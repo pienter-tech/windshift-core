@@ -3,7 +3,8 @@ name: Docker Publish
 on:
   push:
     branches: [main]
-    tags: ['v*']
+    # Fork releases only (vX.Y.Z-pienter.N); upstream tags never publish here.
+    tags: ['v*-pienter.*']
 
 permissions:
   contents: read
@@ -22,15 +23,9 @@ jobs:
       fail-fast: false
       matrix:
         image:
-          - name: windshiftapp/windshift
+          - name: pienter-tech/windshift-core
             dockerfile: Dockerfile
-            short: windshift
-          - name: windshiftapp/ws-carrier
-            dockerfile: deploy/coding-agent/Dockerfile
-            short: ws-carrier
-          - name: windshiftapp/windshift-runner
-            dockerfile: deploy/windshift-runner/Dockerfile
-            short: windshift-runner
+            short: windshift-core
         platform:
           - os: linux/amd64
             runner: ubuntu-latest
@@ -110,16 +105,11 @@ jobs:
       contents: read
       packages: write
     strategy:
-      # One image's merge hiccup must not cancel the others' publishes.
       fail-fast: false
       matrix:
         image:
-          - name: windshiftapp/windshift
-            short: windshift
-          - name: windshiftapp/ws-carrier
-            short: ws-carrier
-          - name: windshiftapp/windshift-runner
-            short: windshift-runner
+          - name: pienter-tech/windshift-core
+            short: windshift-core
     steps:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3.12.0
@@ -136,12 +126,13 @@ jobs:
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051  # v5.10.0
         with:
           images: ${{ env.REGISTRY }}/${{ matrix.image.name }}
+          # `latest` comes only from the raw rule below.
+          flavor: |
+            latest=false
           tags: |
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-dev') && !contains(github.ref, '-test') && !contains(github.ref, '-rc') }}
             type=ref,event=branch
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
             type=sha,prefix=
 
       - name: Create manifest list from per-arch staging tags
@@ -184,10 +175,10 @@ jobs:
           # the job — leftover staging tags are harmless if this can't run.
           for arch in amd64 arm64; do
             tag="stage-${{ github.sha }}-${arch}"
-            vid=$(gh api --paginate "/orgs/windshiftapp/packages/container/${PKG}/versions" \
+            vid=$(gh api --paginate "/orgs/pienter-tech/packages/container/${PKG}/versions" \
               --jq ".[] | select(.metadata.container.tags | index(\"${tag}\")) | .id" | head -n1)
             if [ -n "$vid" ]; then
-              gh api --method DELETE "/orgs/windshiftapp/packages/container/${PKG}/versions/${vid}" \
+              gh api --method DELETE "/orgs/pienter-tech/packages/container/${PKG}/versions/${vid}" \
                 && echo "pruned ${tag} (version ${vid})" || echo "could not prune ${tag}"
             else
               echo "no version found for ${tag}"
