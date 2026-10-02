@@ -703,6 +703,20 @@
     }
   }
 
+  // Insert markdown at the cursor (canned responses, WI-1138). The listener
+  // plugin mirrors the document change back into the bindable content value.
+  export function insertMarkdown(markdown) {
+    if (!editor || readonly) {
+      console.warn('Cannot insert markdown: editor not ready or readonly');
+      return;
+    }
+    try {
+      editor.action(insert(markdown));
+    } catch (error) {
+      console.error('Failed to insert markdown:', error);
+    }
+  }
+
   function togglePageLinkPicker() {
     pageLinkPickerOpen = !pageLinkPickerOpen;
     if (pageLinkPickerOpen) {

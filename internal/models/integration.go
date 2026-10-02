@@ -781,6 +781,11 @@ const (
 	ActionTriggerItemLinked       ActionTriggerType = "item_linked"
 	ActionTriggerManual           ActionTriggerType = "manual"
 
+	// SLA-driven triggers emitted in the breach/warning transaction. They are
+	// configuration consumers, not fields on imported SLA goals.
+	ActionTriggerSLABreached ActionTriggerType = "sla_breached"
+	ActionTriggerSLAWarning  ActionTriggerType = "sla_warning"
+
 	// SCM-driven triggers emitted by the repo-sync loop when a new git ref
 	// matching the per-repository pattern is observed. Payload (in
 	// ActionEvent.NewValues) carries: ref.name, ref.short, ref.sha,
@@ -795,6 +800,13 @@ const (
 	// (scm_pr_merged).
 	ActionTriggerSCMPRLinked ActionTriggerType = "scm_pr_linked"
 	ActionTriggerSCMPRMerged ActionTriggerType = "scm_pr_merged"
+
+	// Helpdesk triggers (WI-1132). comment_created fires after a comment is
+	// committed; NewValues carries comment_is_private and
+	// comment_from_customer. item_inactive fires from the inactivity
+	// sweeper for stale open tickets.
+	ActionTriggerCommentCreated ActionTriggerType = "comment_created"
+	ActionTriggerItemInactive   ActionTriggerType = "item_inactive"
 )
 
 // ActionNodeType defines the type of action node
@@ -830,6 +842,18 @@ const (
 	// row on scm_tag_created events. Registered via the node-executor
 	// registry rather than the legacy switch in action_service.go.
 	ActionNodeCreateMilestone ActionNodeType = "create_milestone"
+	// ActionNodeInsertCannedResponse renders a workspace canned response
+	// (WI-1138) with the execution variables and posts it as a comment on the
+	// trigger item. Private snippets become private comments; public snippets
+	// become public comments and flow through the normal reply-email path.
+	ActionNodeInsertCannedResponse ActionNodeType = "insert_canned_response"
+	// ActionNodeNotifyCustomer emails the portal customer who created the
+	// trigger item through the same threaded transport as reply
+	// notifications (WI-1132).
+	ActionNodeNotifyCustomer ActionNodeType = "notify_customer"
+	// ActionNodeAdjustLabels adds and removes item labels on the trigger
+	// item (WI-1132).
+	ActionNodeAdjustLabels ActionNodeType = "adjust_labels"
 )
 
 // IsIterator reports whether this node type fans out — i.e. the engine must
@@ -896,6 +920,15 @@ type ActionTriggerConfig struct {
 	RepositoryFullName string `json:"repository_full_name,omitempty"`
 
 	RespondToCascades bool `json:"respond_to_cascades,omitempty"` // If true, action responds to events triggered by other actions
+
+	// For comment_created triggers (WI-1132): when true only customer
+	// comments (portal customer or email-intake sender) match; when false
+	// only agent-authored comments match; nil matches any author.
+	FromCustomer *bool `json:"from_customer,omitempty"`
+
+	// For item_inactive triggers (WI-1132): the open item must have had no
+	// comment or update for this many hours before the trigger fires.
+	InactiveHours int `json:"inactive_hours,omitempty"`
 }
 
 // ActionNode represents a step in the action flow
@@ -912,6 +945,12 @@ type ActionNode struct {
 
 // FlowNodeID returns the node's ID for generic action-flow helpers.
 func (n ActionNode) FlowNodeID() int { return n.ID }
+
+// GetID returns the node's ID for the shared action-flow runner.
+func (n ActionNode) GetID() int { return n.ID }
+
+// GetNodeType returns the node type for the shared action-flow runner.
+func (n ActionNode) GetNodeType() string { return string(n.NodeType) }
 
 // SetFlowActionID sets the node's action ID for generic action-flow helpers.
 func (n *ActionNode) SetFlowActionID(id int) { n.ActionID = id }
@@ -935,6 +974,15 @@ type ActionEdge struct {
 
 // SetFlowActionID sets the edge's action ID for generic action-flow helpers.
 func (e *ActionEdge) SetFlowActionID(id int) { e.ActionID = id }
+
+// GetSourceNodeID returns the edge's source node ID for the shared runner.
+func (e ActionEdge) GetSourceNodeID() int { return e.SourceNodeID }
+
+// GetTargetNodeID returns the edge's target node ID for the shared runner.
+func (e ActionEdge) GetTargetNodeID() int { return e.TargetNodeID }
+
+// GetEdgeType returns the edge's routing type for the shared runner.
+func (e ActionEdge) GetEdgeType() string { return e.EdgeType }
 
 // FlowSourceNodeID returns the edge's source node ID for generic action-flow helpers.
 func (e ActionEdge) FlowSourceNodeID() int { return e.SourceNodeID }
@@ -1150,6 +1198,28 @@ type TransitionItemNodeConfig struct {
 type AddCommentNodeConfig struct {
 	Content   string `json:"content"` // Can contain {{variable}} templates
 	IsPrivate bool   `json:"is_private"`
+}
+
+// InsertCannedResponseNodeConfig configures an insert_canned_response node
+// (WI-1138). The referenced canned response must be active; private snippets
+// are inserted as private comments.
+type InsertCannedResponseNodeConfig struct {
+	CannedResponseID int `json:"canned_response_id"`
+}
+
+// NotifyCustomerNodeConfig configures a notify_customer node (WI-1132). The
+// message supports {{variable}} templates and is emailed to the portal
+// customer who created the item.
+type NotifyCustomerNodeConfig struct {
+	Subject string `json:"subject,omitempty"`
+	Message string `json:"message"`
+}
+
+// AdjustLabelsNodeConfig configures an adjust_labels node (WI-1132). At
+// least one of the two lists must be non-empty.
+type AdjustLabelsNodeConfig struct {
+	AddLabelIDs    []int `json:"add_label_ids,omitempty"`
+	RemoveLabelIDs []int `json:"remove_label_ids,omitempty"`
 }
 
 // NotifyUserNodeConfig configures a notify_user node

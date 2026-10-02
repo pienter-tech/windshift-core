@@ -64,14 +64,14 @@ func (r *BoardConfigurationRepository) GetByCollectionID(collectionID int) (*mod
 func (r *BoardConfigurationRepository) getConfig(where string, arg any) (*models.BoardConfiguration, error) {
 	var config models.BoardConfiguration
 	var collID, wsID sql.NullInt64
-	var backlogStatusIDsJSON, listColumnsJSON, cardFieldsJSON, roadmapConfigJSON sql.NullString
+	var backlogStatusIDsJSON, listColumnsJSON, cardFieldsJSON, roadmapConfigJSON, viewSettingsJSON sql.NullString
 	var completedItemRetentionDays sql.NullInt64
 	err := r.db.QueryRow(`
-		SELECT id, collection_id, workspace_id, backlog_status_ids, list_columns, card_fields, roadmap_config, show_rightmost_column_last_50, completed_item_retention_days, created_at, updated_at
+		SELECT id, collection_id, workspace_id, backlog_status_ids, list_columns, card_fields, roadmap_config, view_settings, show_rightmost_column_last_50, completed_item_retention_days, created_at, updated_at
 		FROM board_configurations
 		WHERE `+where,
 		arg,
-	).Scan(&config.ID, &collID, &wsID, &backlogStatusIDsJSON, &listColumnsJSON, &cardFieldsJSON, &roadmapConfigJSON, &config.ShowRightmostColumnLast50, &completedItemRetentionDays, &config.CreatedAt, &config.UpdatedAt)
+	).Scan(&config.ID, &collID, &wsID, &backlogStatusIDsJSON, &listColumnsJSON, &cardFieldsJSON, &roadmapConfigJSON, &viewSettingsJSON, &config.ShowRightmostColumnLast50, &completedItemRetentionDays, &config.CreatedAt, &config.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -91,7 +91,7 @@ func (r *BoardConfigurationRepository) getConfig(where string, arg any) (*models
 		days := int(completedItemRetentionDays.Int64)
 		config.CompletedItemRetentionDays = &days
 	}
-	unmarshalBoardConfigFields(&config, backlogStatusIDsJSON, listColumnsJSON, cardFieldsJSON, roadmapConfigJSON)
+	unmarshalBoardConfigFields(&config, backlogStatusIDsJSON, listColumnsJSON, cardFieldsJSON, roadmapConfigJSON, viewSettingsJSON)
 	return &config, nil
 }
 
@@ -114,15 +114,15 @@ func (r *BoardConfigurationRepository) Create(collectionID, workspaceID *int, re
 	if workspaceID != nil {
 		// Create workspace board configuration
 		err = tx.QueryRow(`
-			INSERT INTO board_configurations (workspace_id, backlog_status_ids, list_columns, card_fields, roadmap_config, show_rightmost_column_last_50, completed_item_retention_days, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-			*workspaceID, configBytes.BacklogStatusIDs, configBytes.ListColumns, configBytes.CardFields, configBytes.RoadmapConfig, req.ShowRightmostColumnLast50, req.CompletedItemRetentionDays, time.Now(), time.Now(),
+			INSERT INTO board_configurations (workspace_id, backlog_status_ids, list_columns, card_fields, roadmap_config, view_settings, show_rightmost_column_last_50, completed_item_retention_days, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+			*workspaceID, jsonOrNil(configBytes.BacklogStatusIDs), jsonOrNil(configBytes.ListColumns), jsonOrNil(configBytes.CardFields), jsonOrNil(configBytes.RoadmapConfig), jsonOrNil(configBytes.ViewSettings), req.ShowRightmostColumnLast50, req.CompletedItemRetentionDays, time.Now(), time.Now(),
 		).Scan(&configID)
 	} else {
 		err = tx.QueryRow(`
-			INSERT INTO board_configurations (collection_id, backlog_status_ids, list_columns, card_fields, roadmap_config, show_rightmost_column_last_50, completed_item_retention_days, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-			*collectionID, configBytes.BacklogStatusIDs, configBytes.ListColumns, configBytes.CardFields, configBytes.RoadmapConfig, req.ShowRightmostColumnLast50, req.CompletedItemRetentionDays, time.Now(), time.Now(),
+			INSERT INTO board_configurations (collection_id, backlog_status_ids, list_columns, card_fields, roadmap_config, view_settings, show_rightmost_column_last_50, completed_item_retention_days, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+			*collectionID, jsonOrNil(configBytes.BacklogStatusIDs), jsonOrNil(configBytes.ListColumns), jsonOrNil(configBytes.CardFields), jsonOrNil(configBytes.RoadmapConfig), jsonOrNil(configBytes.ViewSettings), req.ShowRightmostColumnLast50, req.CompletedItemRetentionDays, time.Now(), time.Now(),
 		).Scan(&configID)
 	}
 	if err != nil {
@@ -158,9 +158,9 @@ func (r *BoardConfigurationRepository) Update(configID int, req *models.BoardCon
 	// Update the configuration
 	_, err = tx.Exec(`
 		UPDATE board_configurations
-		SET backlog_status_ids = ?, list_columns = ?, card_fields = ?, roadmap_config = ?, show_rightmost_column_last_50 = ?, completed_item_retention_days = ?, updated_at = ?
+		SET backlog_status_ids = ?, list_columns = ?, card_fields = ?, roadmap_config = ?, view_settings = ?, show_rightmost_column_last_50 = ?, completed_item_retention_days = ?, updated_at = ?
 		WHERE id = ?`,
-		configBytes.BacklogStatusIDs, configBytes.ListColumns, configBytes.CardFields, configBytes.RoadmapConfig, req.ShowRightmostColumnLast50, req.CompletedItemRetentionDays, time.Now(), configID,
+		jsonOrNil(configBytes.BacklogStatusIDs), jsonOrNil(configBytes.ListColumns), jsonOrNil(configBytes.CardFields), jsonOrNil(configBytes.RoadmapConfig), jsonOrNil(configBytes.ViewSettings), req.ShowRightmostColumnLast50, req.CompletedItemRetentionDays, time.Now(), configID,
 	)
 	if err != nil {
 		return err
@@ -391,12 +391,22 @@ func (r *BoardConfigurationRepository) createColumns(tx database.Tx, configID in
 	return nil
 }
 
+// jsonOrNil binds marshaled JSON bytes as SQL NULL when empty. PostgreSQL
+// would otherwise coerce an empty string to the jsonb type and reject it.
+func jsonOrNil(b []byte) any {
+	if len(b) == 0 {
+		return nil
+	}
+	return b
+}
+
 // boardConfigBytes holds the JSON-encoded board configuration fields.
 type boardConfigBytes struct {
 	BacklogStatusIDs []byte
 	ListColumns      []byte
 	CardFields       []byte
 	RoadmapConfig    []byte
+	ViewSettings     []byte
 }
 
 // marshalBoardConfigFields marshals the JSON config fields from a request.
@@ -434,11 +444,18 @@ func marshalBoardConfigFields(req *models.BoardConfigurationRequest) (*boardConf
 		}
 	}
 
+	if req.ViewSettings != nil {
+		result.ViewSettings, err = json.Marshal(req.ViewSettings)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	return result, nil
 }
 
 // unmarshalBoardConfigFields decodes the JSON config fields into a BoardConfiguration.
-func unmarshalBoardConfigFields(config *models.BoardConfiguration, backlogJSON, listColumnsJSON, cardFieldsJSON, roadmapJSON sql.NullString) {
+func unmarshalBoardConfigFields(config *models.BoardConfiguration, backlogJSON, listColumnsJSON, cardFieldsJSON, roadmapJSON, viewSettingsJSON sql.NullString) {
 	if backlogJSON.Valid && backlogJSON.String != "" {
 		var backlogStatusIDs []int
 		if err := json.Unmarshal([]byte(backlogJSON.String), &backlogStatusIDs); err == nil {
@@ -461,6 +478,12 @@ func unmarshalBoardConfigFields(config *models.BoardConfiguration, backlogJSON, 
 		var roadmapConfig models.RoadmapConfig
 		if err := json.Unmarshal([]byte(roadmapJSON.String), &roadmapConfig); err == nil {
 			config.RoadmapConfig = &roadmapConfig
+		}
+	}
+	if viewSettingsJSON.Valid && viewSettingsJSON.String != "" {
+		var viewSettings models.ViewSettings
+		if err := json.Unmarshal([]byte(viewSettingsJSON.String), &viewSettings); err == nil {
+			config.ViewSettings = &viewSettings
 		}
 	}
 }

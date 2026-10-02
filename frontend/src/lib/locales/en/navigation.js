@@ -418,7 +418,23 @@ export default {
     dismissOnboarding: 'Dismiss onboarding',
     getStartedMember: 'Here are the workspaces available to you',
     selectWorkspace: 'Select a workspace to get started',
+    browseAllWorkspaces: 'Browse all {count} workspaces',
     noWorkspacesAvailable:
       'No workspaces are available yet. Please contact your administrator to get access to a workspace.',
+  },
+  navConfig: {
+    configureTitle: 'Configure navigation',
+    scopeWorkspace: 'Workspace default — {name}',
+    scopeCollection: 'Collection — {name}',
+    collectionScopeHelp:
+      'These toggles override the workspace default for this collection. Tools and tests follow the workspace setting.',
+    inheritedBadge: 'Following the workspace default — toggle a view to override it.',
+    resetToInherited: 'Reset to workspace default',
+    alwaysVisible: 'Always visible',
+    adminOnlyHint: 'Visible to workspace admins',
+    moduleHint: 'Appears when the test management module is enabled and the viewer can access tests.',
+    defaultViewHint: "The workspace's default view — cannot be disabled",
+    saveError: 'Could not save navigation settings: {error}',
+    loadError: 'Could not load navigation settings: {error}',
   },
 };

@@ -43,9 +43,9 @@ func (s *PortalLookupStore) GetCustomer(id int) (*auth.PortalCustomer, error) {
 	var phone sql.NullString
 	var orgID sql.NullInt64
 	err := s.db.QueryRow(`
-		SELECT id, name, email, phone, customer_organisation_id, created_at, updated_at
+		SELECT id, name, email, phone, customer_organisation_id, deactivated_at, created_at, updated_at
 		FROM portal_customers WHERE id = ?
-	`, id).Scan(&c.ID, &c.Name, &c.Email, &phone, &orgID, &c.CreatedAt, &c.UpdatedAt)
+	`, id).Scan(&c.ID, &c.Name, &c.Email, &phone, &orgID, &c.DeactivatedAt, &c.CreatedAt, &c.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrPortalCustomerNotFound
 	}

@@ -159,6 +159,12 @@ html[data-color-mode="light"],
   --ds-accent-yellow-subtler: #ffe380;
   --ds-icon-accent-yellow: #b38600;
 
+  /* Gray — neutral badge ink. #767676 is the lightest gray holding
+     WCAG AA (4.5:1) on white, so it reads lighter than the zinc it
+     replaced without sacrificing readability. */
+  --ds-accent-gray: #767676;
+  --ds-accent-gray-subtle: #94a3b8;
+
   /* Accent text — readable-on-subtle text for badges and chips */
   --ds-text-accent-blue: var(--color-blue-800);
   --ds-text-accent-green: var(--color-green-800);

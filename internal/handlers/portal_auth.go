@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -267,6 +268,18 @@ func (h *PortalAuthHandler) VerifyMagicLink(w http.ResponseWriter, r *http.Reque
 
 	session, err := h.portalSessionManager.CreatePortalSession(result.PortalCustomerID, channel.ID, clientIP, userAgent)
 	if err != nil {
+		// A deactivated customer can hold nothing against a valid link they
+		// received, so a clear refusal beats a generic 500 (WI-1554).
+		if errors.Is(err, auth.ErrPortalCustomerDeactivated) {
+			slog.Warn("magic link redemption refused: customer deactivated",
+				slog.String("component", "portal_auth"), slog.Int("portal_customer_id", result.PortalCustomerID))
+			respondJSON(w, http.StatusUnauthorized, map[string]any{
+				"success": false,
+				"message": "This account has been deactivated. Please contact support if you believe this is a mistake.",
+				"code":    "deactivated",
+			})
+			return
+		}
 		slog.Error("failed to create portal session", slog.String("component", "portal_auth"), slog.Any("error", err))
 		respondInternalError(w, r, err)
 		return

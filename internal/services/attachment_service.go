@@ -40,10 +40,14 @@ type CreateAttachmentParams struct {
 	FilePath         string
 	MimeType         string
 	FileSize         int64
-	UploadedBy       *int
-	HasThumbnail     bool
-	ThumbnailPath    string
-	Category         string // e.g. "avatar", "" for regular attachments
+	// UploadedBy and UploadedByPortalCustomerID attribute the uploader.
+	// Exactly one is set: internal uploads carry the user, portal and
+	// public-form uploads carry the portal customer.
+	UploadedBy                 *int
+	UploadedByPortalCustomerID *int
+	HasThumbnail               bool
+	ThumbnailPath              string
+	Category                   string // e.g. "avatar", "" for regular attachments
 }
 
 // CanModifyItemAttachment checks if a user can upload/delete attachments on an item.
@@ -182,10 +186,10 @@ func (s *AttachmentService) CreateRecord(params CreateAttachmentParams) (int64, 
 
 	var attachmentID int64
 	err := s.db.QueryRow(`
-		INSERT INTO attachments (item_id, entity_type, filename, original_filename, file_path, mime_type, file_size, uploaded_by, has_thumbnail, thumbnail_path, category)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
+		INSERT INTO attachments (item_id, entity_type, filename, original_filename, file_path, mime_type, file_size, uploaded_by, uploaded_by_portal_customer_id, has_thumbnail, thumbnail_path, category)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
 	`, itemID, params.EntityType, params.Filename, params.OriginalFilename, params.FilePath,
-		params.MimeType, params.FileSize, params.UploadedBy,
+		params.MimeType, params.FileSize, params.UploadedBy, params.UploadedByPortalCustomerID,
 		params.HasThumbnail, params.ThumbnailPath, params.Category).Scan(&attachmentID)
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert attachment record: %w", err)
@@ -194,33 +198,46 @@ func (s *AttachmentService) CreateRecord(params CreateAttachmentParams) (int64, 
 	return attachmentID, nil
 }
 
+// AttachmentHistoryActor identifies who performed an attachment lifecycle
+// event: the uploading user (internal uploads), the acting portal customer
+// (portal/public-form uploads), or neither for system-initiated deletes.
+type AttachmentHistoryActor struct {
+	UserID           *int
+	PortalCustomerID *int
+}
+
 // RecordItemHistory appends an item_history row for an attachment lifecycle
 // event (upload/delete). It is the single source of truth for attachment
 // history shared by the cookie-auth handler and the bearer-token v1 item
 // service, so both surfaces emit identical entries. Recording is best-effort
 // and non-transactional: callers log and swallow the error so it never fails
-// an otherwise-successful upload or delete. A nil userID is a no-op (no actor
-// to attribute). new_value encodes the attachment id for uploads
-// ("attachment:<id>:<filename>") and the bare filename otherwise, matching the
-// format the activity feed already consumes.
-func (s *AttachmentService) RecordItemHistory(itemID int, userID *int, action string, oldValue *string, attachmentID int64, filename string) error {
-	if userID == nil {
-		return nil
-	}
-	value := filename
-	if action == "attachment_uploaded" {
-		value = fmt.Sprintf("attachment:%d:%s", attachmentID, filename)
-	}
+// an otherwise-successful upload or delete. new_value encodes the attachment
+// id for uploads ("attachment:<id>:<filename>") and the bare filename
+// otherwise, matching the format the activity feed already consumes.
+func (s *AttachmentService) RecordItemHistory(itemID int, actor AttachmentHistoryActor, action string, oldValue *string, attachmentID int64, filename string) error {
 	entry := repository.HistoryEntry{
 		ItemID:       itemID,
-		UserID:       *userID,
 		FieldName:    action,
 		OldValueNull: oldValue == nil,
-		NewValue:     value,
+		NewValue:     filename,
 		ChangedAt:    time.Now(),
 	}
 	if oldValue != nil {
 		entry.OldValue = *oldValue
+	}
+	switch {
+	case actor.UserID != nil:
+		entry.ActorKind = repository.HistoryActorUser
+		entry.UserID = *actor.UserID
+	case actor.PortalCustomerID != nil:
+		entry.ActorKind = repository.HistoryActorPortalCustomer
+		id := *actor.PortalCustomerID
+		entry.ActorPortalCustomerID = &id
+	default:
+		entry.ActorKind = repository.HistoryActorSystem
+	}
+	if action == "attachment_uploaded" {
+		entry.NewValue = fmt.Sprintf("attachment:%d:%s", attachmentID, filename)
 	}
 	return repository.NewItemRepository(s.db).RecordHistory(s.db, entry)
 }

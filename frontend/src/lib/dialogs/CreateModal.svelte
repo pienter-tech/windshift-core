@@ -90,13 +90,20 @@
     name: '',
     key: '',
     description: '',
-    template_workspace_id: null
+    template_workspace_id: null,
+    template_pack: '',
+    restricted_to_creator: false
   });
 
   let workspaceTemplateOptions = $state([]);
   let workspaceTemplatesLoading = $state(false);
   let workspaceTemplatesError = $state(null);
   let workspaceTemplatesLoaded = $state(false);
+
+  let workspacePackOptions = $state([]);
+  let workspacePacksLoading = $state(false);
+  let workspacePacksError = $state(null);
+  let workspacePacksLoaded = $state(false);
 
   let collectionFormData = $state({
     name: '',
@@ -165,7 +172,9 @@
       name: '',
       key: '',
       description: '',
-      template_workspace_id: null
+      template_workspace_id: null,
+      template_pack: '',
+      restricted_to_creator: false
     };
 
     collectionFormData = {
@@ -182,6 +191,23 @@
     selectedType = type;
     if (type === 'work-item' && !$workspacesStore.loaded) {
       loadWorkspaces();
+    }
+  }
+
+  async function loadWorkspacePacks() {
+    if (workspacePacksLoaded || workspacePacksLoading) return;
+    workspacePacksLoading = true;
+    workspacePacksError = null;
+    try {
+      const packs = await api.packs.list();
+      workspacePackOptions = Array.isArray(packs) ? packs : [];
+      workspacePacksLoaded = true;
+    } catch (error) {
+      console.error('Failed to load built-in packs:', error);
+      workspacePackOptions = [];
+      workspacePacksError = error?.message || String(error);
+    } finally {
+      workspacePacksLoading = false;
     }
   }
 
@@ -281,10 +307,14 @@
           description: workspaceFormData.description || '',
           icon: 'Package',
           color: '#3b82f6',
-          active: true
+          active: true,
+          restricted_to_creator: workspaceFormData.restricted_to_creator === true
         };
         if (workspaceFormData.template_workspace_id) {
           payload.template_workspace_id = workspaceFormData.template_workspace_id;
+        }
+        if (workspaceFormData.template_pack) {
+          payload.template_pack = workspaceFormData.template_pack;
         }
         const result = await api.workspaces.create(payload);
 
@@ -369,6 +399,10 @@
       ($permissionStore.userPermissionKeys?.has('workspace.create') || $isSystemAdmin)
     ) {
       loadWorkspaceTemplates();
+      // Built-in packs are a system-administrator surface, matching GET /packs.
+      if ($isSystemAdmin) {
+        loadWorkspacePacks();
+      }
     }
   });
 
@@ -577,6 +611,9 @@
             templates={workspaceTemplateOptions}
             templatesLoading={workspaceTemplatesLoading}
             templatesError={workspaceTemplatesError}
+            packs={workspacePackOptions}
+            packsLoading={workspacePacksLoading}
+            packsError={workspacePacksError}
             bind:nameInputRef={nameInputRef}
           />
         {:else if selectedType === 'collection'}

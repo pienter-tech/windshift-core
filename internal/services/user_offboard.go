@@ -1,16 +1,43 @@
 package services
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
+	"time"
 
 	"windshift/internal/database"
+	"windshift/internal/itemevents"
 	"windshift/internal/models"
 	"windshift/internal/repository"
 )
+
+// itemsAssignedToUser loads the minimal item shape needed to record an
+// assignee removal before the bulk clear runs.
+func itemsAssignedToUser(tx database.Tx, userID int) ([]models.Item, error) {
+	rows, err := tx.Query(`SELECT id, workspace_id, assignee_id FROM items WHERE assignee_id = ?`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var items []models.Item
+	for rows.Next() {
+		var item models.Item
+		var assignee sql.NullInt64
+		if err := rows.Scan(&item.ID, &item.WorkspaceID, &assignee); err != nil {
+			return nil, err
+		}
+		if assignee.Valid {
+			value := int(assignee.Int64)
+			item.AssigneeID = &value
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
 
 // UserNotificationDeleter removes a user's notifications through the
 // notification service/manager layer so caches are invalidated with the rows.
@@ -92,6 +119,7 @@ func OffboardUser(db database.Database, userID int, notificationDeleter UserNoti
 		return result, fmt.Errorf("failed to find personal workspace: %w", err)
 	}
 	itemRepo := repository.NewItemRepository(db)
+	slaRepo := repository.NewSLARepository(db)
 	if personalWsID != nil {
 		if err := itemRepo.LockWorkspaceItemsTx(tx, *personalWsID); err != nil {
 			return result, err
@@ -133,12 +161,51 @@ func OffboardUser(db database.Database, userID int, notificationDeleter UserNoti
 		if err := itemRepo.DeleteByWorkspaceTx(tx, *personalWsID); err != nil {
 			return result, fmt.Errorf("failed to delete personal workspace items: %w", err)
 		}
+		// Drop SLA metrics before the workspace calendars cascade so the
+		// goal-target calendar FK cannot abort the delete.
+		if err := slaRepo.DeleteWorkspaceMetricsTx(context.Background(), tx, *personalWsID); err != nil {
+			return result, fmt.Errorf("failed to delete personal workspace SLA metrics: %w", err)
+		}
 		if _, err := tx.Exec(`DELETE FROM workspaces WHERE id = ?`, *personalWsID); err != nil {
 			return result, fmt.Errorf("failed to delete personal workspace: %w", err)
 		}
 	}
 
-	// c) Unassign from all items
+	// c) Unassign from all items. Record the removal as an item fact so inline
+	//    SLA evaluation and other observers see the assignee change; the bulk
+	//    clear then writes the same state inside this transaction.
+	assignedItems, err := itemsAssignedToUser(tx, userID)
+	if err != nil {
+		return result, fmt.Errorf("failed to load assigned items: %w", err)
+	}
+	if len(assignedItems) > 0 {
+		metadata := itemevents.System("user_offboard")
+		if metadata.OccurredAt.IsZero() {
+			metadata.OccurredAt = time.Now()
+		}
+		records := make([]itemevents.UpdateRecord, 0, len(assignedItems))
+		now := metadata.OccurredAt
+		for i := range assignedItems {
+			original := &assignedItems[i]
+			patched := *original
+			patched.AssigneeID = nil
+			records = append(records, itemevents.UpdateRecord{
+				Item:     &patched,
+				Changes:  itemevents.Changes(original, &patched),
+				Metadata: metadata,
+			})
+			// The unassignment must be visible in item history too, not only
+			// in the domain event log; the actor is the system (offboarding).
+			if err := itemRepo.RecordHistory(tx, historyEntryForChange(
+				original.ID, "assignee_id", intPtrToString(original.AssigneeID), "", now, metadata,
+			)); err != nil {
+				return result, fmt.Errorf("record assignee removal history: %w", err)
+			}
+		}
+		if _, err := itemevents.NewRecorder(db).UpdatedBatch(context.Background(), tx, records); err != nil {
+			return result, fmt.Errorf("record assignee removal: %w", err)
+		}
+	}
 	if err := itemRepo.ClearAssigneeForUserTx(tx, userID); err != nil {
 		return result, fmt.Errorf("failed to unassign items: %w", err)
 	}

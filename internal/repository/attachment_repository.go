@@ -34,11 +34,13 @@ func (r *AttachmentRepository) ListItem(itemID, limit, offset int) ([]models.Att
 	}
 	rows, err := r.db.Query(`
 		SELECT a.id, a.item_id, a.filename, a.original_filename, a.mime_type, a.file_size,
-		       a.uploaded_by, a.has_thumbnail, a.created_at,
+		       a.uploaded_by, a.uploaded_by_portal_customer_id, a.has_thumbnail, a.created_at,
 		       COALESCE(NULLIF(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')), ''), u.username, ''),
-		       COALESCE(u.email, '')
+		       COALESCE(u.email, ''),
+		       COALESCE(NULLIF(TRIM(pc.name), ''), pc.email, '')
 		FROM attachments a
 		LEFT JOIN users u ON u.id = a.uploaded_by
+		LEFT JOIN portal_customers pc ON pc.id = a.uploaded_by_portal_customer_id
 		WHERE a.item_id = ? AND COALESCE(a.entity_type, 'item') = 'item'
 		ORDER BY a.created_at DESC, a.id DESC
 		LIMIT ? OFFSET ?
@@ -50,10 +52,11 @@ func (r *AttachmentRepository) ListItem(itemID, limit, offset int) ([]models.Att
 	result := make([]models.Attachment, 0, limit)
 	for rows.Next() {
 		var attachment models.Attachment
-		var rowItemID, uploadedBy sql.NullInt64
+		var rowItemID, uploadedBy, uploadedByCustomer sql.NullInt64
 		if err := rows.Scan(&attachment.ID, &rowItemID, &attachment.Filename, &attachment.OriginalFilename,
-			&attachment.MimeType, &attachment.FileSize, &uploadedBy, &attachment.HasThumbnail,
-			&attachment.CreatedAt, &attachment.UploaderName, &attachment.UploaderEmail); err != nil {
+			&attachment.MimeType, &attachment.FileSize, &uploadedBy, &uploadedByCustomer, &attachment.HasThumbnail,
+			&attachment.CreatedAt, &attachment.UploaderName, &attachment.UploaderEmail,
+			&attachment.UploaderPortalCustomerName); err != nil {
 			return nil, 0, fmt.Errorf("scan item attachment: %w", err)
 		}
 		if rowItemID.Valid {
@@ -63,6 +66,10 @@ func (r *AttachmentRepository) ListItem(itemID, limit, offset int) ([]models.Att
 		if uploadedBy.Valid {
 			id := int(uploadedBy.Int64)
 			attachment.UploadedBy = &id
+		}
+		if uploadedByCustomer.Valid {
+			id := int(uploadedByCustomer.Int64)
+			attachment.UploadedByPortalCustomerID = &id
 		}
 		result = append(result, attachment)
 	}
@@ -74,19 +81,22 @@ func (r *AttachmentRepository) ListItem(itemID, limit, offset int) ([]models.Att
 
 func (r *AttachmentRepository) GetItem(id int) (*models.Attachment, error) {
 	var attachment models.Attachment
-	var itemID, uploadedBy sql.NullInt64
+	var itemID, uploadedBy, uploadedByCustomer sql.NullInt64
 	err := r.db.QueryRow(`
 		SELECT a.id, a.item_id, a.filename, a.original_filename, a.mime_type, a.file_size,
-		       a.uploaded_by, a.has_thumbnail, a.created_at,
+		       a.uploaded_by, a.uploaded_by_portal_customer_id, a.has_thumbnail, a.created_at,
 		       COALESCE(NULLIF(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')), ''), u.username, ''),
-		       COALESCE(u.email, '')
+		       COALESCE(u.email, ''),
+		       COALESCE(NULLIF(TRIM(pc.name), ''), pc.email, '')
 		FROM attachments a
 		LEFT JOIN users u ON u.id = a.uploaded_by
+		LEFT JOIN portal_customers pc ON pc.id = a.uploaded_by_portal_customer_id
 		WHERE a.id = ? AND a.item_id IS NOT NULL AND COALESCE(a.entity_type, 'item') = 'item'
 	`, id).Scan(
 		&attachment.ID, &itemID, &attachment.Filename, &attachment.OriginalFilename,
-		&attachment.MimeType, &attachment.FileSize, &uploadedBy, &attachment.HasThumbnail,
+		&attachment.MimeType, &attachment.FileSize, &uploadedBy, &uploadedByCustomer, &attachment.HasThumbnail,
 		&attachment.CreatedAt, &attachment.UploaderName, &attachment.UploaderEmail,
+		&attachment.UploaderPortalCustomerName,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -99,6 +109,10 @@ func (r *AttachmentRepository) GetItem(id int) (*models.Attachment, error) {
 	if uploadedBy.Valid {
 		uploader := int(uploadedBy.Int64)
 		attachment.UploadedBy = &uploader
+	}
+	if uploadedByCustomer.Valid {
+		id := int(uploadedByCustomer.Int64)
+		attachment.UploadedByPortalCustomerID = &id
 	}
 	return &attachment, nil
 }
@@ -190,6 +204,28 @@ func (r *AttachmentRepository) GetItemDownloadRecord(id int) (*AttachmentDownloa
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get attachment download: %w", err)
+	}
+	return &rec, nil
+}
+
+// GetPortalRequestAttachmentRecord returns download metadata for an
+// item-scoped attachment bound to one specific request (item). The itemID
+// comes from the caller's portal ownership resolution, so the query refuses
+// attachments that belong to any other item or entity type.
+func (r *AttachmentRepository) GetPortalRequestAttachmentRecord(attachmentID, itemID int) (*AttachmentDownloadRecord, error) {
+	var rec AttachmentDownloadRecord
+	err := r.db.QueryRow(`
+		SELECT i.workspace_id, a.filename, a.original_filename, a.file_path, a.mime_type, a.file_size
+		FROM attachments a
+		JOIN items i ON i.id = a.item_id
+		WHERE a.id = ? AND a.item_id = ?
+		  AND (a.entity_type IS NULL OR a.entity_type = '' OR a.entity_type = 'item')
+	`, attachmentID, itemID).Scan(&rec.WorkspaceID, &rec.Filename, &rec.OriginalFilename, &rec.FilePath, &rec.MimeType, &rec.FileSize)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get portal request attachment: %w", err)
 	}
 	return &rec, nil
 }

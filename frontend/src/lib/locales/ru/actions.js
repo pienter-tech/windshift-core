@@ -33,6 +33,8 @@ export default {
       itemCreated: 'Элемент создан',
       itemUpdated: 'Элемент обновлён',
       itemLinked: 'Элемент связан',
+      slaBreached: 'Нарушение SLA',
+      slaWarning: 'Предупреждение SLA',
       manual: 'Вручную',
       respondToCascades: 'Реагировать на изменения от других действий',
       respondToCascadesHint:

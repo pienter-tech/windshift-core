@@ -48,15 +48,17 @@ type Client interface {
 	GetProjectWorkflowScheme(ctx context.Context, projectKey string) (*JiraWorkflow, error)
 	GetProjectIssueTypeStatuses(ctx context.Context, projectKey string) ([]JiraIssueTypeWithStatuses, error)
 
-	// Issues (Legacy - uses deprecated GET /rest/api/3/search)
-	SearchIssues(ctx context.Context, opts SearchOptions) (*SearchResult, error)
+	// Issues. SearchIssuesJQL is the only issue search on the Client:
+	// Cloud serves it via POST /rest/api/3/search/jql (the legacy GET /search
+	// endpoint was removed by Atlassian), Data Center adapts it to its
+	// supported GET /rest/api/2/search.
+	SearchIssuesJQL(ctx context.Context, req JQLSearchRequest) (*JQLSearchResponse, error)
 	GetIssue(ctx context.Context, issueKey string, expand []string) (*JiraIssue, error)
 	GetIssueComments(ctx context.Context, issueKey string, startAt, maxResults int) (*JiraCommentContainer, error)
 	GetIssueWorklogs(ctx context.Context, issueKey string, startAt, maxResults int) (*JiraWorklogContainer, error)
 	GetIssueCount(ctx context.Context, projectKey string, openOnly bool) (int, error)
 
-	// Issues (Enhanced - uses POST /rest/api/3/search/jql)
-	SearchIssuesJQL(ctx context.Context, req JQLSearchRequest) (*JQLSearchResponse, error)
+	// Issues (Bulk - uses POST /rest/api/3/issue/bulkfetch)
 	BulkFetchIssues(ctx context.Context, req BulkFetchRequest) (*BulkFetchResponse, error)
 	GetAllIssueKeys(ctx context.Context, jql string) ([]string, error)
 
@@ -1360,11 +1362,6 @@ func (c *cloudClient) GetProjectIssueTypeStatuses(ctx context.Context, projectKe
 // ================================================================
 // Issue Methods
 // ================================================================
-
-// SearchIssues searches for issues using JQL
-func (c *cloudClient) SearchIssues(ctx context.Context, opts SearchOptions) (*SearchResult, error) {
-	return jiraSearchIssuesLegacy(ctx, c, c.baseURL, opts)
-}
 
 // GetIssue gets a single issue by key
 func (c *cloudClient) GetIssue(ctx context.Context, issueKey string, expand []string) (*JiraIssue, error) {

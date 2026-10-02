@@ -15,6 +15,11 @@ func RegisterItemRoutes(deps *Deps) {
 	// path ends in /events so it is exempt from per-user concurrency slots.
 	api.HandleH("GET /items/{id}/events", auth(http.HandlerFunc(deps.Items.Item.Events)))
 
+	// Duplicate-candidates panel (WI-1548): the requester's other open
+	// tickets, permission-filtered per workspace. Item-view gated with 404 on
+	// no view, matching the events stream.
+	api.HandleH("GET /items/{id}/requester-open-tickets", auth(http.HandlerFunc(deps.Items.Item.RequesterOpenTickets)))
+
 	// Calendar scheduling endpoints
 	api.HandleH("POST /items/{id}/schedule", auth(http.HandlerFunc(deps.Items.Item.ScheduleItem)))
 	api.HandleH("DELETE /items/{id}/unschedule", auth(http.HandlerFunc(deps.Items.Item.UnscheduleItem)))

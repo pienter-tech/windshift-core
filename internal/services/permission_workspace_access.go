@@ -144,6 +144,42 @@ func (ps *PermissionService) activeWorkspacePairs() ([]repository.IDKey, error) 
 	}
 }
 
+// WorkspaceVisibility evaluates many per-workspace view/admin decisions for
+// one user against a single decoded permission snapshot, so paged directory
+// and search requests pay one snapshot decode instead of one per candidate.
+type WorkspaceVisibility interface {
+	// CanView reports whether the user holds item.view on the workspace.
+	CanView(workspaceID int) (bool, error)
+	// CanAdmin reports whether the user holds workspace.admin on the workspace.
+	CanAdmin(workspaceID int) (bool, error)
+}
+
+// snapshotWorkspaceVisibility answers from an already-decoded snapshot;
+// evaluation is fail-closed map lookups and cannot error.
+type snapshotWorkspaceVisibility struct {
+	permissions *models.UserPermissionCache
+}
+
+func (v snapshotWorkspaceVisibility) CanView(workspaceID int) (bool, error) {
+	return workspacePermissionFromSnapshot(v.permissions, workspaceID, models.PermissionItemView), nil
+}
+
+func (v snapshotWorkspaceVisibility) CanAdmin(workspaceID int) (bool, error) {
+	return workspacePermissionFromSnapshot(v.permissions, workspaceID, models.PermissionWorkspaceAdmin), nil
+}
+
+// WorkspaceVisibility acquires the request-scoped evaluator. A snapshot build
+// failure is returned so callers keep failing closed; revocation stays
+// governed by the snapshot's own TTL and invalidation, exactly as for
+// per-check HasWorkspacePermission calls.
+func (ps *PermissionService) WorkspaceVisibility(userID int) (WorkspaceVisibility, error) {
+	permissions, err := ps.effectivePermissionSnapshot(userID)
+	if err != nil {
+		return nil, err
+	}
+	return snapshotWorkspaceVisibility{permissions: permissions}, nil
+}
+
 // InvalidateActiveWorkspaceCache makes local workspace create/update/delete
 // mutations visible immediately. The TTL bounds changes made by other replicas.
 func (ps *PermissionService) InvalidateActiveWorkspaceCache() {

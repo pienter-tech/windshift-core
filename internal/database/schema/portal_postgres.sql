@@ -10,6 +10,9 @@ CREATE TABLE IF NOT EXISTS portal_customers (
 	custom_field_values JSONB,
 	is_primary BOOLEAN DEFAULT false,
 	dismissed_passkey_prompt_at TIMESTAMPTZ,
+	erased_at TIMESTAMPTZ, -- Set when the customer completed Article 17 erasure; the row is kept pseudonymized and never cleared
+	deactivated_at TIMESTAMPTZ, -- Set when an admin cut portal access; every portal auth path rejects deactivated customers; reactivation is an explicit admin action
+	created_via TEXT NOT NULL DEFAULT 'unknown', -- Creation provenance: agent | email-intake | magic-link | ticket-import | unknown (rows predating provenance capture)
 	created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
 	updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
 	FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
@@ -66,3 +69,26 @@ ON CONFLICT (name) DO NOTHING;
 
 -- Note: portal_request_drafts lives in portal_drafts_postgres.sql, loaded
 -- after request_types_postgres.sql so its FK target exists at CREATE time.
+
+-- DSAR completion evidence: one row per Article 17 erasure execution against
+-- a portal customer. The customer row itself is pseudonymized (never
+-- deleted), so records persist.
+CREATE TABLE IF NOT EXISTS customer_erasure_records (
+	id SERIAL PRIMARY KEY,
+	portal_customer_id INTEGER NOT NULL,
+	requested_by TEXT NOT NULL, -- DSAR intake reference: subject email/channel reference
+	requested_at TIMESTAMPTZ NOT NULL, -- when the erasure request was received
+	approved_by INTEGER NOT NULL, -- admin user who approved execution
+	executed_at TIMESTAMPTZ NOT NULL, -- when erasure completed
+	policy_version TEXT NOT NULL, -- erasure policy version applied
+	notes TEXT,
+	FOREIGN KEY (portal_customer_id) REFERENCES portal_customers(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_customer_erasure_records_customer_id ON customer_erasure_records(portal_customer_id);
+
+
+-- migration: 20261005_portal_customers_erased_at
+-- migration: 20261005_customer_erasure_records
+-- migration: 20261006_portal_customers_deactivated_at
+-- migration: 20261006_portal_customers_created_via

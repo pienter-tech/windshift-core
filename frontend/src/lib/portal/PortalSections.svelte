@@ -259,6 +259,7 @@
             style="{isDraggingItem && isDropTarget ? `border-color: ${dropZoneStates.get(section.id)?.isOver ? 'var(--ds-status-info-solid)' : 'var(--ds-border)'}; background-color: ${dropZoneStates.get(section.id)?.isOver ? 'var(--ds-status-info-bg)' : 'transparent'}; padding: 0.5rem;` : ''}"
             data-section-drop-zone
             data-section-id={section.id}
+            data-testid="portal-section-drop-zone"
           >
             {#if gridItems.length > 0}
               <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -312,7 +313,7 @@
                       <div class="min-w-0 flex-1">
                         <div class="text-sm font-medium leading-5 flex items-center gap-2" style="color: var(--ds-text);">
                           {entry.item.name}
-                          {#if !entry.item.is_active}
+                          {#if entry.item.is_active === false}
                             <span
                               class="px-1.5 py-0.5 text-[10px] font-medium rounded"
                               style="background-color: var(--ds-background-neutral); color: var(--ds-text-subtle);"

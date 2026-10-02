@@ -249,6 +249,7 @@ CREATE TABLE IF NOT EXISTS themes (
 	nav_background_color_dark TEXT NOT NULL DEFAULT '#1f2937',
 	nav_text_color_dark TEXT NOT NULL DEFAULT '#f3f4f6',
 	logo_url TEXT,
+	logo_url_dark TEXT,
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -264,6 +265,7 @@ CREATE TABLE IF NOT EXISTS board_configurations (
 	list_columns TEXT, -- JSON array of list column configurations
 	roadmap_config TEXT, -- JSON object with roadmap view settings
 	card_fields TEXT, -- JSON array of card field configurations
+	view_settings TEXT, -- JSON object of view-scoped settings (enabled_views)
 	show_rightmost_column_last_50 BOOLEAN DEFAULT false,
 	completed_item_retention_days INTEGER,
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,

@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "kind": "windshift.configuration-set",
+  "payload": {
+    "configuration_set": {
+      "name": "Helpdesk",
+      "description": "Email-first customer support configuration: ticket lifecycle, priorities, and request context.",
+      "differentiate_by_item_type": false,
+      "default_item_type_name": "Ticket"
+    },
+    "status_categories": [
+      { "name": "To Do" },
+      { "name": "In Progress" },
+      { "name": "Done" }
+    ],
+    "statuses": [
+      { "name": "Open", "description": "New work item, not yet started", "category_name": "To Do" },
+      { "name": "In Progress", "description": "Currently being worked on", "category_name": "In Progress" },
+      { "name": "Pending", "description": "Waiting on the requester", "category_name": "In Progress" },
+      { "name": "Resolved", "description": "Support work is complete", "category_name": "Done" },
+      { "name": "Closed", "description": "Ticket is closed and archived", "category_name": "Done" }
+    ],
+    "workflows": [
+      {
+        "name": "Support Workflow",
+        "description": "Ticket lifecycle from intake to resolution and closure.",
+        "transitions": [
+          { "to_status_name": "Open", "display_order": 0 },
+          { "from_status_name": "Open", "to_status_name": "In Progress", "display_order": 1 },
+          { "from_status_name": "Open", "to_status_name": "Pending", "display_order": 2 },
+          { "from_status_name": "Open", "to_status_name": "Resolved", "display_order": 3 },
+          { "from_status_name": "In Progress", "to_status_name": "Pending", "display_order": 4 },
+          { "from_status_name": "In Progress", "to_status_name": "Resolved", "display_order": 5 },
+          { "from_status_name": "Pending", "to_status_name": "In Progress", "display_order": 6 },
+          { "from_status_name": "Pending", "to_status_name": "Resolved", "display_order": 7 },
+          { "from_status_name": "Resolved", "to_status_name": "Closed", "display_order": 8 },
+          { "from_status_name": "Resolved", "to_status_name": "Open", "display_order": 9 },
+          { "from_status_name": "Closed", "to_status_name": "Open", "display_order": 10 }
+        ]
+      }
+    ],
+    "item_types": [
+      {
+        "name": "Ticket",
+        "description": "Customer support request",
+        "icon": "Ticket",
+        "color": "#2563eb",
+        "hierarchy_level": 3,
+        "sort_order": 1
+      }
+    ],
+    "priorities": [
+      { "name": "Critical", "description": "Urgent items requiring immediate attention", "icon": "AlertCircle", "color": "#dc2626", "sort_order": 1 },
+      { "name": "High", "description": "High priority items", "icon": "ArrowUp", "color": "#ea580c", "sort_order": 2 },
+      { "name": "Medium", "description": "Normal priority items", "icon": "Minus", "color": "#ca8a04", "sort_order": 3 },
+      { "name": "Low", "description": "Low priority items", "icon": "ArrowDown", "color": "#16a34a", "sort_order": 4 }
+    ],
+    "custom_fields": [
+      {
+        "name": "Requester Reference",
+        "field_type": "text",
+        "description": "External reference for the requesting customer",
+        "required": false,
+        "display_order": 1,
+        "applies_to_portal_customers": true
+      }
+    ],
+    "screens": [
+      {
+        "name": "Support Ticket Screen",
+        "description": "Fields captured on a support ticket",
+        "fields": [
+          { "field_kind": "system", "field_identifier": "title", "display_order": 1, "is_required": true, "field_width": "full" },
+          { "field_kind": "system", "field_identifier": "description", "display_order": 2, "field_width": "full" },
+          { "field_kind": "system", "field_identifier": "status", "display_order": 3, "is_required": true, "field_width": "half" },
+          { "field_kind": "system", "field_identifier": "priority", "display_order": 4, "field_width": "half" },
+          { "field_kind": "system", "field_identifier": "assignee", "display_order": 5, "field_width": "half" },
+          { "field_kind": "custom", "custom_field_name": "Requester Reference", "display_order": 6, "field_width": "half" }
+        ]
+      }
+    ],
+    "configuration_set_links": {
+      "workflow_name": "Support Workflow",
+      "create_screen_name": "Support Ticket Screen",
+      "edit_screen_name": "Support Ticket Screen",
+      "view_screen_name": "Support Ticket Screen",
+      "priority_names": ["Critical", "High", "Medium", "Low"],
+      "item_type_configs": [
+        {
+          "item_type_name": "Ticket",
+          "workflow_name": "Support Workflow",
+          "create_screen_name": "Support Ticket Screen",
+          "edit_screen_name": "Support Ticket Screen",
+          "view_screen_name": "Support Ticket Screen"
+        }
+      ]
+    }
+  }
+}

@@ -70,3 +70,63 @@ export function getListColumnTableWidth(column) {
   if (column.field_identifier === 'key') return 'w-32';
   return widths[width] || widths[2];
 }
+
+// Per-column baselines (rem) for the list grid — what "M" looks like today.
+// S/L/XL widths scale around this so the size picker has visible effect.
+const GRID_BASE_FIXED_WIDTHS = {
+  status: 8,
+  priority: 7,
+  assignee: 9,
+  milestone: 12,
+  iteration: 9,
+  due_date: 7,
+  created_at: 7,
+  updated_at: 7,
+  project: 9,
+};
+
+// width values: 1=S, 2=M, 3=L, 4=XL
+const GRID_WIDTH_SCALE = { 1: 0.75, 2: 1, 3: 1.5, 4: 2 };
+
+// Fixed columns may shrink down to their S size when a row is tight. Without
+// a floor they hold their configured width and squeeze the flexible Title
+// track until its text spills over the next cell.
+const GRID_MIN_FIXED_SCALE = 0.75;
+const GRID_MIN_TITLE_WIDTH = 16;
+const GRID_MIN_FLEXIBLE_WIDTH = 10;
+
+function gridColumnTrack(col) {
+  if (col.field_identifier === 'key') return 'max-content';
+
+  const base = GRID_BASE_FIXED_WIDTHS[col.field_identifier];
+  if (base !== undefined) {
+    const min = base * GRID_MIN_FIXED_SCALE;
+    const max = base * (GRID_WIDTH_SCALE[col.width] ?? 1);
+    return max > min ? `minmax(${min}rem, ${max}rem)` : `${min}rem`;
+  }
+
+  const min = col.field_identifier === 'title' ? GRID_MIN_TITLE_WIDTH : GRID_MIN_FLEXIBLE_WIDTH;
+  const fr = Number(col.width) || 2;
+  return `minmax(${min}rem, ${fr}fr)`;
+}
+
+// Floor for the whole row. When it exceeds the viewport the list scrolls
+// horizontally instead of letting columns collapse into each other.
+function gridColumnMinWidth(col) {
+  if (col.field_identifier === 'key') return 5;
+  const base = GRID_BASE_FIXED_WIDTHS[col.field_identifier];
+  if (base !== undefined) return base * GRID_MIN_FIXED_SCALE;
+  return col.field_identifier === 'title' ? GRID_MIN_TITLE_WIDTH : GRID_MIN_FLEXIBLE_WIDTH;
+}
+
+/** CSS grid-template-columns for a list-shaped row of columns. */
+export function listGridTemplateColumns(columns) {
+  return `${columns.map(gridColumnTrack).join(' ')} auto`;
+}
+
+/** Row min-width matching listGridTemplateColumns; 2.5rem covers the actions
+ * track plus the gap between every track. */
+export function listGridMinWidth(columns) {
+  const total = columns.reduce((sum, col) => sum + gridColumnMinWidth(col), 0);
+  return `${total + 2.5 + columns.length}rem`;
+}

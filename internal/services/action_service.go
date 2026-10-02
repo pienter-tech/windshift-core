@@ -26,6 +26,7 @@ import (
 	"windshift/internal/llm"
 	"windshift/internal/models"
 	"windshift/internal/repository"
+	"windshift/internal/repository/actionutil"
 	"windshift/internal/utils"
 	"windshift/internal/validation"
 
@@ -398,6 +399,13 @@ func (as *ActionService) matchesTrigger(action *models.Action, event *models.Act
 		return false
 	}
 
+	// Targeted events carry the action they were emitted for (the inactivity
+	// sweeper evaluates each action's threshold separately) and match only
+	// that action.
+	if target := utils.InterfaceToIntPtr(event.NewValues["action_id"]); target != nil && *target != action.ID {
+		return false
+	}
+
 	var config models.ActionTriggerConfig
 	if action.TriggerConfig != "" {
 		if err := json.Unmarshal([]byte(action.TriggerConfig), &config); err != nil {
@@ -424,6 +432,10 @@ func (as *ActionService) matchesTrigger(action *models.Action, event *models.Act
 	}
 
 	switch event.EventType {
+	case models.ActionTriggerCommentCreated:
+		return matchesCommentCreatedTrigger(config, event)
+	case models.ActionTriggerItemInactive:
+		return matchesItemInactiveTrigger(config, event)
 	case models.ActionTriggerStatusTransition:
 		return matchesStatusTransition(config.FromStatusID, config.ToStatusID, event.OldValues, event.NewValues) &&
 			as.matchesDestinationStatusCategory(config.ToStatusCategoryIsCompleted, event.NewValues)
@@ -452,6 +464,35 @@ func (as *ActionService) matchesDestinationStatusCategory(isCompleted *bool, new
 	}
 	status, err := NewStatusService(as.db).GetStatus(*newStatusID)
 	return err == nil && status != nil && status.IsCompleted == *isCompleted
+}
+
+// matchesCommentCreatedTrigger narrows comment_created events by author
+// type. from_customer = true reacts only to customer replies (portal
+// customer or email-intake sender); false only to agent comments; nil to
+// any author.
+func matchesCommentCreatedTrigger(config models.ActionTriggerConfig, event *models.ActionEvent) bool {
+	if config.FromCustomer != nil {
+		fromCustomer, ok := event.NewValues["comment_from_customer"].(bool)
+		if !ok || fromCustomer != *config.FromCustomer {
+			return false
+		}
+	}
+	return true
+}
+
+// matchesItemInactiveTrigger narrows item_inactive events by item type.
+// inactive_hours drives the sweeper's query; the matcher only enforces that
+// a threshold is configured.
+func matchesItemInactiveTrigger(config models.ActionTriggerConfig, event *models.ActionEvent) bool {
+	if config.InactiveHours <= 0 {
+		return false
+	}
+	if config.ItemTypeID != nil {
+		if event.ItemTypeID == nil || *event.ItemTypeID != *config.ItemTypeID {
+			return false
+		}
+	}
+	return true
 }
 
 func matchesItemActionTrigger(config models.ActionTriggerConfig, event *models.ActionEvent) bool {
@@ -645,108 +686,60 @@ func (as *ActionService) executeActionForEvent(executionCtx context.Context, act
 		return err
 	}
 
-	sortedNodes, err := as.topologicalSort(action.Nodes, action.Edges)
-	if err != nil {
-		log.Status = models.ActionStatusFailed
-		log.ErrorMessage = fmt.Sprintf("failed to sort nodes: %v", err)
-		completedAt := time.Now()
-		log.CompletedAt = &completedAt
-		if logErr := as.repo.UpdateExecutionLog(log); logErr != nil {
-			slog.Error("failed to update execution log", slog.Any("error", logErr), slog.Int("action_id", action.ID))
-		}
-		return fmt.Errorf("failed to topologically sort nodes: %w", err)
-	}
-
-	executedNodes := make(map[int]bool)
-	for _, node := range sortedNodes {
-		if node.NodeType == models.ActionNodeTrigger {
-			executedNodes[node.ID] = true
-			continue
-		}
-
-		// Iterators consume their downstream body in one swoop: they execute
-		// the body subgraph once per emitted item with ctx.Item swapped, then
-		// mark every body node as executed in the outer map. This loop must
-		// not re-run those body nodes when it later visits them.
-		if executedNodes[node.ID] {
-			continue
-		}
-
-		canExecute := as.canExecuteNode(node.ID, action.Edges, executedNodes, ctx)
-		if !canExecute {
-			continue
-		}
-
-		ctx.TotalSteps++
-		if ctx.TotalSteps > maxStepsPerFlow {
-			budgetStep := models.StepResult{
-				NodeID:       node.ID,
-				NodeType:     node.NodeType,
-				Status:       models.ActionStatusFailed,
-				StartedAt:    time.Now(),
-				ErrorMessage: errStepBudgetExceeded.Error(),
-			}
-			completedAt := time.Now()
-			budgetStep.CompletedAt = &completedAt
-			ctx.StepResults = append(ctx.StepResults, budgetStep)
-			slog.Warn("action step budget exceeded; aborting flow",
-				slog.String("component", "actions"),
-				slog.Int("action_id", action.ID),
-				slog.Int("steps", ctx.TotalSteps),
-			)
-			break
-		}
-
-		stepResult := models.StepResult{
-			NodeID:    node.ID,
-			NodeType:  node.NodeType,
-			Status:    models.ActionStatusRunning,
-			StartedAt: time.Now(),
-		}
-
+	run, err := actionutil.RunFlow(executionCtx, action.Nodes, action.Edges, actionutil.FlowOptions{
+		TriggerNodeType:   string(models.ActionNodeTrigger),
+		MaxSteps:          maxStepsPerFlow,
+		BudgetExceededErr: errStepBudgetExceeded,
+		TotalSteps:        &ctx.TotalSteps,
+		OnStep:            func(step *models.StepResult) { ctx.StepResults = append(ctx.StepResults, *step) },
+	}, func(node *models.ActionNode, step *models.StepResult, markExecuted func(int)) error {
 		var err error
-		nodeCopy := node
 		if node.NodeType.IsIterator() {
-			err = as.runIterator(&nodeCopy, ctx, &stepResult, action.Nodes, action.Edges, executedNodes)
+			err = as.runIterator(node, ctx, step, action.Nodes, action.Edges, markExecuted)
 		} else {
-			err = as.executeNode(&nodeCopy, ctx, &stepResult)
+			err = as.executeNode(node, ctx, step)
 		}
-		completedAt := time.Now()
-		stepResult.CompletedAt = &completedAt
-		if contextErr := executionCtx.Err(); contextErr != nil {
-			stepResult.Status = models.ActionStatusFailed
-			stepResult.ErrorMessage = contextErr.Error()
-			ctx.StepResults = append(ctx.StepResults, stepResult)
-			as.cleanupActionContainers(ctx.StepResults)
-			log.Status = models.ActionStatusFailed
-			log.ErrorMessage = contextErr.Error()
-			log.CompletedAt = &completedAt
-			if trace, marshalErr := json.Marshal(ctx.StepResults); marshalErr == nil {
-				log.ExecutionTrace = string(trace)
-			}
-			if logErr := as.repo.UpdateExecutionLog(log); logErr != nil {
-				slog.Error("failed to cancel action execution log", slog.Any("error", logErr), slog.Int("action_id", action.ID))
-			}
-			return contextErr
-		}
-
 		if err != nil {
-			stepResult.Status = models.ActionStatusFailed
-			stepResult.ErrorMessage = err.Error()
-			ctx.StepResults = append(ctx.StepResults, stepResult)
-
-			// Continue after recording the failed step.
 			slog.Warn("node execution failed",
 				slog.String("component", "actions"),
 				slog.Int("node_id", node.ID),
 				slog.String("node_type", string(node.NodeType)),
 				slog.Any("error", err),
 			)
-		} else {
-			stepResult.Status = models.ActionStatusCompleted
-			ctx.StepResults = append(ctx.StepResults, stepResult)
-			executedNodes[node.ID] = true
 		}
+		return err
+	})
+	if err != nil {
+		completedAt := time.Now()
+		if errors.Is(err, actionutil.ErrCycleDetected) {
+			log.Status = models.ActionStatusFailed
+			log.ErrorMessage = fmt.Sprintf("failed to sort nodes: %v", err)
+			log.CompletedAt = &completedAt
+			if logErr := as.repo.UpdateExecutionLog(log); logErr != nil {
+				slog.Error("failed to update execution log", slog.Any("error", logErr), slog.Int("action_id", action.ID))
+			}
+			return fmt.Errorf("failed to topologically sort nodes: %w", err)
+		}
+		// The execution context was canceled mid-step; the runner already
+		// recorded the in-flight step as failed.
+		as.cleanupActionContainers(ctx.StepResults)
+		log.Status = models.ActionStatusFailed
+		log.ErrorMessage = err.Error()
+		log.CompletedAt = &completedAt
+		if trace, marshalErr := json.Marshal(ctx.StepResults); marshalErr == nil {
+			log.ExecutionTrace = string(trace)
+		}
+		if logErr := as.repo.UpdateExecutionLog(log); logErr != nil {
+			slog.Error("failed to cancel action execution log", slog.Any("error", logErr), slog.Int("action_id", action.ID))
+		}
+		return err
+	}
+	if run.BudgetExceeded {
+		slog.Warn("action step budget exceeded; aborting flow",
+			slog.String("component", "actions"),
+			slog.Int("action_id", action.ID),
+			slog.Int("steps", ctx.TotalSteps),
+		)
 	}
 
 	// Clean up containers started by this action.
@@ -795,101 +788,6 @@ func actionRequestContext(ctx *models.ExecutionContext) context.Context {
 }
 
 // topologicalSort sorts nodes in execution order using Kahn's algorithm
-func (as *ActionService) topologicalSort(nodes []models.ActionNode, edges []models.ActionEdge) ([]models.ActionNode, error) {
-	if len(nodes) == 0 {
-		return nil, nil
-	}
-
-	// Build adjacency list and in-degree map
-	nodeMap := make(map[int]*models.ActionNode)
-	inDegree := make(map[int]int)
-	adjacency := make(map[int][]int)
-
-	for i := range nodes {
-		nodeMap[nodes[i].ID] = &nodes[i]
-		inDegree[nodes[i].ID] = 0
-		adjacency[nodes[i].ID] = []int{}
-	}
-
-	for _, edge := range edges {
-		adjacency[edge.SourceNodeID] = append(adjacency[edge.SourceNodeID], edge.TargetNodeID)
-		inDegree[edge.TargetNodeID]++
-	}
-
-	queue := []int{}
-	for nodeID, degree := range inDegree {
-		if degree == 0 {
-			queue = append(queue, nodeID)
-		}
-	}
-
-	sorted := []models.ActionNode{}
-	for len(queue) > 0 {
-		nodeID := queue[0]
-		queue = queue[1:]
-
-		if node, ok := nodeMap[nodeID]; ok {
-			sorted = append(sorted, *node)
-		}
-
-		for _, targetID := range adjacency[nodeID] {
-			inDegree[targetID]--
-			if inDegree[targetID] == 0 {
-				queue = append(queue, targetID)
-			}
-		}
-	}
-
-	if len(sorted) != len(nodes) {
-		return nil, fmt.Errorf("cycle detected in action flow")
-	}
-
-	return sorted, nil
-}
-
-// canExecuteNode checks if a node can be executed based on incoming edges
-func (as *ActionService) canExecuteNode(nodeID int, edges []models.ActionEdge, executedNodes map[int]bool, ctx *models.ExecutionContext) bool {
-	return as.canExecuteNodeWithResults(nodeID, edges, executedNodes, ctx.StepResults, len(edges) == 0)
-}
-
-func (as *ActionService) canExecuteNodeWithResults(nodeID int, edges []models.ActionEdge, executedNodes map[int]bool, stepResults []models.StepResult, allowRoot bool) bool {
-	hasIncomingEdge := false
-	for _, edge := range edges {
-		if edge.TargetNodeID == nodeID {
-			hasIncomingEdge = true
-
-			if !executedNodes[edge.SourceNodeID] {
-				return false
-			}
-
-			if edge.EdgeType == "true" || edge.EdgeType == "false" {
-				foundConditionResult := false
-				for _, result := range stepResults {
-					if result.NodeID != edge.SourceNodeID {
-						continue
-					}
-					foundConditionResult = true
-					condResult, ok := result.Output["condition_result"].(bool)
-					if !ok {
-						return false
-					}
-					if edge.EdgeType == "true" && !condResult {
-						return false
-					}
-					if edge.EdgeType == "false" && condResult {
-						return false
-					}
-				}
-				if !foundConditionResult {
-					return false
-				}
-			}
-		}
-	}
-
-	return hasIncomingEdge || allowRoot
-}
-
 // executeNode executes a single node. Registered NodeExecutors take
 // precedence over the legacy switch so new node types can ship without
 // touching this function.
@@ -2234,8 +2132,14 @@ func (as *ActionService) cleanupActionContainers(results []models.StepResult) {
 	}
 }
 
-// authorizeWorkspaceMutation requires effective-actor workspace access and
-// fails closed when authorization is unavailable.
+// AuthorizeWorkspaceMutation verifies the effective actor's workspace access
+// and is the NodeAPI surface for registered executors; it delegates to the
+// shared authorization helper, which fails closed when authorization is
+// unavailable.
+func (as *ActionService) AuthorizeWorkspaceMutation(actorUserID, workspaceID int, permission string) error {
+	return as.authorizeWorkspaceMutation(actorUserID, workspaceID, permission)
+}
+
 func (as *ActionService) authorizeWorkspaceMutation(actorUserID, workspaceID int, permissionKey string) error {
 	if actorUserID <= 0 {
 		return fmt.Errorf("workspace mutation requires an identified actor (workspace %d)", workspaceID)

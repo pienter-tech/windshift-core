@@ -18,13 +18,20 @@ import (
 
 // PortalService encapsulates database logic for portal requests
 type PortalService struct {
-	db    database.Database
-	items *repository.ItemRepository
+	db       database.Database
+	items    *repository.ItemRepository
+	comments *CommentService
 }
 
 // NewPortalService creates a new PortalService
 func NewPortalService(db database.Database) *PortalService {
 	return &PortalService{db: db, items: repository.NewItemRepository(db)}
+}
+
+// SetCommentService wires the application comment service so portal replies
+// run the standard side-effect pipeline (notifications, mentions, webhooks).
+func (s *PortalService) SetCommentService(cs *CommentService) {
+	s.comments = cs
 }
 
 // GetCustomerIDForUser returns the portal customer linked to an internal user.
@@ -99,21 +106,26 @@ func (s *PortalService) CreateRequestComment(ctx context.Context, itemID int, co
 	now := time.Now()
 	out := &CreatedPortalComment{ItemID: itemID, Content: content, CreatedAt: now, UpdatedAt: now}
 
-	// Route through CommentService — the single comment-write chokepoint, which
-	// publishes the item-change (WI-483). Portal request comments stay silent
-	// (no internal notifications/webhooks), matching prior behavior.
+	// Route through the wired CommentService — the single comment-write
+	// chokepoint — so customer replies notify assignee, creator, and watchers
+	// and dispatch comment webhooks. The email reply consumer skips
+	// portal-customer authors, so customers never receive an echo of their own
+	// reply. Use a bare service only when the caller did not wire one (tests).
+	commentService := s.comments
+	if commentService == nil {
+		commentService = NewCommentService(s.db)
+	}
 	params := CreateCommentParams{
-		ItemID:                itemID,
-		Content:               content,
-		CreatedAt:             &now,
-		SuppressNotifications: true,
+		ItemID:    itemID,
+		Content:   content,
+		CreatedAt: &now,
 	}
 	if internalUserID != nil {
 		params.AuthorID = *internalUserID
 	} else if portalCustomerID != nil {
 		params.PortalCustomerID = portalCustomerID
 	}
-	res, err := NewCommentService(s.db).Create(params)
+	res, err := commentService.Create(params)
 	if err != nil {
 		return nil, err
 	}
@@ -215,9 +227,77 @@ func portalRequestSummariesFromRows(rows []repository.PortalRequestRow) []Portal
 	return requests
 }
 
+// PortalRequestVisibility resolves the WI-1547 visibility rules for one
+// portal: enabled intake email channels whose email_connected_portal_id
+// points at it (so email-originated tickets surface in "My Requests" and
+// pass ownership checks), plus the workspaces the portal serves
+// (defense-in-depth against an intake channel routed at an unrelated
+// workspace). Configs are parsed in Go — no JSON-in-SQL dialect concerns.
+// A missing portal channel yields an empty visibility: nothing extra is
+// exposed and the caller's own-channel query degrades to the portal itself.
+func (s *PortalService) portalRequestVisibility(ctx context.Context, portalChannelID int) (repository.PortalRequestVisibility, error) {
+	vis := repository.PortalRequestVisibility{PortalChannelID: portalChannelID}
+
+	var portalConfig string
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(config, '{}') FROM channels WHERE id = ?`, portalChannelID).Scan(&portalConfig)
+	if errors.Is(err, sql.ErrNoRows) {
+		return vis, nil
+	}
+	if err != nil {
+		return vis, fmt.Errorf("load portal config: %w", err)
+	}
+	var portalCfg models.ChannelConfig
+	if json.Unmarshal([]byte(portalConfig), &portalCfg) == nil {
+		vis.ServedWorkspaceIDs = portalCfg.PortalWorkspaceIDs
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, COALESCE(config, '{}') FROM channels
+		WHERE type = 'email' AND direction = 'inbound' AND status = 'enabled'
+	`)
+	if err != nil {
+		return vis, fmt.Errorf("list intake email channels: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var id int
+		var configJSON string
+		if err := rows.Scan(&id, &configJSON); err != nil {
+			continue
+		}
+		var cfg models.ChannelConfig
+		if json.Unmarshal([]byte(configJSON), &cfg) != nil {
+			continue
+		}
+		if cfg.EmailConnectedPortalID != nil && *cfg.EmailConnectedPortalID == portalChannelID {
+			vis.LinkedEmailChannelIDs = append(vis.LinkedEmailChannelIDs, id)
+		}
+	}
+	return vis, rows.Err()
+}
+
+// portalServesWorkspace reports whether the visibility's served-workspace
+// restriction admits the item. An empty list means the portal has no
+// configured workspaces (legacy): restriction disabled.
+func portalServesWorkspace(vis repository.PortalRequestVisibility, workspaceID int) bool {
+	if len(vis.ServedWorkspaceIDs) == 0 {
+		return true
+	}
+	for _, id := range vis.ServedWorkspaceIDs {
+		if id == workspaceID {
+			return true
+		}
+	}
+	return false
+}
+
 // GetRequestsByCreatorID gets requests for internal user (by creator_id)
-func (s *PortalService) GetRequestsByCreatorID(_ context.Context, creatorID, channelID int) ([]PortalRequestSummary, error) {
-	rows, err := s.items.ListChannelRequestsByCreator(creatorID, channelID)
+func (s *PortalService) GetRequestsByCreatorID(ctx context.Context, creatorID, channelID int) ([]PortalRequestSummary, error) {
+	vis, err := s.portalRequestVisibility(ctx, channelID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve portal visibility: %w", err)
+	}
+	rows, err := s.items.ListChannelRequestsByCreator(creatorID, vis)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch requests: %w", err)
 	}
@@ -225,8 +305,12 @@ func (s *PortalService) GetRequestsByCreatorID(_ context.Context, creatorID, cha
 }
 
 // GetRequestsByPortalCustomerID gets requests for portal customer (by creator_portal_customer_id)
-func (s *PortalService) GetRequestsByPortalCustomerID(_ context.Context, portalCustomerID, channelID int) ([]PortalRequestSummary, error) {
-	rows, err := s.items.ListChannelRequestsByPortalCustomer(portalCustomerID, channelID)
+func (s *PortalService) GetRequestsByPortalCustomerID(ctx context.Context, portalCustomerID, channelID int) ([]PortalRequestSummary, error) {
+	vis, err := s.portalRequestVisibility(ctx, channelID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve portal visibility: %w", err)
+	}
+	rows, err := s.items.ListChannelRequestsByPortalCustomer(portalCustomerID, vis)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch requests: %w", err)
 	}
@@ -251,7 +335,12 @@ func (s *PortalService) GetRequestDetail(_ context.Context, itemID int) (*Portal
 }
 
 // VerifyRequestOwnership verifies that a user owns a request
-// Returns true if the user owns the request within the specified channel
+// Returns true if the user owns the request within the specified channel.
+// Since WI-1547 the check also admits items created through enabled intake
+// email channels linked to this portal (email_connected_portal_id), so a
+// customer who opened a ticket by email can read and continue it in the
+// connected portal. Items outside the portal's served workspaces never pass,
+// regardless of channel linkage.
 func (s *PortalService) VerifyRequestOwnership(ctx context.Context, itemID, channelID int, internalUserID, portalCustomerID *int) (bool, error) {
 	detail, err := s.GetRequestDetail(ctx, itemID)
 	if err != nil {
@@ -261,8 +350,29 @@ func (s *PortalService) VerifyRequestOwnership(ctx context.Context, itemID, chan
 		return false, nil
 	}
 
-	// Verify channel matches
-	if detail.ChannelID == nil || *detail.ChannelID != channelID {
+	// Verify channel: the portal's own channel, or a linked intake channel.
+	if detail.ChannelID == nil {
+		return false, nil
+	}
+	vis, err := s.portalRequestVisibility(ctx, channelID)
+	if err != nil {
+		return false, err
+	}
+	if *detail.ChannelID != channelID {
+		linked := false
+		for _, id := range vis.LinkedEmailChannelIDs {
+			if id == *detail.ChannelID {
+				linked = true
+				break
+			}
+		}
+		if !linked {
+			return false, nil
+		}
+	}
+
+	// Defense-in-depth: the item must live in a workspace the portal serves.
+	if !portalServesWorkspace(vis, detail.WorkspaceID) {
 		return false, nil
 	}
 

@@ -17,6 +17,8 @@
   import BasePicker from '../pickers/BasePicker.svelte';
   import TransitionOverrideWarning from '../components/TransitionOverrideWarning.svelte';
   import { toHotkeyString } from '../utils/keyboardShortcuts.js';
+  import { transitionFromLabel } from './transitionLabels.js';
+  import { transitionsFromStatus } from './transitionSelection.js';
 	import TextField from '../components/TextField.svelte';
 	import TextareaField from '../components/TextareaField.svelte';
 
@@ -243,13 +245,7 @@
 
   function transitionLabel(tr) {
     if (!tr) return '—';
-    const from = tr.from_status_id ? statusName(tr.from_status_id) : '(initial)';
-    return `${from} → ${statusName(tr.to_status_id)}`;
-  }
-
-  // Transitions originating from a given status — usable as approve/deny targets.
-  function transitionsFromStatus(statusId) {
-    return transitions.filter(tr => tr.from_status_id === statusId);
+    return `${transitionFromLabel(tr)} → ${statusName(tr.to_status_id)}`;
   }
 
   function addSetStatus() {
@@ -330,7 +326,7 @@
         return `Approval status #${i + 1}: select approve and deny transitions.`;
       if (ass.approve_transition_id === ass.deny_transition_id)
         return t('approvalSets.transitionsMustDiffer');
-      const allowedIDs = new Set(transitionsFromStatus(ass.status_id).map(tr => tr.id));
+      const allowedIDs = new Set(transitionsFromStatus(transitions, ass.status_id).map(tr => tr.id));
       if (!allowedIDs.has(ass.approve_transition_id) || !allowedIDs.has(ass.deny_transition_id))
         return t('approvalSets.transitionsMustExitStatus');
       if (ass.steps.length === 0)
@@ -387,7 +383,8 @@
   }
 </script>
 
-<div class="p-6 max-w-5xl mx-auto">
+<div class="flex-1 min-h-0 overflow-y-auto p-6" style="background-color: var(--ds-surface);" data-testid="approval-set-detail-scroll">
+  <div class="max-w-5xl mx-auto">
   <div class="mb-4">
     <Button variant="ghost" icon={ArrowLeft} onclick={back}>
       {t('approvalSets.backToList')}
@@ -474,7 +471,7 @@
 
       <div class="space-y-3">
         {#each formData.set_statuses as ass, idx (idx)}
-          {@const fromStatusTransitions = transitionsFromStatus(ass.status_id)}
+          {@const fromStatusTransitions = transitionsFromStatus(transitions, ass.status_id)}
           {@const isExpanded = expandedStatuses.has(idx)}
           <div class="border rounded" style="border-color: var(--ds-border); background: var(--ds-surface-raised);">
             <button type="button"
@@ -856,4 +853,5 @@
       </Button>
     </div>
   {/if}
+  </div>
 </div>

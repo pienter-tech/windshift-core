@@ -67,6 +67,9 @@
 					user_email: entry.user_email,
 					is_agent: entry.is_agent,
 					agent_owner_name: entry.agent_owner_name,
+					actor_kind: entry.actor_kind || 'user',
+					portal_customer_name: entry.portal_customer_name || '',
+					portal_customer_email: entry.portal_customer_email || '',
 					changes: []
 				};
 				groups.push(currentGroup);
@@ -82,6 +85,21 @@
 		});
 
 		return groups;
+	}
+
+	// Display name for a history group: internal user, portal customer, or
+	// System (system/integration actors have no stored reference).
+	function groupActorName(group) {
+		if (group.user_id && group.user_name) return group.user_name;
+		if (group.actor_kind === 'portal_customer') return group.portal_customer_name || 'Portal customer';
+		if (group.user_name) return group.user_name;
+		return 'System';
+	}
+
+	function groupActorEmail(group) {
+		if (group.user_id) return group.user_email;
+		if (group.actor_kind === 'portal_customer') return group.portal_customer_email;
+		return group.user_email;
 	}
 
 	// Approval-engine events are merged into the history feed server-side as
@@ -205,10 +223,10 @@
 					<div class="rail">
 						<div
 							class="avatar"
-							style="background-color: {getUserColor(group.user_name)};"
-							title={group.user_email || group.user_name}
+							style="background-color: {getUserColor(groupActorName(group))};"
+							title={groupActorEmail(group) || groupActorName(group)}
 						>
-							{getUserInitials(group.user_name)}
+							{getUserInitials(groupActorName(group))}
 						</div>
 						<div class="line"></div>
 					</div>
@@ -219,7 +237,10 @@
 									<Bot class="w-3.5 h-3.5" style="color: var(--ds-text-subtle);" />
 								</Tooltip>
 							{/if}
-							<span class="user">{group.user_name || 'Unknown'}</span>
+							<span class="user" data-testid="item-history-actor">{groupActorName(group)}</span>
+							{#if group.actor_kind === 'portal_customer'}
+								<span class="actor-badge" data-testid="item-history-portal-actor">portal</span>
+							{/if}
 							<span data-testid="item-history-time" class="time" title={formatHistoryTimestamp(group.changed_at, timezone)}>
 								{formatRelativeTime(group.changed_at)}
 							</span>
@@ -317,6 +338,16 @@
 		font-weight: 600;
 		font-size: 0.875rem;
 		color: var(--ds-text);
+	}
+
+	.actor-badge {
+		font-size: 0.6875rem;
+		line-height: 1;
+		padding: 0.1875rem 0.375rem;
+		border-radius: 999px;
+		background: var(--ds-surface-hovered);
+		color: var(--ds-text-subtle);
+		white-space: nowrap;
 	}
 
 	.time {

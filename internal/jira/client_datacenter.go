@@ -270,8 +270,9 @@ func (c *dataCenterClient) GetProjectIssueTypeStatuses(ctx context.Context, proj
 // Issue Methods - Data Center uses GET /search with startAt/maxResults
 // ================================================================
 
-// SearchIssues searches for issues using JQL (legacy GET endpoint)
-func (c *dataCenterClient) SearchIssues(ctx context.Context, opts SearchOptions) (*SearchResult, error) {
+// searchIssues runs JQL against the Data Center legacy GET /search endpoint,
+// which remains the supported search API for Data Center deployments.
+func (c *dataCenterClient) searchIssues(ctx context.Context, opts SearchOptions) (*SearchResult, error) {
 	return jiraSearchIssuesLegacy(ctx, c, c.baseURL, opts)
 }
 
@@ -300,7 +301,7 @@ func (c *dataCenterClient) GetIssueCount(ctx context.Context, projectKey string,
 	}
 
 	// Use search with maxResults=0 to get just the total count
-	result, err := c.SearchIssues(ctx, SearchOptions{
+	result, err := c.searchIssues(ctx, SearchOptions{
 		JQL:        jql,
 		MaxResults: 1,
 		Fields:     []string{"key"},
@@ -372,7 +373,7 @@ func (c *dataCenterClient) BulkFetchIssues(ctx context.Context, req BulkFetchReq
 	jql := "key in (" + strings.Join(quotedKeys, ",") + ")"
 
 	// Fetch in a single request if possible (Data Center typically allows large JQL)
-	result, err := c.SearchIssues(ctx, SearchOptions{
+	result, err := c.searchIssues(ctx, SearchOptions{
 		JQL:        jql,
 		MaxResults: len(req.IssueIdsOrKeys),
 		Fields:     req.Fields,
@@ -394,7 +395,7 @@ func (c *dataCenterClient) GetAllIssueKeys(ctx context.Context, jql string) ([]s
 	maxResults := 100
 
 	for {
-		result, err := c.SearchIssues(ctx, SearchOptions{
+		result, err := c.searchIssues(ctx, SearchOptions{
 			JQL:        jql,
 			StartAt:    startAt,
 			MaxResults: maxResults,

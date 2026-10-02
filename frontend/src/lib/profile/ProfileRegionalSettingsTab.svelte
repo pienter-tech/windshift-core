@@ -8,6 +8,7 @@
   import BasePicker from '../pickers/BasePicker.svelte';
   import { authStore } from '../stores';
   import { i18n, SUPPORTED_LOCALES, t } from '../stores/i18n.svelte.js';
+  import { listIanaTimezones } from '../utils/timeUtils.js';
 
   let { user = $bindable(null), userId = null } = $props();
 
@@ -60,29 +61,16 @@
     }
   }
 
-  const timezoneIds = [
-    'UTC',
-    'America/New_York',
-    'America/Chicago',
-    'America/Denver',
-    'America/Los_Angeles',
-    'America/Anchorage',
-    'Pacific/Honolulu',
-    'Europe/London',
-    'Europe/Paris',
-    'Europe/Berlin',
-    'Europe/Rome',
-    'Europe/Madrid',
-    'Asia/Tokyo',
-    'Asia/Shanghai',
-    'Asia/Hong_Kong',
-    'Asia/Singapore',
-    'Asia/Dubai',
-    'Asia/Kolkata',
-    'Australia/Sydney',
-    'Australia/Melbourne',
-    'Pacific/Auckland',
-  ];
+  // Offer every IANA zone the runtime knows. Keep a stored value visible even
+  // when it is an alias or no longer canonical (e.g. legacy "Local").
+  const baseTimezoneIds = listIanaTimezones();
+  const timezoneIds = $derived.by(() => {
+    const stored = user?.timezone;
+    if (stored && !baseTimezoneIds.includes(stored)) {
+      return [stored, ...baseTimezoneIds];
+    }
+    return baseTimezoneIds;
+  });
 
   function timezoneLabel(timezone) {
     try {

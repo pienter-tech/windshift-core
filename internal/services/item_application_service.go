@@ -788,6 +788,14 @@ func (s *ItemApplicationService) ReparentChildren(ctx context.Context, actor Aud
 		}
 		updated := *child
 		updated.ParentID = parentID
+		// The parent change must be visible in item history, not only in the
+		// domain event log.
+		if err := s.items.RecordHistory(tx, historyEntryForChange(
+			child.ID, "parent_id", intPtrToString(child.ParentID), intPtrToString(parentID),
+			metadata.OccurredAt, metadata,
+		)); err != nil {
+			return ItemMutationCount{}, err
+		}
 		records = append(records, itemevents.UpdateRecord{Item: &updated, Changes: itemevents.Changes(child, &updated), Metadata: metadata})
 	}
 	if _, err := itemevents.NewRecorder(s.db).UpdatedBatch(ctx, tx, records); err != nil {
@@ -972,7 +980,10 @@ func (s *ItemApplicationService) AvailableTransitions(ctx context.Context, userI
 	}
 	if s.conditions != nil {
 		conditionSetID, conditionErr := s.conditions.GetConditionSetIDForItem(item.WorkspaceID, item.ItemTypeID)
-		if conditionErr == nil && conditionSetID != nil {
+		if conditionErr != nil {
+			return ItemTransitionSummary{}, conditionErr
+		}
+		if conditionSetID != nil {
 			candidates := make([]TransitionWithID, 0, len(options))
 			for _, option := range options {
 				color := ""
@@ -982,16 +993,17 @@ func (s *ItemApplicationService) AvailableTransitions(ctx context.Context, userI
 				candidates = append(candidates, TransitionWithID{TransitionID: option.TransitionID, StatusID: option.StatusID, BuiltinKey: option.BuiltinKey, StatusName: option.StatusName, CategoryColor: color})
 			}
 			filtered, filterErr := s.conditions.FilterTransitionsByConditions(ctx, *conditionSetID, candidates, userID, BuildItemContextFromIDs(s.db, itemID, item.WorkspaceID, item.StatusID, item.ItemTypeID))
-			if filterErr == nil {
-				options = options[:0]
-				for _, option := range filtered {
-					var color *string
-					if option.CategoryColor != "" {
-						value := option.CategoryColor
-						color = &value
-					}
-					options = append(options, StatusTransitionOption{TransitionID: option.TransitionID, StatusID: option.StatusID, BuiltinKey: option.BuiltinKey, StatusName: option.StatusName, CategoryColor: color})
+			if filterErr != nil {
+				return ItemTransitionSummary{}, filterErr
+			}
+			options = options[:0]
+			for _, option := range filtered {
+				var color *string
+				if option.CategoryColor != "" {
+					value := option.CategoryColor
+					color = &value
 				}
+				options = append(options, StatusTransitionOption{TransitionID: option.TransitionID, StatusID: option.StatusID, BuiltinKey: option.BuiltinKey, StatusName: option.StatusName, CategoryColor: color})
 			}
 		}
 	}
@@ -1513,6 +1525,8 @@ func (s *ItemApplicationService) resolveHistoryValue(field, value string, allowe
 	switch field {
 	case "assignee_id":
 		return s.resolver.ResolveUserName(id)
+	case "team_id":
+		return s.resolver.ResolveTeamName(id)
 	case "priority_id":
 		return s.resolver.ResolvePriorityName(id)
 	case "status_id":

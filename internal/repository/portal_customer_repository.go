@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"windshift/internal/database"
+	"windshift/internal/models"
 )
 
 type PortalCustomerRepository struct {
@@ -53,12 +54,17 @@ func (r *PortalCustomerRepository) FindIDByEmail(email string) (int, error) {
 
 // FindOrCreateByEmail returns the id of the portal customer whose email
 // matches case-insensitively (both sides trimmed), creating the customer when
-// missing. The insert uses ON CONFLICT DO NOTHING so a concurrent writer with
-// the same address makes this call fall through and re-read the winning row
-// instead of failing; created reports whether this call inserted the row.
-func (r *PortalCustomerRepository) FindOrCreateByEmail(ctx context.Context, name, email string) (id int, created bool, err error) {
+// missing. createdVia records the creation provenance on the new row
+// (WI-1553); existing rows are returned untouched. The insert uses ON
+// CONFLICT DO NOTHING so a concurrent writer with the same address makes this
+// call fall through and re-read the winning row instead of failing; created
+// reports whether this call inserted the row.
+func (r *PortalCustomerRepository) FindOrCreateByEmail(ctx context.Context, name, email, createdVia string) (id int, created bool, err error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	name = strings.TrimSpace(name)
+	if createdVia == "" {
+		createdVia = models.CustomerCreatedViaUnknown
+	}
 
 	err = r.db.QueryRowContext(ctx,
 		"SELECT id FROM portal_customers WHERE LOWER(email) = ?", email,
@@ -72,11 +78,11 @@ func (r *PortalCustomerRepository) FindOrCreateByEmail(ctx context.Context, name
 
 	var insertedID int64
 	err = r.db.QueryRowContext(ctx, `
-		INSERT INTO portal_customers (name, email, created_at, updated_at)
-		VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		INSERT INTO portal_customers (name, email, created_via, created_at, updated_at)
+		VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 		ON CONFLICT DO NOTHING
 		RETURNING id
-	`, name, email).Scan(&insertedID)
+	`, name, email, createdVia).Scan(&insertedID)
 	if errors.Is(err, sql.ErrNoRows) {
 		if err := r.db.QueryRowContext(ctx,
 			"SELECT id FROM portal_customers WHERE LOWER(email) = ?", email,
@@ -91,13 +97,19 @@ func (r *PortalCustomerRepository) FindOrCreateByEmail(ctx context.Context, name
 	return int(insertedID), true, nil
 }
 
-func (r *PortalCustomerRepository) Create(name, email string, organisationID int) (int, error) {
+// CreateWithProvenance inserts a portal customer with an explicit creation
+// provenance (WI-1553). Every production creation path must record where the
+// row came from — never introduce an untagged INSERT.
+func (r *PortalCustomerRepository) CreateWithProvenance(name, email string, organisationID int, createdVia string) (int, error) {
+	if createdVia == "" {
+		createdVia = models.CustomerCreatedViaUnknown
+	}
 	var id int
 	err := r.db.QueryRow(`
 		INSERT INTO portal_customers
-			(name, email, customer_organisation_id, created_at, updated_at)
-		VALUES (?, ?, NULLIF(?, 0), ?, ?) RETURNING id
-	`, name, email, organisationID, time.Now(), time.Now()).Scan(&id)
+			(name, email, customer_organisation_id, created_via, created_at, updated_at)
+		VALUES (?, ?, NULLIF(?, 0), ?, ?, ?) RETURNING id
+	`, name, email, organisationID, createdVia, time.Now(), time.Now()).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("create portal customer: %w", err)
 	}

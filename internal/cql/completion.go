@@ -12,6 +12,7 @@ const (
 	CompletionValuesStatusCategories CompletionValueSource = "status_categories"
 	CompletionValuesPriorities       CompletionValueSource = "priorities"
 	CompletionValuesUsers            CompletionValueSource = "users"
+	CompletionValuesTeams            CompletionValueSource = "teams"
 	CompletionValuesMilestones       CompletionValueSource = "milestones"
 	CompletionValuesIterations       CompletionValueSource = "iterations"
 	CompletionValuesProjects         CompletionValueSource = "projects"
@@ -54,6 +55,7 @@ var (
 		{Name: "completed_at", ValueType: "date", Operators: orderedOperators},
 		{Name: "dueDate", Aliases: []string{"due_date", "due-date"}, ValueType: "date", Operators: orderedOperators},
 		{Name: "assignee", Aliases: []string{"assigneeId", "assignee_id"}, ValueType: "number", ValueSource: CompletionValuesUsers, Operators: equalityOperators},
+		{Name: "team", Aliases: []string{"teamId", "team_id"}, ValueType: "number", ValueSource: CompletionValuesTeams, Operators: equalityOperators},
 		{Name: "creator", Aliases: []string{"creatorId", "creator_id"}, ValueType: "number", ValueSource: CompletionValuesUsers, Operators: equalityOperators},
 		{Name: "reporter", Aliases: []string{"reporterId", "reporter_id"}, ValueType: "number", ValueSource: CompletionValuesUsers, Operators: equalityOperators},
 		{Name: "milestone", ValueType: "string", ValueSource: CompletionValuesMilestones, Operators: textOperators},
@@ -71,8 +73,19 @@ var (
 		{Name: "itemTypeId", Aliases: []string{"item_type_id"}, ValueType: "number", ValueSource: CompletionValuesItemTypes, Operators: orderedOperators},
 		{Name: "itemTypeName", ValueType: "string", ValueSource: CompletionValuesItemTypes, Operators: equalityOperators},
 		{Name: "type", ValueType: "string", ValueSource: CompletionValuesItemTypes, Operators: equalityOperators},
+		{Name: "requestType", Aliases: []string{"request_type"}, ValueType: "string", Operators: textOperators},
+		{Name: "requestTypeId", Aliases: []string{"request_type_id"}, ValueType: "number", Operators: equalityOperators},
+		{Name: "requestTypeName", ValueType: "string", Operators: textOperators},
+		{Name: "customerOrganisation", Aliases: []string{"customer_organization", "organisation", "organization"}, ValueType: "string", Operators: textOperators},
+		{Name: "customerOrganisationId", Aliases: []string{"customer_organization_id"}, ValueType: "number", Operators: equalityOperators},
 		{Name: "parent", Aliases: []string{"parentId", "parent_id"}, ValueType: "number", Operators: equalityOperators},
 		{Name: "isTask", Aliases: []string{"is_task"}, ValueType: "boolean", Operators: booleanOperators},
+		{Name: "slaBreached", Aliases: []string{"sla_breached"}, ValueType: "boolean", Operators: booleanOperators},
+		{Name: "slaPaused", Aliases: []string{"sla_paused"}, ValueType: "boolean", Operators: booleanOperators},
+		{Name: "slaRunning", Aliases: []string{"sla_running"}, ValueType: "boolean", Operators: booleanOperators},
+		{Name: "slaEverBreached", Aliases: []string{"sla_ever_breached"}, ValueType: "boolean", Operators: booleanOperators},
+		{Name: "slaCompleted", Aliases: []string{"sla_completed"}, ValueType: "boolean", Operators: booleanOperators},
+		{Name: "slaDeadline", Aliases: []string{"sla_deadline"}, ValueType: "date", Operators: orderedOperators},
 		{Name: "rank", ValueType: "number", Operators: orderedOperators},
 		{Name: "id", ValueType: "number", Operators: orderedOperators},
 		{Name: "key", ValueType: "string", Operators: equalityOperators},

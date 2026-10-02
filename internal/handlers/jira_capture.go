@@ -312,10 +312,6 @@ func (r *recordingClient) GetProjectIssueTypeStatuses(ctx context.Context, proje
 	return r.inner.GetProjectIssueTypeStatuses(ctx, projectKey)
 }
 
-func (r *recordingClient) SearchIssues(ctx context.Context, opts jira.SearchOptions) (*jira.SearchResult, error) {
-	return r.inner.SearchIssues(ctx, opts)
-}
-
 func (r *recordingClient) GetIssue(ctx context.Context, issueKey string, expand []string) (*jira.JiraIssue, error) {
 	return r.inner.GetIssue(ctx, issueKey, expand)
 }

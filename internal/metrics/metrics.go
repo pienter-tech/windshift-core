@@ -30,6 +30,7 @@ type Metrics struct {
 	httpRequestDuration *prometheus.HistogramVec
 	scmPolls            *prometheus.CounterVec
 	scmPollDuration     *prometheus.HistogramVec
+	slaInlineDuration   prometheus.Histogram
 }
 
 // New creates an isolated registry and registers process, runtime, database,
@@ -80,6 +81,13 @@ func New(db database.Database) *Metrics {
 		Help:      "Scheduled SCM poll duration by operation.",
 		Buckets:   prometheus.ExponentialBuckets(0.25, 2, 12),
 	}, []string{"operation"})
+	slaInlineDuration := prometheus.NewHistogram(prometheus.HistogramOpts{
+		Namespace: namespace,
+		Subsystem: "sla",
+		Name:      "inline_duration_seconds",
+		Help:      "Inline SLA evaluation duration per recorded item fact.",
+		Buckets:   prometheus.ExponentialBuckets(0.0005, 2, 14),
+	})
 
 	registry.MustRegister(
 		buildInfo,
@@ -88,11 +96,13 @@ func New(db database.Database) *Metrics {
 		httpRequestDuration,
 		scmPolls,
 		scmPollDuration,
+		slaInlineDuration,
 	)
 	if db != nil && db.GetDB() != nil {
 		registry.MustRegister(
 			collectors.NewDBStatsCollector(db.GetDB(), "windshift"),
 			newDomainCollector(db),
+			newSLAJobCollector(db),
 		)
 	}
 
@@ -102,6 +112,7 @@ func New(db database.Database) *Metrics {
 		httpRequestDuration: httpRequestDuration,
 		scmPolls:            scmPolls,
 		scmPollDuration:     scmPollDuration,
+		slaInlineDuration:   slaInlineDuration,
 	}
 	m.handler = promhttp.HandlerFor(registry, promhttp.HandlerOpts{
 		ErrorLog:          metricsLogger{},
@@ -164,6 +175,14 @@ func (m *Metrics) CaptureRoutePattern(next http.Handler) http.Handler {
 		}()
 		next.ServeHTTP(w, r)
 	})
+}
+
+// ObserveSLAInlineDuration records one inline SLA evaluation's duration.
+func (m *Metrics) ObserveSLAInlineDuration(duration time.Duration) {
+	if m == nil {
+		return
+	}
+	m.slaInlineDuration.Observe(duration.Seconds())
 }
 
 // ObserveSCMPoll records one scheduled SCM polling operation.

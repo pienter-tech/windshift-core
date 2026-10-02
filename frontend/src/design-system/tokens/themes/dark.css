@@ -161,6 +161,11 @@ html[data-color-mode="dark"],
   --ds-accent-yellow-subtler: #7f5f01;
   --ds-icon-accent-yellow: #f5cd47;
 
+  /* Gray — neutral badge ink, harmonized with the blue-gray text family
+     and lighter than the zinc it replaced (~7:1 on dark surfaces). */
+  --ds-accent-gray: #a5b0c0;
+  --ds-accent-gray-subtle: #94a3b8;
+
   /* Accent text — readable-on-subtle text for badges and chips */
   --ds-text-accent-blue: var(--color-blue-300);
   --ds-text-accent-green: var(--color-green-300);

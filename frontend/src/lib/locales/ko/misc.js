@@ -680,6 +680,8 @@ export default {
     "workspaceTemplateBlank": "빈 워크스페이스",
     "workspaceTemplateLoading": "템플릿 불러오는 중...",
     "workspaceTemplateError": "워크스페이스 템플릿을 불러오지 못했습니다",
+    "workspaceRestrict": "공개 범위 제한",
+    "workspaceRestrictHint": "본인과 지정된 사용자만 이 워크스페이스를 볼 수 있습니다",
     "workspaceTemplateMeta": "템플릿 {templates}개 · 작업 {items}개",
     "type": "유형",
     "template": "템플릿",

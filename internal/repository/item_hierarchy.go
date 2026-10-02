@@ -79,6 +79,26 @@ func (r *ItemRepository) GetDescendants(parentID int) ([]*models.Item, error) {
 	return r.GetDescendantsWithMaxDepth(parentID, maxItemHierarchyDepth)
 }
 
+// IsDescendantContext reports whether itemID is reachable from ancestorID
+// through the live parent_id chain, capped at the maximum hierarchy depth.
+// The materialized items.path column is not maintained by regular writes and
+// must not anchor ancestry checks.
+func (r *ItemRepository) IsDescendantContext(ctx context.Context, ancestorID, itemID int) (bool, error) {
+	var count int
+	err := r.db.QueryRowContext(ctx, `
+		WITH RECURSIVE descendants(id, level) AS (
+			SELECT id, 1 FROM items WHERE parent_id = ?
+			UNION ALL
+			SELECT i.id, d.level + 1 FROM items i INNER JOIN descendants d ON i.parent_id = d.id WHERE d.level < ?
+		)
+		SELECT COUNT(*) FROM descendants WHERE id = ?
+	`, ancestorID, maxItemHierarchyDepth, itemID).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("check whether item %d descends from item %d: %w", itemID, ancestorID, err)
+	}
+	return count > 0, nil
+}
+
 // GetDescendantsWithMaxDepth returns descendants up to maxDepth levels deep.
 func (r *ItemRepository) GetDescendantsWithMaxDepth(parentID, maxDepth int) ([]*models.Item, error) {
 	return r.GetDescendantsWithMaxDepthContext(context.Background(), parentID, maxDepth)

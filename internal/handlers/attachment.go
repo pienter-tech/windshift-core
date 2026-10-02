@@ -670,7 +670,7 @@ func (h *AttachmentHandler) Upload(w http.ResponseWriter, r *http.Request) {
 
 	if entityType == "item" && attachmentEntityID != nil {
 		if entityIDInt, ok := attachmentEntityID.(int); ok {
-			if err = h.attachmentService.RecordItemHistory(entityIDInt, uploaderID, "attachment_uploaded", nil, attachmentID, fileHeader.Filename); err != nil {
+			if err = h.attachmentService.RecordItemHistory(entityIDInt, services.AttachmentHistoryActor{UserID: uploaderID}, "attachment_uploaded", nil, attachmentID, fileHeader.Filename); err != nil {
 				slog.Warn("failed to record attachment history", slog.String("component", "attachments"), slog.Any("error", err))
 				// Don't fail the whole operation if history recording fails
 			}

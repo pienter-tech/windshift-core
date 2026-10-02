@@ -8,6 +8,7 @@
   import ItemKey from '../items/ItemKey.svelte';
   import CardFieldChip from './CardFieldChip.svelte';
   import DependencySummary from './DependencySummary.svelte';
+  import SLABadge from '../sla/SLABadge.svelte';
 
   let {
     item,
@@ -165,6 +166,9 @@
           </span>
         {/if}
         <DependencySummary {item} links={dependencyLinks} />
+        <span class="inline-flex shrink-0" data-testid={`board-card-sla-${item.id}`}>
+          <SLABadge itemId={item.id} workspaceId={item.workspace_id} />
+        </span>
         <span class="flex-1"></span>
         {#if item.assignee_id}
           {@const assignee = users.find((user) => user.id === item.assignee_id)}

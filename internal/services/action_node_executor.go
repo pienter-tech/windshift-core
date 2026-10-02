@@ -42,6 +42,11 @@ type NodeAPI interface {
 	// Use sparingly — emitting from a node creates a cascade that is
 	// subject to depth limits enforced by the engine.
 	EmitActionEvent(event *models.ActionEvent)
+
+	// AuthorizeWorkspaceMutation verifies the effective actor may mutate
+	// items in the workspace with the given permission. Executors that
+	// change item state must call it before writing.
+	AuthorizeWorkspaceMutation(actorUserID, workspaceID int, permission string) error
 }
 
 // RegisterNodeExecutor wires an executor into the per-service registry.

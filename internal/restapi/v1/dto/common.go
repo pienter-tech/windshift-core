@@ -14,6 +14,14 @@ type UserSummary struct {
 	AvatarURL string `json:"avatar_url,omitempty"`
 }
 
+// PortalCustomerSummary provides a minimal portal-customer representation for
+// attribution fields (uploaders, history actors).
+type PortalCustomerSummary struct {
+	ID    int    `json:"id"`
+	Name  string `json:"name"`
+	Email string `json:"email"`
+}
+
 // StatusSummary provides a minimal status representation
 type StatusSummary struct {
 	ID                 int    `json:"id"`

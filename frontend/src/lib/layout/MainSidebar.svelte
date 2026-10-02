@@ -32,13 +32,46 @@
   const isTauri = getIsTauri();
 
   let workspaceSearchQuery = $state('');
+  let searchedWorkspaces = $state(null);
+  let workspaceSearchGeneration = 0;
+  let workspaceSearchTimer = null;
+
+  // When the cached directory page is partial, typing extends the matches to
+  // the rest of the directory via the server. Until the first server result
+  // arrives, the local filter over the cached page still applies.
+  const directoryWorkspaces = $derived(
+    workspaceSearchQuery && $workspacesStore.truncated && searchedWorkspaces
+      ? searchedWorkspaces
+      : ($workspacesStore.regularWorkspaces || [])
+  );
 
   const workspacesDropdownItems = $derived(workspaceMenuItems(
-    $workspacesStore.regularWorkspaces,
+    directoryWorkspaces,
     workspaceSearchQuery,
-    (value) => workspaceSearchQuery = value,
+    onWorkspaceSearchInput,
     t
   ));
+
+  function onWorkspaceSearchInput(value) {
+    workspaceSearchQuery = value;
+    if (workspaceSearchTimer) {
+      clearTimeout(workspaceSearchTimer);
+      workspaceSearchTimer = null;
+    }
+    workspaceSearchGeneration += 1;
+    const generation = workspaceSearchGeneration;
+    const query = value.trim();
+    if (!query || !$workspacesStore.truncated) {
+      searchedWorkspaces = null;
+      return;
+    }
+    workspaceSearchTimer = setTimeout(async () => {
+      workspaceSearchTimer = null;
+      const result = await workspacesStore.searchWorkspaces(query);
+      if (generation !== workspaceSearchGeneration) return;
+      searchedWorkspaces = result.workspaces;
+    }, 150);
+  }
 
   // Filter nav items based on permissions (registry: navigation/mainNavigation.js)
   const filteredMainNav = $derived(
@@ -79,10 +112,18 @@
         ? 'justify-start px-4'
         : 'justify-center'} w-full h-10 mb-2 hover:opacity-80 transition-opacity cursor-pointer"
     >
-      {#if themeStore.activeTheme?.logo_url}
+      {#if themeStore.isDarkMode && themeStore.activeTheme?.logo_url_dark}
+        <img
+          src={themeStore.activeTheme.logo_url_dark}
+          alt={themeStore.activeTheme.name || 'Windshift'}
+          data-testid="nav-logo"
+          class="max-w-8 max-h-8 object-contain flex-shrink-0"
+        />
+      {:else if themeStore.activeTheme?.logo_url}
         <img
           src={themeStore.activeTheme.logo_url}
           alt={themeStore.activeTheme.name || 'Windshift'}
+          data-testid="nav-logo"
           class="max-w-8 max-h-8 object-contain flex-shrink-0"
         />
       {:else}
@@ -242,6 +283,7 @@
   as="nav"
   class="main-sidebar {$uiStore.navExpanded ? 'w-[200px]' : 'w-16'} shadow-lg border-r py-4 fixed inset-y-0 left-0 z-40 themed-nav transition-[width] duration-200 ease-[cubic-bezier(0.25,1,0.5,1)] motion-reduce:transition-none"
   style="border-color: var(--ds-border);"
+  data-testid="main-sidebar"
   aria-label={t('aria.mainNavigation')}
   header={sidebarHeader}
   footer={sidebarFooter}

@@ -429,76 +429,7 @@ func (h *JiraImportHandler) Analyze(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Collect users from a sample of issues
-	userMap := make(map[string]JiraUserSummary)
-	for _, projectKey := range req.ProjectKeys {
-		// Fetch a sample of issues to discover users (limit to 100 per project for performance)
-		jql := `project = "` + escapeHandlerJQLString(projectKey) + `" ORDER BY created DESC`
-		if req.OpenIssuesOnly {
-			jql = `project = "` + escapeHandlerJQLString(projectKey) + `" AND statusCategory != Done ORDER BY created DESC`
-		}
-
-		var searchResult *jira.SearchResult
-		searchResult, err = client.SearchIssues(ctx, jira.SearchOptions{
-			JQL:        jql,
-			MaxResults: 100,
-			StartAt:    0,
-		})
-		if err != nil {
-			slog.Debug("Failed to fetch sample issues for user collection", slog.String("component", "jira"), slog.String("project", projectKey), slog.Any("error", err))
-			continue
-		}
-
-		for _, issue := range searchResult.Issues {
-			// Collect assignee
-			if issue.Fields.Assignee != nil && issue.Fields.Assignee.AccountID != "" {
-				if _, exists := userMap[issue.Fields.Assignee.AccountID]; !exists {
-					avatarURL := ""
-					if issue.Fields.Assignee.AvatarURLs != nil {
-						avatarURL = issue.Fields.Assignee.AvatarURLs["48x48"]
-					}
-					userMap[issue.Fields.Assignee.AccountID] = JiraUserSummary{
-						AccountID:   issue.Fields.Assignee.AccountID,
-						AccountType: issue.Fields.Assignee.AccountType,
-						Email:       issue.Fields.Assignee.EmailAddress,
-						DisplayName: issue.Fields.Assignee.DisplayName,
-						AvatarURL:   avatarURL,
-					}
-				}
-			}
-			// Collect reporter
-			if issue.Fields.Reporter != nil && issue.Fields.Reporter.AccountID != "" {
-				if _, exists := userMap[issue.Fields.Reporter.AccountID]; !exists {
-					avatarURL := ""
-					if issue.Fields.Reporter.AvatarURLs != nil {
-						avatarURL = issue.Fields.Reporter.AvatarURLs["48x48"]
-					}
-					userMap[issue.Fields.Reporter.AccountID] = JiraUserSummary{
-						AccountID:   issue.Fields.Reporter.AccountID,
-						AccountType: issue.Fields.Reporter.AccountType,
-						Email:       issue.Fields.Reporter.EmailAddress,
-						DisplayName: issue.Fields.Reporter.DisplayName,
-						AvatarURL:   avatarURL,
-					}
-				}
-			}
-			// Collect creator
-			if issue.Fields.Creator != nil && issue.Fields.Creator.AccountID != "" {
-				if _, exists := userMap[issue.Fields.Creator.AccountID]; !exists {
-					avatarURL := ""
-					if issue.Fields.Creator.AvatarURLs != nil {
-						avatarURL = issue.Fields.Creator.AvatarURLs["48x48"]
-					}
-					userMap[issue.Fields.Creator.AccountID] = JiraUserSummary{
-						AccountID:   issue.Fields.Creator.AccountID,
-						AccountType: issue.Fields.Creator.AccountType,
-						Email:       issue.Fields.Creator.EmailAddress,
-						DisplayName: issue.Fields.Creator.DisplayName,
-						AvatarURL:   avatarURL,
-					}
-				}
-			}
-		}
-	}
+	userMap := h.collectSampleUsers(ctx, client, req.ProjectKeys, req.OpenIssuesOnly)
 
 	// Convert user map to slice and try to match with existing Windshift users
 	userRepo := repository.NewUserRepository(h.db)
@@ -536,6 +467,64 @@ func (h *JiraImportHandler) Analyze(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondJSONOK(w, result)
+}
+
+// collectSampleUsers discovers users from a sample of the newest issues in
+// each project. It searches through the enhanced JQL search API; Cloud no
+// longer serves the legacy GET /search endpoint.
+func (h *JiraImportHandler) collectSampleUsers(
+	ctx context.Context,
+	client jira.Client,
+	projectKeys []string,
+	openOnly bool,
+) map[string]JiraUserSummary {
+	userMap := make(map[string]JiraUserSummary)
+	for _, projectKey := range projectKeys {
+		jql := `project = "` + escapeHandlerJQLString(projectKey) + `" ORDER BY created DESC`
+		if openOnly {
+			jql = `project = "` + escapeHandlerJQLString(projectKey) + `" AND statusCategory != Done ORDER BY created DESC`
+		}
+
+		searchResult, err := client.SearchIssuesJQL(ctx, jira.JQLSearchRequest{
+			JQL:        jql,
+			MaxResults: 100,
+			Fields:     []string{"assignee", "reporter", "creator"},
+		})
+		if err != nil {
+			slog.Debug("Failed to fetch sample issues for user collection", slog.String("component", "jira"), slog.String("project", projectKey), slog.Any("error", err))
+			continue
+		}
+
+		for i := range searchResult.Issues {
+			issue := &searchResult.Issues[i]
+			collectUserSummary(userMap, issue.Fields.Assignee)
+			collectUserSummary(userMap, issue.Fields.Reporter)
+			collectUserSummary(userMap, issue.Fields.Creator)
+		}
+	}
+	return userMap
+}
+
+// collectUserSummary records one issue participant in userMap, keeping the
+// first sighting of each account ID.
+func collectUserSummary(userMap map[string]JiraUserSummary, user *jira.JiraUser) {
+	if user == nil || user.AccountID == "" {
+		return
+	}
+	if _, exists := userMap[user.AccountID]; exists {
+		return
+	}
+	avatarURL := ""
+	if user.AvatarURLs != nil {
+		avatarURL = user.AvatarURLs["48x48"]
+	}
+	userMap[user.AccountID] = JiraUserSummary{
+		AccountID:   user.AccountID,
+		AccountType: user.AccountType,
+		Email:       user.EmailAddress,
+		DisplayName: user.DisplayName,
+		AvatarURL:   avatarURL,
+	}
 }
 
 // GetAssetSchemas handles GET /api/admin/jira-import/assets?connection_id={id}

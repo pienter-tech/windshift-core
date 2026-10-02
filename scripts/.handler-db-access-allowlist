@@ -40,5 +40,6 @@ internal/handlers/scm_providers_oauth.go
 internal/handlers/scm_providers_workspaces.go
 internal/handlers/screens.go
 internal/handlers/setup.go
+internal/handlers/sla.go
 internal/handlers/webauthn.go
 internal/handlers/workspaces_personal.go

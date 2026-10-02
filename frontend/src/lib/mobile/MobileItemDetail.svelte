@@ -295,6 +295,7 @@
       if (token !== loadToken) return;
       item = { ...item, ...fresh };
     } catch (err) {
+      if (token !== loadToken) return;
       // 404 => the item was deleted out from under us; leave the stale view.
       if (err?.status === 404) handleDeleted();
       return;

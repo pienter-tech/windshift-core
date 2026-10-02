@@ -22,6 +22,11 @@ CREATE TABLE IF NOT EXISTS items (
 	-- Hierarchy fields
 	parent_id INTEGER,
 	path TEXT DEFAULT '/',
+	-- Merge lifecycle: set on a duplicate after its content moved to the
+	-- canonical ticket. The item stays in place (searchable, visible to its
+	-- requester) and the pointer drives the merged banner, merge idempotency,
+	-- and conflict detection.
+	merged_into_item_id INTEGER REFERENCES items(id) ON DELETE SET NULL,
 	-- Personal task relationship (for linking personal workspace tasks to work items)
 	related_work_item_id INTEGER REFERENCES items(id) ON DELETE SET NULL,
 	-- Estimation
@@ -150,17 +155,24 @@ CREATE INDEX IF NOT EXISTS idx_items_request_type_id ON items(request_type_id);
 -- Personal task relationship index
 CREATE INDEX IF NOT EXISTS idx_items_related_work_item_id ON items(related_work_item_id);
 
--- Item history table for tracking changes to items
+-- Item history table for tracking changes to items.
+-- Actor attribution mirrors comments and domain events: user_id holds the
+-- acting internal user and is NULL for portal customers and system actions;
+-- actor_kind is 'user', 'portal_customer', or 'system'; and
+-- actor_portal_customer_id carries the portal-customer actor.
 CREATE TABLE IF NOT EXISTS item_history (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	item_id INTEGER NOT NULL,
-	user_id INTEGER NOT NULL,
+	user_id INTEGER,
+	actor_kind TEXT NOT NULL DEFAULT 'user',
+	actor_portal_customer_id INTEGER,
 	changed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 	field_name TEXT NOT NULL,
 	old_value TEXT,
 	new_value TEXT,
 	FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE,
-	FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE RESTRICT
+	FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE RESTRICT,
+	FOREIGN KEY (actor_portal_customer_id) REFERENCES portal_customers(id) ON DELETE SET NULL
 );
 
 -- Index for efficient history queries (most common: get all history for an item)
@@ -217,5 +229,22 @@ CREATE TRIGGER IF NOT EXISTS trg_items_change_delete BEFORE DELETE ON items
 BEGIN
 	INSERT INTO item_change_log(item_id, workspace_id, change_type) VALUES (OLD.id, OLD.workspace_id, 'delete');
 END;
+
+-- Ticket CSV import idempotency: one row per imported ticket keyed by the
+-- source system's external reference within its workspace. Re-importing a
+-- CSV resolves through this table, so retries never duplicate tickets.
+CREATE TABLE IF NOT EXISTS item_import_rows (
+	workspace_id INTEGER NOT NULL,
+	external_ref TEXT NOT NULL,
+	item_id INTEGER NOT NULL,
+	job_id TEXT NOT NULL,
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	PRIMARY KEY (workspace_id, external_ref),
+	FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+	FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_item_import_rows_job_id ON item_import_rows(job_id);
+CREATE INDEX IF NOT EXISTS idx_item_import_rows_item_id ON item_import_rows(item_id);
 
 -- migration: 0000_baseline

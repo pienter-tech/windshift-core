@@ -350,6 +350,11 @@ const (
 	ActionConfigSetDelete               = "config_set.delete"
 	ActionConfigSetExport               = "config_set.export"
 	ActionConfigSetImport               = "config_set.import"
+	ActionConfigSetConformanceCheck     = "config_set.conformance_check"
+	ActionConfigSetConformanceRepair    = "config_set.conformance_repair"
+	ActionWorkspaceBundleExport         = "workspace.bundle_export"
+	ActionWorkspaceBundleImport         = "workspace.bundle_import"
+	ActionPackApply                     = "pack.apply"
 	ActionConfigSetNotificationAssign   = "config_set.notification_assign"
 	ActionConfigSetNotificationUnassign = "config_set.notification_unassign"
 
@@ -631,10 +636,15 @@ const (
 	ActionTimeCustomerDelete = "time_customer.delete"
 
 	// Portal customer (contact) management
-	ActionPortalCustomerCreate    = "portal_customer.create"
-	ActionPortalCustomerUpdate    = "portal_customer.update"
-	ActionPortalCustomerDelete    = "portal_customer.delete"
-	ActionPortalCustomerUpdateOrg = "portal_customer.update_organisation" //nolint:misspell // British spelling
+	ActionPortalCustomerCreate      = "portal_customer.create"
+	ActionPortalCustomerUpdate      = "portal_customer.update"
+	ActionPortalCustomerDelete      = "portal_customer.delete"
+	ActionPortalCustomerUpdateOrg   = "portal_customer.update_organisation" //nolint:misspell // British spelling
+	ActionPortalCustomerErase       = "portal_customer.erase"
+	ActionPortalCustomerDataExport  = "portal_customer.data_export"
+	ActionPortalCustomerDeactivate  = "portal_customer.deactivate"
+	ActionPortalCustomerActivate    = "portal_customer.activate"
+	ActionPortalCustomerBulkCleanup = "portal_customer.bulk_cleanup"
 
 	// Time project permission management
 	ActionTimeProjectAddManager    = "time_project.add_manager"
@@ -662,6 +672,11 @@ const (
 	ActionPageLabelCreate = "page_label.create"
 	ActionPageLabelUpdate = "page_label.update"
 	ActionPageLabelDelete = "page_label.delete"
+
+	// Canned response management (WI-1138, workspace-level reply snippets)
+	ActionCannedResponseCreate = "canned_response.create"
+	ActionCannedResponseUpdate = "canned_response.update"
+	ActionCannedResponseDelete = "canned_response.delete"
 
 	// Knowledge page lifecycle and ACL management.
 	ActionPageCreate           = "page.create"
@@ -702,6 +717,10 @@ const (
 	// Asset set role management
 	ActionAssetSetRoleAssign = "asset_set_role.assign"
 	ActionAssetSetRoleRevoke = "asset_set_role.revoke"
+
+	// Asset set portal exposure
+	ActionAssetSetPortalAccessGrant  = "asset_set_portal_access.grant"
+	ActionAssetSetPortalAccessRevoke = "asset_set_portal_access.revoke"
 
 	// Notification setting management
 	ActionNotificationSettingCreate = "notification_setting.create"
@@ -857,6 +876,7 @@ const (
 	ResourcePortalCustomer       = "portal_customer"
 	ResourceLabel                = "label"
 	ResourceItemTemplate         = "item_template"
+	ResourceCannedResponse       = "canned_response"
 	ResourcePage                 = "page"
 	ResourcePageLabel            = "page_label"
 	ResourceAsset                = "asset"
@@ -865,6 +885,7 @@ const (
 	ResourceAssetCategory        = "asset_category"
 	ResourceAssetSet             = "asset_set"
 	ResourceAssetSetRole         = "asset_set_role"
+	ResourceAssetSetPortalAccess = "asset_set_portal_access"
 	ResourceNotificationSetting  = "notification_setting"
 	ResourceIterationType        = "iteration_type"
 	ResourceChannelCategory      = "channel_category"

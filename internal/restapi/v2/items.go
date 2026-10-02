@@ -50,6 +50,7 @@ type itemCreateRequest struct {
 	InheritProject    bool           `json:"inherit_project"`
 	TimeProjectID     *int           `json:"time_project_id"`
 	AssigneeID        *int           `json:"assignee_id"`
+	TeamID            *int           `json:"team_id"`
 	ParentID          *int           `json:"parent_id"`
 	RelatedWorkItemID *int           `json:"related_work_item_id"`
 	StoryPoints       *float64       `json:"story_points"`
@@ -64,6 +65,7 @@ type itemPatchRequest struct {
 	Description       Optional[string]         `json:"description"`
 	PriorityID        Optional[int]            `json:"priority_id"`
 	AssigneeID        Optional[int]            `json:"assignee_id"`
+	TeamID            Optional[int]            `json:"team_id"`
 	ParentID          Optional[int]            `json:"parent_id"`
 	IterationID       Optional[int]            `json:"iteration_id"`
 	ProjectID         Optional[int]            `json:"project_id"`
@@ -116,7 +118,7 @@ type roadmapHierarchyDatesRequest struct {
 	RootIDs []int `json:"root_ids"`
 }
 
-func registerItemRoutes(builder *routeBuilder, app *services.ItemApplicationService, detail *services.ItemDetailApplicationService, rollupAccess resourceAccess, rollup storyPointRollupReader, requestTimeout time.Duration) {
+func registerItemRoutes(builder *routeBuilder, app *services.ItemApplicationService, detail *services.ItemDetailApplicationService, lifecycle *services.ItemLifecycleService, rollupAccess resourceAccess, rollup storyPointRollupReader, requestTimeout time.Duration) {
 	collection := "/items"
 	builder.Page("/items/search", AuthAuthenticated, []string{"items:read"}, searchItems(app, requestTimeout))
 	builder.PageMetadata(collection, AuthAuthenticated, []string{"items:read"}, func(r *http.Request) ([]models.Item, Pagination, int, itemListMeta, error) {
@@ -144,7 +146,7 @@ func registerItemRoutes(builder *routeBuilder, app *services.ItemApplicationServ
 			DueDate: input.DueDate, StartDate: input.StartDate, EndDate: input.EndDate,
 			IsTask: input.IsTask, IterationID: input.IterationID, ProjectID: input.ProjectID,
 			InheritProject: input.InheritProject, TimeProjectID: input.TimeProjectID,
-			AssigneeID: input.AssigneeID, ParentID: input.ParentID,
+			AssigneeID: input.AssigneeID, TeamID: input.TeamID, ParentID: input.ParentID,
 			RelatedWorkItemID: input.RelatedWorkItemID, StoryPoints: input.StoryPoints,
 			EstimateMinutes: input.EstimateMinutes, CustomFieldValues: input.CustomFieldValues,
 			MilestoneIDs: input.MilestoneIDs, LabelIDs: input.LabelIDs,
@@ -277,8 +279,71 @@ func registerItemRoutes(builder *routeBuilder, app *services.ItemApplicationServ
 		}
 		return itemError(app.Delete(auditActor(r, user), id))
 	})
+	registerItemLifecycleRoutes(builder, lifecycle)
 	registerItemReadRoutes(builder, app)
 	registerItemSetRoutes(builder, app)
+}
+
+// itemMergeRequest names the duplicates to fold into the canonical item.
+type itemMergeRequest struct {
+	SourceItemIDs []int `json:"source_item_ids"`
+}
+
+// itemSplitRequest carves a subticket out of an item with explicit ownership.
+type itemSplitRequest struct {
+	Title            string `json:"title"`
+	Description      string `json:"description"`
+	CommentIDs       []int  `json:"comment_ids"`
+	AttachmentIDs    []int  `json:"attachment_ids"`
+	AssigneeID       *int   `json:"assignee_id"`
+	PortalCustomerID *int   `json:"portal_customer_id"`
+}
+
+func registerItemLifecycleRoutes(builder *routeBuilder, lifecycle *services.ItemLifecycleService) {
+	builder.JSON(http.MethodPost, "/items/{item_id}/merge", http.StatusOK, false, AuthAuthenticated, []string{"items:write"}, func(r *http.Request, input itemMergeRequest) (*services.ItemMergeResult, error) {
+		user, err := principal(r)
+		if err != nil {
+			return nil, err
+		}
+		id, err := pathID(r, "item_id")
+		if err != nil {
+			return nil, err
+		}
+		result, err := lifecycle.Merge(r.Context(), services.ItemMergeInput{
+			ActorUserID: user.ID, ActorUsername: user.Username,
+			TargetItemID: id, SourceItemIDs: input.SourceItemIDs,
+		})
+		return result, itemError(err)
+	})
+	builder.JSON(http.MethodPost, "/items/{item_id}/split", http.StatusCreated, false, AuthAuthenticated, []string{"items:write"}, func(r *http.Request, input itemSplitRequest) (*services.ItemSplitResult, error) {
+		user, err := principal(r)
+		if err != nil {
+			return nil, err
+		}
+		id, err := pathID(r, "item_id")
+		if err != nil {
+			return nil, err
+		}
+		result, err := lifecycle.Split(r.Context(), services.ItemSplitInput{
+			ActorUserID: user.ID, ActorUsername: user.Username,
+			SourceItemID: id, Title: input.Title, Description: input.Description,
+			CommentIDs: input.CommentIDs, AttachmentIDs: input.AttachmentIDs,
+			AssigneeID: input.AssigneeID, PortalCustomerID: input.PortalCustomerID,
+		})
+		return result, itemError(err)
+	})
+	builder.Read("/items/{item_id}/merge-redirect", AuthAuthenticated, []string{"items:read"}, func(r *http.Request) (*services.ItemMergeRedirect, error) {
+		user, err := principal(r)
+		if err != nil {
+			return nil, err
+		}
+		id, err := pathID(r, "item_id")
+		if err != nil {
+			return nil, err
+		}
+		redirect, err := lifecycle.GetMergeRedirect(r.Context(), user.ID, id)
+		return redirect, itemError(err)
+	})
 }
 
 func registerItemSetRoutes(builder *routeBuilder, app *services.ItemApplicationService) {
@@ -777,7 +842,7 @@ func parseItemFilters(r *http.Request, filters *services.ItemFilters) error {
 	query := r.URL.Query()
 	for name, target := range map[string]**int{
 		"status_id": &filters.StatusID, "priority_id": &filters.PriorityID,
-		"assignee_id": &filters.AssigneeID, "item_type_id": &filters.ItemTypeID,
+		"assignee_id": &filters.AssigneeID, "team_id": &filters.TeamID, "item_type_id": &filters.ItemTypeID,
 		"iteration_id": &filters.IterationID, "milestone_id": &filters.MilestoneID,
 		"id": &filters.ItemID, "level": &filters.Level, "max_level": &filters.MaxLevel,
 	} {
@@ -811,6 +876,7 @@ func itemPatchFields(input itemPatchRequest) map[string]json.RawMessage {
 	putOptional(fields, "description", input.Description)
 	putOptional(fields, "priority_id", input.PriorityID)
 	putOptional(fields, "assignee_id", input.AssigneeID)
+	putOptional(fields, "team_id", input.TeamID)
 	putOptional(fields, "parent_id", input.ParentID)
 	putOptional(fields, "iteration_id", input.IterationID)
 	putOptional(fields, "project_id", input.ProjectID)
@@ -941,6 +1007,9 @@ func itemError(err error) error {
 	}
 	if errors.Is(err, services.ErrItemHasProtectedIntegrationLinks) {
 		return newError(http.StatusConflict, "conflict", "Remove all protected integration links from the affected items before deleting them.")
+	}
+	if errors.Is(err, services.ErrItemMergeConflict) {
+		return newError(http.StatusConflict, "merge_conflict", err.Error())
 	}
 	if errors.Is(err, services.ErrBulkItemNotFound) {
 		return newError(http.StatusNotFound, "not_found", "Item not found")

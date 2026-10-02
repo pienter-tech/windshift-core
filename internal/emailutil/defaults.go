@@ -46,7 +46,7 @@ func DefaultTemplates() []DefaultTemplate {
 		},
 		{
 			Name:        TemplatePortalReply,
-			Description: "Threaded reply sent to a portal customer when an internal user comments on their email-originated item.",
+			Description: "Threaded reply sent to a portal customer when an internal user comments on their ticket (email or portal origin).",
 			Subject:     `Re: {{.OriginalSubject}}`,
 			HTMLBody:    portalReplyHTML,
 			TextBody:    portalReplyText,

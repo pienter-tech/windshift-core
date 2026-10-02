@@ -242,6 +242,21 @@ func (r *WorkflowRepository) Delete(id int) (cancelledApprovalIDs []int, err err
 		return nil, err
 	}
 
+	// Condition sets and approval sets cascade-delete with the workflow. Their
+	// referencing columns are plain integers without foreign keys, so clear the
+	// references first to avoid leaving configuration sets and item-type
+	// overrides pointing at deleted rows (which would disable their gates).
+	for _, cleanup := range []string{
+		`UPDATE configuration_sets SET condition_set_id = NULL WHERE condition_set_id IN (SELECT id FROM condition_sets WHERE workflow_id = ?)`,
+		`UPDATE configuration_sets SET approval_set_id = NULL WHERE approval_set_id IN (SELECT id FROM approval_sets WHERE workflow_id = ?)`,
+		`UPDATE configuration_set_item_types SET condition_set_id = NULL WHERE condition_set_id IN (SELECT id FROM condition_sets WHERE workflow_id = ?)`,
+		`UPDATE configuration_set_item_types SET approval_set_id = NULL WHERE approval_set_id IN (SELECT id FROM approval_sets WHERE workflow_id = ?)`,
+	} {
+		if _, err = tx.Exec(cleanup, id); err != nil {
+			return nil, err
+		}
+	}
+
 	// Delete workflow transitions first
 	if _, err = tx.Exec("DELETE FROM workflow_transitions WHERE workflow_id = ?", id); err != nil {
 		return nil, err

@@ -87,6 +87,16 @@ type ChannelConfig struct {
 	EmailDeleteAfterProcess    bool       `json:"email_delete_after_process,omitempty"`    // Delete emails after processing
 	EmailConnectedPortalID     *int       `json:"email_connected_portal_id,omitempty"`     // Portal for "My Requests" visibility
 	EmailTrackingRetentionDays int        `json:"email_tracking_retention_days,omitempty"` // Days to keep processed-email tracking rows; 0 = default (365). Anchor rows (referenced by in_reply_to) are kept regardless.
+	KBEventsRetentionDays      int        `json:"kb_events_retention_days,omitempty"`      // Days to keep this portal's kb_events analytics rows; 0 = instance default (365). See the kb_events retention sweeper.
+	// Per-sender cap on NEW tickets per rolling hour. nil = default
+	// (DefaultEmailRateLimitPerHour), 0 = unlimited, n = n. Replies to
+	// existing threads are never rate-limited.
+	EmailRateLimitPerHour *int `json:"email_rate_limit_per_hour,omitempty"`
+	// Opt-in (WI-1548): a fresh (unquoted) email from a sender with an open
+	// ticket in this channel's workspace is appended to that ticket instead of
+	// creating a duplicate. The guard is creator-or-prior-email-participant,
+	// never sender-address match alone. Default off.
+	EmailAutoAppendOpenTickets bool `json:"email_auto_append_open_tickets,omitempty"`
 
 	// Portal Configuration
 	PortalSlug         string `json:"portal_slug,omitempty"`        // URL-friendly identifier (e.g., "support-portal")
@@ -176,6 +186,28 @@ type PortalSection struct {
 }
 
 // PortalCustomer represents an individual portal user
+// Creation provenance values recorded on portal_customers.created_via
+// (WI-1553). 'unknown' covers rows created before provenance capture;
+// portal submissions never create customers (they attribute to existing
+// authenticated identities), so no 'portal' value exists.
+const (
+	CustomerCreatedViaAgent        = "agent"
+	CustomerCreatedViaEmailIntake  = "email-intake"
+	CustomerCreatedViaMagicLink    = "magic-link"
+	CustomerCreatedViaTicketImport = "ticket-import"
+	CustomerCreatedViaUnknown      = "unknown"
+)
+
+// CustomerCreatedViaValues lists every provenance value the bulk cleanup
+// filter accepts.
+var CustomerCreatedViaValues = []string{
+	CustomerCreatedViaAgent,
+	CustomerCreatedViaEmailIntake,
+	CustomerCreatedViaMagicLink,
+	CustomerCreatedViaTicketImport,
+	CustomerCreatedViaUnknown,
+}
+
 type PortalCustomer struct {
 	ID                     int            `json:"id"`
 	Name                   string         `json:"name"`
@@ -185,6 +217,8 @@ type PortalCustomer struct {
 	CustomerOrganisationID *int           `json:"customer_organisation_id,omitempty"` //nolint:misspell // matches API/database field name
 	IsPrimary              bool           `json:"is_primary"`                         // Primary contact for the organization
 	CustomFieldValues      map[string]any `json:"custom_field_values,omitempty"`
+	DeactivatedAt          *time.Time     `json:"deactivated_at,omitempty"` // Security deactivation (WI-1554); every portal auth path refuses deactivated customers
+	CreatedVia             string         `json:"created_via"`              // Creation provenance (WI-1553)
 	CreatedAt              time.Time      `json:"created_at"`
 	UpdatedAt              time.Time      `json:"updated_at"`
 	// Joined fields for API responses
@@ -245,6 +279,21 @@ type RequestTypeConfig struct {
 	SuccessMessage   string `json:"success_message,omitempty"`
 	SubmitButtonText string `json:"submit_button_text,omitempty"`
 	RedirectURL      string `json:"redirect_url,omitempty"`
+	// RowActions is only meaningful on asset reports: each action renders a
+	// per-row link that opens a request type with one field prefilled.
+	RowActions []AssetReportRowAction `json:"row_actions,omitempty"`
+}
+
+// AssetReportRowAction configures a portal asset report row link that opens a
+// request type with one form field prefilled from that row's asset. Source is
+// one of asset_id, asset_tag, or title; the row action only passes a scalar
+// through the URL, so a whole-object source is intentionally not supported.
+type AssetReportRowAction struct {
+	ID            string `json:"id"`
+	Label         string `json:"label"`
+	RequestTypeID int    `json:"request_type_id"`
+	TargetField   string `json:"target_field"`
+	Source        string `json:"source"`
 }
 
 // RequestType represents a portal request type that maps to an item type
@@ -355,8 +404,9 @@ type PublicAssetReport struct {
 // PublicAssetReportConfig contains only copy used by the current portal form
 // UI. Internal auth and redirect controls are not part of the guest contract.
 type PublicAssetReportConfig struct {
-	SuccessMessage   string `json:"success_message,omitempty"`
-	SubmitButtonText string `json:"submit_button_text,omitempty"`
+	SuccessMessage   string                 `json:"success_message,omitempty"`
+	SubmitButtonText string                 `json:"submit_button_text,omitempty"`
+	RowActions       []AssetReportRowAction `json:"row_actions,omitempty"`
 }
 
 // AssetReportField represents a field configuration for a form-mode asset report.
@@ -632,6 +682,10 @@ const (
 	// Mention events
 	EventMention = "mention.created"
 
+	// SLA events
+	EventSLABreached = "sla.breached"
+	EventSLAWarning  = "sla.warning"
+
 	// Approval events
 	EventApprovalRequested   = "approval.requested"
 	EventApprovalStepStarted = "approval.step_started"
@@ -654,6 +708,8 @@ func GetAvailableNotificationEvents() []NotificationEvent {
 		{EventItemLinked, "Item Linked", "When work items are linked together", "link"},
 		{EventItemUnlinked, "Item Unlinked", "When work item links are removed", "link"},
 		{EventStatusChanged, "Status Changed", "When a work item's status is changed", "status"},
+		{EventSLABreached, "SLA Breached", "When a work item misses an SLA goal", "sla"},
+		{EventSLAWarning, "SLA Warning", "When a work item approaches an SLA goal", "sla"},
 		{EventMention, "User Mentioned", "When a user is @mentioned in a comment or description", "mention"},
 		{EventApprovalRequested, "Approval Requested", "When an item enters a status that requires approval", "approval"},
 		{EventApprovalStepStarted, "Approval Step Started", "When a new approval step opens for its approvers", "approval"},
@@ -681,12 +737,18 @@ type PortalHubConfig struct {
 	FooterColumns     []FooterColumn `json:"footer_columns"`
 }
 
-// HubSection represents a customizable section in the Portal Hub
+// HubSection represents a customizable section in the Portal Hub. The shape
+// mirrors the frontend editor, which persists subtitle, ordering, and the
+// portals assigned to each section; dropping any of these on save would lose
+// section assignments on the next load.
 type HubSection struct {
-	ID      string `json:"id"`
-	Title   string `json:"title"`
-	Content string `json:"content"`
-	Visible bool   `json:"visible"`
+	ID           string `json:"id"`
+	Title        string `json:"title"`
+	Subtitle     string `json:"subtitle"`
+	Content      string `json:"content"`
+	Visible      bool   `json:"visible"`
+	DisplayOrder int    `json:"display_order"`
+	PortalIDs    []int  `json:"portal_ids"`
 }
 
 // FooterColumn represents a column in the Portal Hub footer

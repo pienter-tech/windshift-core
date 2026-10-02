@@ -7,6 +7,7 @@
     Info,
     List,
     MessageSquare,
+    Paperclip,
     Tag,
   } from '@lucide/svelte';
   import StateDisplay from '../components/StateDisplay.svelte';
@@ -101,7 +102,7 @@
           {:else}
             <div class="space-y-3 mb-7">
               {#each portalRequestsStore.comments as comment}
-                <article class="request-comment">
+                <article class="request-comment" data-testid="portal-request-comment">
                   <div class="request-comment-avatar" aria-hidden="true">
                     {(comment.author_name || '?').slice(0, 1).toUpperCase()}
                   </div>
@@ -127,6 +128,31 @@
               {/each}
             </div>
 
+            {#if portalRequestsStore.attachments.length > 0}
+              <div class="request-attachments mb-7" data-testid="portal-request-attachments">
+                <h3 class="text-sm font-medium mb-2" style="color: var(--ds-text);">Attachments</h3>
+                <ul class="space-y-1.5">
+                  {#each portalRequestsStore.attachments as attachment (attachment.id)}
+                    <li>
+                      <a
+                        href={portalRequestsStore.attachmentUrl(attachment.id)}
+                        class="inline-flex items-center gap-2 text-sm hover:underline"
+                        style="color: var(--ds-text-link);"
+                        download={attachment.original_filename}
+                        data-testid="portal-request-attachment"
+                      >
+                        <Paperclip class="w-3.5 h-3.5" aria-hidden="true" />
+                        {attachment.original_filename}
+                        <span class="text-xs" style="color: var(--ds-text-subtle);">
+                          ({Math.max(1, Math.round(attachment.file_size / 1024))} KB)
+                        </span>
+                      </a>
+                    </li>
+                  {/each}
+                </ul>
+              </div>
+            {/if}
+
             <div class="request-comment-form">
               <label class="block text-sm font-medium mb-2" style="color: var(--ds-text);" for="portal-request-comment">
                 Add a comment
@@ -138,10 +164,32 @@
                 placeholder="Write an update or question…"
                 rows={3}
               />
-              <div class="flex justify-end mt-3">
+              <div class="flex items-center justify-between mt-3">
+                <label
+                  class="inline-flex items-center gap-1.5 text-sm cursor-pointer hover:underline"
+                  style="color: var(--ds-text-link);"
+                  for="portal-request-attachment-input"
+                  data-testid="portal-request-attach-button"
+                >
+                  <Paperclip class="w-4 h-4" aria-hidden="true" />
+                  {portalRequestsStore.uploadingAttachment ? 'Uploading…' : 'Attach file'}
+                </label>
+                <input
+                  id="portal-request-attachment-input"
+                  type="file"
+                  class="hidden"
+                  disabled={portalRequestsStore.uploadingAttachment}
+                  onchange={(event) => {
+                    const input = event.currentTarget;
+                    const file = input.files?.[0];
+                    if (file) portalRequestsStore.addAttachment(file);
+                    input.value = '';
+                  }}
+                />
                 <!-- shortcut-guard-exempt: portal comments are an explicit, form-scoped submit action. -->
                 <Button
                   variant="primary"
+                  dataTestid="portal-request-comment-submit"
                   onclick={() => portalRequestsStore.addComment()}
                   disabled={!portalRequestsStore.newComment.trim() || portalRequestsStore.addingComment}
                   loading={portalRequestsStore.addingComment}

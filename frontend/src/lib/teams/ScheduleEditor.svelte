@@ -9,6 +9,7 @@
   import Textarea from '../components/Textarea.svelte';
   import Select from '../components/Select.svelte';
   import Checkbox from '../components/Checkbox.svelte';
+  import { listIanaTimezones } from '../utils/timeUtils.js';
 
   let { teamId, schedule = null, onSaved, onCancel } = $props();
 
@@ -22,22 +23,14 @@
   });
   let busy = $state(false);
 
-  // Build a list of supported timezones; fall back to a small curated set.
-  function listTimezones() {
-    try {
-      if (typeof Intl !== 'undefined' && typeof Intl.supportedValuesOf === 'function') {
-        return Intl.supportedValuesOf('timeZone');
-      }
-    } catch {
-      /* fall through */
-    }
-    return [
-      'UTC', 'Europe/Berlin', 'Europe/London', 'America/New_York',
-      'America/Los_Angeles', 'Asia/Tokyo', 'Australia/Sydney',
-    ];
-  }
-
-  const timezoneOptions = listTimezones().map((tz) => ({ value: tz, label: tz }));
+  // Offer every IANA zone; keep a stored alias visible if the runtime omits it.
+  const baseTimezoneIds = listIanaTimezones();
+  const timezoneOptions = $derived.by(() => {
+    const zones = formData.timezone && !baseTimezoneIds.includes(formData.timezone)
+      ? [formData.timezone, ...baseTimezoneIds]
+      : baseTimezoneIds;
+    return zones.map((tz) => ({ value: tz, label: tz }));
+  });
 
   async function save() {
     if (!formData.name?.trim()) {

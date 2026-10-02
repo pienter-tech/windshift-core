@@ -52,6 +52,12 @@ func NewWorkspaceApplicationService(db database.Database, access WorkspaceMutati
 	}
 }
 
+// SetPackProvisioner forwards the create-from-template-pack provisioner to the
+// inner workspace service, which owns the create path.
+func (s *WorkspaceApplicationService) SetPackProvisioner(provisioner WorkspacePackProvisioner) {
+	s.workspaces.SetPackProvisioner(provisioner)
+}
+
 func (s *WorkspaceApplicationService) Create(ctx context.Context, actor AuditActor, params CreateWorkspaceParams) (*models.Workspace, error) {
 	allowed, err := s.access.HasGlobalPermission(actor.UserID, models.PermissionWorkspaceCreate)
 	if err != nil {

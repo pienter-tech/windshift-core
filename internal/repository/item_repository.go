@@ -222,6 +222,41 @@ func (r *ItemRepository) FindByIDsForUpdateContext(ctx context.Context, tx datab
 	return items, nil
 }
 
+// FindByIDsInWorkspace resolves the requested item ids that exist in the
+// given workspace, preserving the requested id order. Ids belonging to other
+// workspaces are silently dropped so batch reads stay workspace-scoped.
+func (r *ItemRepository) FindByIDsInWorkspace(ctx context.Context, workspaceID int, ids []int) ([]*models.Item, error) {
+	if len(ids) == 0 {
+		return []*models.Item{}, nil
+	}
+	placeholders, args := inPlaceholders(ids)
+	args = append([]any{workspaceID}, args...)
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT `+itemBaseColumns+` FROM items WHERE workspace_id = ? AND id IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("find items in workspace: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	byID := make(map[int]*models.Item, len(ids))
+	for rows.Next() {
+		item, scanErr := scanItemBase(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan item: %w", scanErr)
+		}
+		byID[item.ID] = item
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate items: %w", err)
+	}
+	out := make([]*models.Item, 0, len(ids))
+	for _, id := range ids {
+		if item, ok := byID[id]; ok {
+			out = append(out, item)
+		}
+	}
+	return out, nil
+}
+
 // LockWorkspaceItemsTx prevents new foreign-key references from being added to
 // the workspace's current items while a destructive workspace operation runs.
 // The caller must lock the workspace row first so concurrent item creation is
@@ -289,7 +324,9 @@ const itemDetailsSelectBody = `
 	       rw.title as related_work_item_title,
 	       rw_ws.key as related_work_item_workspace_key,
 	       rw.workspace_id as related_work_item_workspace_id,
-	       rw.workspace_item_number as related_work_item_number
+	       rw.workspace_item_number as related_work_item_number,
+	       i.team_id, i.incident_id,
+	       t.name as team_name, t.color as team_color, t.avatar_url as team_avatar
 	FROM items i
 	JOIN workspaces w ON i.workspace_id = w.id
 	LEFT JOIN iterations iter ON i.iteration_id = iter.id
@@ -302,7 +339,8 @@ const itemDetailsSelectBody = `
 	LEFT JOIN statuses s ON i.status_id = s.id
 	LEFT JOIN item_types it ON i.item_type_id = it.id
 	LEFT JOIN items rw ON i.related_work_item_id = rw.id
-	LEFT JOIN workspaces rw_ws ON rw.workspace_id = rw_ws.id`
+	LEFT JOIN workspaces rw_ws ON rw.workspace_id = rw_ws.id
+	LEFT JOIN teams t ON i.team_id = t.id`
 
 // scanItemDetailsRow scans the shared projection. Milestones are attached by
 // the caller to avoid a per-row query.
@@ -325,6 +363,8 @@ func scanItemDetailsRow(scanner rowScanner) (models.Item, bool, error) {
 	var relatedWorkItemTitle, relatedWorkItemWorkspaceKey sql.NullString
 	var relatedWorkItemWorkspaceID, relatedWorkItemNumber sql.NullInt64
 	var creatorPortalCustomerID, channelID, requestTypeID sql.NullInt64
+	var teamID, incidentID sql.NullInt64
+	var teamName, teamColor, teamAvatar sql.NullString
 
 	var storyPoints sql.NullFloat64
 	var estimateMinutes sql.NullInt64
@@ -347,6 +387,11 @@ func scanItemDetailsRow(scanner rowScanner) (models.Item, bool, error) {
 		&relatedWorkItemWorkspaceKey,
 		&relatedWorkItemWorkspaceID,
 		&relatedWorkItemNumber,
+		&teamID,
+		&incidentID,
+		&teamName,
+		&teamColor,
+		&teamAvatar,
 	)
 	if err != nil {
 		return models.Item{}, false, err
@@ -365,6 +410,8 @@ func scanItemDetailsRow(scanner rowScanner) (models.Item, bool, error) {
 	assignNullableInt(&item.CreatorPortalCustomerID, creatorPortalCustomerID)
 	assignNullableInt(&item.ChannelID, channelID)
 	assignNullableInt(&item.RequestTypeID, requestTypeID)
+	assignNullableInt(&item.TeamID, teamID)
+	assignNullableInt(&item.IncidentID, incidentID)
 
 	assignNullableTime(&item.DueDate, dueDate)
 	assignNullableTime(&item.StartDate, startDate)
@@ -390,6 +437,9 @@ func scanItemDetailsRow(scanner rowScanner) (models.Item, bool, error) {
 	assignNullableString(&item.StatusBuiltinKey, statusBuiltinKey)
 	assignNullableString(&item.ItemTypeName, itemTypeName)
 	assignNullableString(&item.ItemTypeBuiltinKey, itemTypeBuiltinKey)
+	assignNullableString(&item.TeamName, teamName)
+	assignNullableString(&item.TeamColor, teamColor)
+	assignNullableString(&item.TeamAvatarURL, teamAvatar)
 
 	assignNullableInt(&item.RelatedWorkItemID, relatedWorkItemID)
 	assignNullableString(&item.RelatedWorkItemTitle, relatedWorkItemTitle)
@@ -446,6 +496,61 @@ func (r *ItemRepository) GetWorkspaceIDCtx(ctx context.Context, itemID int) (int
 		return 0, mapItemErr(err, "get workspace id")
 	}
 	return workspaceID, nil
+}
+
+// ChildItemSummary is the projection used by item briefings. It carries
+// descriptions but not attachments, so a parent briefing can include children
+// without pulling in attachment data.
+type ChildItemSummary struct {
+	ID           int
+	ItemKey      string
+	Title        string
+	StatusName   string
+	AssigneeName string
+	ItemTypeName string
+	Description  string
+}
+
+// ListChildBriefings returns the direct children of parentID in the same
+// workspace, ordered by board position, capped at limit. It does not recurse.
+func (r *ItemRepository) ListChildBriefings(workspaceID, parentID, limit int) ([]ChildItemSummary, error) {
+	if limit <= 0 {
+		return []ChildItemSummary{}, nil
+	}
+	rows, err := r.db.Query(`
+		SELECT i.id,
+		       w.key || '-' || CAST(i.workspace_item_number AS TEXT) as item_key,
+		       i.title,
+		       COALESCE(s.name, '') as status_name,
+		       COALESCE(NULLIF(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')), ''), '') as assignee_name,
+		       COALESCE(it.name, '') as item_type_name,
+		       COALESCE(i.description, '') as description
+		FROM items i
+		JOIN workspaces w ON i.workspace_id = w.id
+		LEFT JOIN statuses s ON i.status_id = s.id
+		LEFT JOIN users u ON i.assignee_id = u.id
+		LEFT JOIN item_types it ON i.item_type_id = it.id
+		WHERE i.workspace_id = ? AND i.parent_id = ?
+		ORDER BY i.frac_index, i.workspace_item_number
+		LIMIT ?
+	`, workspaceID, parentID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list child briefings: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make([]ChildItemSummary, 0)
+	for rows.Next() {
+		var child ChildItemSummary
+		if err := rows.Scan(&child.ID, &child.ItemKey, &child.Title, &child.StatusName, &child.AssigneeName, &child.ItemTypeName, &child.Description); err != nil {
+			return nil, fmt.Errorf("scan child briefing: %w", err)
+		}
+		out = append(out, child)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate child briefings: %w", err)
+	}
+	return out, nil
 }
 
 func (r *ItemRepository) ListChildTitles(parentID int) ([]string, error) {
@@ -649,8 +754,19 @@ var itemRemapColumns = map[string]bool{
 }
 
 // RemapFieldForWorkspacesTx remaps one allowlisted reference column in a
-// transaction and optionally restricts by item type.
+// transaction and optionally restricts by item type. The remap lands in item
+// history attributed to the system (no acting user).
 func (r *ItemRepository) RemapFieldForWorkspacesTx(tx database.Tx, column string, fromID *int, toID int, itemTypeID *int, workspaceIDs []int, now time.Time) (int, error) {
+	return r.remapFieldForWorkspacesTx(tx, column, fromID, toID, itemTypeID, workspaceIDs, now, 0)
+}
+
+// RemapFieldForWorkspacesTxAsUser behaves like RemapFieldForWorkspacesTx but
+// attributes the item-history rows to the acting admin user.
+func (r *ItemRepository) RemapFieldForWorkspacesTxAsUser(tx database.Tx, column string, fromID *int, toID int, itemTypeID *int, workspaceIDs []int, now time.Time, actorUserID int) (int, error) {
+	return r.remapFieldForWorkspacesTx(tx, column, fromID, toID, itemTypeID, workspaceIDs, now, actorUserID)
+}
+
+func (r *ItemRepository) remapFieldForWorkspacesTx(tx database.Tx, column string, fromID *int, toID int, itemTypeID *int, workspaceIDs []int, now time.Time, actorUserID int) (int, error) {
 	if !itemRemapColumns[column] {
 		return 0, fmt.Errorf("RemapFieldForWorkspacesTx: column %q is not in the allow-list", column)
 	}
@@ -659,27 +775,73 @@ func (r *ItemRepository) RemapFieldForWorkspacesTx(tx database.Tx, column string
 	}
 	// The column name is validated against the fixed allow-list above, so the
 	// fmt.Sprintf cannot splice attacker-controlled input.
-	query := fmt.Sprintf("UPDATE items SET %s = ?, updated_at = ?", column)
-	args := []any{toID, now}
+	where := " WHERE " + column
+	args := []any{}
 	if fromID == nil {
-		query += fmt.Sprintf(" WHERE %s IS NULL", column)
+		where += " IS NULL"
 	} else {
-		query += fmt.Sprintf(" WHERE %s = ?", column)
+		where += " = ?"
 		args = append(args, *fromID)
 	}
 	if itemTypeID != nil {
-		query += " AND item_type_id = ?"
+		where += " AND item_type_id = ?"
 		args = append(args, *itemTypeID)
 	}
 	ph, wsArgs := inPlaceholders(workspaceIDs)
-	query += " AND workspace_id IN (" + ph + ")"
+	where += " AND workspace_id IN (" + ph + ")"
 	args = append(args, wsArgs...)
 
-	res, err := tx.Exec(query, args...)
+	// Capture the affected items before the update so each one gets an
+	// item-history row; the remap is otherwise invisible to audit trails.
+	idRows, err := tx.Query("SELECT id FROM items"+where, args...)
+	if err != nil {
+		return 0, fmt.Errorf("list %s remap targets: %w", column, err)
+	}
+	var itemIDs []int
+	for idRows.Next() {
+		var id int
+		if err := idRows.Scan(&id); err != nil {
+			_ = idRows.Close()
+			return 0, fmt.Errorf("scan %s remap target: %w", column, err)
+		}
+		itemIDs = append(itemIDs, id)
+	}
+	if err := idRows.Err(); err != nil {
+		_ = idRows.Close()
+		return 0, fmt.Errorf("iterate %s remap targets: %w", column, err)
+	}
+	_ = idRows.Close()
+
+	updateQuery := fmt.Sprintf("UPDATE items SET %s = ?, updated_at = ?", column) + where
+	updateArgs := make([]any, 0, 2+len(args))
+	updateArgs = append(updateArgs, toID, now)
+	updateArgs = append(updateArgs, args...)
+	res, err := tx.Exec(updateQuery, updateArgs...)
 	if err != nil {
 		return 0, fmt.Errorf("remap %s: %w", column, err)
 	}
 	rows, _ := res.RowsAffected()
+
+	// Record the remap per item, committed atomically with the update.
+	oldValue := ""
+	if fromID != nil {
+		oldValue = fmt.Sprintf("%d", *fromID)
+	}
+	for _, itemID := range itemIDs {
+		entry := HistoryEntry{
+			ItemID: itemID, FieldName: column,
+			OldValue: oldValue, NewValue: fmt.Sprintf("%d", toID), ChangedAt: now,
+		}
+		if actorUserID > 0 {
+			entry.ActorKind = HistoryActorUser
+			entry.UserID = actorUserID
+		} else {
+			entry.ActorKind = HistoryActorSystem
+		}
+		if err := r.RecordHistory(tx, entry); err != nil {
+			return 0, fmt.Errorf("record %s remap history: %w", column, err)
+		}
+	}
 	return int(rows), nil
 }
 
@@ -815,13 +977,13 @@ func (r *ItemRepository) Update(tx database.Tx, item *models.Item) error {
 		UPDATE items
 		SET workspace_id = ?, title = ?, description = ?, status_id = ?, priority_id = ?,
 		    due_date = ?, start_date = ?, end_date = ?, is_task = ?, iteration_id = ?, project_id = ?, inherit_project = ?,
-		    time_project_id = ?, assignee_id = ?, creator_id = ?, custom_field_values = ?, parent_id = ?,
+		    time_project_id = ?, assignee_id = ?, team_id = ?, creator_id = ?, custom_field_values = ?, parent_id = ?,
 		    related_work_item_id = ?, story_points = ?, estimate_minutes = ?, updated_at = ?, last_active_at = ?
 		WHERE id = ?
 	`,
 		item.WorkspaceID, item.Title, item.Description, item.StatusID, item.PriorityID,
 		item.DueDate, item.StartDate, item.EndDate, item.IsTask, item.IterationID, item.ProjectID, item.InheritProject,
-		item.TimeProjectID, item.AssigneeID, item.CreatorID, customFieldValuesJSON, item.ParentID,
+		item.TimeProjectID, item.AssigneeID, item.TeamID, item.CreatorID, customFieldValuesJSON, item.ParentID,
 		item.RelatedWorkItemID, item.StoryPoints, item.EstimateMinutes, now, now, item.ID,
 	)
 
@@ -837,7 +999,7 @@ var allowedItemColumns = map[string]bool{
 	"title": true, "description": true, "status_id": true, "priority_id": true,
 	"due_date": true, "start_date": true, "end_date": true,
 	"iteration_id": true, "project_id": true, "inherit_project": true,
-	"assignee_id": true, "creator_id": true, "custom_field_values": true,
+	"assignee_id": true, "team_id": true, "creator_id": true, "custom_field_values": true,
 	"parent_id": true, "related_work_item_id": true, "item_type_id": true,
 	"frac_index": true, "is_task": true, "time_project_id": true,
 	"story_points": true, "estimate_minutes": true,
@@ -1722,17 +1884,23 @@ func (r *ItemRepository) ClearRelatedWorkItem(itemID int) error {
 }
 
 // GetHistoryWithApprovals returns item history plus approval decision events as a single chronological feed.
+// Portal-customer actors resolve to their customer name; system rows have no
+// user and display through the empty-name fallback the frontend applies.
 func (r *ItemRepository) GetHistoryWithApprovals(itemID int, includeAgentOwner bool) ([]models.ItemHistory, error) {
 	query := `
 		SELECT
 			ih.id, ih.item_id, ih.user_id, ih.changed_at, ih.field_name, ih.old_value, ih.new_value,
-			COALESCE(u.first_name || ' ' || u.last_name, u.username, '') as user_name,
-			COALESCE(u.email, '') as user_email,
+			COALESCE(NULLIF(TRIM(u.first_name || ' ' || u.last_name), ''), u.username, '') AS user_name,
+			COALESCE(u.email, '') AS user_email,
 			COALESCE(u.is_agent, FALSE) AS is_agent,
-			COALESCE(NULLIF(TRIM(COALESCE(owner.first_name, '') || ' ' || COALESCE(owner.last_name, '')), ''), owner.username, '') AS agent_owner_name
+			COALESCE(NULLIF(TRIM(COALESCE(owner.first_name, '') || ' ' || COALESCE(owner.last_name, '')), ''), owner.username, '') AS agent_owner_name,
+			ih.actor_kind,
+			ih.actor_portal_customer_id,
+			COALESCE(NULLIF(TRIM(pc.name), ''), pc.email, '') AS portal_customer_name
 		FROM item_history ih
 		LEFT JOIN users u ON ih.user_id = u.id
 		LEFT JOIN users owner ON owner.id = u.agent_owner_user_id
+		LEFT JOIN portal_customers pc ON ih.actor_portal_customer_id = pc.id
 		WHERE ih.item_id = ?
 		UNION ALL
 		SELECT
@@ -1743,14 +1911,18 @@ func (r *ItemRepository) GetHistoryWithApprovals(itemID int, includeAgentOwner b
 			'approval_' || d.decision AS field_name,
 			NULL AS old_value,
 			d.comment AS new_value,
-			COALESCE(u.first_name || ' ' || u.last_name, u.username, 'System') AS user_name,
+			COALESCE(NULLIF(TRIM(u.first_name || ' ' || u.last_name), ''), u.username, '') AS user_name,
 			COALESCE(u.email, '') AS user_email,
 			COALESCE(u.is_agent, FALSE) AS is_agent,
-			COALESCE(NULLIF(TRIM(COALESCE(owner.first_name, '') || ' ' || COALESCE(owner.last_name, '')), ''), owner.username, '') AS agent_owner_name
+			COALESCE(NULLIF(TRIM(COALESCE(owner.first_name, '') || ' ' || COALESCE(owner.last_name, '')), ''), owner.username, '') AS agent_owner_name,
+			CASE WHEN d.actor_portal_customer_id IS NOT NULL THEN 'portal_customer' ELSE 'user' END AS actor_kind,
+			d.actor_portal_customer_id,
+			COALESCE(NULLIF(TRIM(pc.name), ''), pc.email, '') AS portal_customer_name
 		FROM approval_decisions d
 		JOIN approval_requests ar ON ar.id = d.approval_request_id
 		LEFT JOIN users u ON u.id = d.actor_user_id
 		LEFT JOIN users owner ON owner.id = u.agent_owner_user_id
+		LEFT JOIN portal_customers pc ON d.actor_portal_customer_id = pc.id
 		WHERE ar.item_id = ?
 		ORDER BY changed_at DESC
 	`
@@ -1764,8 +1936,18 @@ func (r *ItemRepository) GetHistoryWithApprovals(itemID int, includeAgentOwner b
 	history := []models.ItemHistory{}
 	for rows.Next() {
 		var entry models.ItemHistory
-		if err := rows.Scan(&entry.ID, &entry.ItemID, &entry.UserID, &entry.ChangedAt, &entry.FieldName, &entry.OldValue, &entry.NewValue, &entry.UserName, &entry.UserEmail, &entry.IsAgent, &entry.AgentOwnerName); err != nil {
+		var userID, portalCustomerID sql.NullInt64
+		var actorKind sql.NullString
+		if err := rows.Scan(&entry.ID, &entry.ItemID, &userID, &entry.ChangedAt, &entry.FieldName, &entry.OldValue, &entry.NewValue, &entry.UserName, &entry.UserEmail, &entry.IsAgent, &entry.AgentOwnerName, &actorKind, &portalCustomerID, &entry.PortalCustomerName); err != nil {
 			return nil, err
+		}
+		if userID.Valid {
+			entry.UserID = int(userID.Int64)
+		}
+		entry.ActorKind = actorKind.String
+		if portalCustomerID.Valid {
+			id := int(portalCustomerID.Int64)
+			entry.PortalCustomerID = &id
 		}
 		if !includeAgentOwner {
 			entry.AgentOwnerName = ""

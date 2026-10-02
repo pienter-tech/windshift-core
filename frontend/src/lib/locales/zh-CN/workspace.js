@@ -4,6 +4,9 @@ export default {
     subtitle: '管理您的工作区和项目',
     workspace: '工作区',
     template: '模板',
+    restricted: '受限',
+    visibility: '可见性',
+    open: '开放',
     workspaces_one: '{count} 个工作区',
     workspaces_other: '{count} 个工作区',
     createWorkspace: '创建工作区',
@@ -677,6 +680,9 @@ export default {
     noLogoSet: '未设置标志',
     uploadLogo: '上传标志',
     logoRecommendation: '建议：透明背景的 PNG 或 SVG。页眉中最大高度：40-50px。',
+    lightLogo: '浅色模式标志',
+    darkLogo: '深色模式标志',
+    darkLogoFallback: '在深色模式下显示。留空时使用浅色模式标志。',
   },
 
   issueSync: {

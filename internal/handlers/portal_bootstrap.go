@@ -56,7 +56,7 @@ func (h *PortalHandler) GetBootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	portal, err := h.loadPortalData(ctx, channel, config)
+	portal, err := h.loadPortalData(ctx, r, channel, config)
 	if errors.Is(err, repository.ErrNotFound) {
 		respondNotFound(w, r, "workspace")
 		return
@@ -81,7 +81,7 @@ func (h *PortalHandler) GetBootstrap(w http.ResponseWriter, r *http.Request) {
 	}()
 	go func() {
 		defer wait.Done()
-		assetReports, err := h.loadPortalAssetReports(channel, config, vc)
+		assetReports, err := h.loadPortalAssetReports(ctx, channel, config, vc)
 		if err != nil {
 			slog.Warn("portal bootstrap: asset reports unavailable", "channel_id", channel.ID, "error", err)
 			return

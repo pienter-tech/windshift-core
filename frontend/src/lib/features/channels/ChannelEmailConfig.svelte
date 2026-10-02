@@ -33,19 +33,32 @@
       imap_password: '',
       workspace_id: null,
       item_type_id: null,
+      connected_portal_id: null,
       mailbox: 'INBOX',
       mark_as_read: true,
       delete_after_process: false,
+      rate_limit_per_hour: null,
+      auto_append_open_tickets: false,
       enabled: false
     }),
     workspaces = [],
     itemTypes = [],
+    portals = [],
     loading = $bindable(false),
     onLoadItemTypes = () => {},
     onSaveBeforeOAuth = async () => {},
     onOAuthStartFailed = async () => {},
     onToast = () => {}
   } = $props();
+
+  // A missing key would crash the select's bind:value (undefined + fallback);
+  // normalize once at init so older callers without the field keep working.
+  if (formData.connected_portal_id === undefined) {
+    formData.connected_portal_id = null;
+  }
+  if (formData.auto_append_open_tickets === undefined) {
+    formData.auto_append_open_tickets = false;
+  }
 
   let oauthIdentityChanged = $derived(
     formData.oauth_connected && (
@@ -56,6 +69,23 @@
     )
   );
   let oauthIsConnected = $derived(formData.oauth_connected && !oauthIdentityChanged);
+
+  // Keep a configured-but-unlisted portal selectable so a save never silently
+  // clears the link (e.g. the manager cannot list the portal channel).
+  let portalOptions = $derived.by(() => {
+    const options = [{ value: null, label: t('channel.connectedPortalNotConnected') }];
+    for (const portal of portals) {
+      options.push({ value: portal.id, label: portal.name });
+    }
+    const known = portals.some((portal) => portal.id === formData.connected_portal_id);
+    if (formData.connected_portal_id != null && !known) {
+      options.push({
+        value: formData.connected_portal_id,
+        label: t('channel.connectedPortalUnknown', { id: formData.connected_portal_id })
+      });
+    }
+    return options;
+  });
 
   async function startOAuthFlow() {
     if (!$isSystemAdmin || !channelId) return;
@@ -111,6 +141,9 @@
     if (!formData.item_type_id) {
       return { valid: false, message: t('channel.itemTypeRequired') };
     }
+    if (formData.rate_limit_per_hour !== null && formData.rate_limit_per_hour !== '' && Number(formData.rate_limit_per_hour) < 0) {
+      return { valid: false, message: t('channel.rateLimitInvalid') };
+    }
 
     return { valid: true };
   }
@@ -120,9 +153,18 @@
       email_auth_method: formData.auth_method,
       email_workspace_id: formData.workspace_id,
       email_item_type_id: formData.item_type_id,
+      // null explicitly disconnects the portal; the config merge overwrites
+      // the stored key with null rather than leaving a stale link behind.
+      email_connected_portal_id: formData.connected_portal_id ?? null,
       email_mailbox: formData.mailbox,
       email_mark_as_read: formData.mark_as_read,
-      email_delete_after_process: formData.delete_after_process
+      email_delete_after_process: formData.delete_after_process,
+      // null = default cap, 0 = unlimited, n = n per sender per hour
+      email_rate_limit_per_hour:
+        formData.rate_limit_per_hour === null || formData.rate_limit_per_hour === ''
+          ? null
+          : Number(formData.rate_limit_per_hour),
+      email_auto_append_open_tickets: formData.auto_append_open_tickets
     };
 
     if (formData.auth_method === 'oauth') {
@@ -393,6 +435,22 @@
       </div>
     </div>
 
+    <!-- Customer Portal -->
+    <div class="pt-4 border-t space-y-4" style="border-color: var(--ds-border);">
+      <h5 class="text-sm font-medium" style="color: var(--ds-text);">{t('channel.connectedPortalSection')}</h5>
+
+      <div>
+        <SelectField
+          label={t('channel.connectedPortal')}
+          labelColor="default"
+          id="email-connected-portal"
+          options={portalOptions}
+          bind:value={formData.connected_portal_id}
+        />
+        <DescriptionText>{t('channel.connectedPortalHelp')}</DescriptionText>
+      </div>
+    </div>
+
     <!-- Processing Options -->
     <div class="pt-4 border-t space-y-4" style="border-color: var(--ds-border);">
       <h5 class="text-sm font-medium" style="color: var(--ds-text);">{t('channel.processingOptions')}</h5>
@@ -405,6 +463,28 @@
           bind:value={formData.mailbox}
         />
         <DescriptionText>{t('channel.mailboxHelp')}</DescriptionText>
+      </div>
+
+      <div>
+        <TextField
+          label={t('channel.rateLimitPerHour')}
+          labelColor="default"
+          type="number"
+          min="0"
+          placeholder="100"
+          bind:value={formData.rate_limit_per_hour}
+        />
+        <DescriptionText>{t('channel.rateLimitHelp')}</DescriptionText>
+      </div>
+
+      <div class="p-3 rounded" style="background-color: var(--ds-surface-raised);">
+        <Checkbox
+          bind:checked={formData.auto_append_open_tickets}
+          label={t('channel.autoAppendOpenTickets')}
+          hint={t('channel.autoAppendOpenTicketsHelp')}
+          size="small"
+          dataTestid="email-auto-append-open-tickets"
+        />
       </div>
 
       <div class="space-y-3">

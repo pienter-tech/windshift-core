@@ -14,6 +14,7 @@
   import Lozenge from '../components/Lozenge.svelte';
   import SearchInput from '../components/SearchInput.svelte';
   import { toHotkeyString } from '../utils/keyboardShortcuts.js';
+  import { transitionFromLabel } from './transitionLabels.js';
 
   let conditionSets = $state([]);
   let loading = $state(true);
@@ -155,7 +156,7 @@
                 <div class="flex items-center gap-1.5 flex-wrap">
                   <span style="color: var(--ds-text-subtle);">{t('conditionSets.transitions')}:</span>
                   {#each getGatedTransitions(cs) as gt (gt.transition_id)}
-                    <Lozenge color="blue" text={`${gt.from_status_name || 'Initial'} → ${gt.to_status_name}`} />
+                    <Lozenge color="blue" text={`${transitionFromLabel(gt)} → ${gt.to_status_name}`} />
                   {/each}
                 </div>
               {/if}

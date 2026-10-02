@@ -203,6 +203,51 @@ func (r *ActionRepository) ListByWorkspace(workspaceID int) ([]*models.Action, e
 	return actions, nil
 }
 
+// ListEnabledByTrigger returns every enabled action across all workspaces
+// with the given trigger type, with nodes and edges loaded. Used by
+// background sweepers that evaluate time-based triggers (WI-1132).
+func (r *ActionRepository) ListEnabledByTrigger(triggerType models.ActionTriggerType) ([]*models.Action, error) {
+	rows, err := r.db.Query(`
+		SELECT a.id, a.workspace_id, a.name, a.description, a.is_enabled,
+		       a.trigger_type, a.trigger_config, a.created_by, a.actor_user_id,
+		       a.created_at, a.updated_at
+		FROM actions a
+		WHERE a.is_enabled = true AND a.trigger_type = ?
+		ORDER BY a.id ASC
+	`, triggerType)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query enabled actions by trigger: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var actions []*models.Action
+	for rows.Next() {
+		action := &models.Action{}
+		var description, triggerConfig sql.NullString
+		var createdBy, actorUserID sql.NullInt64
+		if err := rows.Scan(
+			&action.ID, &action.WorkspaceID, &action.Name, &description, &action.IsEnabled,
+			&action.TriggerType, &triggerConfig, &createdBy, &actorUserID,
+			&action.CreatedAt, &action.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan action: %w", err)
+		}
+		applyActionNulls(action, description, triggerConfig, createdBy, actorUserID)
+		nodes, err := r.GetNodesByActionID(action.ID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get action nodes: %w", err)
+		}
+		action.Nodes = nodes
+		edges, err := r.GetEdgesByActionID(action.ID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get action edges: %w", err)
+		}
+		action.Edges = edges
+		actions = append(actions, action)
+	}
+	return actions, rows.Err()
+}
+
 // ListEnabledByWorkspace lists all enabled actions for a workspace
 func (r *ActionRepository) ListEnabledByWorkspace(workspaceID int) ([]*models.Action, error) {
 	rows, err := r.db.Query(`

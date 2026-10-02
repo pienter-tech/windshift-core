@@ -37,6 +37,7 @@ import { assetReports, channelCategories, channels, requestTypes } from './chann
 import { collectionCategories, collections } from './collections.js';
 import { conditionSets } from './conditionSets.js';
 import {
+  cannedResponses,
   configurationSets,
   customFields,
   hierarchyLevels,
@@ -51,6 +52,7 @@ import { del, fetchAPI, get, post, put } from './core.js';
 import { emailTemplates } from './email-templates.js';
 import { forms } from './forms.js';
 import { hub } from './hub.js';
+import { itemIncidents } from './incidents.js';
 import {
   integrationProviders,
   itemIntegrationLinks,
@@ -92,6 +94,7 @@ import {
 import { oauth } from './oauth.js';
 import { objectTranslations } from './objectTranslations.js';
 import { onCallSchedules } from './oncall.js';
+import { packs } from './packs.js';
 import { pageLabels, pages } from './pages.js';
 import { groups, permissions } from './permissions.js';
 import {
@@ -105,6 +108,7 @@ import {
 import { queryLanguage } from './queryLanguage.js';
 import { recurrence } from './recurrence.js';
 import { issueSync, itemSCMLinks, scmProviders, userSCM, workspaceSCM } from './scm.js';
+import { sla } from './sla.js';
 import { sso } from './sso.js';
 import { teams } from './teams.js';
 import { tests } from './tests/index.js';
@@ -158,8 +162,10 @@ export const api = {
   customFields,
   workspaces,
   workspaceRoles,
+  packs,
   screens,
   items,
+  itemIncidents,
   configurationSets,
 
   // Users (standalone functions)
@@ -183,6 +189,9 @@ export const api = {
 
   // Teams (cross-workspace orgs with on-call)
   teams,
+
+  // SLA configuration, reporting, and item state
+  sla,
 
   // On-call schedules (per-team)
   onCallSchedules,
@@ -303,6 +312,9 @@ export const api = {
   // Item Types
   itemTypes,
   itemTemplates,
+
+  // Canned responses (WI-1138)
+  cannedResponses,
 
   // Priorities
   priorities,

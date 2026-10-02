@@ -9,7 +9,9 @@
     'status_transition': t('actions.trigger.statusTransition'),
     'item_created': t('actions.trigger.itemCreated'),
     'item_updated': t('actions.trigger.itemUpdated'),
-    'item_linked': t('actions.trigger.itemLinked')
+    'item_linked': t('actions.trigger.itemLinked'),
+    'sla_breached': t('actions.trigger.slaBreached'),
+    'sla_warning': t('actions.trigger.slaWarning')
   };
 
   // Reverse mapping from backend name to display label

@@ -3,7 +3,7 @@
   import StateDisplay from '../../components/StateDisplay.svelte';
   import { useEventListener } from 'runed';
   import { t } from '../../stores/i18n.svelte.js';
-  import { IconLifebuoy, IconPlus, IconTrash, IconSettings, IconSearch, IconTag, IconPower, IconFileText } from '@tabler/icons-svelte-runes';
+  import { IconLifebuoy, IconPlus, IconTrash, IconSettings, IconSearch, IconTag, IconPower, IconFileText, IconMail } from '@tabler/icons-svelte-runes';
   import { api } from '../../api.js';
   import { currentRoute, navigate } from '../../router.js';
   import { channelCategoriesStore } from '../../stores/channelCategories.js';
@@ -98,6 +98,7 @@
   let selectedChannel = $state(null);
   let showEmailLog = $state(false);
   let emailLogChannel = $state(null);
+  let emailLogInitialTab = $state('inbound');
   let creating = $state(false);
 
 
@@ -131,8 +132,9 @@
     }
   }
 
-  function openEmailLog(channel) {
+  function openEmailLog(channel, initialTab = 'inbound') {
     emailLogChannel = channel;
+    emailLogInitialTab = initialTab;
     showEmailLog = true;
   }
 
@@ -153,6 +155,14 @@
         title: t('channel.processingLog', 'Processing Log'),
         icon: IconFileText,
         onClick: () => openEmailLog(channel)
+      });
+    }
+    if (channel.type === 'email' || channel.type === 'portal') {
+      items.push({
+        title: t('channel.customerReplies', 'Customer replies'),
+        icon: IconMail,
+        testid: `channel-action-customer-replies`,
+        onClick: () => openEmailLog(channel, 'outbox')
       });
     }
 
@@ -751,6 +761,7 @@
 <EmailLogModal
   isOpen={showEmailLog}
   channel={emailLogChannel}
+  initialTab={emailLogInitialTab}
   onClose={() => { showEmailLog = false; emailLogChannel = null; }}
 />
 

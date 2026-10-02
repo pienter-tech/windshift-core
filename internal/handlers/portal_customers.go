@@ -57,6 +57,8 @@ const portalCustomerBaseQuery = `
 		pc.id, pc.name, pc.email, pc.phone,
 		pc.user_id, pc.customer_organisation_id, pc.is_primary,
 		pc.custom_field_values,
+		pc.created_via,
+		pc.deactivated_at,
 		pc.created_at, pc.updated_at,
 		u.first_name AS user_first_name,
 		u.last_name AS user_last_name,
@@ -93,11 +95,15 @@ func scanPortalCustomer(scanner interface{ Scan(...any) error }) (models.PortalC
 	var userFirstName, userLastName, userEmail, orgName sql.NullString
 	var customFieldValuesStr sql.NullString
 	var createdAtStr, updatedAtStr string
+	var deactivatedAtStr sql.NullString
+	var createdViaStr string
 
 	err := scanner.Scan(
 		&c.ID, &c.Name, &c.Email, &phone,
 		&c.UserID, &c.CustomerOrganisationID, &c.IsPrimary,
 		&customFieldValuesStr,
+		&createdViaStr,
+		&deactivatedAtStr,
 		&createdAtStr, &updatedAtStr,
 		&userFirstName, &userLastName, &userEmail, &orgName,
 	)
@@ -111,6 +117,11 @@ func scanPortalCustomer(scanner interface{ Scan(...any) error }) (models.PortalC
 	}
 	if updatedAt, err := parseTimestamp(updatedAtStr); err == nil {
 		c.UpdatedAt = updatedAt
+	}
+	if deactivatedAtStr.Valid && deactivatedAtStr.String != "" {
+		if deactivatedAt, err := parseTimestamp(deactivatedAtStr.String); err == nil && !deactivatedAt.IsZero() {
+			c.DeactivatedAt = &deactivatedAt
+		}
 	}
 
 	// Populate nullable fields
@@ -127,6 +138,8 @@ func scanPortalCustomer(scanner interface{ Scan(...any) error }) (models.PortalC
 			return c, &customFieldParseError{err: err}
 		}
 	}
+
+	c.CreatedVia = createdViaStr
 
 	return c, nil
 }
@@ -434,9 +447,9 @@ func (h *PortalCustomersHandler) CreatePortalCustomer(w http.ResponseWriter, r *
 	txErr := database.WithTx(h.db, func(tx database.Tx) error {
 		//nolint:misspell // database column uses British spelling
 		err := tx.QueryRow(`
-			INSERT INTO portal_customers (name, email, phone, customer_organisation_id, is_primary, custom_field_values, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING id
-		`, input.Name, input.Email, input.Phone, input.CustomerOrganisationID, input.IsPrimary, input.CustomFieldValuesJSON).Scan(&customerID)
+			INSERT INTO portal_customers (name, email, phone, customer_organisation_id, is_primary, custom_field_values, created_via, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING id
+		`, input.Name, input.Email, input.Phone, input.CustomerOrganisationID, input.IsPrimary, input.CustomFieldValuesJSON, models.CustomerCreatedViaAgent).Scan(&customerID)
 		if err != nil {
 			return err
 		}
@@ -503,8 +516,9 @@ func (h *PortalCustomersHandler) UpdatePortalCustomerOrganisation(w http.Respons
 	}
 
 	//nolint:misspell // British spelling used in database (customer_organisation_id)
-	// Update the customer organisation assignment
-	query := `UPDATE portal_customers SET customer_organisation_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+	// Update the customer organisation assignment. Erased tombstones are
+	// immutable: a re-identification write must not resurrect them.
+	query := `UPDATE portal_customers SET customer_organisation_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND erased_at IS NULL`
 	if !h.execCustomerWrite(w, r, query, requestData.CustomerOrganisationID, customerID) {
 		return
 	}
@@ -538,7 +552,7 @@ func (h *PortalCustomersHandler) UpdatePortalCustomer(w http.ResponseWriter, r *
 		query := `
 			UPDATE portal_customers
 			SET name = ?, email = ?, phone = ?, customer_organisation_id = ?, is_primary = ?, custom_field_values = ?, updated_at = CURRENT_TIMESTAMP
-			WHERE id = ?
+			WHERE id = ? AND erased_at IS NULL
 		`
 		result, err := tx.Exec(query, input.Name, input.Email, input.Phone, input.CustomerOrganisationID, input.IsPrimary, input.CustomFieldValuesJSON, customerID)
 		if err != nil {
@@ -610,25 +624,291 @@ func (h *PortalCustomersHandler) execCustomerWrite(w http.ResponseWriter, r *htt
 	return true
 }
 
-// DeletePortalCustomer deletes a portal customer
+// PortalCustomerErasureRequest is the DSAR intake payload for
+// POST /portal-customers/{id}/erase.
+type PortalCustomerErasureRequest struct {
+	// RequestedBy records where the erasure request came from — the data
+	// subject's email or an intake-channel reference. Required.
+	RequestedBy string `json:"requested_by"`
+	// RequestedAt is when the controller received the request; defaults to now.
+	RequestedAt *time.Time `json:"requested_at,omitempty"`
+	// Notes optionally records the controller's decision context.
+	Notes string `json:"notes,omitempty"`
+}
+
+// ErasePortalCustomer executes an irreversible Article 17 erasure (DSAR).
+// The customer row is pseudonymized, never deleted, so customer-authored
+// comments, items, item history, attachments, and approval decisions stay
+// interpretable. Distinct from the historical hard delete: erasure is a
+// documented data-subject right execution, not an administrative cleanup.
+func (h *PortalCustomersHandler) ErasePortalCustomer(w http.ResponseWriter, r *http.Request) {
+	currentUser, ok := RequireAuth(w, r)
+	if !ok {
+		return
+	}
+
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+
+	body, ok := decodeJSON[PortalCustomerErasureRequest](w, r)
+	if !ok {
+		return
+	}
+
+	input := services.CustomerErasureInput{RequestedBy: body.RequestedBy, Notes: body.Notes}
+	if body.RequestedAt != nil {
+		input.RequestedAt = *body.RequestedAt
+	}
+	h.eraseCustomer(w, r, currentUser, id, input)
+}
+
+// DeletePortalCustomer is retained as a DELETE alias for erasure so existing
+// admin UI flows keep working. The controller decision is the authenticated
+// customer manager's action; the intake reference is derived from the actor
+// because the legacy endpoint carries no DSAR body.
 func (h *PortalCustomersHandler) DeletePortalCustomer(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.Atoi(idStr)
+	currentUser, ok := RequireAuth(w, r)
+	if !ok {
+		return
+	}
+
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+
+	intake := fmt.Sprintf("admin:%s via customer management", currentUser.Username)
+	h.eraseCustomer(w, r, currentUser, id, services.CustomerErasureInput{RequestedBy: intake})
+}
+
+// ExportPortalCustomer serves the Article 15/20 data export for one customer
+// as a JSON download. The payload structure is pinned by the service's schema
+// version so repeated DSAR exports stay comparable.
+func (h *PortalCustomersHandler) ExportPortalCustomer(w http.ResponseWriter, r *http.Request) {
+	currentUser, ok := RequireAuth(w, r)
+	if !ok {
+		return
+	}
+
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+
+	actor := services.NewAuditActorFromRequest(r, currentUser, nil, "")
+	export, err := services.ExportCustomerData(h.db, id, actor)
 	if err != nil {
-		respondInvalidID(w, r, "id")
+		if se, ok := err.(*services.ServiceError); ok {
+			handleServiceError(w, r, se)
+			return
+		}
+		slog.Error("failed to export portal customer data", slog.String("component", "portal"), slog.Int("customer_id", id), slog.Any("error", err))
+		respondInternalError(w, r, err)
 		return
 	}
 
-	// Delete the portal customer
-	if !h.execCustomerWrite(w, r, `DELETE FROM portal_customers WHERE id = ?`, id) {
+	payload, err := json.Marshal(export)
+	if err != nil {
+		respondInternalError(w, r, err)
 		return
 	}
 
-	if user := utils.GetCurrentUser(r); user != nil {
-		logAudit(h.db, r, user, logger.ActionPortalCustomerDelete, logger.ResourcePortalCustomer, &id, "")
+	filename := fmt.Sprintf("customer-data-export-%d.json", id)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(payload)
+}
+
+// DeactivatePortalCustomer cuts portal access for a customer without
+// exercising the erasure right: it stamps deactivated_at, invalidates every
+// live session, and records the decision with the acting admin. All portal
+// auth paths (session validation, magic-link issuance/redemption, passkey
+// login) refuse deactivated customers.
+func (h *PortalCustomersHandler) DeactivatePortalCustomer(w http.ResponseWriter, r *http.Request) {
+	currentUser, ok := RequireAuth(w, r)
+	if !ok {
+		return
 	}
 
-	w.WriteHeader(http.StatusNoContent)
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+
+	var name, email string
+	var deactivatedAt, erasedAt sql.NullString
+	if err := h.db.QueryRow(`SELECT name, email, deactivated_at, erased_at FROM portal_customers WHERE id = ?`, id).
+		Scan(&name, &email, &deactivatedAt, &erasedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondNotFound(w, r, "customer")
+			return
+		}
+		respondInternalError(w, r, err)
+		return
+	}
+	if deactivatedAt.Valid && deactivatedAt.String != "" {
+		respondConflict(w, r, "Portal customer is already deactivated")
+		return
+	}
+	if erasedAt.Valid && erasedAt.String != "" {
+		respondConflict(w, r, "Portal customer has been erased and cannot be deactivated")
+		return
+	}
+
+	deactivated := time.Now()
+	if _, err := h.db.ExecWrite(`UPDATE portal_customers SET deactivated_at = ?, updated_at = ? WHERE id = ?`, deactivated, deactivated, id); err != nil {
+		respondInternalError(w, r, err)
+		return
+	}
+
+	// Invalidate every live session immediately; validation would refuse
+	// them anyway, but deletion removes the stored ip/user_agent access
+	// surface right away.
+	if _, err := h.db.ExecWrite(`DELETE FROM portal_customer_sessions WHERE portal_customer_id = ?`, id); err != nil {
+		slog.Error("failed to invalidate portal sessions on deactivation", slog.String("component", "portal"), slog.Int("customer_id", id), slog.Any("error", err))
+		respondInternalError(w, r, err)
+		return
+	}
+
+	if currentUser != nil {
+		logAuditWithDetails(h.db, r, currentUser, logger.ActionPortalCustomerDeactivate, logger.ResourcePortalCustomer, &id, name, map[string]any{
+			"email": email,
+		})
+	}
+
+	c, err := h.loadPortalCustomerWithRoles(int64(id))
+	if err != nil {
+		respondInternalError(w, r, err)
+		return
+	}
+	respondJSONOK(w, c)
+}
+
+// ActivatePortalCustomer re-grants portal access to a deactivated customer.
+// Reactivation is an explicit admin decision, distinct from erasure — erased
+// customers are never reactivatable.
+func (h *PortalCustomersHandler) ActivatePortalCustomer(w http.ResponseWriter, r *http.Request) {
+	currentUser, ok := RequireAuth(w, r)
+	if !ok {
+		return
+	}
+
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+
+	var name, email string
+	var deactivatedAt, erasedAt sql.NullString
+	if err := h.db.QueryRow(`SELECT name, email, deactivated_at, erased_at FROM portal_customers WHERE id = ?`, id).
+		Scan(&name, &email, &deactivatedAt, &erasedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondNotFound(w, r, "customer")
+			return
+		}
+		respondInternalError(w, r, err)
+		return
+	}
+	if !deactivatedAt.Valid || deactivatedAt.String == "" {
+		respondValidationError(w, r, "Portal customer is not deactivated")
+		return
+	}
+	if erasedAt.Valid && erasedAt.String != "" {
+		respondConflict(w, r, "Portal customer has been erased and cannot be reactivated")
+		return
+	}
+
+	res, err := h.db.ExecWrite(`UPDATE portal_customers SET deactivated_at = NULL, updated_at = ? WHERE id = ? AND erased_at IS NULL`, time.Now(), id)
+	if err != nil {
+		respondInternalError(w, r, err)
+		return
+	}
+	if affected, _ := res.RowsAffected(); affected == 0 {
+		respondConflict(w, r, "Portal customer has been erased and cannot be reactivated")
+		return
+	}
+
+	if currentUser != nil {
+		logAuditWithDetails(h.db, r, currentUser, logger.ActionPortalCustomerActivate, logger.ResourcePortalCustomer, &id, name, map[string]any{
+			"email": email,
+		})
+	}
+
+	c, err := h.loadPortalCustomerWithRoles(int64(id))
+	if err != nil {
+		respondInternalError(w, r, err)
+		return
+	}
+	respondJSONOK(w, c)
+}
+
+// PortalCustomerBulkCleanupRequest selects the stale auto-created customers
+// a cleanup run targets.
+type PortalCustomerBulkCleanupRequest struct {
+	// CreatedVia optionally filters by provenance (agent, email-intake,
+	// magic-link, ticket-import, unknown). Empty = any.
+	CreatedVia string `json:"created_via,omitempty"`
+	// OlderThanDays optionally restricts to customers created more than this
+	// many days ago. 0 = no age filter.
+	OlderThanDays int `json:"older_than_days,omitempty"`
+}
+
+// BulkCleanupPortalCustomers erases stale auto-created customers (spam and
+// one-off email senders that never became tickets) through the standard
+// erasure flow, one DSAR evidence row each, plus a single batch audit event.
+func (h *PortalCustomersHandler) BulkCleanupPortalCustomers(w http.ResponseWriter, r *http.Request) {
+	currentUser, ok := RequireAuth(w, r)
+	if !ok {
+		return
+	}
+
+	body, ok := decodeJSON[PortalCustomerBulkCleanupRequest](w, r)
+	if !ok {
+		return
+	}
+
+	actor := services.NewAuditActorFromRequest(r, currentUser, nil, "")
+	result, err := services.CleanupAutoCreatedCustomers(h.db, actor, services.CustomerBulkCleanupInput{
+		CreatedVia:    body.CreatedVia,
+		OlderThanDays: body.OlderThanDays,
+	})
+	if err != nil {
+		if se, ok := err.(*services.ServiceError); ok {
+			handleServiceError(w, r, se)
+			return
+		}
+		slog.Error("failed to run portal customer bulk cleanup", slog.String("component", "portal"), slog.Any("error", err))
+		respondInternalError(w, r, err)
+		return
+	}
+
+	respondJSONOK(w, result)
+}
+
+// eraseCustomer runs the shared erasure execution and writes the response:
+// 201 with the DSAR evidence on success, 409 on repeat erasure, 404 for an
+// unknown customer, and mapped service errors otherwise.
+func (h *PortalCustomersHandler) eraseCustomer(w http.ResponseWriter, r *http.Request, currentUser *models.User, customerID int, input services.CustomerErasureInput) {
+	actor := services.NewAuditActorFromRequest(r, currentUser, nil, "")
+	evidence, err := services.EraseCustomer(h.db, customerID, actor, input)
+	if err != nil {
+		if errors.Is(err, services.ErrCustomerAlreadyErased) {
+			respondConflict(w, r, "Portal customer has already been erased")
+			return
+		}
+		if se, ok := err.(*services.ServiceError); ok {
+			handleServiceError(w, r, se)
+			return
+		}
+		slog.Error("failed to erase portal customer", slog.String("component", "portal"), slog.Int("customer_id", customerID), slog.Any("error", err))
+		respondInternalError(w, r, err)
+		return
+	}
+
+	respondJSONCreated(w, evidence)
 }
 
 // GetOrganisationContacts returns all portal customers (contacts) for a given customer organisation

@@ -1995,6 +1995,63 @@
         ]
       }
     },
+    "/asset-sets/{asset_set_id}/portal-access": {
+      "get": {
+        "description": "Get asset set portal access. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "asset_set_id",
+            "In": "path",
+            "Description": "The asset set identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Get asset set portal access",
+        "tags": [
+          "Asset management"
+        ]
+      },
+      "put": {
+        "description": "Set asset set portal access. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "asset_set_id",
+            "In": "path",
+            "Description": "The asset set identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Set asset set portal access",
+        "tags": [
+          "Asset management"
+        ]
+      }
+    },
     "/asset-sets/{asset_set_id}/roles": {
       "get": {
         "description": "List asset set roles. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
@@ -3239,6 +3296,135 @@
         ]
       }
     },
+    "/collections/{collection_id}/queues": {
+      "get": {
+        "description": "List collection support queues. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "collection_id",
+            "In": "path",
+            "Description": "The collection identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "List collection support queues",
+        "tags": [
+          "Work items"
+        ]
+      },
+      "post": {
+        "description": "Create a collection support queue. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "collection_id",
+            "In": "path",
+            "Description": "The collection identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Create a collection support queue",
+        "tags": [
+          "Work items"
+        ]
+      }
+    },
+    "/collections/{collection_id}/queues/builtins/{builtin_key}": {
+      "put": {
+        "description": "Hide or restore a built-in collection queue. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "collection_id",
+            "In": "path",
+            "Description": "The collection identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "builtin_key",
+            "In": "path",
+            "Description": "The stable built-in queue key.",
+            "Required": true,
+            "Schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Hide or restore a built-in collection queue",
+        "tags": [
+          "Work items"
+        ]
+      }
+    },
+    "/collections/{collection_id}/queues/order": {
+      "put": {
+        "description": "Reorder collection support queues. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "collection_id",
+            "In": "path",
+            "Description": "The collection identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Reorder collection support queues",
+        "tags": [
+          "Work items"
+        ]
+      }
+    },
     "/collections/{collection_id}/sharing": {
       "patch": {
         "description": "Update collection sharing. The operation uses JSON Merge Patch: omitted fields remain unchanged and documented nullable fields accept null. Unknown fields are rejected.",
@@ -3844,6 +4030,27 @@
         ]
       }
     },
+    "/configuration-sets/import": {
+      "post": {
+        "description": "Import a configuration set template. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "409": {},
+          "413": {},
+          "415": {},
+          "422": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Import a configuration set template",
+        "tags": [
+          "Workspace configuration"
+        ]
+      }
+    },
     "/configuration-sets/{configuration_set_id}": {
       "delete": {
         "description": "Delete configuration set. The server verifies resource ownership and deletion preconditions before removing the resource.",
@@ -3893,6 +4100,68 @@
           "500": {}
         },
         "summary": "Get configuration set",
+        "tags": [
+          "Workspace configuration"
+        ]
+      }
+    },
+    "/configuration-sets/{configuration_set_id}/conformance/check": {
+      "post": {
+        "description": "Check configuration set conformance. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "configuration_set_id",
+            "In": "path",
+            "Description": "The configuration set identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Check configuration set conformance",
+        "tags": [
+          "Workspace configuration"
+        ]
+      }
+    },
+    "/configuration-sets/{configuration_set_id}/conformance/repair": {
+      "post": {
+        "description": "Repair configuration set conformance. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "configuration_set_id",
+            "In": "path",
+            "Description": "The configuration set identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Repair configuration set conformance",
         "tags": [
           "Workspace configuration"
         ]
@@ -6082,6 +6351,66 @@
         ]
       }
     },
+    "/items/{item_id}/merge": {
+      "post": {
+        "description": "Merge duplicate items into canonical item. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "item_id",
+            "In": "path",
+            "Description": "The item identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "409": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Merge duplicate items into canonical item",
+        "tags": [
+          "Work items"
+        ]
+      }
+    },
+    "/items/{item_id}/merge-redirect": {
+      "get": {
+        "description": "Read the merge redirect target. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "item_id",
+            "In": "path",
+            "Description": "The item identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Read the merge redirect target",
+        "tags": [
+          "Work items"
+        ]
+      }
+    },
     "/items/{item_id}/move-workspace": {
       "post": {
         "description": "Move item workspace. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
@@ -6450,6 +6779,66 @@
           "500": {}
         },
         "summary": "Reparent item children",
+        "tags": [
+          "Work items"
+        ]
+      }
+    },
+    "/items/{item_id}/sla": {
+      "get": {
+        "description": "Get item SLA state. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "item_id",
+            "In": "path",
+            "Description": "The item identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Get item SLA state",
+        "tags": [
+          "Work items"
+        ]
+      }
+    },
+    "/items/{item_id}/split": {
+      "post": {
+        "description": "Split item into subticket. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "item_id",
+            "In": "path",
+            "Description": "The item identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "409": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Split item into subticket",
         "tags": [
           "Work items"
         ]
@@ -7730,6 +8119,148 @@
         ]
       }
     },
+    "/packs": {
+      "get": {
+        "description": "List built-in framework packs. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [],
+        "responses": {
+          "401": {},
+          "403": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "List built-in framework packs",
+        "tags": [
+          "Workspace configuration"
+        ]
+      }
+    },
+    "/packs/apply": {
+      "post": {
+        "description": "Apply a framework pack. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Apply a framework pack",
+        "tags": [
+          "Workspace configuration"
+        ]
+      }
+    },
+    "/packs/verify": {
+      "post": {
+        "description": "Verify a framework pack. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Verify a framework pack",
+        "tags": [
+          "Workspace configuration"
+        ]
+      }
+    },
+    "/packs/{name}/apply": {
+      "post": {
+        "description": "Apply a built-in framework pack. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "name",
+            "In": "path",
+            "Description": "Built-in pack name.",
+            "Required": true,
+            "Schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Apply a built-in framework pack",
+        "tags": [
+          "Workspace configuration"
+        ]
+      }
+    },
+    "/packs/{name}/verify": {
+      "post": {
+        "description": "Verify a built-in framework pack. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "name",
+            "In": "path",
+            "Description": "Built-in pack name.",
+            "Required": true,
+            "Schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Verify a built-in framework pack",
+        "tags": [
+          "Workspace configuration"
+        ]
+      }
+    },
+    "/pages/titles": {
+      "get": {
+        "description": "List page titles across workspaces. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "workspace_ids",
+            "In": "query",
+            "Description": "Comma-separated workspace IDs to include.",
+            "Required": false,
+            "Schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "List page titles across workspaces",
+        "tags": [
+          "Knowledge"
+        ]
+      }
+    },
     "/pages/{page_id}/links": {
       "get": {
         "description": "List page links. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
@@ -7959,6 +8490,63 @@
           "500": {}
         },
         "summary": "Search query language completion values",
+        "tags": [
+          "Work items"
+        ]
+      }
+    },
+    "/queues/{queue_id}": {
+      "delete": {
+        "description": "Delete a support queue. The server verifies resource ownership and deletion preconditions before removing the resource.",
+        "parameters": [
+          {
+            "Name": "queue_id",
+            "In": "path",
+            "Description": "The queue identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Delete a support queue",
+        "tags": [
+          "Work items"
+        ]
+      },
+      "patch": {
+        "description": "Update a support queue. The operation uses JSON Merge Patch: omitted fields remain unchanged and documented nullable fields accept null. Unknown fields are rejected.",
+        "parameters": [
+          {
+            "Name": "queue_id",
+            "In": "path",
+            "Description": "The queue identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Update a support queue",
         "tags": [
           "Work items"
         ]
@@ -9130,6 +9718,69 @@
         ]
       }
     },
+    "/time/worklogs/aggregate": {
+      "get": {
+        "description": "Aggregate worklogs for reports. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "from",
+            "In": "query",
+            "Description": "Range start as YYYY-MM-DD in the reporting timezone.",
+            "Required": true,
+            "Schema": {
+              "type": "string"
+            }
+          },
+          {
+            "Name": "to",
+            "In": "query",
+            "Description": "Range end (exclusive) as YYYY-MM-DD in the reporting timezone.",
+            "Required": true,
+            "Schema": {
+              "type": "string"
+            }
+          },
+          {
+            "Name": "timezone",
+            "In": "query",
+            "Description": "IANA timezone used to bucket civil days; defaults to the caller's profile timezone.",
+            "Required": false,
+            "Schema": {
+              "type": "string"
+            }
+          },
+          {
+            "Name": "project_id",
+            "In": "query",
+            "Description": "Restrict the aggregation to one project.",
+            "Required": false,
+            "Schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "customer_id",
+            "In": "query",
+            "Description": "Restrict the aggregation to one customer.",
+            "Required": false,
+            "Schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Aggregate worklogs for reports",
+        "tags": [
+          "Time tracking"
+        ]
+      }
+    },
     "/time/worklogs/{worklog_id}": {
       "delete": {
         "description": "Delete worklog. The server verifies resource ownership and deletion preconditions before removing the resource.",
@@ -9782,6 +10433,15 @@
                 "created_at",
                 "-created_at"
               ],
+              "type": "string"
+            }
+          },
+          {
+            "Name": "search",
+            "In": "query",
+            "Description": "Case-insensitive substring match on workspace name, key, and description.",
+            "Required": false,
+            "Schema": {
               "type": "string"
             }
           }
@@ -10626,6 +11286,219 @@
         ]
       }
     },
+    "/workspaces/{workspace_id}/canned-responses": {
+      "get": {
+        "description": "List canned responses. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "List canned responses",
+        "tags": [
+          "Workspace configuration"
+        ]
+      },
+      "post": {
+        "description": "Create canned response. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "409": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Create canned response",
+        "tags": [
+          "Workspace configuration"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/canned-responses/{response_id}": {
+      "delete": {
+        "description": "Delete canned response. The server verifies resource ownership and deletion preconditions before removing the resource.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "response_id",
+            "In": "path",
+            "Description": "The canned response identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Delete canned response",
+        "tags": [
+          "Workspace configuration"
+        ]
+      },
+      "get": {
+        "description": "Get canned response. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "response_id",
+            "In": "path",
+            "Description": "The canned response identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Get canned response",
+        "tags": [
+          "Workspace configuration"
+        ]
+      },
+      "patch": {
+        "description": "Update canned response. The operation uses JSON Merge Patch: omitted fields remain unchanged and documented nullable fields accept null. Unknown fields are rejected.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "response_id",
+            "In": "path",
+            "Description": "The canned response identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "409": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Update canned response",
+        "tags": [
+          "Workspace configuration"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/canned-responses/{response_id}/preview": {
+      "post": {
+        "description": "Preview canned response. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "response_id",
+            "In": "path",
+            "Description": "The canned response identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Preview canned response",
+        "tags": [
+          "Workspace configuration"
+        ]
+      }
+    },
     "/workspaces/{workspace_id}/effective-config": {
       "get": {
         "description": "Resolve effective workspace configuration. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
@@ -10659,6 +11532,65 @@
           "500": {}
         },
         "summary": "Resolve effective workspace configuration",
+        "tags": [
+          "Workspace configuration"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/export": {
+      "get": {
+        "description": "Export a workspace bundle. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Export a workspace bundle",
+        "tags": [
+          "Workspace configuration"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/import": {
+      "post": {
+        "description": "Import a workspace bundle. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Import a workspace bundle",
         "tags": [
           "Workspace configuration"
         ]
@@ -10869,6 +11801,45 @@
         "summary": "List workspace item types",
         "tags": [
           "Workspace configuration"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/items/sla": {
+      "get": {
+        "description": "Get item SLA state in batch. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "ids",
+            "In": "query",
+            "Description": "Comma-separated item identifiers to read. At most 200 ids per request; ids outside the workspace are ignored.",
+            "Required": true,
+            "Schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Get item SLA state in batch",
+        "tags": [
+          "Work items"
         ]
       }
     },
@@ -12885,6 +13856,596 @@
         ]
       }
     },
+    "/workspaces/{workspace_id}/sla/available-calendars": {
+      "get": {
+        "description": "List available SLA calendars. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "List available SLA calendars",
+        "tags": [
+          "Workspace configuration"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/sla/calendars": {
+      "get": {
+        "description": "List SLA calendars. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "List SLA calendars",
+        "tags": [
+          "Workspace configuration"
+        ]
+      },
+      "post": {
+        "description": "Create SLA calendar. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Create SLA calendar",
+        "tags": [
+          "Workspace configuration"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/sla/calendars/{calendar_id}": {
+      "delete": {
+        "description": "Delete SLA calendar. The server verifies resource ownership and deletion preconditions before removing the resource.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "calendar_id",
+            "In": "path",
+            "Description": "The working calendar identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "409": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Delete SLA calendar",
+        "tags": [
+          "Workspace configuration"
+        ]
+      },
+      "put": {
+        "description": "Update SLA calendar. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "calendar_id",
+            "In": "path",
+            "Description": "The working calendar identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Update SLA calendar",
+        "tags": [
+          "Workspace configuration"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/sla/calendars/{calendar_id}/impact": {
+      "get": {
+        "description": "Preview SLA calendar edit impact. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "calendar_id",
+            "In": "path",
+            "Description": "The working calendar identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Preview SLA calendar edit impact",
+        "tags": [
+          "Workspace configuration"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/sla/coverage-preview": {
+      "get": {
+        "description": "Preview SLA coverage discrepancy. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "calendar_id",
+            "In": "query",
+            "Description": "The candidate scheduling calendar identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Preview SLA coverage discrepancy",
+        "tags": [
+          "Workspace configuration"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/sla/metrics": {
+      "get": {
+        "description": "List SLA metrics. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "List SLA metrics",
+        "tags": [
+          "Workspace configuration"
+        ]
+      },
+      "post": {
+        "description": "Create SLA metric. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Create SLA metric",
+        "tags": [
+          "Workspace configuration"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/sla/metrics/{metric_id}": {
+      "delete": {
+        "description": "Delete SLA metric. The server verifies resource ownership and deletion preconditions before removing the resource.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "metric_id",
+            "In": "path",
+            "Description": "The SLA metric identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Delete SLA metric",
+        "tags": [
+          "Workspace configuration"
+        ]
+      },
+      "get": {
+        "description": "Get SLA metric. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "metric_id",
+            "In": "path",
+            "Description": "The SLA metric identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Get SLA metric",
+        "tags": [
+          "Workspace configuration"
+        ]
+      },
+      "put": {
+        "description": "Update SLA metric. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "metric_id",
+            "In": "path",
+            "Description": "The SLA metric identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Update SLA metric",
+        "tags": [
+          "Workspace configuration"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/sla/report": {
+      "get": {
+        "description": "Get SLA compliance report. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "from",
+            "In": "query",
+            "Description": "Inclusive lower bound (RFC3339 or YYYY-MM-DD) on the cycle stop time.",
+            "Required": false,
+            "Schema": {
+              "type": "string"
+            }
+          },
+          {
+            "Name": "to",
+            "In": "query",
+            "Description": "Exclusive upper bound (RFC3339 or YYYY-MM-DD) on the cycle stop time.",
+            "Required": false,
+            "Schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Get SLA compliance report",
+        "tags": [
+          "Work items"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/sla/warning-thresholds": {
+      "get": {
+        "description": "List SLA warning thresholds. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "List SLA warning thresholds",
+        "tags": [
+          "Workspace configuration"
+        ]
+      },
+      "post": {
+        "description": "Create SLA warning threshold. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Create SLA warning threshold",
+        "tags": [
+          "Workspace configuration"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/sla/warning-thresholds/{threshold_id}": {
+      "delete": {
+        "description": "Delete SLA warning threshold. The server verifies resource ownership and deletion preconditions before removing the resource.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "threshold_id",
+            "In": "path",
+            "Description": "The warning threshold identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Delete SLA warning threshold",
+        "tags": [
+          "Workspace configuration"
+        ]
+      },
+      "put": {
+        "description": "Update SLA warning threshold. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "threshold_id",
+            "In": "path",
+            "Description": "The warning threshold identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Update SLA warning threshold",
+        "tags": [
+          "Workspace configuration"
+        ]
+      }
+    },
     "/workspaces/{workspace_id}/statuses": {
       "get": {
         "description": "List workspace statuses. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
@@ -12918,6 +14479,101 @@
           "500": {}
         },
         "summary": "List workspace statuses",
+        "tags": [
+          "Workspace configuration"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/team-bindings": {
+      "get": {
+        "description": "List team bindings. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "List team bindings",
+        "tags": [
+          "Workspace configuration"
+        ]
+      },
+      "post": {
+        "description": "Create team binding. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Create team binding",
+        "tags": [
+          "Workspace configuration"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/team-bindings/{binding_id}": {
+      "delete": {
+        "description": "Delete team binding. The server verifies resource ownership and deletion preconditions before removing the resource.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "binding_id",
+            "In": "path",
+            "Description": "The team-workspace binding identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Delete team binding",
         "tags": [
           "Workspace configuration"
         ]
@@ -15813,6 +17469,133 @@
         ]
       }
     },
+    "/workspaces/{workspace_id}/tickets/export": {
+      "get": {
+        "description": "Export tickets as CSV. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Export tickets as CSV",
+        "tags": [
+          "Work items"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/tickets/import/jobs/{job_id}": {
+      "get": {
+        "description": "Read ticket import progress. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "job_id",
+            "In": "path",
+            "Description": "The import job identifier.",
+            "Required": true,
+            "Schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Read ticket import progress",
+        "tags": [
+          "Work items"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/tickets/import/start": {
+      "post": {
+        "description": "Start a ticket CSV import. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Start a ticket CSV import",
+        "tags": [
+          "Work items"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/tickets/import/upload": {
+      "post": {
+        "description": "Stage a ticket CSV import upload. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Stage a ticket CSV import upload",
+        "tags": [
+          "Work items"
+        ]
+      }
+    },
     "/workspaces/{workspace_id}/time-projects": {
       "get": {
         "description": "List workspace time projects. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
@@ -16009,6 +17792,135 @@
           "500": {}
         },
         "summary": "Get item detail summary by key",
+        "tags": [
+          "Work items"
+        ]
+      }
+    },
+    "/workspaces/{workspace_key}/queues": {
+      "get": {
+        "description": "List support queue presets. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "workspace_key",
+            "In": "path",
+            "Description": "The workspace key.",
+            "Required": true,
+            "Schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "List support queue presets",
+        "tags": [
+          "Work items"
+        ]
+      },
+      "post": {
+        "description": "Create a support queue. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "workspace_key",
+            "In": "path",
+            "Description": "The workspace key.",
+            "Required": true,
+            "Schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Create a support queue",
+        "tags": [
+          "Work items"
+        ]
+      }
+    },
+    "/workspaces/{workspace_key}/queues/builtins/{builtin_key}": {
+      "put": {
+        "description": "Hide or restore a built-in queue. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "workspace_key",
+            "In": "path",
+            "Description": "The workspace key.",
+            "Required": true,
+            "Schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "Name": "builtin_key",
+            "In": "path",
+            "Description": "The stable built-in queue key.",
+            "Required": true,
+            "Schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Hide or restore a built-in queue",
+        "tags": [
+          "Work items"
+        ]
+      }
+    },
+    "/workspaces/{workspace_key}/queues/order": {
+      "put": {
+        "description": "Reorder support queues. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "workspace_key",
+            "In": "path",
+            "Description": "The workspace key.",
+            "Required": true,
+            "Schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Reorder support queues",
         "tags": [
           "Work items"
         ]

@@ -270,7 +270,7 @@ func (h *LabelHandler) SetForItem(w http.ResponseWriter, r *http.Request) {
 	if !h.DecodeBodyOrRespond(w, r, &req) {
 		return
 	}
-	labels, err := h.application.SetForItem(item.ID, req.LabelIDs)
+	labels, err := h.application.SetForItem(h.labelActor(r), item.ID, req.LabelIDs)
 	if err != nil {
 		h.respondAssignmentError(w, r, err)
 		return
@@ -304,7 +304,7 @@ func (h *LabelHandler) AddToItem(w http.ResponseWriter, r *http.Request) {
 	if !h.DecodeBodyOrRespond(w, r, &req) {
 		return
 	}
-	labels, err := h.application.AddToItem(item.ID, req.LabelID)
+	labels, err := h.application.AddToItem(h.labelActor(r), item.ID, req.LabelID)
 	if err != nil {
 		h.respondAssignmentError(w, r, err)
 		return
@@ -335,7 +335,7 @@ func (h *LabelHandler) RemoveFromItem(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.application.RemoveFromItem(item.ID, labelID); err != nil {
+	if err := h.application.RemoveFromItem(h.labelActor(r), item.ID, labelID); err != nil {
 		h.RespondInternalError(w, r)
 		return
 	}
@@ -434,4 +434,15 @@ func (h *LabelHandler) respondAssignmentError(w http.ResponseWriter, r *http.Req
 	default:
 		h.RespondInternalError(w, r)
 	}
+}
+
+// labelActor resolves the authenticated user for label change provenance.
+// The auth middleware has already rejected anonymous callers by the time the
+// route runs, so a missing context user records a system actor.
+func (h *LabelHandler) labelActor(r *http.Request) services.AuditActor {
+	actor := services.AuditActor{Source: "api"}
+	if user := middleware.GetUser(r.Context()); user != nil {
+		actor.UserID = user.ID
+	}
+	return actor
 }
