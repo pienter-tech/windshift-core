@@ -51,6 +51,25 @@ func scanWorkspaceBase(s interface{ Scan(dest ...any) error }) (models.Workspace
 	return ws, nil
 }
 
+// scanWorkspaceBase additionally reads the COUNT(*) OVER () window column.
+func scanWorkspaceBaseWithTotal(s interface{ Scan(dest ...any) error }, total *int) (models.Workspace, error) {
+	var ws models.Workspace
+	var icon, color, defaultView, displayMode, timeProjectName sql.NullString
+	err := s.Scan(&ws.ID, &ws.Name, &ws.Key, &ws.Description,
+		&ws.Active, &ws.IsTemplate, &ws.TimeProjectID, &ws.IsPersonal, &ws.OwnerID,
+		&icon, &color, &ws.AvatarURL, &defaultView, &displayMode,
+		&ws.InternalCommentsEnabled,
+		&ws.CreatedAt, &ws.UpdatedAt, &timeProjectName, total)
+	if err != nil {
+		return ws, err
+	}
+	ws.Icon = icon.String
+	ws.Color = color.String
+	ws.DefaultView = defaultView.String
+	ws.TimeProjectName = timeProjectName.String
+	return ws, nil
+}
+
 // IDKey is a (id, key) pair used by WorkspaceKeyCache to resolve URL path
 // parameters that may be either numeric IDs or human-readable workspace keys.
 type IDKey struct {
@@ -139,6 +158,37 @@ func (r *WorkspaceRepository) ListActiveIDs() ([]int, error) {
 			return nil, fmt.Errorf("scan workspace id: %w", err)
 		}
 		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// WorkspaceIDsWithViewerAssignments returns the set of workspace IDs where
+// the built-in Viewer role has at least one explicit user or group
+// assignment. That assignment is what flips a workspace into restricted
+// visibility: unassigned users lose the everyone-fallback permissions and the
+// workspace disappears from their directory.
+func (r *WorkspaceRepository) WorkspaceIDsWithViewerAssignments() (map[int]bool, error) {
+	rows, err := r.db.Query(`
+		SELECT DISTINCT uwr.workspace_id
+		FROM user_workspace_roles uwr
+		JOIN workspace_roles wr ON wr.id = uwr.role_id AND wr.builtin_key = ?
+		UNION
+		SELECT DISTINCT gwr.workspace_id
+		FROM group_workspace_roles gwr
+		JOIN workspace_roles wr ON wr.id = gwr.role_id AND wr.builtin_key = ?
+	`, models.RoleBuiltinViewer, models.RoleBuiltinViewer)
+	if err != nil {
+		return nil, fmt.Errorf("list workspace viewer assignments: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	ids := make(map[int]bool)
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan workspace viewer assignment: %w", err)
+		}
+		ids[id] = true
 	}
 	return ids, rows.Err()
 }
@@ -250,6 +300,125 @@ func (r *WorkspaceRepository) FindByIDBasic(id int) (*models.Workspace, error) {
 	return &workspace, nil
 }
 
+// WorkspaceCandidateStatus carries the (id, active) pair needed to decide
+// visibility without materializing full workspace rows.
+type WorkspaceCandidateStatus struct {
+	ID     int
+	Active bool
+}
+
+// ListCandidateStatuses returns (id, active) for the same candidate set as
+// FindAll(userID, false) — every non-personal workspace plus the user's own
+// personal workspace — so visibility can be filtered in memory and only the
+// visible IDs handed to a paged query.
+func (r *WorkspaceRepository) ListCandidateStatuses(userID int) ([]WorkspaceCandidateStatus, error) {
+	rows, err := r.db.Query(`
+		SELECT id, COALESCE(active, false)
+		FROM workspaces
+		WHERE is_personal = false OR is_personal IS NULL OR owner_id = ?
+	`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list workspace candidates: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var statuses []WorkspaceCandidateStatus
+	for rows.Next() {
+		var status WorkspaceCandidateStatus
+		if err := rows.Scan(&status.ID, &status.Active); err != nil {
+			return nil, fmt.Errorf("failed to scan workspace candidate: %w", err)
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses, rows.Err()
+}
+
+// WorkspaceIDPageParams filters one page of workspaces by an already-visible
+// ID set. The ID list is produced by the per-user permission snapshot, so it
+// is bounded by the user's accessible workspace count (the 10k-workspace
+// target stays far below SQLite's 32k and Postgres' 65k parameter limits).
+type WorkspaceIDPageParams struct {
+	IDs    []int
+	Search string
+	Sort   string // name | key | created_at; anything else falls back to name
+	Desc   bool
+	Limit  int
+	Offset int
+}
+
+// FindByIDsPage returns one SQL-side page of the given workspaces with a
+// total computed in the same query, instead of materializing every row.
+func (r *WorkspaceRepository) FindByIDsPage(params WorkspaceIDPageParams) ([]models.Workspace, int, error) {
+	if len(params.IDs) == 0 {
+		return []models.Workspace{}, 0, nil
+	}
+
+	where := " WHERE w.id IN (" + placeholders(len(params.IDs)) + ")"
+	args := make([]any, 0, len(params.IDs)+6)
+	for _, id := range params.IDs {
+		args = append(args, id)
+	}
+	if search := strings.TrimSpace(params.Search); search != "" {
+		pattern := "%" + escapeLikePattern(search) + "%"
+		where += ` AND (LOWER(w.name) LIKE LOWER(?) ESCAPE '\'`
+		where += ` OR LOWER(w.key) LIKE LOWER(?) ESCAPE '\'`
+		where += ` OR LOWER(w.description) LIKE LOWER(?) ESCAPE '\')`
+		args = append(args, pattern, pattern, pattern)
+	}
+
+	sortColumn := "LOWER(w.name)"
+	switch params.Sort {
+	case "key":
+		sortColumn = "LOWER(w.key)"
+	case "created_at":
+		sortColumn = "w.created_at"
+	}
+	direction := " ASC"
+	if params.Desc {
+		direction = " DESC"
+	}
+	// The id tiebreak stays ascending regardless of direction, matching the
+	// previous in-memory sort (only the key comparison is flipped).
+	orderBy := " ORDER BY " + sortColumn + direction + ", w.id ASC"
+
+	args = append(args, params.Limit, params.Offset)
+	// COUNT(*) OVER () is evaluated after the GROUP BY, so it counts
+	// workspaces, not joined rows, and the total arrives with the page in one
+	// round trip.
+	query := workspaceSelectBase + `,
+	       COUNT(*) OVER () AS page_total_count` + workspaceFromJoinsBase +
+		where + workspaceGroupByBase + orderBy + `
+		LIMIT ? OFFSET ?`
+	rows, err := r.db.Query(query, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list workspaces by ids: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var workspaces []models.Workspace
+	total := 0
+	for rows.Next() {
+		var pageTotal int
+		workspace, scanErr := scanWorkspaceBaseWithTotal(rows, &pageTotal)
+		if scanErr != nil {
+			return nil, 0, fmt.Errorf("failed to scan workspace: %w", scanErr)
+		}
+		total = pageTotal
+		workspaces = append(workspaces, workspace)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("failed to iterate workspaces: %w", err)
+	}
+	if workspaces == nil {
+		workspaces = []models.Workspace{}
+	}
+	return workspaces, total, nil
+}
+
+func placeholders(count int) string {
+	return strings.TrimSuffix(strings.Repeat("?,", count), ",")
+}
+
 // FindAll retrieves all workspaces accessible to a user
 func (r *WorkspaceRepository) FindAll(userID int, isPersonalOnly bool) ([]models.Workspace, error) {
 	var query string
@@ -284,18 +453,21 @@ func (r *WorkspaceRepository) FindAll(userID int, isPersonalOnly bool) ([]models
 	return workspaces, rows.Err()
 }
 
-// GrantAdministratorRoleTx grants the Administrator role on a workspace to a user within a transaction.
-func (r *WorkspaceRepository) GrantAdministratorRoleTx(tx database.Tx, workspaceID int64, userID int) error {
+// GrantBuiltinRoleTx grants a built-in workspace role to a user within a
+// transaction. Creation uses it to hand the creator both Administrator and,
+// for restricted workspaces, Viewer — the Viewer grant is what flips the
+// permission cache into gated visibility.
+func (r *WorkspaceRepository) GrantBuiltinRoleTx(tx database.Tx, workspaceID int64, userID int, builtinKey string) error {
 	result, err := tx.Exec(`
 		INSERT INTO user_workspace_roles (workspace_id, user_id, role_id, granted_by, granted_at)
 		SELECT ?, ?, id, ?, CURRENT_TIMESTAMP FROM workspace_roles WHERE builtin_key = ?
-	`, workspaceID, userID, userID, models.RoleBuiltinAdministrator)
+	`, workspaceID, userID, userID, builtinKey)
 	if err != nil {
-		return fmt.Errorf("failed to grant admin role to workspace creator: %w", err)
+		return fmt.Errorf("failed to grant %s role to workspace creator: %w", builtinKey, err)
 	}
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
-		return fmt.Errorf("administrator role not found; workspace creation aborted")
+		return fmt.Errorf("%s role not found; workspace creation aborted", builtinKey)
 	}
 	return nil
 }

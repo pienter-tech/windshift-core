@@ -33,6 +33,9 @@ type Item struct {
 	ProjectID      *int `json:"project_id,omitempty"`
 	InheritProject bool `json:"inherit_project"` // If true, ProjectID is ignored and the parent item's effective project is used
 	TimeProjectID  *int `json:"time_project_id,omitempty"`
+	// Team assignment. Mirrors AssigneeID at the team level and is the team
+	// whose on-call policy governs an incident on this item.
+	TeamID *int `json:"team_id,omitempty"`
 	// User assignment fields
 	AssigneeID              *int `json:"assignee_id,omitempty"`                // User assigned to this item
 	CreatorID               *int `json:"creator_id,omitempty"`                 // Internal user who created this item
@@ -49,6 +52,10 @@ type Item struct {
 	ParentKey string `json:"parent_key,omitempty" db:"-"`
 	// Personal task relationship (for linking personal workspace tasks to work items)
 	RelatedWorkItemID *int `json:"related_work_item_id,omitempty"` // Link to work item (for personal tasks)
+	// Current/latest incident. Non-nil means this item is an incident; the
+	// incident's own history lives in the incidents table.
+	IncidentID *int      `json:"incident_id,omitempty"`
+	Incident   *Incident `json:"incident,omitempty" db:"-"`
 	// Estimation
 	StoryPoints     *float64 `json:"story_points,omitempty"`     // Story points for velocity tracking
 	EstimateMinutes *int     `json:"estimate_minutes,omitempty"` // Time estimate in minutes (compared against logged worklog time)
@@ -87,6 +94,10 @@ type Item struct {
 	EffectiveProjectID     *int   `json:"effective_project_id,omitempty"`
 	EffectiveProjectName   string `json:"effective_project_name,omitempty"`
 	ProjectInheritanceMode string `json:"project_inheritance_mode,omitempty"` // "none" | "inherit" | "direct"
+	// Team information for API responses
+	TeamName      string `json:"team_name,omitempty"`
+	TeamColor     string `json:"team_color,omitempty"`
+	TeamAvatarURL string `json:"team_avatar_url,omitempty"`
 	// User information for API responses
 	AssigneeName               string `json:"assignee_name,omitempty"`                 // Full name of assigned user
 	AssigneeEmail              string `json:"assignee_email,omitempty"`                // Email of assigned user
@@ -145,6 +156,15 @@ type ItemHistory struct {
 	UserName  string `json:"user_name,omitempty"`  // Full name of user who made the change
 	UserEmail string `json:"user_email,omitempty"` // Email of user who made the change
 	IsAgent   bool   `json:"is_agent"`             // Whether the user is an AI agent
+	// ActorKind is "user" (default/legacy), "portal_customer", or "system".
+	// UserID is 0 for non-user actors and PortalCustomerID carries the
+	// acting portal customer instead.
+	ActorKind          string `json:"actor_kind,omitempty"`
+	PortalCustomerID   *int   `json:"portal_customer_id,omitempty"`
+	PortalCustomerName string `json:"portal_customer_name,omitempty"`
+	// PortalCustomerEmail is the resolved portal-customer email for
+	// non-user actors; not set for user rows.
+	PortalCustomerEmail string `json:"portal_customer_email,omitempty"`
 	// AgentOwnerName is permission-filtered by the item-history handler.
 	AgentOwnerName string `json:"agent_owner_name,omitempty"`
 	// Resolved values for display (when value is an ID)
@@ -225,20 +245,27 @@ type Mention struct {
 
 // Attachment represents a file attached to an item
 type Attachment struct {
-	ID               int       `json:"id"`
-	ItemID           *int      `json:"item_id,omitempty"`
-	Filename         string    `json:"filename"`          // Stored filename (UUID-based)
-	OriginalFilename string    `json:"original_filename"` // Original user filename
-	FilePath         string    `json:"-"`                 // Full file path, not sent to client
-	MimeType         string    `json:"mime_type"`
-	FileSize         int64     `json:"file_size"`
-	UploadedBy       *int      `json:"uploaded_by,omitempty"`
-	HasThumbnail     bool      `json:"has_thumbnail"` // Whether thumbnail was generated
-	ThumbnailPath    string    `json:"-"`             // Thumbnail file path, not sent to client
-	CreatedAt        time.Time `json:"created_at"`
+	ID               int    `json:"id"`
+	ItemID           *int   `json:"item_id,omitempty"`
+	Filename         string `json:"filename"`          // Stored filename (UUID-based)
+	OriginalFilename string `json:"original_filename"` // Original user filename
+	FilePath         string `json:"-"`                 // Full file path, not sent to client
+	MimeType         string `json:"mime_type"`
+	FileSize         int64  `json:"file_size"`
+	UploadedBy       *int   `json:"uploaded_by,omitempty"`
+	// UploadedByPortalCustomerID carries the portal-customer uploader when
+	// the file was submitted through a portal or public form; UploadedBy is
+	// nil in that case.
+	UploadedByPortalCustomerID *int      `json:"uploaded_by_portal_customer_id,omitempty"`
+	HasThumbnail               bool      `json:"has_thumbnail"` // Whether thumbnail was generated
+	ThumbnailPath              string    `json:"-"`             // Thumbnail file path, not sent to client
+	CreatedAt                  time.Time `json:"created_at"`
 	// Joined fields for API responses
 	UploaderName  string `json:"uploader_name,omitempty"`
 	UploaderEmail string `json:"uploader_email,omitempty"`
+	// UploaderPortalCustomerName is the resolved portal-customer uploader
+	// name for portal/form submissions.
+	UploaderPortalCustomerName string `json:"uploader_portal_customer_name,omitempty"`
 }
 
 // AttachmentSettings represents system-wide attachment configuration

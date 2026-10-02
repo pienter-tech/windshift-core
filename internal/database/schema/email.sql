@@ -90,6 +90,13 @@ CREATE TABLE IF NOT EXISTS email_message_tracking (
 	-- 'failed' = the email had attachments but none were stored.
 	attachments_status TEXT CHECK(attachments_status IN ('ok','partial','failed') OR attachments_status IS NULL),
 	direction TEXT DEFAULT 'inbound' CHECK(direction IN ('inbound', 'outbound')),
+	-- uid/uid_validity record the IMAP coordinates observed at fetch time so
+	-- rate-limited mail can be requeued surgically within the right epoch.
+	uid INTEGER NOT NULL DEFAULT 0,
+	uid_validity INTEGER NOT NULL DEFAULT 0,
+	-- rate_limited_at is set when per-sender flood protection declined to
+	-- create a ticket. The mail stays in the mailbox for operator requeue.
+	rate_limited_at DATETIME,
 	processed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE,
 	FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE SET NULL,
@@ -100,6 +107,8 @@ CREATE INDEX IF NOT EXISTS idx_email_message_tracking_channel_id ON email_messag
 CREATE INDEX IF NOT EXISTS idx_email_message_tracking_message_id ON email_message_tracking(message_id);
 CREATE INDEX IF NOT EXISTS idx_email_message_tracking_in_reply_to ON email_message_tracking(in_reply_to);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_email_message_tracking_dedup ON email_message_tracking(channel_id, dedup_key);
+CREATE INDEX IF NOT EXISTS idx_email_message_tracking_sender ON email_message_tracking(from_email);
+CREATE INDEX IF NOT EXISTS idx_email_message_tracking_channel_sender_time ON email_message_tracking(channel_id, LOWER(from_email), processed_at);
 
 -- Durable at-least-once queue for comment replies. Sending SMTP inline is an
 -- optimization; a transient failure leaves this row pending for the
@@ -121,8 +130,14 @@ CREATE TABLE IF NOT EXISTS email_reply_outbox (
 	from_name TEXT NOT NULL DEFAULT '',
 	attempt_count INTEGER NOT NULL DEFAULT 0,
 	next_attempt_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	-- Set while a worker holds a delivery lease; NULL means next_attempt_at
+	-- is retry backoff rather than a claim.
+	lease_owner TEXT,
 	last_error TEXT,
 	delivered_at DATETIME,
+	-- discarded_at marks an operator's explicit "never send" decision. A
+	-- discarded row stops retrying and stays visible for audit.
+	discarded_at DATETIME,
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	FOREIGN KEY (comment_id) REFERENCES comments(id) ON DELETE CASCADE,

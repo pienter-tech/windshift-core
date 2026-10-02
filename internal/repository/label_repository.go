@@ -158,6 +158,23 @@ func (r *LabelRepository) ListForItem(itemID int) ([]models.Label, error) {
 	return scanLabels(rows)
 }
 
+// ListForItemTx is ListForItem inside the caller's transaction.
+func (r *LabelRepository) ListForItemTx(tx database.Tx, itemID int) ([]models.Label, error) {
+	rows, err := tx.Query(`
+		SELECT l.id, l.name, l.color, l.created_at, l.updated_at
+		FROM item_labels il
+		JOIN labels l ON il.label_id = l.id
+		WHERE il.item_id = ?
+		ORDER BY l.name
+	`, itemID)
+	if err != nil {
+		return nil, fmt.Errorf("list labels for item %d: %w", itemID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	return scanLabels(rows)
+}
+
 // ReplaceItemLabels swaps the label set for an item atomically: deletes all
 // existing rows and inserts the new set inside a single transaction.
 func (r *LabelRepository) ReplaceItemLabels(itemID int, labelIDs []int) error {
@@ -167,20 +184,10 @@ func (r *LabelRepository) ReplaceItemLabels(itemID int, labelIDs []int) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.Exec("DELETE FROM item_labels WHERE item_id = ?", itemID); err != nil {
-		return fmt.Errorf("delete existing item_labels for item %d: %w", itemID, err)
+	if err := r.ReplaceItemLabelsTx(context.Background(), tx, itemID, labelIDs); err != nil {
+		return err
 	}
-
-	now := time.Now()
-	for _, labelID := range labelIDs {
-		if _, err := tx.Exec(
-			"INSERT INTO item_labels (item_id, label_id, created_at) VALUES (?, ?, ?)",
-			itemID, labelID, now,
-		); err != nil {
-			return fmt.Errorf("add label %d to item %d: %w", labelID, itemID, err)
-		}
-	}
-	if err := NewItemRepository(r.db).TouchChanged(tx, itemID, now); err != nil {
+	if err := NewItemRepository(r.db).TouchChanged(tx, itemID, time.Now()); err != nil {
 		return fmt.Errorf("touch item %d after replacing labels: %w", itemID, err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -234,24 +241,39 @@ func (r *LabelRepository) AddItemLabel(itemID, labelID int) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	now := time.Now()
-	_, err = tx.Exec(
-		"INSERT INTO item_labels (item_id, label_id, created_at) VALUES (?, ?, ?)",
-		itemID, labelID, now,
-	)
+	changed, err := r.AddItemLabelTx(tx, itemID, labelID)
 	if err != nil {
-		if database.IsUniqueConstraintError(err) {
-			return ErrDuplicateEntry
-		}
-		return fmt.Errorf("add label %d to item %d: %w", labelID, itemID, err)
+		return err
 	}
-	if err := NewItemRepository(r.db).TouchChanged(tx, itemID, now); err != nil {
-		return fmt.Errorf("touch item %d after adding label %d: %w", itemID, labelID, err)
+	if changed {
+		if err := NewItemRepository(r.db).TouchChanged(tx, itemID, time.Now()); err != nil {
+			return fmt.Errorf("touch item %d after adding label %d: %w", itemID, labelID, err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit add label %d to item %d: %w", labelID, itemID, err)
 	}
 	return nil
+}
+
+// AddItemLabelTx attaches one label inside the caller's transaction. It
+// reports whether a row was inserted.
+func (r *LabelRepository) AddItemLabelTx(tx database.Tx, itemID, labelID int) (bool, error) {
+	result, err := tx.Exec(
+		"INSERT INTO item_labels (item_id, label_id, created_at) VALUES (?, ?, ?)",
+		itemID, labelID, time.Now(),
+	)
+	if err != nil {
+		if database.IsUniqueConstraintError(err) {
+			return false, ErrDuplicateEntry
+		}
+		return false, fmt.Errorf("add label %d to item %d: %w", labelID, itemID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read attached label count for item %d: %w", itemID, err)
+	}
+	return rows > 0, nil
 }
 
 // RemoveItemLabel detaches a label from an item. No-ops silently when the
@@ -263,18 +285,11 @@ func (r *LabelRepository) RemoveItemLabel(itemID, labelID int) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	result, err := tx.Exec(
-		"DELETE FROM item_labels WHERE item_id = ? AND label_id = ?",
-		itemID, labelID,
-	)
+	changed, err := r.RemoveItemLabelTx(tx, itemID, labelID)
 	if err != nil {
-		return fmt.Errorf("remove label %d from item %d: %w", labelID, itemID, err)
+		return err
 	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("read removed label count for item %d: %w", itemID, err)
-	}
-	if rows > 0 {
+	if changed {
 		if err := NewItemRepository(r.db).TouchChanged(tx, itemID, time.Now()); err != nil {
 			return fmt.Errorf("touch item %d after removing label %d: %w", itemID, labelID, err)
 		}
@@ -283,6 +298,23 @@ func (r *LabelRepository) RemoveItemLabel(itemID, labelID int) error {
 		return fmt.Errorf("commit remove label %d from item %d: %w", labelID, itemID, err)
 	}
 	return nil
+}
+
+// RemoveItemLabelTx detaches one label inside the caller's transaction. It
+// reports whether a row was removed.
+func (r *LabelRepository) RemoveItemLabelTx(tx database.Tx, itemID, labelID int) (bool, error) {
+	result, err := tx.Exec(
+		"DELETE FROM item_labels WHERE item_id = ? AND label_id = ?",
+		itemID, labelID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("remove label %d from item %d: %w", labelID, itemID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read removed label count for item %d: %w", itemID, err)
+	}
+	return rows > 0, nil
 }
 
 // LoadForItems bulk-loads label rows for a slice of items and attaches them

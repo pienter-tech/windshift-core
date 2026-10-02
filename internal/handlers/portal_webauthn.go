@@ -319,6 +319,11 @@ func (h *PortalWebAuthnHandler) CompletePortalLogin(w http.ResponseWriter, r *ht
 		if err != nil {
 			return nil, fmt.Errorf("customer not found: %w", err)
 		}
+		// Deactivated customers cannot authenticate (WI-1554): failing the
+		// resolution produces the same generic 401 as any other failed login.
+		if customer.DeactivatedAt != nil {
+			return nil, fmt.Errorf("customer is deactivated")
+		}
 		hasAccess, err := h.lookupStore.CustomerHasChannelAccess(customerID, channel.ID)
 		if err != nil {
 			return nil, fmt.Errorf("channel access check failed: %w", err)

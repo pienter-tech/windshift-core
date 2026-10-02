@@ -49,6 +49,7 @@ func RegisterRoutes(deps restapi.Deps) {
 	itemHandler.SetItemUpdateApplicationService(deps.ItemUpdateApplicationService)
 	itemHandler.SetItemDeletionApplicationService(deps.ItemDeletionApplicationService)
 	workspaceHandler := handlers.NewWorkspaceHandler(db, permissionService, deps.AuthorizationCacheInvalidator)
+	workspaceHandler.SetPackProvisioner(deps.PackProvisioner)
 	statusHandler := handlers.NewStatusHandler(db, permissionService, objectTranslationService)
 	workflowHandler := handlers.NewWorkflowHandler(db, permissionService)
 	itemTypeHandler := handlers.NewItemTypeHandler(db, permissionService, objectTranslationService)

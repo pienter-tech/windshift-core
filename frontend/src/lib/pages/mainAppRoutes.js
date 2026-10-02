@@ -41,6 +41,8 @@ export const MAIN_APP_COMPONENT_LOADERS = {
   'asset-detail': () => import('../features/assets/AssetBrowser.svelte'),
   'asset-settings': () => import('../features/assets/AssetManager.svelte'),
   'channel-manager': () => import('../features/channels/ManagerChannels.svelte'),
+  'workspace-queue': () => import('../features/support/SupportQueue.svelte'),
+  'workspace-nav-config': () => import('../workspaces/NavigationConfigPage.svelte'),
   'workspace-board': () => import('../features/collections/CollectionBoard.svelte'),
   'workspace-board-config': () => import('../settings/BoardConfigurationPage.svelte'),
   'workspace-backlog': () => import('../features/collections/CollectionBacklog.svelte'),
@@ -52,6 +54,7 @@ export const MAIN_APP_COMPONENT_LOADERS = {
   'workspace-pages-archived': () => import('../features/pages/ArchivedPagesPage.svelte'),
   'collection-board': () => import('../features/collections/CollectionBoard.svelte'),
   'collection-board-config': () => import('../settings/BoardConfigurationPage.svelte'),
+  'collection-nav-config': () => import('../workspaces/NavigationConfigPage.svelte'),
   'collection-backlog': () => import('../features/collections/CollectionBacklog.svelte'),
   'collection-list': () => import('../features/collections/CollectionList.svelte'),
   'collection-tree': () => import('../features/collections/CollectionTree.svelte'),
@@ -129,6 +132,8 @@ export const MAIN_APP_ROUTE_CONFIG = {
         'workspace-settings-action-credentials',
         'workspace-settings-recurrence',
         'workspace-settings-templates',
+        'workspace-settings-canned-responses',
+        'workspace-settings-service-levels',
         'workspace-settings-danger',
       ],
       getProps: (currentRoute) => ({
@@ -264,6 +269,27 @@ export const MAIN_APP_ROUTE_CONFIG = {
     'Failed to load Board Configuration',
     { getProps: workspaceCollectionProps }
   ),
+  'workspace-nav-config': route(
+    'Loading Navigation Settings...',
+    'Failed to load Navigation Settings',
+    {
+      getProps: (currentRoute) => ({
+        workspaceId: Number(currentRoute.params.id),
+        collectionId: currentRoute.params.collectionId
+          ? Number(currentRoute.params.collectionId)
+          : null,
+      }),
+    }
+  ),
+  'workspace-queue': route('Loading Queue...', 'Failed to load Queue', {
+    getProps: (currentRoute) => ({
+      workspaceId: Number(currentRoute.params.id),
+      collectionId: currentRoute.params.collectionId
+        ? Number(currentRoute.params.collectionId)
+        : null,
+      queue: currentRoute.query?.queue || null,
+    }),
+  }),
   'workspace-backlog': route('Loading Backlog View...', 'Failed to load Backlog View', {
     getProps: workspaceCollectionProps,
   }),
@@ -296,6 +322,11 @@ export const MAIN_APP_ROUTE_CONFIG = {
   'collection-board-config': route(
     'Loading Board Configuration...',
     'Failed to load Board Configuration',
+    { getProps: globalCollectionProps }
+  ),
+  'collection-nav-config': route(
+    'Loading Navigation Settings...',
+    'Failed to load Navigation Settings',
     { getProps: globalCollectionProps }
   ),
   'collection-backlog': route('Loading Backlog View...', 'Failed to load Backlog View', {
@@ -466,6 +497,8 @@ export const WORKSPACE_SETTINGS_TABS = {
   'workspace-settings-action-credentials': 'action-credentials',
   'workspace-settings-recurrence': 'recurrence',
   'workspace-settings-templates': 'templates',
+  'workspace-settings-canned-responses': 'canned-responses',
+  'workspace-settings-service-levels': 'service-levels',
   'workspace-settings-danger': 'danger',
 };
 

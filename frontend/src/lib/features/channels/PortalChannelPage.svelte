@@ -37,6 +37,9 @@
     allowed_domains: '',
   });
 
+  // Email channels whose email_connected_portal_id points at this portal.
+  let connectedMailboxes = $state([]);
+
   let channelId = $derived(parseInt($currentRoute.path.match(/\/admin\/channels\/(\d+)\/portal/)?.[1]));
 
   onMount(async () => {
@@ -72,6 +75,7 @@
           ? config.portal_allowed_domains.join(', ')
           : '',
       };
+      await loadConnectedMailboxes(id, requestSequence);
     } catch (err) {
       if (requestSequence !== loadSequence) return;
       console.error('Failed to load channel:', err);
@@ -79,6 +83,27 @@
       errorToast(err.message || t('channel.failedToLoad', 'Failed to load channel'));
     } finally {
       if (requestSequence === loadSequence) loading = false;
+    }
+  }
+
+  // Email channels linked to this portal, derived from each channel's
+  // email_connected_portal_id config. Best-effort: a load failure leaves the
+  // previous (or empty) list rather than blocking the settings page.
+  async function loadConnectedMailboxes(portalId, requestSequence) {
+    try {
+      const emailChannels = await api.channels.getAll({
+        type: 'email',
+        direction: 'inbound',
+        include_disabled: true,
+      });
+      if (requestSequence !== loadSequence) return;
+      connectedMailboxes = emailChannels.filter((ch) => {
+        const chConfig = parseChannelConfig(ch.config) || {};
+        return chConfig.email_connected_portal_id === portalId;
+      });
+    } catch (err) {
+      console.error('Failed to load connected mailboxes:', err);
+      if (requestSequence === loadSequence) connectedMailboxes = [];
     }
   }
 
@@ -136,6 +161,7 @@
         <ChannelPortalConfig
           bind:this={portalConfigRef}
           bind:formData={portalFormData}
+          {connectedMailboxes}
         />
       </ChannelAdminSettings>
     {:else if tabId === 'managers' && $isSystemAdmin}

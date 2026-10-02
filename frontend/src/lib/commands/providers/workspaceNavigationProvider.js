@@ -5,6 +5,7 @@ import {
 } from '../../navigation/workspaceNavigation.js';
 import { workspacePermissions } from '../../stores';
 import { t } from '../../stores/i18n.svelte.js';
+import { viewSettingsStore } from '../../stores/viewSettings.svelte.js';
 import { BUCKET } from '../buckets.js';
 import { createCommand } from '../types.js';
 
@@ -35,7 +36,9 @@ export function workspaceNavigationProvider(ctx) {
     })
   );
 
+  const enabledViews = new Set(viewSettingsStore.enabledViewIds(workspaceId, collectionId));
   for (const view of workspaceViewItems) {
+    if (!enabledViews.has(view.id)) continue;
     const label = t(view.labelKey);
     out.push(
       createCommand({
@@ -50,7 +53,9 @@ export function workspaceNavigationProvider(ctx) {
   }
 
   if (!collectionId) {
+    const enabledNav = new Set(viewSettingsStore.enabledNavIds(workspaceId));
     for (const view of workspaceOnlyViews) {
+      if (!enabledNav.has(view.id)) continue;
       if (view.id === 'agents' && !workspacePermissions.canAdminWorkspace(workspaceId)) continue;
       const label = t(view.labelKey);
       out.push(
@@ -71,6 +76,8 @@ export function workspaceNavigationProvider(ctx) {
     workspacePermissions.canViewTests(workspaceId) &&
     !collectionId
   ) {
+    // Test entries are not nav-configurable; module and permission gating
+    // decide their visibility.
     for (const view of testNavigationItems) {
       const slug = view.id === 'test-cases' ? 'tests' : `tests/${view.id.replace(/^test-/, '')}`;
       const label = t(view.labelKey);

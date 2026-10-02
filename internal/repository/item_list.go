@@ -58,6 +58,7 @@ type ItemFilters struct {
 	StatusIDNot   *int
 	PriorityID    *int
 	AssigneeID    *int
+	TeamID        *int
 	CreatorID     *int
 	ItemTypeID    *int
 	MilestoneID   *int
@@ -87,7 +88,7 @@ type ItemFilters struct {
 
 func (f ItemFilters) hasScalarFilters() bool {
 	return f.StatusID != nil || f.StatusIDNot != nil || f.PriorityID != nil ||
-		f.AssigneeID != nil || f.CreatorID != nil || f.ItemTypeID != nil ||
+		f.AssigneeID != nil || f.TeamID != nil || f.CreatorID != nil || f.ItemTypeID != nil ||
 		f.MilestoneID != nil || f.IterationID != nil || f.ParentIDIsSet ||
 		f.Level != nil || f.MaxLevel != nil || f.CreatedSince != nil ||
 		f.CompletedSince != nil || f.CompletedActivitySince != nil || f.ItemID != nil
@@ -179,6 +180,7 @@ var systemFieldSortColumns = map[string]string{
 	"status":         "i.status_id",
 	"priority":       "i.priority_id",
 	"assignee":       "i.assignee_id",
+	"team":           "i.team_id",
 	"milestone":      "(SELECT MIN(milestone_id) FROM item_milestones WHERE item_id = i.id)",
 	"iteration":      "i.iteration_id",
 	"due_date":       "i.due_date",
@@ -190,6 +192,10 @@ var systemFieldSortColumns = map[string]string{
 	"project":        "i.project_id",
 	"rank":           "i.rank",
 	"frac_index":     "i.frac_index",
+	// SLA urgency: nearest running deadline first; paused cycles carry no
+	// deadline and sort last. Exact business-time remaining is display-only.
+	"sla_deadline": "(SELECT sla_c.next_deadline_at FROM item_sla_cycles sla_c WHERE sla_c.item_id = i.id AND sla_c.status = 'ongoing' AND sla_c.next_deadline_at IS NOT NULL ORDER BY sla_c.next_deadline_at LIMIT 1)",
+	"sla_urgency":  "(SELECT MAX(CASE WHEN sla_c.pause_started_at IS NOT NULL THEN 1 ELSE 0 END) FROM item_sla_cycles sla_c WHERE sla_c.item_id = i.id AND sla_c.status = 'ongoing')",
 }
 
 // unsortableCustomFieldTypes lists custom field types that cannot be meaningfully sorted.
@@ -266,13 +272,15 @@ func (r *ItemRepository) FindAllWithDetailsPageContext(ctx context.Context, para
 		creator.first_name || ' ' || creator.last_name as creator_name, creator.email as creator_email,
 		st.name as status_name, COALESCE(st.builtin_key, '') as status_builtin_key, sc.color as status_color,
 		pri.name as priority_name, COALESCE(pri.builtin_key, '') as priority_builtin_key, pri.icon as priority_icon, pri.color as priority_color,
-		COALESCE(%s, i.created_at) as status_since
+		COALESCE(%s, i.created_at) as status_since,
+		i.team_id, i.incident_id, team.name as team_name, team.color as team_color, team.avatar_url as team_avatar
 	`, descriptionExpr, cql.CurrentStatusTransitionAtExpr(""))
 
 	fromClause := ItemListFilterFromClause() + `
 		LEFT JOIN items p ON i.parent_id = p.id
 		LEFT JOIN users assignee ON i.assignee_id = assignee.id
 		LEFT JOIN users creator ON i.creator_id = creator.id
+		LEFT JOIN teams team ON i.team_id = team.id
 	`
 
 	whereClause, args := r.buildWhereClause(params)
@@ -655,6 +663,11 @@ func (r *ItemRepository) buildWhereClause(params ItemListParams) (whereClause st
 		args = append(args, *params.Filters.AssigneeID)
 	}
 
+	if params.Filters.TeamID != nil {
+		whereClause += " AND i.team_id = ?"
+		args = append(args, *params.Filters.TeamID)
+	}
+
 	if params.Filters.CreatorID != nil {
 		whereClause += " AND i.creator_id = ?"
 		args = append(args, *params.Filters.CreatorID)
@@ -793,6 +806,51 @@ func (r *ItemRepository) buildWhereClause(params ItemListParams) (whereClause st
 	return whereClause, args
 }
 
+// QueueCountQuery is one compiled QL fragment to count in a batched call.
+type QueueCountQuery struct {
+	Key     string
+	Filters ItemFilters
+}
+
+// CountQLQueries runs one COUNT per query in a single statement, reusing the
+// same filter and QL plan as the item list. Results are keyed by Key. The
+// workspace ids apply to every query, so a queue count never crosses the
+// caller's accessible workspaces.
+func (r *ItemRepository) CountQLQueries(ctx context.Context, workspaceIDs []int, queries []QueueCountQuery) (map[string]int64, error) {
+	if len(queries) == 0 {
+		return map[string]int64{}, nil
+	}
+	from := ItemListFilterFromClause()
+	var builder strings.Builder
+	args := make([]any, 0, len(queries)*2)
+	for i, query := range queries {
+		where, whereArgs := r.buildWhereClause(ItemListParams{WorkspaceIDs: workspaceIDs, Filters: query.Filters})
+		if i > 0 {
+			builder.WriteString(" UNION ALL ")
+		}
+		fmt.Fprintf(&builder, "SELECT %d AS idx, COUNT(*) AS n %s %s", i, from, where)
+		args = append(args, whereArgs...)
+	}
+	rows, err := r.db.QueryContext(ctx, builder.String(), args...)
+	if err != nil {
+		return nil, fmt.Errorf("count queue queries: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	result := make(map[string]int64, len(queries))
+	for rows.Next() {
+		var idx int
+		var count int64
+		if err := rows.Scan(&idx, &count); err != nil {
+			return nil, fmt.Errorf("scan queue count: %w", err)
+		}
+		if idx < 0 || idx >= len(queries) {
+			continue
+		}
+		result[queries[idx].Key] = count
+	}
+	return result, rows.Err()
+}
+
 // buildOrderByClause constructs the ORDER BY clause.
 // It supports system field identifiers (from systemFieldSortColumns) and custom field IDs
 // (which sort via JSON extraction from i.custom_field_values).
@@ -822,6 +880,11 @@ func (r *ItemRepository) buildOrderByClause(sortBy string, sortAsc bool) string 
 		)
 	}
 	if col, ok := systemFieldSortColumns[sortBy]; ok {
+		if sortBy == "sla_deadline" || sortBy == "sla_urgency" {
+			// Items with no matching cycle sort last regardless of direction,
+			// and the item id breaks ties so pages cannot reshuffle.
+			return fmt.Sprintf(" ORDER BY (%s IS NULL) ASC, %s %s, i.id ASC", col, col, direction)
+		}
 		return fmt.Sprintf(" ORDER BY %s %s, i.id ASC", col, direction)
 	}
 
@@ -867,7 +930,9 @@ func (r *ItemRepository) scanItemList(rows *sql.Rows) ([]models.Item, error) {
 		var itemTypeID, parentID, parentWorkspaceItemNumber, iterationID, projectID, timeProjectID, assigneeID, creatorID, statusID, priorityID sql.NullInt64
 		var dueDate, startDate, endDate sql.NullTime
 		var statusSince sql.NullString
+		var teamID, incidentID sql.NullInt64
 		var itemTypeName, itemTypeBuiltinKey, parentTitle, iterationName, iterationEndDate, projectName, timeProjectName sql.NullString
+		var teamName, teamColor, teamAvatar sql.NullString
 		var assigneeName, assigneeEmail, assigneeAvatar, creatorName, creatorEmail, statusName, statusColor sql.NullString
 		var statusBuiltinKey, priorityName, priorityBuiltinKey, priorityIcon, priorityColor sql.NullString
 		var fracIndex sql.NullString
@@ -884,6 +949,7 @@ func (r *ItemRepository) scanItemList(rows *sql.Rows) ([]models.Item, error) {
 			&storyPoints, &estimateMinutes, &fracIndex, &item.CreatedAt, &item.UpdatedAt, &lastActiveAt, &item.WorkspaceName, &item.WorkspaceKey, &itemTypeName, &itemTypeBuiltinKey, &parentTitle, &parentWorkspaceItemNumber, &iterationName, &iterationEndDate, &projectName, &timeProjectName,
 			&assigneeName, &assigneeEmail, &assigneeAvatar, &creatorName, &creatorEmail, &statusName, &statusBuiltinKey, &statusColor, &priorityName, &priorityBuiltinKey, &priorityIcon, &priorityColor,
 			&statusSince,
+			&teamID, &incidentID, &teamName, &teamColor, &teamAvatar,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan item: %w", err)
@@ -904,6 +970,8 @@ func (r *ItemRepository) scanItemList(rows *sql.Rows) ([]models.Item, error) {
 		assignNullableInt(&item.TimeProjectID, timeProjectID)
 		assignNullableInt(&item.PriorityID, priorityID)
 		assignNullableInt(&item.AssigneeID, assigneeID)
+		assignNullableInt(&item.TeamID, teamID)
+		assignNullableInt(&item.IncidentID, incidentID)
 		assignNullableInt(&item.CreatorID, creatorID)
 
 		if dueDate.Valid {
@@ -945,6 +1013,9 @@ func (r *ItemRepository) scanItemList(rows *sql.Rows) ([]models.Item, error) {
 		assignNullableString(&item.AssigneeAvatar, assigneeAvatar)
 		assignNullableString(&item.CreatorName, creatorName)
 		assignNullableString(&item.CreatorEmail, creatorEmail)
+		assignNullableString(&item.TeamName, teamName)
+		assignNullableString(&item.TeamColor, teamColor)
+		assignNullableString(&item.TeamAvatarURL, teamAvatar)
 
 		if fracIndex.Valid {
 			item.FracIndex = &fracIndex.String

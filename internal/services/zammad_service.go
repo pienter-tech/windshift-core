@@ -1938,6 +1938,16 @@ func (s *ZammadService) completeWindshiftItem(ctx context.Context, link *models.
 	if err != nil {
 		return false, err
 	}
+	actor, err := repository.NewUserRepository(s.db).GetActivationTarget(*connection.CreatedBy)
+	if errors.Is(err, repository.ErrNotFound) {
+		return false, errors.New("configured Zammad actor no longer exists")
+	}
+	if err != nil {
+		return false, err
+	}
+	if !actor.IsActive || actor.Offboarded {
+		return false, errors.New("configured Zammad actor is inactive or offboarded")
+	}
 	allowed, err := s.permission.HasWorkspacePermission(*connection.CreatedBy, item.WorkspaceID, models.PermissionItemEdit)
 	if err != nil {
 		return false, err

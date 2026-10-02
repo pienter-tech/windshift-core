@@ -43,6 +43,8 @@
     getMainAppWorkspaceRedirect,
     resolveMainAppWorkspaceContext,
   } from './mainAppWorkspaceContext.js';
+  import { getDisabledViewRedirect } from './mainAppViewGuard.js';
+  import { viewSettingsStore } from '../stores/viewSettings.svelte.js';
 
   let showCommandPalette = $state(false);
   let showCreateModal = $state(false);
@@ -277,6 +279,27 @@
 
   $effect(() => {
     const redirect = getMainAppWorkspaceRedirect($currentRoute, $currentWorkspace);
+    if (redirect) navigate(redirect, { replace: true });
+  });
+
+  // Redirect direct navigation to a view or nav entry the scope has
+  // disabled. The load is awaited through the reactive entry so the decision
+  // uses real settings, and waits for the workspace record so the default
+  // view is known.
+  $effect(() => {
+    const route = $currentRoute;
+    const viewId = route.view?.startsWith('workspace-') ? route.view.slice('workspace-'.length) : route.view;
+    if (!viewId || !viewSettingsStore.allNavIds.includes(viewId)) return;
+    const workspaceId = route.params?.id;
+    if (!workspaceId) return;
+    if (!$currentWorkspace?.id) return; // hydration re-runs this effect
+    const collectionId = route.params?.collectionId ?? null;
+
+    void viewSettingsStore.load(workspaceId, collectionId);
+    const entry = viewSettingsStore.entryFor(workspaceId, collectionId);
+    if (!entry?.loaded) return;
+
+    const redirect = getDisabledViewRedirect(route, $currentWorkspace);
     if (redirect) navigate(redirect, { replace: true });
   });
 

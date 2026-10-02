@@ -10,6 +10,9 @@ CREATE TABLE IF NOT EXISTS portal_customers (
 	custom_field_values TEXT,
 	is_primary BOOLEAN DEFAULT false,
 	dismissed_passkey_prompt_at DATETIME,
+	erased_at DATETIME, -- Set when the customer completed Article 17 erasure; the row is kept pseudonymized and never cleared
+	deactivated_at DATETIME, -- Set when an admin cut portal access; every portal auth path rejects deactivated customers; reactivation is an explicit admin action
+	created_via TEXT NOT NULL DEFAULT 'unknown', -- Creation provenance: agent | email-intake | magic-link | ticket-import | unknown (rows predating provenance capture)
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 	FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
@@ -93,3 +96,26 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_portal_request_drafts_user
 	WHERE user_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_portal_request_drafts_updated_at
 	ON portal_request_drafts(updated_at DESC);
+
+-- DSAR completion evidence: one row per Article 17 erasure execution against
+-- a portal customer. The customer row itself is pseudonymized (never
+-- deleted), so records persist.
+CREATE TABLE IF NOT EXISTS customer_erasure_records (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	portal_customer_id INTEGER NOT NULL,
+	requested_by TEXT NOT NULL, -- DSAR intake reference: subject email/channel reference
+	requested_at DATETIME NOT NULL, -- when the erasure request was received
+	approved_by INTEGER NOT NULL, -- admin user who approved execution
+	executed_at DATETIME NOT NULL, -- when erasure completed
+	policy_version TEXT NOT NULL, -- erasure policy version applied
+	notes TEXT,
+	FOREIGN KEY (portal_customer_id) REFERENCES portal_customers(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_customer_erasure_records_customer_id ON customer_erasure_records(portal_customer_id);
+
+
+-- migration: 20261005_portal_customers_erased_at
+-- migration: 20261005_customer_erasure_records
+-- migration: 20261006_portal_customers_deactivated_at
+-- migration: 20261006_portal_customers_created_via

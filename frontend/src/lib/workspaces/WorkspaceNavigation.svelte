@@ -15,8 +15,9 @@
     IconPencil as Pencil,
   } from '@tabler/icons-svelte-runes';
   import { workspaceViewItems, workspaceOnlyViews, testNavigationItems, visibleWorkspaceSettingsItems, workspaceSettingsViews, workspaceSettingsRoute } from '../navigation/workspaceNavigation.js';
+  import { viewSettingsStore } from '../stores/viewSettings.svelte.js';
   import { navigate, currentRoute } from '../router.js';
-  import { currentWorkspace, workspacePermissions } from '../stores';
+  import { authStore, currentWorkspace, workspacePermissions } from '../stores';
   import { moduleSettings } from '../stores/moduleSettings.js';
   import { api } from '../api.js';
   import DropdownMenu from '../layout/DropdownMenu.svelte';
@@ -83,7 +84,17 @@
   ]);
   const activeTestNavId = $derived.by(() => getActiveTestNavId($currentRoute));
   const isSettingsView = $derived(SETTINGS_VIEWS.includes($currentRoute.view));
-  const defaultCollectionView = workspaceViewItems[0]?.id || 'backlog';
+  // Collection-scoped views filtered by the scope's enabled-views setting.
+  const visibleWorkspaceViews = $derived.by(() => {
+    const enabled = new Set(viewSettingsStore.enabledViewIds(workspaceId, currentCollectionId));
+    return workspaceViewItems.filter((view) => enabled.has(view.id));
+  });
+  // First enabled view — workspace-only views cannot be collection-scoped.
+  const defaultCollectionView = $derived(visibleWorkspaceViews[0]?.id || 'backlog');
+
+  // Workspace-scope nav visibility (views plus tools/test entries). Tools
+  // render in collection contexts too, so keep the workspace entry warm.
+  const enabledNavSet = $derived(new Set(viewSettingsStore.enabledNavIds(workspaceId)));
 
   // Permission-based visibility
   const canViewTests = $derived.by(() => workspacePermissions.canViewTests(workspaceId));
@@ -96,15 +107,39 @@
   );
   const canViewPages = $derived.by(() => workspacePermissions.hasPermission(workspaceId, 'page.view'));
 
-  // Filter workspace-only views based on permissions
+  // Filter workspace-only views based on nav visibility and permissions.
   const filteredWorkspaceOnlyViews = $derived.by(() => {
     return workspaceOnlyViews.filter(view => {
+      if (!enabledNavSet.has(view.id)) return false;
       if (view.id === 'agents') return canAdmin;
       if (view.id === 'actions') return canManageActions;
       if (view.id === 'pages') return canViewPages;
       return true;
     });
   });
+  const visibleTestNavItems = $derived.by(() => {
+    // Test entries are not nav-configurable; module and permission gating
+    // decide their visibility.
+    return testNavigationItems;
+  });
+  // Entry points mirror the backend's write gates: the workspace-default
+  // navigation is workspace-admin territory, while a collection's views
+  // belong to whoever can edit the collection (its creator, with the
+  // collections:write the HTTP layer also requires).
+  const canConfigureWorkspaceNav = $derived.by(() =>
+    workspacePermissions.canAdminWorkspace(workspaceId)
+  );
+  const currentCollectionObject = $derived.by(() =>
+    collections.find((c) => String(c.id) === String(currentCollectionId)) ?? null
+  );
+  const canConfigureCollectionNav = $derived.by(() =>
+    Boolean(
+      currentCollectionObject &&
+        authStore.currentUser?.id != null &&
+        String(currentCollectionObject.created_by) === String(authStore.currentUser.id) &&
+        workspacePermissions.hasPermission(workspaceId, 'collections:write')
+    )
+  );
 
   // Gradient detection
   const gradientStyle = $derived.by(() => ($applyToAllViews && $workspaceGradientIndex > 0) ? getGradientStyle($workspaceGradientIndex) : null);
@@ -124,6 +159,15 @@
   $effect(() => {
     if (workspaceId) {
       loadCollections();
+    }
+  });
+
+  // Keep the enabled-views lookup warm for the current scope, plus the
+  // workspace scope so tools entries filter correctly inside collections.
+  $effect(() => {
+    if (workspaceId) {
+      viewSettingsStore.load(workspaceId, currentCollectionId);
+      viewSettingsStore.load(workspaceId, null);
     }
   });
 
@@ -206,6 +250,7 @@
     items.push({
       id: 'default',
       type: 'regular',
+      testid: 'workspace-collection-option-default',
       title: `${workspaceName} — ${t('collections.allItems')}`,
       badge: currentCollectionId === null ? '✓' : null,
       badgeClass: currentCollectionId === null ? '' : '',
@@ -219,6 +264,7 @@
       const collectionItems = collections.map(collection => ({
         id: `collection-${collection.id}`,
         type: 'regular',
+        testid: `workspace-collection-option-${collection.id}`,
         title: collection.name,
         subtitle: collection.description || undefined,
         badge: currentCollectionId == collection.id ? '✓' : null,
@@ -482,13 +528,13 @@
     <div class="flex flex-col items-center space-y-1 mt-6">
       {@render collapsedNavIcon({ href: getNavigationUrl('overview'), label: t('workspaceSettings.views.overview'), icon: Home, isActive: $currentRoute.view === 'workspace-overview' })}
 
-      {#each workspaceViewItems as view (view.id)}
+      {#each visibleWorkspaceViews as view (view.id)}
         {@render collapsedNavIcon({ href: getNavigationUrl(view.id), label: viewLabel(view), icon: view.icon, isActive: $currentRoute.view === `workspace-${view.id}` })}
       {/each}
 
       {#if $moduleSettings.test_management_enabled && canViewTests && !currentCollectionId}
         {@render sectionDivider()}
-        {#each testNavigationItems as view (view.id)}
+        {#each visibleTestNavItems as view (view.id)}
           {@render collapsedNavIcon({ href: getTestNavigationUrl(view.id), label: viewLabel(view), icon: view.icon, isActive: activeTestNavId === view.id })}
         {/each}
       {/if}
@@ -589,7 +635,7 @@
     <nav class="px-4 space-y-1 pb-2">
       {@render navLink({ href: getNavigationUrl('overview'), label: t('workspaceSettings.views.overview'), tooltip: t('commandPalette.commands.workspaceOverview.description'), icon: Home, isActive: $currentRoute.view === 'workspace-overview' })}
 
-      {#each workspaceViewItems as view (view.id)}
+      {#each visibleWorkspaceViews as view (view.id)}
         {@render navLink({ href: getNavigationUrl(view.id), label: viewLabel(view), tooltip: viewTooltip(view), icon: view.icon, testId: view.testId, isActive: $currentRoute.view === `workspace-${view.id}` })}
       {/each}
 
@@ -599,6 +645,9 @@
             {t('collections.collection')}
           </div>
           {@render navLink({ href: `/collections/${currentCollectionId}?workspace=${workspaceId}`, label: t('collections.editCollection'), icon: Pencil, isActive: false })}
+          {#if canConfigureCollectionNav}
+            {@render navLink({ href: `/workspaces/${workspaceId}/collections/${currentCollectionId}/nav-config`, label: t('navConfig.configureTitle'), icon: Settings, testId: 'workspace-nav-config-collection', isActive: $currentRoute.view === 'workspace-nav-config' })}
+          {/if}
         </div>
       {/if}
 
@@ -618,7 +667,7 @@
 
           {#if testsExpanded}
             <div id="workspace-tests-navigation" class="space-y-1" data-testid="workspace-tests-navigation">
-              {#each testNavigationItems as view (view.id)}
+              {#each visibleTestNavItems as view (view.id)}
                 {@render navLink({ href: getTestNavigationUrl(view.id), label: viewLabel(view), tooltip: viewTooltip(view), icon: view.icon, isActive: activeTestNavId === view.id })}
               {/each}
             </div>
@@ -627,14 +676,29 @@
       {/if}
 
       <div class="mt-4 pt-4 border-t" style="border-color: var(--ds-border);">
-        <button
-          type="button"
-          class="section-toggle w-full flex items-center justify-between text-xs font-semibold uppercase tracking-wide mb-2 transition-colors"
-          onclick={toggleWorkspaceToolsSection}
-        >
-          <span>{t('actions.config.tools')}</span>
-          <ChevronDown class={`w-4 h-4 transition-transform ${workspaceToolsExpanded ? 'rotate-180' : ''}`} />
-        </button>
+        <div class="flex items-center justify-between gap-1">
+          <button
+            type="button"
+            class="section-toggle flex-1 min-w-0 flex items-center justify-between text-xs font-semibold uppercase tracking-wide mb-2 transition-colors"
+            onclick={toggleWorkspaceToolsSection}
+          >
+            <span>{t('actions.config.tools')}</span>
+            <ChevronDown class={`w-4 h-4 transition-transform ${workspaceToolsExpanded ? 'rotate-180' : ''}`} />
+          </button>
+          {#if canConfigureWorkspaceNav && !currentCollectionId}
+            <Tooltip content={t('navConfig.configureTitle')} placement="right">
+              <a
+                href={`/workspaces/${workspaceId}/nav-config`}
+                data-testid="workspace-nav-config-button"
+                class="shrink-0 inline-flex items-center justify-center w-6 h-6 mb-2 rounded transition-colors hover:bg-[var(--ds-background-neutral)]"
+                style="color: var(--ds-text-subtle);"
+                aria-label={t('navConfig.configureTitle')}
+              >
+                <Settings size={14} />
+              </a>
+            </Tooltip>
+          {/if}
+        </div>
 
         {#if workspaceToolsExpanded}
           <div class="space-y-1" data-testid="workspace-tools-navigation">

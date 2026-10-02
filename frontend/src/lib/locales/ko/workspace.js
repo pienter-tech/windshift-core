@@ -5,6 +5,9 @@ export default {
     "subtitle": "워크스페이스 및 프로젝트 관리",
     "workspace": "워크스페이스",
     "template": "템플릿",
+    "restricted": "제한됨",
+    "visibility": "공개 범위",
+    "open": "공개",
     "workspaces_one": "워크스페이스 {count}개",
     "workspaces_other": "워크스페이스 {count}개",
     "createWorkspace": "워크스페이스 만들기",
@@ -792,7 +795,10 @@ export default {
     "currentLogo": "현재 로고",
     "noLogoSet": "로고 미설정",
     "uploadLogo": "로고 업로드",
-    "logoRecommendation": "권장: 투명 배경 PNG 또는 SVG. 헤더의 최대 높이: 40~50px."
+    "logoRecommendation": "권장: 투명 배경 PNG 또는 SVG. 헤더의 최대 높이: 40~50px.",
+    "lightLogo": "라이트 모드 로고",
+    "darkLogo": "다크 모드 로고",
+    "darkLogoFallback": "다크 모드에서 표시됩니다. 비워 두면 라이트 모드 로고를 사용합니다."
   },
   "issueSync": {
     "title": "GitHub 이슈 동기화",

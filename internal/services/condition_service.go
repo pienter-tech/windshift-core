@@ -59,7 +59,7 @@ func (s *ConditionService) EvaluateTransitionConditions(ctx context.Context, con
 		SELECT cst.transition_id, cst.logic_mode, c.condition_type, c.config, c.mode, COALESCE(c.error_message, '')
 		FROM condition_set_transitions cst
 		JOIN conditions c ON c.condition_set_transition_id = cst.id
-		WHERE cst.condition_set_id = ? AND cst.transition_id = ? AND c.mode IN (%s)
+		WHERE cst.condition_set_id = ? AND cst.transition_id = ? AND COALESCE(NULLIF(c.mode, ''), 'condition') IN (%s)
 		ORDER BY c.display_order, c.id
 	`, placeholders)
 
@@ -99,7 +99,7 @@ func (s *ConditionService) FilterTransitionsByConditions(ctx context.Context, co
 		SELECT cst.transition_id, cst.logic_mode, c.condition_type, c.config, c.mode, COALESCE(c.error_message, '')
 		FROM condition_set_transitions cst
 		JOIN conditions c ON c.condition_set_transition_id = cst.id
-		WHERE cst.condition_set_id = ? AND c.mode = 'condition'
+		WHERE cst.condition_set_id = ? AND COALESCE(NULLIF(c.mode, ''), 'condition') = 'condition'
 		ORDER BY cst.transition_id, c.display_order, c.id
 	`, conditionSetID)
 	if err != nil {
@@ -161,10 +161,32 @@ type TransitionWithID struct {
 }
 
 func (s *ConditionService) evaluateConditions(ctx context.Context, conditions []conditionRow, logicMode string, userID int, item map[string]any) (allowed bool, failureMessage string, err error) {
+	// Validators are hard gates: every validator must pass regardless of the
+	// binding's logic mode. Conditions then decide availability under logicMode.
+	var conditionRules []conditionRow
+	for _, c := range conditions {
+		if c.Mode != models.ConditionModeValidator {
+			conditionRules = append(conditionRules, c)
+			continue
+		}
+		result, err := s.evaluateCondition(ctx, c, userID, item)
+		if err != nil {
+			return false, "", err
+		}
+		if !result {
+			return false, c.ErrorMessage, nil
+		}
+	}
+
+	// No condition-mode rules means the availability gate is vacuously satisfied.
+	if len(conditionRules) == 0 {
+		return true, "", nil
+	}
+
 	if logicMode == "or" {
 		// OR: any condition passing = allowed
 		var lastFailMessage string
-		for _, c := range conditions {
+		for _, c := range conditionRules {
 			result, err := s.evaluateCondition(ctx, c, userID, item)
 			if err != nil {
 				return false, "", err
@@ -180,7 +202,7 @@ func (s *ConditionService) evaluateConditions(ctx context.Context, conditions []
 	}
 
 	// AND (default): all conditions must pass
-	for _, c := range conditions {
+	for _, c := range conditionRules {
 		result, err := s.evaluateCondition(ctx, c, userID, item)
 		if err != nil {
 			return false, "", err
@@ -306,13 +328,26 @@ func (s *ConditionService) evaluateFieldValue(configJSON string, item map[string
 		return false, fmt.Errorf("invalid field_value config: %w", err)
 	}
 
-	fieldValue := fmt.Sprintf("%v", item[cfg.FieldIdentifier])
+	fieldValue := fmt.Sprintf("%v", conditionFieldValue(cfg.FieldIdentifier, item))
 	re, err := regexp.Compile(cfg.Pattern)
 	if err != nil {
 		return false, fmt.Errorf("invalid regex pattern: %w", err)
 	}
 
 	return re.MatchString(fieldValue), nil
+}
+
+// conditionFieldValue resolves a field_value identifier against the regular
+// item fields first, then the item's custom fields (keyed by field id as a
+// string, matching the screen_fields convention).
+func conditionFieldValue(fieldIdentifier string, item map[string]any) any {
+	if value, ok := item[fieldIdentifier]; ok {
+		return value
+	}
+	if customFields, ok := item["custom_fields"].(map[string]any); ok {
+		return customFields[fieldIdentifier]
+	}
+	return nil
 }
 
 func (s *ConditionService) evaluateScript(ctx context.Context, configJSON string, userID int, item map[string]any) (bool, error) {

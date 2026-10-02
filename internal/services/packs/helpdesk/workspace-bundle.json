@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "kind": "windshift.workspace-bundle",
+  "payload": {
+    "pages": [
+      {
+        "ref": "helpdesk-guide",
+        "title": "Helpdesk Guide",
+        "content": "# Helpdesk Guide\n\nThis workspace coordinates customer support. Tickets are the customer-facing work items; internal follow-up stays on the ticket's linked items.\n\n## Queue\n\n- New tickets start in **Open**.\n- Pick up work by moving a ticket to **In Progress**.\n- **Pending** means you are waiting on the requester.\n- **Resolved** closes the support loop; **Closed** archives it.\n\n## Intake\n\nEmail intake, request types, and portal settings are configured on the workspace's support channel."
+      }
+    ]
+  }
+}

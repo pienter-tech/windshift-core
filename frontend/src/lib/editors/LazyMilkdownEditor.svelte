@@ -87,6 +87,12 @@
       editorInstance.insertImage(src, alt, title);
     }
   }
+
+  export function insertMarkdown(markdown) {
+    if (editorInstance?.insertMarkdown) {
+      editorInstance.insertMarkdown(markdown);
+    }
+  }
 </script>
 
 {#if MilkdownEditor}

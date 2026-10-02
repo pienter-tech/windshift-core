@@ -12,6 +12,8 @@
     DEFAULT_LIST_COLUMNS,
     getListColumnLabel,
     listColumnsFromConfig,
+    listGridMinWidth,
+    listGridTemplateColumns,
   } from '../../utils/workItemListColumns.js';
   import { useGradientStyles } from '../../stores/workspaceGradient.svelte.js';
   import { workspacePermissions } from '../../stores/workspacePermissions.svelte.js';
@@ -106,42 +108,11 @@
     });
   });
 
-  // Computed: Calculate total grid columns (sum of widths + 1 for actions)
-  let totalGridColumns = $derived(
-    listColumns.reduce((sum, col) => sum + col.width, 0) + 1
-  );
+  // Computed: Generate grid-template-columns CSS via the shared list grid
+  // helpers (also used by the support queue's list-shaped table).
+  let gridTemplateColumns = $derived(listGridTemplateColumns(listColumns));
 
-  // Computed: Generate grid-template-columns CSS
-  // Per-column baselines (rem) — what "M" looks like today.
-  // S/L/XL scale around this so the size picker has visible effect.
-  const baseFixedWidths = {
-    status: 8,
-    priority: 7,
-    assignee: 9,
-    milestone: 12,
-    iteration: 9,
-    due_date: 7,
-    created_at: 7,
-    project: 9,
-  };
-
-  // width values: 1=S, 2=M, 3=L, 4=XL
-  const widthScale = { 1: 0.75, 2: 1, 3: 1.5, 4: 2 };
-
-  function columnTrack(col) {
-    if (col.field_identifier === 'key') return 'max-content';
-    const base = baseFixedWidths[col.field_identifier];
-    if (base !== undefined) {
-      const scale = widthScale[col.width] ?? 1;
-      return `${base * scale}rem`;
-    }
-    return `${col.width}fr`;
-  }
-
-  let gridTemplateColumns = $derived(
-    listColumns.map(columnTrack).join(' ') + ' auto'
-  );
-
+  let gridMinWidth = $derived(listGridMinWidth(listColumns));
 
   useEventListener(() => window, 'refresh-work-items', async (/** @type {CustomEvent} */ event) => {
     const item = event.detail?.item;
@@ -378,10 +349,11 @@
           />
         {/if}
       {:else}
-        <div class="rounded-xl border shadow-sm overflow-hidden" style="{styles.tableStyle(12)} border-color: var(--ctx-border, var(--ds-border));">
+        <div class="rounded-xl border shadow-sm overflow-x-auto" style="{styles.tableStyle(12)} border-color: var(--ctx-border, var(--ds-border));">
           <!-- Table Header -->
           <TableHeaderBar
             columns={gridTemplateColumns}
+            minWidth={gridMinWidth}
             style={styles.tableHeaderStyle}
           >
             {#each listColumns as column (column.field_identifier)}
@@ -415,10 +387,10 @@
                   {#snippet children()}
                     <div
                       class="grid gap-4 items-center"
-                      style="grid-template-columns: {gridTemplateColumns};"
+                      style="grid-template-columns: {gridTemplateColumns}; min-width: {gridMinWidth};"
                     >
                       {#each listColumns as column (column.field_identifier)}
-                        <div class="min-w-0">
+                        <div class="min-w-0 overflow-hidden">
                           <ListCellRenderer
                             {item}
                             {column}

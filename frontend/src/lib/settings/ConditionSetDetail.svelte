@@ -17,6 +17,8 @@
   import BasePicker from '../pickers/BasePicker.svelte';
   import RolePicker from '../pickers/RolePicker.svelte';
   import DescriptionText from '../components/DescriptionText.svelte';
+  import { transitionFromLabel } from './transitionLabels.js';
+  import { isSelectableTransition } from './transitionSelection.js';
   import TransitionOverrideWarning from '../components/TransitionOverrideWarning.svelte';
 	import TextareaField from '../components/TextareaField.svelte';
 	import TextField from '../components/TextField.svelte';
@@ -90,7 +92,7 @@
 
   const transitionsWithoutConditions = $derived(
     transitions
-      .filter(tr => tr.from_status_id != null) // Exclude initial transitions
+      .filter(isSelectableTransition)
       .filter(tr => !formData.transition_conditions.some(tc => tc.transition_id === tr.id))
   );
 
@@ -343,8 +345,7 @@
 
   function getTransitionLabel(trans) {
     if (!trans) return '';
-    const from = trans.from_status_name || 'Initial';
-    return `${from} → ${trans.to_status_name}`;
+    return `${transitionFromLabel(trans)} → ${trans.to_status_name}`;
   }
 
   function getConditionSummary(conditions) {
@@ -836,7 +837,7 @@
               </div>
             {/if}
 
-            {#if transitions.filter(tr => tr.from_status_id != null).length === 0}
+            {#if transitions.filter(isSelectableTransition).length === 0}
               <div class="text-sm py-4 text-center" style="color: var(--ds-text-subtle);">
                 {t('conditionSets.noTransitions')}
               </div>

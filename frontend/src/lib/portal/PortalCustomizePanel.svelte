@@ -23,6 +23,7 @@
   import { gradients, iconMap } from '../stores/portalPresentation.js';
   import ModalBackdrop from '../components/ModalBackdrop.svelte';
   import { api } from '../api.js';
+  import { workspacesStore } from '../stores/workspaces.svelte.js';
   import { portalAuthStore } from '../stores/portalAuth.svelte.js';
   import { authStore } from '../stores';
   import { loadPermissionProfile } from '../stores/permissionProfile.js';
@@ -90,7 +91,7 @@
 
   async function loadKbWorkspaces() {
     try {
-      kbWorkspaces = (await api.workspaces.getAll()) ?? [];
+      kbWorkspaces = (await workspacesStore.load()) ?? [];
     } catch (err) {
       console.error('Failed to load workspaces for knowledge base wiring:', err);
       kbWorkspaces = [];
@@ -105,9 +106,9 @@
       const profile = await loadPermissionProfile(userId);
       kbIsSystemAdmin = profile.has_system_admin === true;
       const adminIds = new Set();
-      for (const wp of profile.workspace_permissions || []) {
-        if (wp.permission?.permission_key === 'workspace.admin') {
-          adminIds.add(Number(wp.workspace_id));
+      for (const [wsId, keys] of Object.entries(profile.workspace_permissions || {})) {
+        if (keys.includes('workspace.admin')) {
+          adminIds.add(Number(wsId));
         }
       }
       kbAdminWorkspaceIds = adminIds;
@@ -119,19 +120,19 @@
 
   async function loadKbPageTitles() {
     const sources = portalStore.knowledgeBasePageSources || [];
-    const workspaceIds = [...new Set(sources.map((s) => s.workspace_id))];
-    for (const workspaceId of workspaceIds) {
-      if (kbPageTitles[workspaceId]) continue;
-      try {
-        const pages = await api.pages.getAll(workspaceId);
-        const rows = Array.isArray(pages) ? pages : (pages?.items ?? []);
-        const titles = { ...kbPageTitles };
-        for (const page of rows) titles[page.id] = page.title;
-        titles[`ws:${workspaceId}`] = true;
-        kbPageTitles = titles;
-      } catch (err) {
-        console.error('Failed to load page titles for knowledge base wiring:', err);
+    const workspaceIds = [...new Set(sources.map((s) => s.workspace_id))]
+      .filter((id) => kbPageTitles[`ws:${id}`] !== true);
+    if (workspaceIds.length === 0) return;
+    try {
+      const rows = await api.pages.getTitles(workspaceIds);
+      const titles = { ...kbPageTitles };
+      for (const row of Array.isArray(rows) ? rows : []) {
+        titles[row.page_id] = row.title;
       }
+      for (const workspaceId of workspaceIds) titles[`ws:${workspaceId}`] = true;
+      kbPageTitles = titles;
+    } catch (err) {
+      console.error('Failed to load page titles for knowledge base wiring:', err);
     }
   }
 
@@ -355,7 +356,8 @@
   });
 </script>
 
-<!-- Customization Panel Overlay (hide when editing request types so sections are visible) -->
+<!-- Customization Panel Overlay (hidden while the request-types or
+     asset-reports section is active so section drop zones stay reachable) -->
 
 <!-- Shared card fragments for the request-type and asset-report lists. -->
 {#snippet cardIconBadge(color, Icon)}
@@ -366,8 +368,8 @@
   </div>
 {/snippet}
 
-{#snippet dragHandle()}
-  <div class="cursor-grab active:cursor-grabbing pt-1" style="color: {portalStore.isDarkMode ? '#64748b' : '#9ca3af'};" data-drag-handle>
+{#snippet dragHandle(testId)}
+  <div class="cursor-grab active:cursor-grabbing pt-1" style="color: {portalStore.isDarkMode ? '#64748b' : '#9ca3af'};" data-drag-handle data-testid={testId}>
     <GripVertical class="w-4 h-4" />
   </div>
 {/snippet}
@@ -392,7 +394,7 @@
 {/snippet}
 
 <ModalBackdrop
-  show={portalStore.showCustomizePanel && portalStore.activeSection !== 'request-types'}
+  show={portalStore.showCustomizePanel && portalStore.activeSection !== 'request-types' && portalStore.activeSection !== 'asset-reports'}
   opacity={0.3}
   blur={0}
   align="none"
@@ -479,6 +481,7 @@
         {#snippet children()}
           <button
             onclick={() => portalStore.activeSection = 'asset-reports'}
+            data-testid="portal-customize-asset-reports-section"
             class="w-10 h-10 rounded flex items-center justify-center cursor-pointer transition-all mb-1"
             style="background-color: {portalStore.activeSection === 'asset-reports' ? 'var(--ds-background-neutral)' : 'transparent'};"
           >
@@ -626,7 +629,7 @@
                   {@render cardIconBadge(requestType.color, RequestTypeIcon)}
 
                   <!-- Drag Handle -->
-                  {@render dragHandle()}
+                  {@render dragHandle('portal-request-type-drag-handle')}
 
                   <!-- Content -->
                   <div class="flex-1 min-w-0">
@@ -731,13 +734,14 @@
                 style="background-color: {portalStore.isDarkMode ? '#334155' : '#f9fafb'}; border-color: {portalStore.isDarkMode ? '#475569' : '#e5e7eb'};"
                 data-asset-report-card
                 data-asset-report-id={report.id}
+                data-testid="portal-customize-asset-report-card"
               >
                 <div class="flex items-start gap-3">
                   <!-- Icon Preview -->
                   {@render cardIconBadge(report.color, ReportIcon)}
 
                   <!-- Drag Handle -->
-                  {@render dragHandle()}
+                  {@render dragHandle('portal-asset-report-drag-handle')}
 
                   <!-- Content -->
                   <div class="flex-1 min-w-0">

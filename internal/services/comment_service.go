@@ -25,6 +25,12 @@ type WebhookDispatcher interface {
 	DispatchEvent(eventType string, item *models.Item)
 }
 
+// InactivityMarkClearer re-arms item_inactive triggers after comment
+// activity (WI-1132).
+type InactivityMarkClearer interface {
+	ClearItemMarks(itemID int) error
+}
+
 // EmailReplyHandler is an interface for handling outbound email replies on comment creation.
 // This avoids an import cycle with the email reply service.
 type EmailReplyHandler interface {
@@ -101,6 +107,8 @@ type CommentService struct {
 	notificationService *NotificationService
 	mentionService      *MentionService
 	webhookSender       WebhookDispatcher
+	actionEvents        ActionEventEmitter
+	inactivityMarks     InactivityMarkClearer
 	emailReplyService   EmailReplyHandler
 	agentMentionTrigger AgentMentionTrigger
 	issueSync           CommentIssueSync
@@ -177,6 +185,51 @@ func NewCommentService(db database.Database) *CommentService {
 	}
 }
 
+// MoveCommentsToItem re-parents every comment of one ticket onto another
+// within the caller's transaction — the merge primitive. When makePrivate is
+// set (requesters differ), moved comments become internal so the destination
+// ticket's requester is never exposed to another customer's content in the
+// portal; agents keep the full thread with per-comment attribution. The
+// caller owns the surrounding transaction and the item-change publication for
+// both items.
+func (s *CommentService) MoveCommentsToItem(tx database.Tx, fromItemID, toItemID int64, makePrivate bool) (int64, error) {
+	query := `UPDATE comments SET item_id = ?, is_private = TRUE WHERE item_id = ?`
+	if !makePrivate {
+		query = `UPDATE comments SET item_id = ? WHERE item_id = ?`
+	}
+	res, err := tx.Exec(query, toItemID, fromItemID)
+	if err != nil {
+		return 0, fmt.Errorf("move comments from item %d to %d: %w", fromItemID, toItemID, err)
+	}
+	return res.RowsAffected()
+}
+
+// MoveCommentsByID re-parents the selected comments from fromItemID onto
+// toItemID within the caller's transaction — the split primitive. moved must
+// equal len(commentIDs); a mismatch means some comments do not belong to
+// fromItemID and the caller should fail the transaction. The caller owns the
+// surrounding transaction and the item-change publication for both items.
+func (s *CommentService) MoveCommentsByID(tx database.Tx, fromItemID, toItemID int64, commentIDs []int64) (int64, error) {
+	if len(commentIDs) == 0 {
+		return 0, nil
+	}
+	placeholders := strings.Repeat("?,", len(commentIDs))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]any, 0, len(commentIDs)+2)
+	args = append(args, toItemID, fromItemID)
+	for _, id := range commentIDs {
+		args = append(args, id)
+	}
+	res, err := tx.Exec(
+		`UPDATE comments SET item_id = ? WHERE item_id = ? AND id IN (`+placeholders+`)`,
+		args...,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("move %d comments from item %d to item %d: %w", len(commentIDs), fromItemID, toItemID, err)
+	}
+	return res.RowsAffected()
+}
+
 // ListRecentSummaries returns the newest comments for an item.
 func (s *CommentService) ListRecentSummaries(itemID, limit int) ([]ItemCommentSummary, error) {
 	if limit <= 0 {
@@ -247,6 +300,18 @@ func (s *CommentService) SetMentionService(ms *MentionService) {
 // SetWebhookSender sets the webhook sender for dispatching webhook events.
 func (s *CommentService) SetWebhookSender(ws WebhookDispatcher) {
 	s.webhookSender = ws
+}
+
+// SetActionEventEmitter wires the comment_created automation trigger.
+func (s *CommentService) SetActionEventEmitter(e ActionEventEmitter) {
+	s.actionEvents = e
+}
+
+// SetInactivityMarkClearer wires inactivity re-arming on comment activity.
+func (s *CommentService) SetInactivityMarkClearer(c InactivityMarkClearer) {
+	if c != nil {
+		s.inactivityMarks = c
+	}
 }
 
 // SetEmailReplyService sets the email reply service for sending threaded replies to portal customers.
@@ -591,6 +656,34 @@ func (s *CommentService) create(params CreateCommentParams) (*CreateCommentResul
 		// 7. Dispatch webhook (if webhookSender != nil)
 		if s.webhookSender != nil {
 			s.webhookSender.DispatchEvent("comment.created", item)
+		}
+
+		// 7b. Dispatch the comment_created automation trigger (WI-1132).
+		// Admission outlives the request; failures never block comments.
+		if s.actionEvents != nil {
+			fromCustomer := params.PortalCustomerID != nil
+			s.actionEvents.EmitActionEvent(&models.ActionEvent{
+				EventType:   models.ActionTriggerCommentCreated,
+				WorkspaceID: item.WorkspaceID,
+				ItemID:      params.ItemID,
+				ActorUserID: params.ActorUserID,
+				ItemTypeID:  item.ItemTypeID,
+				NewValues: map[string]any{
+					"comment_id":            int(commentID),
+					"comment_is_private":    params.IsPrivate,
+					"comment_from_customer": fromCustomer,
+				},
+			})
+		}
+		// Fresh comment activity re-arms item_inactive triggers for the item.
+		if s.inactivityMarks != nil {
+			if err := s.inactivityMarks.ClearItemMarks(params.ItemID); err != nil {
+				slog.Warn("failed to clear inactivity marks",
+					slog.String("component", "comment_service"),
+					slog.Int("item_id", params.ItemID),
+					slog.Any("error", err),
+				)
+			}
 		}
 
 		// 8. Handle outbound email reply (if emailReplyService != nil)

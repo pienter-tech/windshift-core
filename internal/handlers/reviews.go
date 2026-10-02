@@ -208,6 +208,12 @@ func (h *ReviewHandler) CreateReview(w http.ResponseWriter, r *http.Request) {
 		respondValidationError(w, r, "Missing required fields: review_date, review_type, review_data")
 		return
 	}
+	// review_data is stored as JSON, so reject anything else before it
+	// reaches the database.
+	if err := sanitize.ValidateJSONPayload("review_data", req.ReviewData); err != nil {
+		respondValidationError(w, r, err.Error())
+		return
+	}
 
 	// Validate review type
 	if req.ReviewType != "daily" && req.ReviewType != "weekly" {
@@ -282,6 +288,10 @@ func (h *ReviewHandler) UpdateReview(w http.ResponseWriter, r *http.Request) {
 	// Validate required fields
 	if req.ReviewData == "" {
 		respondValidationError(w, r, "Missing required field: review_data")
+		return
+	}
+	if err := sanitize.ValidateJSONPayload("review_data", req.ReviewData); err != nil {
+		respondValidationError(w, r, err.Error())
 		return
 	}
 

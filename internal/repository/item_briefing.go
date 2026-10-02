@@ -35,11 +35,12 @@ func (r *ItemRepository) RecentItemChanges(workspaceIDs []int, since time.Time, 
 	args = append(args, since)
 	query := fmt.Sprintf(`SELECT ih.field_name, COALESCE(ih.old_value, ''), COALESCE(ih.new_value, ''), ih.changed_at,
 		w.key || '-' || CAST(i.workspace_item_number AS TEXT) as item_key, i.title,
-		COALESCE(u.first_name || ' ' || u.last_name, 'Unknown') as changed_by
+		COALESCE(NULLIF(TRIM(u.first_name || ' ' || u.last_name), ''), u.username, pc.name, 'System') as changed_by
 		FROM item_history ih
 		JOIN items i ON ih.item_id = i.id
 		JOIN workspaces w ON i.workspace_id = w.id
 		LEFT JOIN users u ON ih.user_id = u.id
+		LEFT JOIN portal_customers pc ON ih.actor_portal_customer_id = pc.id
 		WHERE i.workspace_id IN (%s) AND ih.changed_at >= ?
 		ORDER BY ih.changed_at DESC LIMIT %d`, wsIn, limit)
 

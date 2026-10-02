@@ -49,9 +49,11 @@ type PortalHandler struct {
 	approvalService      *services.ApprovalService
 	draftRepo            *repository.PortalDraftRepository
 	attachmentPath       string
+	attachments          *services.ItemAttachmentService
 	eventCoordinator     *services.EventCoordinator
 	publication          *services.KnowledgePublicationService
 	kbSignals            *services.KBSignalService
+	channelService       *services.ChannelService
 }
 
 // SetKnowledgePublicationService wires the resolver for workspace pages
@@ -91,9 +93,21 @@ func (h *PortalHandler) SetApprovalService(s *services.ApprovalService) {
 	h.approvalService = s
 }
 
+// SetCommentService wires the application comment service so portal replies
+// notify staff and dispatch webhooks through the standard pipeline.
+func (h *PortalHandler) SetCommentService(cs *services.CommentService) {
+	h.portalService.SetCommentService(cs)
+}
+
 // SetEventCoordinator wires the shared item-created side-effect pipeline.
 func (h *PortalHandler) SetEventCoordinator(ec *services.EventCoordinator) {
 	h.eventCoordinator = ec
+}
+
+// SetChannelService wires channel-manager lookups so the portal snapshot can
+// report whether the viewer may customize this portal.
+func (h *PortalHandler) SetChannelService(s *services.ChannelService) {
+	h.channelService = s
 }
 
 // getClientIP extracts the client IP with proxy validation
@@ -330,6 +344,10 @@ func applyRequestTypeVisibility(rt *models.RequestType, groups, orgs sql.NullStr
 
 // NewPortalHandler creates a new portal handler
 func NewPortalHandler(db database.Database, sessionManager *auth.SessionManager, portalSessionManager *auth.PortalSessionManager, ipExtractor *utils.IPExtractor, attachmentPath string) *PortalHandler {
+	var attachments *services.ItemAttachmentService
+	if attachmentPath != "" {
+		attachments = services.NewItemAttachmentService(db, attachmentPath, nil)
+	}
 	return &PortalHandler{
 		db:                   db,
 		sessionManager:       sessionManager,
@@ -339,6 +357,7 @@ func NewPortalHandler(db database.Database, sessionManager *auth.SessionManager,
 		portalAuthRepo:       repository.NewPortalAuthRepository(db),
 		draftRepo:            repository.NewPortalDraftRepository(db),
 		attachmentPath:       attachmentPath,
+		attachments:          attachments,
 	}
 }
 
@@ -510,7 +529,7 @@ func (h *PortalHandler) GetPortal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer cancel()
-	response, err := h.loadPortalData(ctx, channel, config)
+	response, err := h.loadPortalData(ctx, r, channel, config)
 	if errors.Is(err, repository.ErrNotFound) {
 		respondNotFound(w, r, "workspace")
 		return
@@ -522,7 +541,7 @@ func (h *PortalHandler) GetPortal(w http.ResponseWriter, r *http.Request) {
 	respondJSONOK(w, response)
 }
 
-func (h *PortalHandler) loadPortalData(ctx context.Context, channel models.Channel, config models.ChannelConfig) (map[string]any, error) {
+func (h *PortalHandler) loadPortalData(ctx context.Context, r *http.Request, channel models.Channel, config models.ChannelConfig) (map[string]any, error) {
 	response := h.loadPortalEntryData(ctx, config)
 
 	// The first configured workspace remains the compatibility value for older clients.
@@ -557,8 +576,30 @@ func (h *PortalHandler) loadPortalData(ctx context.Context, channel models.Chann
 	// Workspace-pages wiring is part of the authenticated portal contract so
 	// the customize panel and the KB itself can mark the exposure.
 	response["knowledge_base_page_sources"] = knowledgeBasePageSourcesResponse(config.KnowledgeBasePageSources)
+	// Internal viewers need to know whether they may edit this portal before
+	// the customize UI is offered; portal customers never can.
+	response["can_manage"] = h.canManagePortal(ctx, r, channel.ID)
 
 	return response, nil
+}
+
+// canManagePortal reports whether the current internal caller holds channel
+// management rights for the portal. Anonymous and portal-customer callers
+// always return false.
+func (h *PortalHandler) canManagePortal(ctx context.Context, r *http.Request, channelID int) bool {
+	if h.channelService == nil {
+		return false
+	}
+	internalUserID, _ := h.getAuthFromContext(r)
+	if internalUserID == nil {
+		return false
+	}
+	canManage, err := h.channelService.UserCanManage(ctx, *internalUserID, channelID)
+	if err != nil {
+		slog.Warn("portal can-manage check failed", "channel_id", channelID, "error", err)
+		return false
+	}
+	return canManage
 }
 
 // knowledgeBasePageSourcesResponse always serializes the wiring as an array.

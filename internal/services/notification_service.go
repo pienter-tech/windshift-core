@@ -1390,6 +1390,10 @@ func (ns *NotificationService) getDefaultMessage(event *NotificationEvent) (subj
 		message = fmt.Sprintf("Work items linked: %s", getItemIdentifier())
 	case models.EventItemUnlinked:
 		message = fmt.Sprintf("Work item link removed: %s", getItemIdentifier())
+	case models.EventSLABreached:
+		message = fmt.Sprintf("SLA breached (%s) for: %s", data["sla.metric"], getItemIdentifier())
+	case models.EventSLAWarning:
+		message = fmt.Sprintf("SLA warning (%s) for: %s", data["sla.metric"], getItemIdentifier())
 	case models.EventMention:
 		actorName := "Someone"
 		if name, ok := data["actor.name"]; ok && name != nil && name != "" {

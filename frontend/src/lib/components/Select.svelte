@@ -220,7 +220,7 @@
       <div
         id={optionId(opt, index)}
         data-testid={id ? `${id}-option` : undefined}
-        data-option-id={opt.value}
+        data-option-id={opt.value ?? ''}
         role="option"
         tabindex="-1"
         aria-selected={isSelected}

@@ -1,0 +1,507 @@
+package jira
+
+import (
+	"fmt"
+	"regexp"
+	"strings"
+)
+
+var (
+	jqlOrderByPattern      = regexp.MustCompile(`(?i)\s+ORDER\s+BY\s+.+$`)
+	jqlSimpleClausePattern = regexp.MustCompile(`(?is)^\s*([A-Za-z][A-Za-z0-9_ -]*)\s*(=|!=|<>|~|IN|NOT\s+IN)\s*(.+?)\s*$`)
+	jqlOuterParensPattern  = regexp.MustCompile(`^\((.*)\)$`)
+	jqlWhitespacePattern   = regexp.MustCompile(`\s+`)
+	jqlIdentifierSafe      = regexp.MustCompile(`^[A-Za-z0-9_.:-]+$`)
+)
+
+// TranslateJQLToWindshiftQL translates a Jira JQL expression into Windshift QL
+// scoped to workspaceID. Clauses that cannot be translated are returned in
+// unsupported; callers must preserve the original JQL and keep the imported
+// selector inactive rather than widening it.
+func TranslateJQLToWindshiftQL(jql string, workspaceID int) (ql string, unsupported []string) {
+	base := fmt.Sprintf("workspace_id = %d", workspaceID)
+	jql = strings.TrimSpace(jql)
+	if jql == "" {
+		return base, nil
+	}
+	unsupported = []string{}
+	if match := jqlOrderByPattern.FindString(jql); match != "" {
+		unsupported = append(unsupported, strings.TrimSpace(match))
+		jql = strings.TrimSpace(jqlOrderByPattern.ReplaceAllString(jql, ""))
+	}
+	if jql == "" {
+		return base, unsupported
+	}
+	expr, err := parseJQLExpression(jql)
+	if err != nil {
+		// Preserve the whole expression when the grammar is not understood;
+		// callers surface this as an unsupported clause rather than guessing.
+		return base, append(unsupported, jql)
+	}
+	translated, clauseUnsupported := translateJQLBoolean(expr)
+	unsupported = append(unsupported, clauseUnsupported...)
+	if translated == "" {
+		return base, unsupported
+	}
+	return base + " AND (" + translated + ")", unsupported
+}
+
+func translateJQLClause(clause string) (string, bool) {
+	clause = strings.TrimSpace(clause)
+	if m := jqlOuterParensPattern.FindStringSubmatch(clause); len(m) == 2 {
+		clause = strings.TrimSpace(m[1])
+	}
+	if containsTopLevelJQLKeyword(clause, "OR") || containsTopLevelJQLKeyword(clause, "AND") {
+		return "", false
+	}
+	m := jqlSimpleClausePattern.FindStringSubmatch(clause)
+	if len(m) != 4 {
+		return "", false
+	}
+	field := normalizeJQLField(m[1])
+	op := normalizeJQLOperator(m[2])
+	rawValue := strings.TrimSpace(m[3])
+
+	if field == "project" {
+		if op == "=" || op == "IN" {
+			// Represented by workspace_id in every imported collection. A
+			// tautology keeps an OR group from silently narrowing.
+			return "1 = 1", true
+		}
+		return "", false
+	}
+	qlField, valueMapper, ok := jqlFieldMapping(field)
+	if !ok {
+		return "", false
+	}
+	values, listOK := parseJQLValueList(rawValue)
+	if op == "IN" || op == "NOT IN" {
+		if !listOK || len(values) == 0 {
+			return "", false
+		}
+		mapped := make([]string, 0, len(values))
+		for _, value := range values {
+			if mv, ok := valueMapper(value); ok {
+				mapped = append(mapped, quoteQLValue(mv))
+			}
+		}
+		if len(mapped) == 0 {
+			return "", false
+		}
+		return fmt.Sprintf("%s %s (%s)", qlField, op, strings.Join(mapped, ", ")), true
+	}
+	if listOK {
+		return "", false
+	}
+	value := unquoteJQLValue(rawValue)
+	mapped, ok := valueMapper(value)
+	if !ok {
+		return "", false
+	}
+	if op == "~" {
+		return fmt.Sprintf("%s ~ %s", qlField, quoteQLValue(mapped)), true
+	}
+	return fmt.Sprintf("%s %s %s", qlField, op, quoteQLValue(mapped)), true
+}
+
+func normalizeJQLField(field string) string {
+	field = strings.ToLower(strings.TrimSpace(field))
+	field = strings.ReplaceAll(field, " ", "")
+	field = strings.ReplaceAll(field, "_", "")
+	return field
+}
+
+func normalizeJQLOperator(op string) string {
+	op = strings.ToUpper(jqlWhitespacePattern.ReplaceAllString(strings.TrimSpace(op), " "))
+	if op == "<>" {
+		return "!="
+	}
+	return op
+}
+
+func jqlFieldMapping(field string) (qlField string, valueMapper func(string) (string, bool), ok bool) {
+	identity := func(v string) (string, bool) { return strings.TrimSpace(v), strings.TrimSpace(v) != "" }
+	switch field {
+	case "status":
+		return "status", identity, true
+	case "statuscategory":
+		return "status_category", identity, true
+	case "priority":
+		return "priority", func(v string) (string, bool) { return SuggestPriorityMapping(v), strings.TrimSpace(v) != "" }, true
+	case "issuetype", "type":
+		return "itemtypename", identity, true
+	case "requesttype", "customerrequesttype", "requesttypename":
+		return "requesttypename", identity, true
+	case "organization", "organizations", "organisation", "customerorganization", "customerorganisation":
+		return "customerorganisation", identity, true
+	case "summary":
+		return "title", identity, true
+	case "description":
+		return "description", identity, true
+	case "labels", "label":
+		return "labels", identity, true
+	case "fixversion", "fixversions", "fixversion/s":
+		return "milestonename", identity, true
+	case "component", "components":
+		return "labels", func(v string) (string, bool) {
+			v = strings.TrimSpace(v)
+			if v == "" {
+				return "", false
+			}
+			return "component:" + v, true
+		}, true
+	case "affectedversion", "affectedversions", "affectedversion/s":
+		return "labels", func(v string) (string, bool) {
+			v = strings.TrimSpace(v)
+			if v == "" {
+				return "", false
+			}
+			return "affects:" + v, true
+		}, true
+	case "key", "issuekey":
+		return "key", identity, true
+	}
+	return "", nil, false
+}
+
+func parseJQLValueList(raw string) ([]string, bool) {
+	raw = strings.TrimSpace(raw)
+	if !strings.HasPrefix(raw, "(") || !strings.HasSuffix(raw, ")") {
+		return nil, false
+	}
+	inner := strings.TrimSpace(raw[1 : len(raw)-1])
+	if inner == "" {
+		return nil, true
+	}
+	var values []string
+	var current strings.Builder
+	quote := rune(0)
+	for _, r := range inner {
+		if quote != 0 {
+			current.WriteRune(r)
+			if r == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch r {
+		case '\'', '"':
+			quote = r
+			current.WriteRune(r)
+		case ',':
+			values = append(values, unquoteJQLValue(current.String()))
+			current.Reset()
+		default:
+			current.WriteRune(r)
+		}
+	}
+	values = append(values, unquoteJQLValue(current.String()))
+	return values, true
+}
+
+func unquoteJQLValue(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) >= 2 {
+		first, last := value[0], value[len(value)-1]
+		if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+			return strings.TrimSpace(value[1 : len(value)-1])
+		}
+	}
+	return value
+}
+
+func quoteQLValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return `""`
+	}
+	if jqlIdentifierSafe.MatchString(value) && !strings.Contains(value, ":") {
+		return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
+	}
+	return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
+}
+
+func isJQLBoundary(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '(' || r == ')'
+}
+
+func hasJQLKeywordAt(runes []rune, idx int, keyword string) bool {
+	if idx+len(keyword) > len(runes) {
+		return false
+	}
+	for j, r := range keyword {
+		if !strings.EqualFold(string(runes[idx+j]), string(r)) {
+			return false
+		}
+	}
+	beforeOK := idx == 0 || isJQLBoundary(runes[idx-1])
+	afterIdx := idx + len(keyword)
+	afterOK := afterIdx >= len(runes) || isJQLBoundary(runes[afterIdx])
+	return beforeOK && afterOK
+}
+
+func containsTopLevelJQLKeyword(value, keyword string) bool {
+	quote := rune(0)
+	depth := 0
+	runes := []rune(value)
+	for i, r := range runes {
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch r {
+		case '\'', '"':
+			quote = r
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		default:
+			if depth == 0 && hasJQLKeywordAt(runes, i, keyword) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// JQL boolean parsing
+// ---------------------------------------------------------------------------
+//
+// Jira saved filters routinely nest AND/OR groups. The original translator only
+// understood a flat top-level AND list and rejected anything nested or ORed.
+// This parser turns a JQL expression into a small tree so the translator can
+// preserve grouping and boolean intent in the emitted Windshift QL.
+
+type jqlBooleanExpr interface{}
+
+type jqlLeafExpr struct {
+	clause string
+}
+
+type jqlBinaryExpr struct {
+	op          string
+	left, right jqlBooleanExpr
+}
+
+type jqlNotExpr struct {
+	operand jqlBooleanExpr
+}
+
+type jqlExprParser struct {
+	runes []rune
+	pos   int
+}
+
+func parseJQLExpression(jql string) (jqlBooleanExpr, error) {
+	parser := &jqlExprParser{runes: []rune(jql)}
+	expr, err := parser.parseOr()
+	if err != nil {
+		return nil, err
+	}
+	parser.skipSpaces()
+	if parser.pos < len(parser.runes) {
+		return nil, fmt.Errorf("unexpected token near %q", parser.remainingPreview())
+	}
+	return expr, nil
+}
+
+func (p *jqlExprParser) parseOr() (jqlBooleanExpr, error) {
+	left, err := p.parseAnd()
+	if err != nil {
+		return nil, err
+	}
+	for p.peekKeyword("OR") {
+		p.consumeKeyword("OR")
+		right, err := p.parseAnd()
+		if err != nil {
+			return nil, err
+		}
+		left = jqlBinaryExpr{op: "OR", left: left, right: right}
+	}
+	return left, nil
+}
+
+func (p *jqlExprParser) parseAnd() (jqlBooleanExpr, error) {
+	left, err := p.parseNot()
+	if err != nil {
+		return nil, err
+	}
+	for p.peekKeyword("AND") {
+		p.consumeKeyword("AND")
+		right, err := p.parseNot()
+		if err != nil {
+			return nil, err
+		}
+		left = jqlBinaryExpr{op: "AND", left: left, right: right}
+	}
+	return left, nil
+}
+
+func (p *jqlExprParser) parseNot() (jqlBooleanExpr, error) {
+	// A prefix NOT is the only unary operator here; `field NOT IN (...)` is a
+	// leaf because NOT is only special when a primary is expected.
+	if p.peekKeyword("NOT") {
+		p.consumeKeyword("NOT")
+		operand, err := p.parseNot()
+		if err != nil {
+			return nil, err
+		}
+		return jqlNotExpr{operand: operand}, nil
+	}
+	return p.parsePrimary()
+}
+
+func (p *jqlExprParser) parsePrimary() (jqlBooleanExpr, error) {
+	p.skipSpaces()
+	if p.pos >= len(p.runes) {
+		return nil, fmt.Errorf("unexpected end of JQL expression")
+	}
+	if p.runes[p.pos] == '(' {
+		p.pos++
+		inner, err := p.parseOr()
+		if err != nil {
+			return nil, err
+		}
+		p.skipSpaces()
+		if p.pos >= len(p.runes) || p.runes[p.pos] != ')' {
+			return nil, fmt.Errorf("missing closing parenthesis")
+		}
+		p.pos++
+		return inner, nil
+	}
+	clause := p.readClause()
+	if strings.TrimSpace(clause) == "" {
+		return nil, fmt.Errorf("empty JQL clause")
+	}
+	return jqlLeafExpr{clause: clause}, nil
+}
+
+func (p *jqlExprParser) readClause() string {
+	start := p.pos
+	quote := rune(0)
+	depth := 0
+	for p.pos < len(p.runes) {
+		r := p.runes[p.pos]
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+			}
+			p.pos++
+			continue
+		}
+		switch r {
+		case '\'', '"':
+			quote = r
+			p.pos++
+		case '(':
+			depth++
+			p.pos++
+		case ')':
+			if depth == 0 {
+				return strings.TrimSpace(string(p.runes[start:p.pos]))
+			}
+			depth--
+			p.pos++
+		default:
+			if depth == 0 && (p.keywordAt(p.pos, "AND") || p.keywordAt(p.pos, "OR")) {
+				return strings.TrimSpace(string(p.runes[start:p.pos]))
+			}
+			p.pos++
+		}
+	}
+	return strings.TrimSpace(string(p.runes[start:p.pos]))
+}
+
+func (p *jqlExprParser) skipSpaces() {
+	for p.pos < len(p.runes) {
+		switch p.runes[p.pos] {
+		case ' ', '\t', '\n', '\r':
+			p.pos++
+		default:
+			return
+		}
+	}
+}
+
+func (p *jqlExprParser) keywordAt(idx int, keyword string) bool {
+	if idx+len(keyword) > len(p.runes) {
+		return false
+	}
+	for j, r := range keyword {
+		if !strings.EqualFold(string(p.runes[idx+j]), string(r)) {
+			return false
+		}
+	}
+	beforeOK := idx == 0 || isJQLBoundary(p.runes[idx-1])
+	afterIdx := idx + len(keyword)
+	afterOK := afterIdx >= len(p.runes) || isJQLBoundary(p.runes[afterIdx])
+	return beforeOK && afterOK
+}
+
+func (p *jqlExprParser) peekKeyword(keyword string) bool {
+	p.skipSpaces()
+	return p.keywordAt(p.pos, keyword)
+}
+
+func (p *jqlExprParser) consumeKeyword(keyword string) {
+	p.skipSpaces()
+	p.pos += len(keyword)
+}
+
+func (p *jqlExprParser) remainingPreview() string {
+	if p.pos >= len(p.runes) {
+		return ""
+	}
+	end := p.pos + 20
+	if end > len(p.runes) {
+		end = len(p.runes)
+	}
+	return string(p.runes[p.pos:end])
+}
+
+// translateJQLBoolean renders a parsed expression as Windshift QL. A single
+// unsupported leaf invalidates the whole expression: returning a partial QL
+// would silently broaden the selector, so the caller keeps the original JQL
+// and marks the goal needs-attention instead.
+func translateJQLBoolean(expr jqlBooleanExpr) (ql string, unsupported []string) {
+	switch node := expr.(type) {
+	case jqlLeafExpr:
+		translated, ok := translateJQLClause(node.clause)
+		if !ok {
+			return "", []string{strings.TrimSpace(node.clause)}
+		}
+		return translated, nil
+	case jqlNotExpr:
+		inner, unsupported := translateJQLBoolean(node.operand)
+		if len(unsupported) > 0 {
+			return "", unsupported
+		}
+		return "NOT (" + inner + ")", nil
+	case jqlBinaryExpr:
+		left, leftUnsupported := translateJQLBoolean(node.left)
+		right, rightUnsupported := translateJQLBoolean(node.right)
+		combined := make([]string, 0, len(leftUnsupported)+len(rightUnsupported))
+		combined = append(combined, leftUnsupported...)
+		combined = append(combined, rightUnsupported...)
+		if len(combined) > 0 {
+			return "", combined
+		}
+		switch {
+		case left == "" && right == "":
+			return "", nil
+		case left == "":
+			return right, nil
+		case right == "":
+			return left, nil
+		default:
+			return "(" + left + " " + node.op + " " + right + ")", nil
+		}
+	default:
+		return "", nil
+	}
+}

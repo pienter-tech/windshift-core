@@ -57,15 +57,15 @@
     md: 'px-2.5 py-1 text-xs'
   };
 
-  // Dark mode colors using 400-level shades (softer, less jarring)
+  // Dark mode colors using 400-level shades (softer, less jarring).
+  // Gray/zinc are handled separately via --ds-accent-gray.
   const darkColorStyles = {
     red: '#f87171', green: '#4ade80', blue: '#60a5fa',
     orange: '#fb923c', amber: '#fbbf24', yellow: '#facc15',
     lime: '#a3e635', emerald: '#34d399', teal: '#2dd4bf',
     cyan: '#22d3ee', sky: '#38bdf8', indigo: '#818cf8',
     violet: '#a78bfa', purple: '#c084fc', fuchsia: '#e879f9',
-    pink: '#f472b6', rose: '#fb7185',
-    zinc: '#a1a1aa', grey: '#a1a1aa', gray: '#a1a1aa'
+    pink: '#f472b6', rose: '#fb7185'
   };
 
   let sizeClass = $derived(sizeClasses[size] || sizeClasses.sm);
@@ -93,13 +93,16 @@
       }
       return `background-color: ${customBg}${bgOpacity}; border-color: ${customBorder || textBorderColor}; color: ${customText || textBorderColor};`;
     }
+    // Gray resolves to the theme's neutral accent ink instead of the
+    // hardcoded named palette, so light and dark modes get readable,
+    // tokenized values. Wash strength mirrors the other tints.
     const isGray = color === 'zinc' || color === 'grey' || color === 'gray';
+    if (isGray) {
+      const wash = themeStore.isDarkMode ? 19 : 10;
+      return `background-color: color-mix(in srgb, var(--ds-accent-gray) ${wash}%, transparent); border-color: var(--ds-accent-gray); color: var(--ds-accent-gray);`;
+    }
     if (themeStore.isDarkMode) {
       const darkColor = darkColorStyles[color] || darkColorStyles.sky;
-      if (isGray) {
-        const lightGray = lightenColor(namedColorHex[color] || namedColorHex.zinc, 1);
-        return `background-color: ${darkColor}30; border-color: ${lightGray}; color: ${lightGray};`;
-      }
       return `background-color: ${darkColor}1A; border-color: ${darkColor}; color: ${darkColor};`;
     }
     const baseColor = namedColorHex[color] || namedColorHex.sky;

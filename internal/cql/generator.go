@@ -206,7 +206,8 @@ func (g *SQLGenerator) generateNullCheck(node *ASTNode) (sql string, args []any,
 
 func isRelativeInstantField(fieldName string) bool {
 	switch strings.ToLower(fieldName) {
-	case "created", "created_at", "createdat", "updated", "updated_at", "updatedat", "completed_at":
+	case "created", "created_at", "createdat", "updated", "updated_at", "updatedat", "completed_at",
+		"sladeadline", "sla_deadline":
 		return true
 	default:
 		return false
@@ -1024,9 +1025,76 @@ func (g *SQLGenerator) generateFunction(node *ASTNode) (sql string, args []any, 
 		}
 		return g.generateItemLinkedOf(node)
 
+	case "slabreached", "slapaused", "slarunning", "slaeverbreached", "slacompleted":
+		return g.generateSLAFunction(node)
+
 	default:
 		return "", nil, fmt.Errorf("unsupported function: %s", node.Value)
 	}
+}
+
+// SLA predicates are SQL-backed over stored cycle columns. They never compute
+// business time at read time, so they stay index-friendly.
+
+// slaOngoingExpr matches items with an ongoing cycle satisfying predicate.
+// The CASE keeps the expression integer-typed on both engines so it compares
+// against the QL boolean literal (0/1) without a boolean/integer cast error.
+func slaOngoingExpr(prefix, predicate string) string {
+	return "(CASE WHEN EXISTS (SELECT 1 FROM item_sla_cycles sla_c WHERE sla_c.item_id = " + prefix + "i.id AND sla_c.status = 'ongoing' AND " + predicate + ") THEN 1 ELSE 0 END)"
+}
+
+// slaAnyExpr matches items with any cycle satisfying predicate.
+func slaAnyExpr(prefix, predicate string) string {
+	return "(CASE WHEN EXISTS (SELECT 1 FROM item_sla_cycles sla_c WHERE sla_c.item_id = " + prefix + "i.id AND " + predicate + ") THEN 1 ELSE 0 END)"
+}
+
+func (g *SQLGenerator) generateSLAFunction(node *ASTNode) (clause string, args []any, err error) {
+	scope, scopeArgs, err := slaMetricScope(node)
+	if err != nil {
+		return "", nil, err
+	}
+	switch strings.ToLower(node.Value) {
+	case "slabreached":
+		return slaOngoingExpr(g.aliasPrefix, "(sla_c.breached_at IS NOT NULL OR sla_c.next_deadline_at <= ?)"+scope), append([]any{g.evaluationTime}, scopeArgs...), nil
+	case "slapaused":
+		return slaOngoingExpr(g.aliasPrefix, "sla_c.pause_started_at IS NOT NULL"+scope), scopeArgs, nil
+	case "slarunning":
+		return slaOngoingExpr(g.aliasPrefix, "sla_c.pause_started_at IS NULL"+scope), scopeArgs, nil
+	case "slaeverbreached":
+		return slaAnyExpr(g.aliasPrefix, "sla_c.breached_at IS NOT NULL"+scope), scopeArgs, nil
+	case "slacompleted":
+		return slaAnyExpr(g.aliasPrefix, "sla_c.status = 'completed'"+scope), scopeArgs, nil
+	}
+	return "", nil, fmt.Errorf("unsupported SLA function: %s", node.Value)
+}
+
+// slaMetricScope builds an optional metric filter for the SLA functions. With
+// no argument the predicate applies to every metric on the item; a string
+// argument filters by metric name and a number argument by metric ID.
+func slaMetricScope(node *ASTNode) (filter string, args []any, err error) {
+	if len(node.Arguments) == 0 {
+		return "", nil, nil
+	}
+	if len(node.Arguments) > 1 {
+		return "", nil, fmt.Errorf("%s() accepts at most one metric argument", node.Value)
+	}
+	argument := node.Arguments[0]
+	switch argument.Type {
+	case NodeLiteral:
+		switch argument.DataType {
+		case STRING:
+			return " AND sla_c.metric_id IN (SELECT id FROM sla_metrics WHERE name = ?)", []any{argument.Value}, nil
+		case NUMBER:
+			id, err := strconv.Atoi(argument.Value)
+			if err != nil {
+				return "", nil, fmt.Errorf("%s() metric ID must be numeric", node.Value)
+			}
+			return " AND sla_c.metric_id = ?", []any{id}, nil
+		}
+	case NodeIdentifier:
+		return " AND sla_c.metric_id IN (SELECT id FROM sla_metrics WHERE name = ?)", []any{argument.Value}, nil
+	}
+	return "", nil, fmt.Errorf("%s() metric argument must be a name or ID", node.Value)
 }
 
 // generateItemLinkedOf generates SQL for finding items linked to other items matching a query
@@ -1873,6 +1941,8 @@ func (g *SQLGenerator) mapItemFieldName(fieldName string) (expr string, args []a
 
 	case "assignee", "assignee_id", "assigneeid":
 		return prefix + "i.assignee_id", nil, nil
+	case "team", "team_id", "teamid":
+		return prefix + "i.team_id", nil, nil
 	case "creator", "creator_id", "creatorid":
 		return prefix + "i.creator_id", nil, nil
 	case "reporter", "reporter_id", "reporterid":
@@ -1912,6 +1982,19 @@ func (g *SQLGenerator) mapItemFieldName(fieldName string) (expr string, args []a
 	case "itemtypename":
 		return prefix + "it.name", nil, nil
 
+	// Request type fields. Resolved with correlated subqueries so the hot item
+	// list query does not have to join these tables on every page.
+	case "requesttype", "requesttypename", "request_type", "request_type_name":
+		return "(SELECT rt.name FROM request_types rt WHERE rt.id = " + prefix + "i.request_type_id)", nil, nil
+	case "requesttypeid", "request_type_id":
+		return prefix + "i.request_type_id", nil, nil
+
+	// Customer organization fields (the item's creator portal customer's org).
+	case "customerorganisation", "customerorganization", "customerorganisationname", "customerorganizationname", "organisation", "organization", "organisationname", "organizationname":
+		return "(SELECT co.name FROM portal_customers pc JOIN customer_organisations co ON co.id = pc.customer_organisation_id WHERE pc.id = " + prefix + "i.creator_portal_customer_id)", nil, nil
+	case "customerorganisationid", "customerorganizationid", "organisationid", "organizationid":
+		return "(SELECT pc.customer_organisation_id FROM portal_customers pc WHERE pc.id = " + prefix + "i.creator_portal_customer_id)", nil, nil
+
 	// Hierarchy fields
 	case "parent", "parent_id", "parentid":
 		return prefix + "i.parent_id", nil, nil
@@ -1923,6 +2006,26 @@ func (g *SQLGenerator) mapItemFieldName(fieldName string) (expr string, args []a
 	// Ranking
 	case "rank":
 		return prefix + "i.rank", nil, nil
+
+	// SLA state. These predicates use stored cycle columns only; exact
+	// business-time remaining is display-only and computed after paging.
+	case "slabreached", "sla_breached", "isbreached", "is_breached":
+		return slaOngoingExpr(prefix, "(sla_c.breached_at IS NOT NULL OR sla_c.next_deadline_at <= ?)"), []any{g.evaluationTime}, nil
+	case "slapaused", "sla_paused", "ispaused", "is_paused":
+		return slaOngoingExpr(prefix, "sla_c.pause_started_at IS NOT NULL"), nil, nil
+	case "slarunning", "sla_running":
+		return slaOngoingExpr(prefix, "sla_c.pause_started_at IS NULL"), nil, nil
+	case "slaeverbreached", "sla_ever_breached":
+		return slaAnyExpr(prefix, "sla_c.breached_at IS NOT NULL"), nil, nil
+	case "slacompleted", "sla_completed":
+		return slaAnyExpr(prefix, "sla_c.status = 'completed'"), nil, nil
+
+	// slaDeadline exposes the running cycle's promised instant as a comparable
+	// datetime, so queues can select items whose deadline is within a window
+	// (for example `slaRunning = true AND slaDeadline <= 2d`). It is the
+	// stored next_deadline_at, not a computed business-time value.
+	case "sladeadline", "sla_deadline":
+		return "(SELECT sla_c.next_deadline_at FROM item_sla_cycles sla_c WHERE sla_c.item_id = " + prefix + "i.id AND sla_c.status = 'ongoing' AND sla_c.next_deadline_at IS NOT NULL ORDER BY sla_c.next_deadline_at LIMIT 1)", nil, nil
 
 	// ID
 	case "id":

@@ -127,9 +127,15 @@ func (h *ConfigurationSetHandler) ExecuteMigration(w http.ResponseWriter, r *htt
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// Remapped items land in item history attributed to the acting admin.
+	actorUserID := 0
+	if currentUser := utils.GetCurrentUser(r); currentUser != nil {
+		actorUserID = currentUser.ID
+	}
+
 	totalMigrated := 0
 	for _, mapping := range migrationReq.StatusMappings {
-		rows, err := h.applyStatusMapping(tx, mapping, migrationReq.WorkspaceIDs)
+		rows, err := h.applyStatusMapping(tx, mapping, migrationReq.WorkspaceIDs, actorUserID)
 		if err != nil {
 			respondInternalError(w, r, err)
 			return
@@ -338,10 +344,16 @@ func (h *ConfigurationSetHandler) ExecuteComprehensiveMigration(w http.ResponseW
 
 	itemRepo := repository.NewItemRepository(h.db)
 
+	// Remapped items land in item history attributed to the acting admin.
+	actorUserID := 0
+	if currentUser := utils.GetCurrentUser(r); currentUser != nil {
+		actorUserID = currentUser.ID
+	}
+
 	// 1. Execute Item Type Migrations
 	for _, mapping := range req.ItemTypeMappings {
 		var rowsAffected int
-		rowsAffected, err = itemRepo.RemapFieldForWorkspacesTx(tx, "item_type_id", mapping.FromItemTypeID, mapping.ToItemTypeID, nil, req.WorkspaceIDs, now)
+		rowsAffected, err = itemRepo.RemapFieldForWorkspacesTxAsUser(tx, "item_type_id", mapping.FromItemTypeID, mapping.ToItemTypeID, nil, req.WorkspaceIDs, now, actorUserID)
 		if err != nil {
 			respondInternalError(w, r, fmt.Errorf("failed to migrate item types: %w", err))
 			return
@@ -365,7 +377,7 @@ func (h *ConfigurationSetHandler) ExecuteComprehensiveMigration(w http.ResponseW
 
 	// 3. Execute Status Migrations (NULL-aware via *int FromStatusID)
 	for _, mapping := range req.StatusMappings {
-		rows, err := h.applyStatusMappingTx(tx, mapping, req.WorkspaceIDs, now)
+		rows, err := h.applyStatusMappingTx(tx, mapping, req.WorkspaceIDs, now, actorUserID)
 		if err != nil {
 			respondInternalError(w, r, fmt.Errorf("failed to migrate statuses: %w", err))
 			return
@@ -376,7 +388,7 @@ func (h *ConfigurationSetHandler) ExecuteComprehensiveMigration(w http.ResponseW
 	// 4. Execute Priority Migrations
 	for _, mapping := range req.PriorityMappings {
 		var rowsAffected int
-		rowsAffected, err = itemRepo.RemapFieldForWorkspacesTx(tx, "priority_id", mapping.FromPriorityID, mapping.ToPriorityID, nil, req.WorkspaceIDs, now)
+		rowsAffected, err = itemRepo.RemapFieldForWorkspacesTxAsUser(tx, "priority_id", mapping.FromPriorityID, mapping.ToPriorityID, nil, req.WorkspaceIDs, now, actorUserID)
 		if err != nil {
 			respondInternalError(w, r, fmt.Errorf("failed to migrate priorities: %w", err))
 			return
@@ -498,18 +510,18 @@ func (h *ConfigurationSetHandler) ExecuteComprehensiveMigration(w http.ResponseW
 // transaction. Returns the number of rows updated. Branches on whether the
 // caller addressed items via NULL status_id (FromStatusID == nil) or a
 // concrete status_id, since SQL `=` does not match NULL.
-func (h *ConfigurationSetHandler) applyStatusMapping(tx database.Tx, mapping models.StatusMigrationMapping, workspaceIDs []int) (int, error) {
-	return h.applyStatusMappingTx(tx, mapping, workspaceIDs, time.Now())
+func (h *ConfigurationSetHandler) applyStatusMapping(tx database.Tx, mapping models.StatusMigrationMapping, workspaceIDs []int, actorUserID int) (int, error) {
+	return h.applyStatusMappingTx(tx, mapping, workspaceIDs, time.Now(), actorUserID)
 }
 
-func (h *ConfigurationSetHandler) applyStatusMappingTx(tx database.Tx, mapping models.StatusMigrationMapping, workspaceIDs []int, now time.Time) (int, error) {
+func (h *ConfigurationSetHandler) applyStatusMappingTx(tx database.Tx, mapping models.StatusMigrationMapping, workspaceIDs []int, now time.Time, actorUserID int) (int, error) {
 	// FromStatusID == nil OR == 0 both mean "items with status_id IS NULL".
 	// Older clients may send 0; treat it the same as nil for back-compat.
 	fromStatusID := mapping.FromStatusID
 	if fromStatusID != nil && *fromStatusID == 0 {
 		fromStatusID = nil
 	}
-	return repository.NewItemRepository(h.db).RemapFieldForWorkspacesTx(tx, "status_id", fromStatusID, mapping.ToStatusID, mapping.ItemTypeID, workspaceIDs, now)
+	return repository.NewItemRepository(h.db).RemapFieldForWorkspacesTxAsUser(tx, "status_id", fromStatusID, mapping.ToStatusID, mapping.ItemTypeID, workspaceIDs, now, actorUserID)
 }
 
 // statusIsInWorkflow reports whether statusID participates in workflowID via

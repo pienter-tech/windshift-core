@@ -6,7 +6,9 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,7 +33,9 @@ import (
 	"windshift/internal/events"
 	"windshift/internal/handlers"
 	"windshift/internal/health"
+	"windshift/internal/itemevents"
 	"windshift/internal/ldap"
+	"windshift/internal/licensing"
 	"windshift/internal/llm"
 	"windshift/internal/logger"
 	mcpserver "windshift/internal/mcp"
@@ -50,6 +54,7 @@ import (
 	"windshift/internal/scheduler"
 	"windshift/internal/scm"
 	"windshift/internal/services"
+	"windshift/internal/sla"
 	"windshift/internal/smtp"
 	"windshift/internal/sso"
 	"windshift/internal/standardagent"
@@ -148,14 +153,25 @@ type Server struct {
 	assetActionService           *services.AssetActionService
 	eventEngine                  *events.Engine
 	approvalEscalationSweeper    *services.ApprovalEscalationSweeper
+	incidentEscalationSweeper    *services.IncidentEscalationSweeper
+	actionInactivitySweeper      *services.ActionInactivitySweeper
+	slaEngine                    *sla.Engine
+	slaLoop                      *sla.Loop
+	slaLoopCancel                context.CancelFunc
+	slaTestClock                 *sla.TestClock
 	emailScheduler               *scheduler.EmailScheduler
+	ticketImport                 *services.TicketImportService
 	emailTrackingRetention       *scheduler.EmailTrackingRetentionSweeper
+	portalAuthRetention          *scheduler.PortalAuthRetentionSweeper
+	kbEventsRetention            *scheduler.KBEventsRetentionSweeper
 	briefingScheduler            *scheduler.BriefingScheduler
 	pluginScheduleScheduler      *scheduler.PluginScheduleScheduler
 	activityTracker              *services.ActivityTracker
 	tokenTracker                 *services.TokenTracker
 	webhookSender                *webhook.WebhookSender
 	scmSyncStopChan              chan struct{}
+	issueSyncLoopMu              sync.Mutex
+	issueSyncLoopStop            chan struct{}
 	// secretEncryption is the at-rest secret cipher shared by the SCM and
 	// integration OAuth surfaces; set during wiring, used to revoke provider
 	// grants when a user is offboarded.
@@ -224,6 +240,15 @@ func New(cfg Config) (*Server, error) {
 }
 
 // initialize sets up all services and handlers.
+// newConfigSetConformanceService builds the conformance service with the
+// custom-field cleanup scheduler wired, so option-set repairs commit their
+// scrubbing jobs atomically (WI-1529).
+func newConfigSetConformanceService(db database.Database) *services.ConfigSetConformanceService {
+	svc := services.NewConfigSetConformanceService(db, repository.NewConfigurationSetRepository(db))
+	svc.SetOptionRemovalEnqueuer(scheduler.EnqueueOptionRemovalTx)
+	return svc
+}
+
 func (s *Server) initialize() error {
 	// FIXME: split initialization into focused builders and lifecycle registries.
 	cfg := s.config
@@ -291,6 +316,11 @@ func (s *Server) initialize() error {
 	}
 	if err = database.ValidateCanonicalSchemaCheckpoint(s.db); err != nil {
 		return fmt.Errorf("database startup refused: %w", err)
+	}
+	// Shipped framework packs are embedded assets; a malformed one is a build
+	// defect, so refuse to start rather than fail at first apply.
+	if err = services.ValidateBuiltinPacks(); err != nil {
+		return fmt.Errorf("built-in packs startup refused: %w", err)
 	}
 	objectTranslationService := objecttranslation.NewService(s.db)
 	if err := objectTranslationService.SyncSystem(context.Background(), objecttranslation.ShippedSystemTranslations()); err != nil {
@@ -726,9 +756,17 @@ func (s *Server) initialize() error {
 	onCallRepo := repository.NewOnCallRepository(s.db)
 	teamService := services.NewTeamService(s.db, teamRepo, leaveRepo)
 	onCallService := services.NewOnCallService(s.db, onCallRepo, leaveRepo)
-	teamHandler := handlers.NewTeamHandler(teamRepo, leaveRepo, permService, logger.NewAuditor(s.db))
+	itemRepo := repository.NewItemRepository(s.db)
+	cannedResponseService := services.NewCannedResponseService(
+		repository.NewCannedResponseRepository(s.db),
+		repository.NewUserRepository(s.db),
+		itemRepo,
+		logger.NewAuditor(s.db),
+	)
+	incidentService := services.NewIncidentService(s.db, onCallRepo, itemRepo, onCallService, teamRepo, s.notificationService)
+	teamHandler := handlers.NewTeamHandler(teamRepo, leaveRepo, repository.NewSLARepository(s.db), permService, logger.NewAuditor(s.db))
 	leaveHandler := handlers.NewLeaveHandler(leaveRepo, repository.NewUserRepository(s.db), permService)
-	onCallHandler := handlers.NewOnCallHandler(onCallRepo, teamRepo, onCallService, permService, logger.NewAuditor(s.db))
+	onCallHandler := handlers.NewOnCallHandler(onCallRepo, teamRepo, itemRepo, onCallService, incidentService, permService, logger.NewAuditor(s.db))
 	s.actionService.SetTeamService(teamService)
 
 	milestoneCategoryConfig := services.NewMilestoneCategoryConfig()
@@ -949,7 +987,6 @@ func (s *Server) initialize() error {
 	} else if n > 0 {
 		slog.Info("reconciled interrupted asset imports", slog.Int("count", n))
 	}
-	go s.runAssetImportRecovery(assetApplication)
 	itemLinkService.WithAssetPermissionChecker(assetHandler)
 	assetRepo := repository.NewAssetRepository(s.db)
 	assetReportHandler := handlers.NewAssetReportHandler(
@@ -972,6 +1009,12 @@ func (s *Server) initialize() error {
 	emailProviderHandler := handlers.NewEmailProviderHandler(s.db, scmProviderHandler.GetEncryption(), baseURL, channelService)
 	emailProviderHandler.SetCredentialManager(emailCredManager)
 
+	s.ticketImport = services.NewTicketImportService(s.db, permService, cfg.AttachmentPath)
+	if n, err := s.ticketImport.ReconcileInterrupted(); err != nil {
+		slog.Warn("failed to reconcile interrupted ticket imports", slog.Any("error", err))
+	} else if n > 0 {
+		slog.Info("reconciled interrupted ticket imports", slog.Int("count", n))
+	}
 	s.emailScheduler = scheduler.NewEmailScheduler(s.db, emailCredManager, cfg.AttachmentPath)
 	s.emailScheduler.Start()
 	slog.Info("email scheduler started (IMAP polling)")
@@ -981,6 +1024,15 @@ func (s *Server) initialize() error {
 	// referenced by in_reply_to are preserved past the cutoff.
 	s.emailTrackingRetention = scheduler.NewEmailTrackingRetentionSweeper(s.db)
 	s.emailTrackingRetention.Start()
+
+	// Daily retention sweeps for portal credential and analytics data:
+	// expired sessions and consumed magic links (system_settings windows,
+	// default 30 days) and kb_events analytics (per-channel override, default
+	// 365 days).
+	s.portalAuthRetention = scheduler.NewPortalAuthRetentionSweeper(s.db)
+	s.portalAuthRetention.Start()
+	s.kbEventsRetention = scheduler.NewKBEventsRetentionSweeper(s.db)
+	s.kbEventsRetention.Start()
 
 	integrationProviderHandler := handlers.NewIntegrationProviderHandler(repository.NewIntegrationProviderRepository(s.db), scmProviderHandler.GetEncryption(), logger.NewAuditor(s.db))
 	integrationOAuthHandler := handlers.NewIntegrationOAuthHandler(s.db, scmProviderHandler.GetEncryption(), baseURL)
@@ -993,8 +1045,9 @@ func (s *Server) initialize() error {
 
 	issueSyncService := scm.NewIssueSyncService(s.db, scmProviderHandler.GetEncryption())
 	issueSyncService.SetUserService(services.NewUserReadService(s.db))
-
-	go s.runIssueSync(issueSyncService)
+	issueSyncHandler := handlers.NewIssueSyncHandler(issueSyncService, permService, logger.NewAuditor(s.db))
+	issueSyncHandler.SetSyncConfigChanged(func() { s.refreshIssueSyncLoop(issueSyncService) })
+	s.refreshIssueSyncLoop(issueSyncService)
 
 	go s.runMagicLinkCleanup(magicLinkService)
 
@@ -1005,6 +1058,7 @@ func (s *Server) initialize() error {
 	eventCoordinator.SetNotificationService(s.notificationService)
 	eventCoordinator.SetActivityTracker(s.activityTracker)
 	eventCoordinator.SetWebhookDispatcher(webhookSender)
+	incidentService.SetWebhookDispatcher(webhookSender)
 	eventCoordinator.SetActionService(s.actionService)
 	eventCoordinator.SetMagicLinkService(magicLinkService)
 	s.actionService.SetEventCoordinator(eventCoordinator)
@@ -1041,6 +1095,8 @@ func (s *Server) initialize() error {
 		commentService.SetAgentMentionTrigger(bindingSvc)
 	}
 	s.actionService.SetCommentService(commentService)
+	commentService.SetActionEventEmitter(s.actionService)
+	commentService.SetInactivityMarkClearer(repository.NewActionTriggerMarkRepository(s.db))
 
 	// Wire email reply service for bidirectional email threading
 	emailReplyService := services.NewEmailReplyService(s.db, smtpSender)
@@ -1049,6 +1105,10 @@ func (s *Server) initialize() error {
 	}
 	commentService.SetEmailReplyService(emailReplyService)
 	s.notificationScheduler.SetEmailReplyOutbox(emailReplyService)
+
+	// Wire the helpdesk automation nodes (WI-1132/WI-1138). The reply
+	// service doubles as the customer notifier for notify_customer.
+	s.actionService.RegisterHelpdeskNodeExecutors(cannedResponseService, commentService, emailReplyService)
 
 	// Wire CommentService into email processor for unified comment creation
 	s.emailScheduler.SetCommentService(commentService)
@@ -1123,6 +1183,38 @@ func (s *Server) initialize() error {
 	s.approvalEscalationSweeper = services.NewApprovalEscalationSweeper(s.db, approvalService, services.DefaultApprovalEscalationSweeperConfig())
 	s.approvalEscalationSweeper.Start()
 
+	// Drives time-based escalation for triggered on-call incidents.
+	s.incidentEscalationSweeper = services.NewIncidentEscalationSweeper(s.db, incidentService, services.DefaultIncidentEscalationSweeperConfig())
+	s.incidentEscalationSweeper.Start()
+
+	s.actionInactivitySweeper = services.NewActionInactivitySweeper(s.db, s.actionService, services.DefaultActionInactivitySweeperConfig())
+	s.actionInactivitySweeper.Start()
+
+	// SLA evaluation runs inline with item facts, and one process-wide
+	// goroutine fires deadline and recalculation jobs. Under the e2e test hook
+	// a manually advanced clock drives derivation and the loop stays off, so a
+	// browser test can prove display does not depend on background work.
+	s.slaEngine = sla.NewEngine(s.db)
+	slaClock := sla.Clock(sla.SystemClock{})
+	if os.Getenv("WINDSHIFT_E2E_TEST_HOOKS") == "1" {
+		s.slaTestClock = sla.NewTestClock(time.Now().UTC())
+		slaClock = s.slaTestClock
+	}
+	s.slaEngine.SetClock(slaClock)
+	s.slaEngine.SetSideEffectEmitter(services.NewSLASideEffectEmitter(s.db))
+	s.slaEngine.SetInlineObserver(s.metrics)
+	s.slaLoop = sla.NewLoop(repository.NewSLARepository(s.db), s.slaEngine, slaClock, nil, sla.LoopConfig{})
+	s.slaEngine.SetJobOwner(s.slaLoop.Owner())
+	s.slaEngine.SetNudge(s.slaLoop.Nudge)
+	itemevents.RegisterFactObserver(s.slaEngine)
+	slaLoopCtx, slaLoopCancel := context.WithCancel(context.Background())
+	s.slaLoopCancel = slaLoopCancel
+	if s.slaTestClock != nil {
+		slog.Warn("WINDSHIFT_E2E_TEST_HOOKS enabled — SLA due-work loop disabled; test clock controls evaluation")
+	} else {
+		go s.slaLoop.Run(slaLoopCtx)
+	}
+
 	// Wire smart-commit dependencies into the SCM sync service and start its
 	// scheduler. Must be done after commentService and conditionService exist.
 	scmSyncService.SetSmartCommitServices(
@@ -1169,6 +1261,7 @@ func (s *Server) initialize() error {
 		logger.NewAuditor(s.db),
 	)
 	channelHandler.SetEmailScheduler(s.emailScheduler)
+	channelHandler.SetEmailReplyService(emailReplyService)
 	channelHandler.SetEncryption(scmProviderHandler.GetEncryption())
 	channelHandler.SetBaseURL(baseURL)
 	channelHandler.SetKnowledgeBasePageValidator(repository.NewPageRepository(s.db).ValidateLivePageInWorkspace)
@@ -1186,8 +1279,10 @@ func (s *Server) initialize() error {
 	portalHandler := handlers.NewPortalHandler(s.db, sessionManager, portalSessionManager, ipExtractor, cfg.AttachmentPath)
 	portalHandler.SetApprovalService(approvalService)
 	portalHandler.SetEventCoordinator(eventCoordinator)
+	portalHandler.SetChannelService(channelService)
 	portalHandler.SetKnowledgePublicationService(knowledgePublication)
 	portalHandler.SetKBSignalService(services.NewKBSignalService(s.db))
+	portalHandler.SetCommentService(commentService)
 	portalAuthHandler := handlers.NewPortalAuthHandler(repository.NewPortalAuthRepository(s.db), portalSessionManager, sessionManager, magicLinkService, ipExtractor)
 	var portalWebAuthnHandler *handlers.PortalWebAuthnHandler
 	if portalWebAuthnConfig != nil {
@@ -1234,9 +1329,32 @@ func (s *Server) initialize() error {
 	itemDiagramService := services.NewItemDiagramService(repository.NewDiagramRepository(s.db))
 
 	var pluginRouter *plugins.Router
+	var pluginLicenseVerifier plugins.LicenseVerifier
+	var instanceService *services.InstanceService
 	if !cfg.Plugins.Disabled {
 		var pluginOpts []plugins.Option
 		pluginOpts = append(pluginOpts, plugins.WithDatabase(s.db), plugins.WithSCMService(scmSyncService), plugins.WithCommentService(commentService))
+
+		// License enforcement: when a license public key is configured, a
+		// plugin only contributes capabilities if its license verifies against
+		// this install's instance ID.
+		if cfg.Plugins.LicensePubKey != "" {
+			licensePubKey, err := base64.StdEncoding.DecodeString(cfg.Plugins.LicensePubKey)
+			if err != nil || len(licensePubKey) != ed25519.PublicKeySize {
+				slog.Error("invalid PLUGIN_LICENSE_PUBKEY; license enforcement disabled", "error", err)
+			} else {
+				instanceService = services.NewInstanceService(repository.NewSystemSettingRepository(s.db))
+				instanceID, err := instanceService.GetOrCreate()
+				if err != nil {
+					slog.Error("failed to load instance id; license enforcement disabled", "error", err)
+					instanceService = nil
+				} else {
+					pluginLicenseVerifier = licensing.MakeVerifier(ed25519.PublicKey(licensePubKey), instanceID)
+					pluginOpts = append(pluginOpts, plugins.WithLicenseVerifier(pluginLicenseVerifier))
+					slog.Info("plugin license enforcement enabled", "instance_id", instanceID)
+				}
+			}
+		}
 
 		pluginDir := cfg.Plugins.Dir
 		if pluginDir == "" {
@@ -1287,6 +1405,7 @@ func (s *Server) initialize() error {
 	ssoHandler.SetPluginManager(s.pluginManager)
 
 	pluginHandler := handlers.NewPluginHandler(s.pluginManager, repository.NewPluginRegistryRepository(s.db), logger.NewAuditor(s.db), cfg.Plugins.Disabled)
+	pluginHandler.SetLicensing(pluginLicenseVerifier, instanceService)
 
 	auditLogHandler := handlers.NewAuditLogHandler(repository.NewAuditLogRepository(s.db))
 
@@ -1447,7 +1566,9 @@ func (s *Server) initialize() error {
 	)
 
 	// Build route dependencies
+	slaHandler := handlers.NewSLAHandler(s.db, s.slaEngine, permService)
 	routeDeps := &routes.Deps{
+		SLA:       slaHandler,
 		API:       api,
 		SCIMGroup: scimGroup,
 		Mux:       mux,
@@ -1491,7 +1612,7 @@ func (s *Server) initialize() error {
 			ItemLinks:     scmItemLinksHandler,
 			UserToken:     userSCMTokenHandler,
 			EmailProvider: emailProviderHandler,
-			IssueSync:     handlers.NewIssueSyncHandler(issueSyncService, permService, logger.NewAuditor(s.db)),
+			IssueSync:     issueSyncHandler,
 		},
 		Items: routes.ItemHandlers{
 			Item:               itemHandler,
@@ -1644,6 +1765,9 @@ func (s *Server) initialize() error {
 		mux.Handle("POST /api/test/scm/setup-mock-repo", handlers.NewTestSetupMockRepo(services.NewTestSCMHookService(s.db, nil)))
 		mux.Handle("POST /api/test/scm/inject-ref", handlers.NewTestSCMInjectRef(services.NewTestSCMHookService(s.db, s.actionService)))
 		mux.Handle("POST /api/test/history/backdate", handlers.NewTestHistoryBackdate(services.NewTestHistoryHookService(s.db)))
+		if s.slaTestClock != nil {
+			mux.Handle("POST /api/test/sla/clock", handlers.NewTestSLAClock(s.slaTestClock))
+		}
 		slog.Warn("WINDSHIFT_E2E_TEST_HOOKS enabled — test hook routes are mounted; never enable in production")
 	}
 
@@ -1651,6 +1775,33 @@ func (s *Server) initialize() error {
 	if pluginRouter != nil {
 		pluginRouter.RegisterRoutes(mux)
 	}
+
+	// Workspace creation wiring: the v2 application service, the v1 and
+	// session create handlers, and the pack apply service share one
+	// create-from-template-pack provisioner. PackApplyService depends on the
+	// application service for name-based workspace creation, so it is wired
+	// after construction.
+	v2Access := authz.New(s.db, permService)
+	workspaceAppService := services.NewWorkspaceApplicationService(s.db, v2Access, authorizationCacheInvalidator)
+	workspaceBundleImportService := services.NewWorkspaceBundleImportService(
+		s.db,
+		repository.NewConfigurationSetRepository(s.db),
+		repository.NewItemTypeRepository(s.db),
+		repository.NewLabelRepository(s.db),
+		pageApplication,
+		pageLabelService,
+		itemHandler.ItemCreationService(),
+		itemLinkService,
+		permService,
+	)
+	packApplyService := services.NewPackApplyService(
+		s.db,
+		workspaceAppService,
+		repository.NewConfigurationSetRepository(s.db),
+		newConfigSetConformanceService(s.db),
+		workspaceBundleImportService,
+	)
+	workspaceAppService.SetPackProvisioner(packApplyService)
 
 	// REST API v1
 	restapi.SetupRoutes(restapi.Deps{
@@ -1671,6 +1822,7 @@ func (s *Server) initialize() error {
 		PageDiagramService:             pageDiagramService,
 		ObjectTranslationService:       objectTranslationService,
 		AuthorizationCacheInvalidator:  authorizationCacheInvalidator,
+		PackProvisioner:                packApplyService,
 		AI:                             aiHandler,
 		AIRateLimiter:                  s.aiRateLimiter,
 	}, v1.RegisterRoutes)
@@ -1678,7 +1830,6 @@ func (s *Server) initialize() error {
 	if !cfg.DisableCSRF {
 		v2CSRF = middleware.NewCSRFValidator(csrfOrigins)
 	}
-	v2Access := authz.New(s.db, permService)
 	planningCredentialResolver := scm.NewCredentialResolver(s.db, scmProviderHandler.GetEncryption())
 	planningApplication := services.NewPlanningApplicationService(
 		milestonePlanningService,
@@ -1730,8 +1881,14 @@ func (s *Server) initialize() error {
 	if err := v2.RegisterRoutes(v2.Deps{
 		Mux:                mux,
 		Tokens:             tokenManager,
+		SLA:                s.slaEngine,
+		SLACalendars:       services.NewSLACalendarService(s.db, s.slaEngine),
+		SLASettings:        services.NewSLASettingsService(s.db, s.slaEngine),
+		SLATeamBindings:    services.NewSLATeamBindingService(s.db, permService),
+		SLAMetrics:         services.NewSLAMetricService(s.db, s.slaEngine),
 		Users:              services.NewUserReadService(s.db),
 		Statuses:           services.NewStatusService(s.db),
+		Teams:              teamRepo,
 		Workflows:          workflowService,
 		Configuration:      services.NewConfigReadService(s.db),
 		ObjectTranslations: objectTranslationService,
@@ -1747,9 +1904,13 @@ func (s *Server) initialize() error {
 		WorkspaceRoles:               services.NewWorkspaceRoleProvisioningService(s.db, repository.NewWorkspaceRoleRepository(s.db), permService, approvalService),
 		ConfigurationSetProvisioning: services.NewConfigurationSetProvisioningService(s.db, repository.NewConfigurationSetRepository(s.db), permService, s.notificationService),
 		ConfigurationSetExport:       services.NewConfigSetExportService(s.db, repository.NewConfigurationSetRepository(s.db)),
+		ConfigSetConformance:         newConfigSetConformanceService(s.db),
+		WorkspaceBundleExport:        services.NewWorkspaceBundleExportService(s.db, services.NewConfigSetExportService(s.db, repository.NewConfigurationSetRepository(s.db))),
+		PackApply:                    packApplyService,
+		WorkspaceBundleImport:        workspaceBundleImportService,
 		StoryPointRollup:             repository.NewItemRepository(s.db),
 		HierarchyLevels:              hierarchyLevelEnumService,
-		Workspaces:                   services.NewWorkspaceApplicationService(s.db, v2Access, authorizationCacheInvalidator),
+		Workspaces:                   workspaceAppService,
 		ItemTemplates:                services.NewItemTemplateApplicationService(s.db, v2Access),
 		Labels:                       services.NewLabelApplicationService(s.db),
 		Items:                        repository.NewItemRepository(s.db),
@@ -1762,6 +1923,7 @@ func (s *Server) initialize() error {
 		PageDiagrams:                 pageDiagramService,
 		PageAccess:                   pagePermissionService,
 		PageLabels:                   pageLabelService,
+		CannedResponses:              cannedResponseService,
 		PagePublication:              knowledgePublication,
 		Worklogs:                     timeWorklogService,
 		TimeAccess:                   timePermissionService,
@@ -1791,6 +1953,8 @@ func (s *Server) initialize() error {
 		Assets:                       assetApplication,
 		ItemApplication:              itemApplication,
 		ItemDetail:                   itemDetailApplication,
+		ItemLifecycle:                services.NewItemLifecycleService(s.db, permService),
+		TicketImport:                 services.NewTicketImportService(s.db, permService, cfg.AttachmentPath),
 		SessionMiddleware:            authMiddleware.OptionalAuth,
 		SearchAllowed:                s.searchLimiter.AllowRequest,
 		DBRequestTimeout:             s.config.DB.RequestTimeout,
@@ -2145,6 +2309,22 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		s.approvalEscalationSweeper.Stop()
 	}
 
+	if s.incidentEscalationSweeper != nil {
+		slog.Info("stopping incident escalation sweeper")
+		s.incidentEscalationSweeper.Stop()
+	}
+
+	if s.actionInactivitySweeper != nil {
+		slog.Info("stopping action inactivity sweeper")
+		s.actionInactivitySweeper.Stop()
+	}
+
+	if s.slaLoopCancel != nil {
+		slog.Info("stopping SLA due-work loop")
+		s.slaLoopCancel()
+		itemevents.ClearFactObserver()
+	}
+
 	if s.assetActionService != nil {
 		slog.Info("stopping asset action service")
 		s.assetActionService.Stop()
@@ -2158,6 +2338,16 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.emailTrackingRetention != nil {
 		slog.Info("stopping email tracking retention sweeper")
 		s.emailTrackingRetention.Stop()
+	}
+
+	if s.portalAuthRetention != nil {
+		slog.Info("stopping portal auth retention sweeper")
+		s.portalAuthRetention.Stop()
+	}
+
+	if s.kbEventsRetention != nil {
+		slog.Info("stopping kb events retention sweeper")
+		s.kbEventsRetention.Stop()
 	}
 
 	if s.briefingScheduler != nil {
@@ -2352,6 +2542,12 @@ func (s *Server) cleanup() {
 
 func (s *Server) stopBackgroundLoops() {
 	s.backgroundStopOnce.Do(func() {
+		s.issueSyncLoopMu.Lock()
+		defer s.issueSyncLoopMu.Unlock()
+		if s.issueSyncLoopStop != nil {
+			close(s.issueSyncLoopStop)
+			s.issueSyncLoopStop = nil
+		}
 		// Do not nil these fields: workers read them concurrently.
 		if s.cleanupTicker != nil {
 			s.cleanupTicker.Stop()
@@ -2453,21 +2649,6 @@ func (s *Server) runMagicLinkCleanup(magicLinkService *services.MagicLinkService
 		case <-s.magicLinkStopChan:
 			slog.Info("magic link cleanup scheduler stopped")
 			return
-		}
-	}
-}
-
-func (s *Server) runAssetImportRecovery(assets *services.AssetApplicationService) {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-s.cleanupStopChan:
-			return
-		case <-ticker.C:
-			if _, err := assets.ReconcileInterruptedImports(); err != nil {
-				slog.Error("asset import recovery failed", "error", err)
-			}
 		}
 	}
 }
@@ -2613,8 +2794,37 @@ func (s *Server) restoreExpiredEmailOAuthChannels(ctx context.Context) error {
 	return nil
 }
 
-// runIssueSync runs periodic GitHub Issue synchronization.
-func (s *Server) runIssueSync(issueSyncService *scm.IssueSyncService) {
+func (s *Server) refreshIssueSyncLoop(issueSyncService *scm.IssueSyncService) {
+	s.issueSyncLoopMu.Lock()
+	defer s.issueSyncLoopMu.Unlock()
+	select {
+	case <-s.issueSyncStopChan:
+		return
+	default:
+	}
+
+	enabled, err := issueSyncService.HasEnabledSyncConfig(context.Background())
+	if err != nil {
+		slog.Error("failed to check issue sync configuration", "error", err)
+		return
+	}
+	if !enabled {
+		if s.issueSyncLoopStop != nil {
+			close(s.issueSyncLoopStop)
+			s.issueSyncLoopStop = nil
+		}
+		return
+	}
+	if s.issueSyncLoopStop != nil {
+		return
+	}
+
+	s.issueSyncLoopStop = make(chan struct{})
+	go s.runIssueSync(issueSyncService, s.issueSyncLoopStop)
+}
+
+// runIssueSync runs periodic GitHub Issue synchronization while enabled.
+func (s *Server) runIssueSync(issueSyncService *scm.IssueSyncService, stop <-chan struct{}) {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 	slog.Info("Issue sync scheduler started (5-minute interval)")
@@ -2629,6 +2839,9 @@ func (s *Server) runIssueSync(issueSyncService *scm.IssueSyncService) {
 				slog.Error("Issue sync error", "error", err)
 			}
 			cancel()
+		case <-stop:
+			slog.Info("Issue sync scheduler stopped because no sync configs are enabled")
+			return
 		case <-s.issueSyncStopChan:
 			slog.Info("Issue sync scheduler stopped")
 			return

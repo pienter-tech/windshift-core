@@ -217,6 +217,15 @@
                 >
                   {customer.name}
                 </button>
+                {#if customer.deactivated_at}
+                  <span
+                    data-testid="customer-deactivated-badge"
+                    class="inline-flex items-center mt-1 px-2 py-0.5 rounded-full text-xs font-medium"
+                    style="background-color: var(--ds-surface-raised); color: var(--ds-text-subtle); border: 1px solid var(--ds-border);"
+                  >
+                    {t('workspaces.customers.deactivated')}
+                  </span>
+                {/if}
                 <div class="flex items-center gap-2 mt-1">
                   <Mail class="w-3.5 h-3.5 flex-shrink-0" style="color: var(--ds-text-subtle);" />
                   <span class="text-sm truncate" style="color: var(--ds-text-subtle);">

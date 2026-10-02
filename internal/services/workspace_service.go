@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -25,15 +26,46 @@ var ErrPersonalWorkspaceDeactivation = errors.New("personal workspaces cannot be
 // (item keys, integrations) rely on them.
 var ErrWorkspaceKeyImmutable = errors.New("workspace key can only be changed for personal workspaces")
 
+// Create-from-template-pack errors. The pack is verified before the workspace
+// exists, and a provisioning failure after creation compensates by deleting
+// the just-created workspace so callers never see a half-provisioned result.
+var (
+	ErrWorkspacePackUnavailable  = errors.New("workspace pack provisioning is not available")
+	ErrWorkspacePackNotFound     = errors.New("workspace pack not found")
+	ErrWorkspacePackProvisioning = errors.New("workspace pack provisioning failed")
+)
+
+// WorkspacePackProvisioner provisions an embedded pack into a workspace the
+// service just created. Implemented by PackApplyService; a nil provisioner
+// refuses TemplatePack.
+type WorkspacePackProvisioner interface {
+	// VerifyBuiltinPack validates the named built-in pack (manifest and plugin
+	// requirements) without writing anything.
+	VerifyBuiltinPack(ctx context.Context, name string) (*PackApplyReport, error)
+	// ApplyBuiltinPackToWorkspace runs the schema, content, and conformance
+	// stages against an already-created workspace.
+	ApplyBuiltinPackToWorkspace(ctx context.Context, actor AuditActor, name string, workspaceID int) (*PackApplyReport, error)
+}
+
 // WorkspaceService encapsulates workspace business logic used by both HTTP handlers
 // and other services.
 type WorkspaceService struct {
 	db                    database.Database
 	repo                  *repository.WorkspaceRepository
 	itemRepo              *repository.ItemRepository
+	slaRepo               *repository.SLARepository
 	templates             *repository.WorkspaceTemplateRepository
+	boards                *repository.BoardConfigurationRepository
 	integrationLinkGuards *IntegrationLinkGuards
 	access                WorkspaceSourceAccess
+	packProvisioner       WorkspacePackProvisioner
+}
+
+// SetPackProvisioner installs the optional create-from-template-pack
+// provisioner. Called after construction because PackApplyService depends on
+// this service for name-based workspace creation.
+func (s *WorkspaceService) SetPackProvisioner(provisioner WorkspacePackProvisioner) {
+	s.packProvisioner = provisioner
 }
 
 // NewWorkspaceService creates a new WorkspaceService.
@@ -42,7 +74,9 @@ func NewWorkspaceService(db database.Database) *WorkspaceService {
 		db:                    db,
 		repo:                  repository.NewWorkspaceRepository(db),
 		itemRepo:              repository.NewItemRepository(db),
+		slaRepo:               repository.NewSLARepository(db),
 		templates:             repository.NewWorkspaceTemplateRepository(db),
+		boards:                repository.NewBoardConfigurationRepository(db),
 		integrationLinkGuards: NewIntegrationLinkGuards(db),
 	}
 }
@@ -58,6 +92,7 @@ func NewWorkspaceServiceWithAccess(db database.Database, access WorkspaceSourceA
 // WorkspaceListParams contains the parameters for listing workspaces.
 type WorkspaceListParams struct {
 	WorkspaceIDs []int
+	Search       string
 	Limit        int
 	Offset       int
 }
@@ -67,31 +102,45 @@ func (s *WorkspaceService) List(params WorkspaceListParams) ([]models.Workspace,
 	if len(params.WorkspaceIDs) == 0 {
 		return []models.Workspace{}, 0, nil
 	}
+	// The ID set is the caller's authorized scope, bounded by the user's
+	// accessible workspace count — far below SQLite's 32k and Postgres' 65k
+	// parameter limits at the 10k-workspace target.
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(params.WorkspaceIDs)), ",")
-	workspaceArgs := make([]any, len(params.WorkspaceIDs))
-	for i, workspaceID := range params.WorkspaceIDs {
-		workspaceArgs[i] = workspaceID
+	workspaceArgs := make([]any, 0, len(params.WorkspaceIDs)+6)
+	for _, workspaceID := range params.WorkspaceIDs {
+		workspaceArgs = append(workspaceArgs, workspaceID)
 	}
-	listArgs := append(append([]any{}, workspaceArgs...), params.Limit, params.Offset)
+	where := " WHERE w.id IN (" + placeholders + ")"
+	if search := strings.TrimSpace(params.Search); search != "" {
+		pattern := "%" + escapeLikePattern(search) + "%"
+		where += " AND (LOWER(w.name) LIKE LOWER(?) ESCAPE '\\'"
+		where += " OR LOWER(w.key) LIKE LOWER(?) ESCAPE '\\'"
+		where += " OR LOWER(w.description) LIKE LOWER(?) ESCAPE '\\')"
+		workspaceArgs = append(workspaceArgs, pattern, pattern, pattern)
+	}
+	// COUNT(*) OVER () returns the filtered total with the page in one query
+	// instead of a separate COUNT per fetched page.
 	rows, err := s.db.Query(`
 		SELECT w.id, w.name, w.key, w.description, w.active, w.is_template, w.is_personal,
-		       w.icon, w.color, w.internal_comments_enabled, w.created_at, w.updated_at
+		       w.icon, w.color, w.internal_comments_enabled, w.created_at, w.updated_at,
+		       COUNT(*) OVER ()
 		FROM workspaces w
-		WHERE w.id IN (`+placeholders+`)
+		`+where+`
 		ORDER BY w.name
 		LIMIT ? OFFSET ?
-	`, listArgs...)
+	`, append(workspaceArgs, params.Limit, params.Offset)...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to list workspaces: %w", err)
 	}
 	defer rows.Close()
 
 	var workspaces []models.Workspace
+	total := 0
 	for rows.Next() {
 		var ws models.Workspace
 		var icon, color sql.NullString
 		err = rows.Scan(&ws.ID, &ws.Name, &ws.Key, &ws.Description, &ws.Active, &ws.IsTemplate, &ws.IsPersonal,
-			&icon, &color, &ws.InternalCommentsEnabled, &ws.CreatedAt, &ws.UpdatedAt)
+			&icon, &color, &ws.InternalCommentsEnabled, &ws.CreatedAt, &ws.UpdatedAt, &total)
 		if err != nil {
 			continue
 		}
@@ -107,13 +156,14 @@ func (s *WorkspaceService) List(params WorkspaceListParams) ([]models.Workspace,
 		workspaces = []models.Workspace{}
 	}
 
-	var total int
-	err = s.db.QueryRow("SELECT COUNT(*) FROM workspaces WHERE id IN ("+placeholders+")", workspaceArgs...).Scan(&total)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to count workspaces: %w", err)
-	}
-
 	return workspaces, total, nil
+}
+
+func escapeLikePattern(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
 }
 
 // GetByID retrieves a workspace by ID.
@@ -153,6 +203,15 @@ type CreateWorkspaceParams struct {
 	DefaultView   string
 
 	TemplateWorkspaceID *int
+	// TemplatePack, when set, is a built-in pack name whose configuration set,
+	// content, and conformance are applied to the new workspace. Mutually
+	// exclusive with TemplateWorkspaceID.
+	TemplatePack string
+
+	// RestrictedToCreator grants the creator the Viewer role inside the
+	// creation transaction, gating the workspace to assigned users from the
+	// first committed moment instead of briefly exposing it as open.
+	RestrictedToCreator *bool
 }
 
 // CreateWorkspaceResult contains the result of creating a workspace. The
@@ -177,6 +236,23 @@ func (s *WorkspaceService) Create(ctx context.Context, params CreateWorkspacePar
 	}
 	if params.IsPersonal && params.TemplateWorkspaceID != nil {
 		return nil, fmt.Errorf("%w: personal workspaces cannot be created from a template", ErrInvalidWorkspaceTemplate)
+	}
+	if params.TemplatePack != "" && params.TemplateWorkspaceID != nil {
+		return nil, fmt.Errorf("%w: template_pack and template_workspace_id are mutually exclusive", ErrWorkspacePackProvisioning)
+	}
+	if params.TemplatePack != "" {
+		if s.packProvisioner == nil {
+			return nil, ErrWorkspacePackUnavailable
+		}
+		// Resolve and verify the pack before the workspace exists, so an unknown
+		// or unsatisfiable pack never creates an orphan.
+		report, err := s.packProvisioner.VerifyBuiltinPack(ctx, params.TemplatePack)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %q: %w", ErrWorkspacePackNotFound, params.TemplatePack, err)
+		}
+		if report == nil || report.Status != PackVerifyStatusVerified {
+			return nil, fmt.Errorf("%w: pack %q requirements are not satisfied", ErrWorkspacePackProvisioning, params.TemplatePack)
+		}
 	}
 
 	key := strings.ToUpper(params.Key)
@@ -225,9 +301,44 @@ func (s *WorkspaceService) Create(ctx context.Context, params CreateWorkspacePar
 			repository.InvalidateItemListCountCache(s.db, result.Workspace.ID)
 			logWorkspaceCloneResult(result, time.Since(started))
 		}
+		if params.TemplatePack != "" {
+			if err := s.provisionTemplatePack(ctx, params, result); err != nil {
+				return nil, err
+			}
+		}
 		return result, nil
 	}
 	return nil, fmt.Errorf("workspace creation failed after retries: %w", lastErr)
+}
+
+// provisionTemplatePack applies the pack's schema, content, and conformance to
+// a freshly committed workspace. No single transaction spans workspace
+// creation, configuration-set import, and bundle import, so a provisioning
+// failure compensates by deleting the workspace the caller just asked for.
+func (s *WorkspaceService) provisionTemplatePack(ctx context.Context, params CreateWorkspaceParams, result *CreateWorkspaceResult) error {
+	// PostgreSQL item numbering needs the per-workspace sequence; content import
+	// may create items. The application layer also ensures this, idempotently.
+	if err := s.repo.CreateItemSequence(int64(result.Workspace.ID)); err != nil {
+		slog.Warn("failed to create item sequence before pack provisioning",
+			"workspace_id", result.Workspace.ID, "error", err)
+	}
+	report, provisionErr := s.packProvisioner.ApplyBuiltinPackToWorkspace(ctx, AuditActor{UserID: params.CreatorID}, params.TemplatePack, result.Workspace.ID)
+	if provisionErr == nil && report != nil && report.Status == PackApplyStatusApplied {
+		return nil
+	}
+	detail := "provisioning did not complete"
+	if provisionErr != nil {
+		detail = provisionErr.Error()
+	} else if failed := firstFailedPackStage(report); failed != nil {
+		detail = fmt.Sprintf("stage %q failed: %s", failed.Name, failed.Detail)
+	} else if report != nil {
+		detail = report.Status
+	}
+	if delErr := s.Delete(result.Workspace.ID); delErr != nil {
+		slog.Error("failed to roll back workspace after pack provisioning failure",
+			"workspace_id", result.Workspace.ID, "pack", params.TemplatePack, "error", delErr)
+	}
+	return fmt.Errorf("%w: pack %q: %s", ErrWorkspacePackProvisioning, params.TemplatePack, detail)
 }
 
 // NullableUpdate distinguishes an omitted field from an explicit null.
@@ -324,6 +435,9 @@ func (s *WorkspaceService) Update(params UpdateWorkspaceParams) (*models.Workspa
 		appendField("avatar_url", nullableUpdateValue(params.AvatarURL))
 	}
 	if params.DefaultView != nil {
+		if err := s.validateDefaultView(params.ID, *params.DefaultView); err != nil {
+			return nil, err
+		}
 		appendField("default_view", *params.DefaultView)
 	}
 	if params.InternalCommentsEnabled != nil {
@@ -364,6 +478,27 @@ func (s *WorkspaceService) Update(params UpdateWorkspaceParams) (*models.Workspa
 	return s.GetByID(params.ID)
 }
 
+// validateDefaultView rejects a default_view that the workspace's view
+// settings disable. Values outside the known view set (legacy data) pass.
+func (s *WorkspaceService) validateDefaultView(workspaceID int, defaultView string) error {
+	if !slices.Contains(models.BoardViewIDs, defaultView) {
+		return nil
+	}
+	wsConfig, err := s.boards.GetByWorkspaceID(workspaceID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to load workspace view settings: %w", err)
+	}
+	if set := wsConfig.ViewSettings.EnabledViewSet(); set != nil {
+		if _, ok := set[defaultView]; !ok {
+			return fmt.Errorf("%w: view %q is disabled by the workspace view settings", ErrWorkspaceMutationInvalid, defaultView)
+		}
+	}
+	return nil
+}
+
 func nullableUpdateValue[T any](update NullableUpdate[T]) any {
 	if update.Value == nil {
 		return nil
@@ -391,6 +526,13 @@ func (s *WorkspaceService) Delete(id int) error {
 		}
 		if hasProtectedLinks {
 			return ErrWorkspaceHasProtectedIntegrationLinks
+		}
+
+		// Remove SLA configuration first so goal targets are gone before the
+		// workspace's calendars cascade; the goal-target calendar FK would
+		// otherwise abort the delete depending on cascade order.
+		if err := s.slaRepo.DeleteWorkspaceMetricsTx(context.Background(), tx, id); err != nil {
+			return err
 		}
 
 		if err := s.repo.DeleteTx(tx, id); err != nil {

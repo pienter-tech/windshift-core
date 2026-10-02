@@ -30,6 +30,10 @@ type CollectionRepository struct {
 	db database.Database
 }
 
+// ErrCollectionQueuesRequireWorkspace prevents orphaning queues when a
+// collection is moved to the global scope, which has no queue storage scope.
+var ErrCollectionQueuesRequireWorkspace = errors.New("collection queues require a workspace")
+
 // NewCollectionRepository creates a collection repository.
 func NewCollectionRepository(db database.Database) *CollectionRepository {
 	return &CollectionRepository{db: db}
@@ -228,12 +232,48 @@ func (r *CollectionRepository) Create(collection *models.Collection, userID int)
 
 // Update replaces all editable collection fields.
 func (r *CollectionRepository) Update(id int, collection *models.Collection) error {
-	_, err := r.db.ExecWrite(`
-		UPDATE collections
-		SET name = ?, description = ?, ql_query = ?, filter_state = ?, is_public = ?, workspace_id = ?, category_id = ?, public_slug = ?, updated_at = CURRENT_TIMESTAMP
-		WHERE id = ?
-	`, collection.Name, collection.Description, collection.QLQuery, collection.FilterState,
-		collection.IsPublic, collection.WorkspaceID, collection.CategoryID, collection.PublicSlug, id)
+	err := database.WithTx(r.db, func(tx database.Tx) error {
+		// Serialize scope changes with queue creation before checking for queues.
+		// Updating only updated_at locks the row without firing the collection
+		// change trigger, which watches query, filter, and workspace columns.
+		var currentWorkspace sql.NullInt64
+		err := tx.QueryRow(`
+			UPDATE collections SET updated_at = updated_at WHERE id = ?
+			RETURNING workspace_id
+		`, id).Scan(&currentWorkspace)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if collection.WorkspaceID == nil && currentWorkspace.Valid {
+			var queueCount int
+			if err := tx.QueryRow("SELECT COUNT(*) FROM queues WHERE collection_id = ?", id).Scan(&queueCount); err != nil {
+				return err
+			}
+			if queueCount > 0 {
+				return ErrCollectionQueuesRequireWorkspace
+			}
+		}
+		if _, err := tx.Exec(`
+			UPDATE collections
+			SET name = ?, description = ?, ql_query = ?, filter_state = ?, is_public = ?, workspace_id = ?, category_id = ?, public_slug = ?, updated_at = CURRENT_TIMESTAMP
+			WHERE id = ?
+		`, collection.Name, collection.Description, collection.QLQuery, collection.FilterState,
+			collection.IsPublic, collection.WorkspaceID, collection.CategoryID, collection.PublicSlug, id); err != nil {
+			return err
+		}
+		if collection.WorkspaceID != nil {
+			if _, err := tx.Exec(`
+				UPDATE queues SET workspace_id = ?, updated_at = CURRENT_TIMESTAMP
+				WHERE collection_id = ? AND workspace_id != ?
+			`, *collection.WorkspaceID, id, *collection.WorkspaceID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 	if err != nil {
 		return fmt.Errorf("update collection %d: %w", id, err)
 	}

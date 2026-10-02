@@ -4,21 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 
 	"windshift/internal/jira"
 	"windshift/internal/models"
-)
-
-var (
-	jqlOrderByPattern      = regexp.MustCompile(`(?i)\s+ORDER\s+BY\s+.+$`)
-	jqlSimpleClausePattern = regexp.MustCompile(`(?is)^\s*([A-Za-z][A-Za-z0-9_ -]*)\s*(=|!=|<>|~|IN|NOT\s+IN)\s*(.+?)\s*$`)
-	jqlOuterParensPattern  = regexp.MustCompile(`^\((.*)\)$`)
-	jqlWhitespacePattern   = regexp.MustCompile(`\s+`)
-	jqlIdentifierSafe      = regexp.MustCompile(`^[A-Za-z0-9_.:-]+$`)
 )
 
 // importJiraBoardsAndFilters imports Jira saved filters as Windshift collections
@@ -47,7 +38,7 @@ func (h *JiraImportHandler) importJiraSavedFilters(ctx context.Context, jobID, p
 		if strings.TrimSpace(filter.ID) == "" {
 			continue
 		}
-		ql, unsupported := translateJQLToWindshiftQL(filter.JQL, workspaceID)
+		ql, unsupported := jira.TranslateJQLToWindshiftQL(filter.JQL, workspaceID)
 		description := jiraFilterCollectionDescription(filter, unsupported)
 		metadata := map[string]any{
 			"jira_entity": "filter",
@@ -109,7 +100,7 @@ func (h *JiraImportHandler) importJiraBoards(ctx context.Context, jobID, project
 			jql = fmt.Sprintf("project = %s", projectKey)
 		}
 
-		ql, unsupported := translateJQLToWindshiftQL(jql, workspaceID)
+		ql, unsupported := jira.TranslateJQLToWindshiftQL(jql, workspaceID)
 		metadata := map[string]any{
 			"jira_entity":   "board",
 			"jira_board_id": board.ID,
@@ -175,293 +166,6 @@ func jiraBoardCollectionDescription(board jira.JiraBoard, config *jira.JiraBoard
 		parts = append(parts, "Unsupported JQL clauses not translated into Windshift QL:\n- "+strings.Join(unsupported, "\n- "))
 	}
 	return strings.Join(parts, "\n\n")
-}
-
-func translateJQLToWindshiftQL(jql string, workspaceID int) (ql string, unsupported []string) {
-	base := fmt.Sprintf("workspace_id = %d", workspaceID)
-	jql = strings.TrimSpace(jql)
-	if jql == "" {
-		return base, nil
-	}
-	unsupported = []string{}
-	if match := jqlOrderByPattern.FindString(jql); match != "" {
-		unsupported = append(unsupported, strings.TrimSpace(match))
-		jql = strings.TrimSpace(jqlOrderByPattern.ReplaceAllString(jql, ""))
-	}
-	clauses := splitJQLAndClauses(jql)
-	qlClauses := []string{base}
-	for _, clause := range clauses {
-		clause = strings.TrimSpace(clause)
-		if clause == "" {
-			continue
-		}
-		if translated, ok := translateJQLClause(clause); ok {
-			if translated != "" {
-				qlClauses = append(qlClauses, translated)
-			}
-			continue
-		}
-		unsupported = append(unsupported, clause)
-	}
-	return strings.Join(qlClauses, " AND "), unsupported
-}
-
-func splitJQLAndClauses(jql string) []string {
-	var clauses []string
-	var current strings.Builder
-	quote := rune(0)
-	depth := 0
-	runes := []rune(jql)
-	for i := 0; i < len(runes); i++ {
-		r := runes[i]
-		if quote != 0 {
-			current.WriteRune(r)
-			if r == quote {
-				quote = 0
-			}
-			continue
-		}
-		switch r {
-		case '\'', '"':
-			quote = r
-			current.WriteRune(r)
-		case '(':
-			depth++
-			current.WriteRune(r)
-		case ')':
-			if depth > 0 {
-				depth--
-			}
-			current.WriteRune(r)
-		default:
-			if depth == 0 && hasJQLKeywordAt(runes, i, "AND") {
-				clauses = append(clauses, current.String())
-				current.Reset()
-				i += len("AND") - 1
-				continue
-			}
-			current.WriteRune(r)
-		}
-	}
-	clauses = append(clauses, current.String())
-	return clauses
-}
-
-func hasJQLKeywordAt(runes []rune, idx int, keyword string) bool {
-	if idx+len(keyword) > len(runes) {
-		return false
-	}
-	for j, r := range keyword {
-		if !strings.EqualFold(string(runes[idx+j]), string(r)) {
-			return false
-		}
-	}
-	beforeOK := idx == 0 || isJQLBoundary(runes[idx-1])
-	afterIdx := idx + len(keyword)
-	afterOK := afterIdx >= len(runes) || isJQLBoundary(runes[afterIdx])
-	return beforeOK && afterOK
-}
-
-func isJQLBoundary(r rune) bool {
-	return r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '(' || r == ')'
-}
-
-func containsTopLevelJQLKeyword(value, keyword string) bool {
-	quote := rune(0)
-	depth := 0
-	runes := []rune(value)
-	for i, r := range runes {
-		if quote != 0 {
-			if r == quote {
-				quote = 0
-			}
-			continue
-		}
-		switch r {
-		case '\'', '"':
-			quote = r
-		case '(':
-			depth++
-		case ')':
-			if depth > 0 {
-				depth--
-			}
-		default:
-			if depth == 0 && hasJQLKeywordAt(runes, i, keyword) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func translateJQLClause(clause string) (string, bool) {
-	clause = strings.TrimSpace(clause)
-	if m := jqlOuterParensPattern.FindStringSubmatch(clause); len(m) == 2 {
-		clause = strings.TrimSpace(m[1])
-	}
-	if containsTopLevelJQLKeyword(clause, "OR") || containsTopLevelJQLKeyword(clause, "AND") {
-		return "", false
-	}
-	m := jqlSimpleClausePattern.FindStringSubmatch(clause)
-	if len(m) != 4 {
-		return "", false
-	}
-	field := normalizeJQLField(m[1])
-	op := normalizeJQLOperator(m[2])
-	rawValue := strings.TrimSpace(m[3])
-
-	if field == "project" {
-		if op == "=" || op == "IN" {
-			return "", true // represented by workspace_id in every imported collection
-		}
-		return "", false
-	}
-	qlField, valueMapper, ok := jqlFieldMapping(field)
-	if !ok {
-		return "", false
-	}
-	values, listOK := parseJQLValueList(rawValue)
-	if op == "IN" || op == "NOT IN" {
-		if !listOK || len(values) == 0 {
-			return "", false
-		}
-		mapped := make([]string, 0, len(values))
-		for _, value := range values {
-			if mv, ok := valueMapper(value); ok {
-				mapped = append(mapped, quoteQLValue(mv))
-			}
-		}
-		if len(mapped) == 0 {
-			return "", false
-		}
-		return fmt.Sprintf("%s %s (%s)", qlField, op, strings.Join(mapped, ", ")), true
-	}
-	if listOK {
-		return "", false
-	}
-	value := unquoteJQLValue(rawValue)
-	mapped, ok := valueMapper(value)
-	if !ok {
-		return "", false
-	}
-	if op == "~" {
-		return fmt.Sprintf("%s ~ %s", qlField, quoteQLValue(mapped)), true
-	}
-	return fmt.Sprintf("%s %s %s", qlField, op, quoteQLValue(mapped)), true
-}
-
-func normalizeJQLField(field string) string {
-	field = strings.ToLower(strings.TrimSpace(field))
-	field = strings.ReplaceAll(field, " ", "")
-	field = strings.ReplaceAll(field, "_", "")
-	return field
-}
-
-func normalizeJQLOperator(op string) string {
-	op = strings.ToUpper(jqlWhitespacePattern.ReplaceAllString(strings.TrimSpace(op), " "))
-	if op == "<>" {
-		return "!="
-	}
-	return op
-}
-
-func jqlFieldMapping(field string) (qlField string, valueMapper func(string) (string, bool), ok bool) {
-	identity := func(v string) (string, bool) { return strings.TrimSpace(v), strings.TrimSpace(v) != "" }
-	switch field {
-	case "status":
-		return "status", identity, true
-	case "statuscategory":
-		return "status_category", identity, true
-	case "priority":
-		return "priority", func(v string) (string, bool) { return jira.SuggestPriorityMapping(v), strings.TrimSpace(v) != "" }, true
-	case "issuetype", "type":
-		return "itemtypename", identity, true
-	case "summary":
-		return "title", identity, true
-	case "description":
-		return "description", identity, true
-	case "labels", "label":
-		return "labels", identity, true
-	case "fixversion", "fixversions", "fixversion/s":
-		return "milestonename", identity, true
-	case "component", "components":
-		return "labels", func(v string) (string, bool) {
-			v = strings.TrimSpace(v)
-			if v == "" {
-				return "", false
-			}
-			return "component:" + v, true
-		}, true
-	case "affectedversion", "affectedversions", "affectedversion/s":
-		return "labels", func(v string) (string, bool) {
-			v = strings.TrimSpace(v)
-			if v == "" {
-				return "", false
-			}
-			return "affects:" + v, true
-		}, true
-	case "key", "issuekey":
-		return "key", identity, true
-	}
-	return "", nil, false
-}
-
-func parseJQLValueList(raw string) ([]string, bool) {
-	raw = strings.TrimSpace(raw)
-	if !strings.HasPrefix(raw, "(") || !strings.HasSuffix(raw, ")") {
-		return nil, false
-	}
-	inner := strings.TrimSpace(raw[1 : len(raw)-1])
-	if inner == "" {
-		return nil, true
-	}
-	var values []string
-	var current strings.Builder
-	quote := rune(0)
-	for _, r := range inner {
-		if quote != 0 {
-			current.WriteRune(r)
-			if r == quote {
-				quote = 0
-			}
-			continue
-		}
-		switch r {
-		case '\'', '"':
-			quote = r
-			current.WriteRune(r)
-		case ',':
-			values = append(values, unquoteJQLValue(current.String()))
-			current.Reset()
-		default:
-			current.WriteRune(r)
-		}
-	}
-	values = append(values, unquoteJQLValue(current.String()))
-	return values, true
-}
-
-func unquoteJQLValue(value string) string {
-	value = strings.TrimSpace(value)
-	if len(value) >= 2 {
-		first, last := value[0], value[len(value)-1]
-		if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
-			return strings.TrimSpace(value[1 : len(value)-1])
-		}
-	}
-	return value
-}
-
-func quoteQLValue(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return `""`
-	}
-	if jqlIdentifierSafe.MatchString(value) && !strings.Contains(value, ":") {
-		return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
-	}
-	return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
 }
 
 func (h *JiraImportHandler) ensureJiraCollection(jobID, jiraID, jiraKey, name, description, ql string, workspaceID, createdByUserID int, metadata map[string]any) (int, bool) {

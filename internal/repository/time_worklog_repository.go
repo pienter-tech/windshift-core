@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -175,6 +176,58 @@ type WorklogDetailFilter struct {
 	DateToExclusiveUnix  *int64
 	Limit                int
 	Offset               int
+}
+
+// WorklogAggregateInput is the slim projection feeding server-side report
+// aggregation: no description, item, or label columns.
+type WorklogAggregateInput struct {
+	StartTimeUnix   int64
+	EndTimeUnix     int64
+	DurationMinutes int
+	UserID          int
+	UserName        string
+	ProjectID       int
+	ProjectName     string
+	CustomerID      int
+	CustomerName    string
+}
+
+// StreamAggregateInputs invokes fn for every worklog matching the filter,
+// ordered for deterministic aggregation, without materializing the whole
+// result set. The query runs under ctx, so a canceled report request stops
+// the scan (WI-1598).
+func (r *TimeWorklogRepository) StreamAggregateInputs(ctx context.Context, filter WorklogDetailFilter, fn func(*WorklogAggregateInput) error) error {
+	if filter.AccessibleProjectIDs != nil && len(filter.AccessibleProjectIDs) == 0 {
+		return nil
+	}
+	where, args := worklogDetailWhere(filter)
+	query := `SELECT w.start_time, w.end_time, w.duration_minutes,
+	       w.user_id, COALESCE(u.first_name || ' ' || u.last_name, ''),
+	       w.project_id, p.name, w.customer_id, c.name
+	FROM time_worklogs w
+	JOIN customer_organisations c ON w.customer_id = c.id
+	JOIN time_projects p ON w.project_id = p.id
+	LEFT JOIN users u ON w.user_id = u.id
+	` + where + "\n ORDER BY w.start_time ASC, w.id ASC"
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("stream worklog aggregate inputs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var item WorklogAggregateInput
+		if scanErr := rows.Scan(&item.StartTimeUnix, &item.EndTimeUnix, &item.DurationMinutes,
+			&item.UserID, &item.UserName, &item.ProjectID, &item.ProjectName,
+			&item.CustomerID, &item.CustomerName); scanErr != nil {
+			return fmt.Errorf("scan worklog aggregate input: %w", scanErr)
+		}
+		if err := fn(&item); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }
 
 // ListDetails returns joined worklogs ordered newest-first.

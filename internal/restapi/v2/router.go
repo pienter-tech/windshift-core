@@ -23,6 +23,7 @@ import (
 	"windshift/internal/repository"
 	"windshift/internal/services"
 	"windshift/internal/services/actioncatalog"
+	"windshift/internal/sla"
 )
 
 const (
@@ -226,6 +227,16 @@ func (b *routeBuilder) RawResponse[Response any](method, path string, status int
 
 // RawDocument registers a handler that parses a non-JSON request itself and
 // writes the standard data envelope.
+// RawHandler mounts a fully custom handler for non-JSON bodies (e.g. CSV
+// streaming). ResponseMediaType declares the body the handler writes itself.
+func (b *routeBuilder) RawHandler(method, path, responseMediaType string, status int, auth AuthClass, scopes []string, handler Handler) {
+	metadata := b.metadata(method, path, auth, scopes)
+	metadata.ResponseMediaType = responseMediaType
+	metadata.SuccessStatus = status
+	metadata.ResponseShape = ResponseRaw
+	b.routes = append(b.routes, route{Route: metadata, handler: handler})
+}
+
 func (b *routeBuilder) RawDocument[Request, Response any](method, path string, status int, requestMediaType string, auth AuthClass, scopes []string, handler Handler) {
 	metadata := b.metadata(method, path, auth, scopes)
 	metadata.RequestType = reflect.TypeFor[Request]()
@@ -281,13 +292,14 @@ type labelApplication interface {
 	Update(services.AuditActor, int, services.LabelUpdate) (*models.Label, error)
 	Delete(services.AuditActor, int) error
 	ListForItem(int) ([]models.Label, error)
-	SetForItem(int, []int) ([]models.Label, error)
-	AddToItem(int, int) ([]models.Label, error)
-	RemoveFromItem(int, int) error
+	SetForItem(services.AuditActor, int, []int) ([]models.Label, error)
+	AddToItem(services.AuditActor, int, int) ([]models.Label, error)
+	RemoveFromItem(services.AuditActor, int, int) error
 }
 
 type itemReader interface {
 	FindByID(int) (*models.Item, error)
+	FindByIDsInWorkspace(ctx context.Context, workspaceID int, ids []int) ([]*models.Item, error)
 }
 
 type resourceAccess interface {
@@ -327,6 +339,7 @@ type pageReader interface {
 
 type pageApplication interface {
 	List(int, int) ([]models.Page, error)
+	ListTitlesAcrossWorkspaces(int, []int) ([]services.PageTitleRow, error)
 	EffectiveLevels(int, int) (map[int]string, error)
 	Get(int, int, int) (*models.Page, error)
 	Search(int, int, string, int) ([]models.Page, error)
@@ -369,6 +382,15 @@ type pageLabelApplication interface {
 	RemoveFromPage(int, int) error
 }
 
+type cannedResponseApplication interface {
+	List(workspaceID int, includeArchived bool) ([]models.CannedResponse, error)
+	Get(workspaceID, id int) (*models.CannedResponse, error)
+	Create(workspaceID int, input services.CannedResponseInput, actors ...services.AuditActor) (*models.CannedResponse, error)
+	Update(workspaceID, id int, update services.CannedResponseUpdate, actors ...services.AuditActor) (*models.CannedResponse, error)
+	Delete(workspaceID, id int, actors ...services.AuditActor) (*models.CannedResponse, error)
+	RenderPreview(workspaceID, id, itemID int, actors ...services.AuditActor) (string, error)
+}
+
 type worklogApplication interface {
 	Create(int, services.WorklogMutationInput) (*services.WorklogMutationResult, error)
 	Update(int, int, services.WorklogMutationInput) (*services.WorklogMutationResult, error)
@@ -377,6 +399,7 @@ type worklogApplication interface {
 	ListMine(repository.WorklogListFilter) ([]models.Worklog, int, error)
 	List(repository.WorklogDetailFilter) ([]models.Worklog, error)
 	ListPage(repository.WorklogDetailFilter) ([]models.Worklog, int, error)
+	Aggregate(ctx context.Context, filter repository.WorklogDetailFilter, timezone string) (*services.WorklogAggregate, error)
 }
 
 type timeAccess interface {
@@ -523,6 +546,7 @@ type Deps struct {
 	Tokens                       tokenAuthenticator
 	Users                        userReader
 	Statuses                     statusReader
+	Teams                        teamReader
 	Workflows                    workflowReader
 	Configuration                configurationReader
 	ObjectTranslations           objectLocalizer
@@ -532,6 +556,10 @@ type Deps struct {
 	Screens                      *services.ScreenProvisioningService
 	WorkspaceRoles               *services.WorkspaceRoleProvisioningService
 	ConfigurationSetProvisioning *services.ConfigurationSetProvisioningService
+	ConfigSetConformance         *services.ConfigSetConformanceService
+	WorkspaceBundleExport        *services.WorkspaceBundleExportService
+	WorkspaceBundleImport        *services.WorkspaceBundleImportService
+	PackApply                    *services.PackApplyService
 	ConfigurationSetExport       *services.ConfigSetExportService
 	StoryPointRollup             storyPointRollupReader
 	HierarchyLevels              *services.EnumService
@@ -548,6 +576,7 @@ type Deps struct {
 	PageDiagrams                 pageDiagramApplication
 	PageAccess                   pageAccess
 	PageLabels                   pageLabelApplication
+	CannedResponses              cannedResponseApplication
 	PagePublication              *services.KnowledgePublicationService
 	Worklogs                     worklogApplication
 	TimeAccess                   timeAccess
@@ -577,12 +606,29 @@ type Deps struct {
 	Assets                       *services.AssetApplicationService
 	ItemApplication              *services.ItemApplicationService
 	ItemDetail                   *services.ItemDetailApplicationService
+	ItemLifecycle                *services.ItemLifecycleService
+	TicketImport                 *services.TicketImportService
 	SessionMiddleware            func(http.Handler) http.Handler
 	SearchAllowed                func(*http.Request) bool
 	DBRequestTimeout             time.Duration
 	CORS                         Middleware
 	CSRF                         csrfValidator
 	Concurrency                  concurrencyLimiter
+	// SLA serves the read-only item SLA state and compliance report. Optional:
+	// nil keeps the routes registered but answering not-found.
+	SLA *sla.Engine
+	// SLACalendars serves workspace working-calendar configuration. Optional:
+	// nil keeps the routes registered but answering not-found.
+	SLACalendars *services.SLACalendarService
+	// SLASettings serves SLA warning-threshold configuration. Optional: nil
+	// keeps the routes registered but answering not-found.
+	SLASettings *services.SLASettingsService
+	// SLATeamBindings serves team-workspace consent bindings. Optional: nil
+	// keeps the routes registered but answering not-found.
+	SLATeamBindings *services.SLATeamBindingService
+	// SLAMetrics serves SLA metric configuration. Optional: nil keeps the
+	// routes registered but answering not-found.
+	SLAMetrics *services.SLAMetricService
 }
 
 // RegisterRoutes validates dependencies and mounts the canonical inventory twice.
@@ -649,6 +695,9 @@ func RegisterRoutes(deps Deps) error {
 	}
 	if deps.PageLabels == nil {
 		return errors.New("v2: PageLabels is required")
+	}
+	if deps.CannedResponses == nil {
+		return errors.New("v2: CannedResponses is required")
 	}
 	if deps.PagePublication == nil {
 		return errors.New("v2: PagePublication is required")
@@ -785,6 +834,8 @@ func buildRoutes(deps Deps) []route {
 	registerScreenRoutes(&builder, deps)
 	registerWorkspaceRoleRoutes(&builder, deps)
 	registerConfigurationSetRoutes(&builder, deps)
+	registerWorkspaceBundleRoutes(&builder, deps)
+	registerPackRoutes(&builder, deps)
 	registerHierarchyLevelRoutes(&builder, deps)
 	registerScopedCatalogRoutes(&builder, deps.Catalog, deps.Workspaces, deps.ItemTemplates)
 	registerLabelRoutes(&builder, deps)
@@ -793,6 +844,7 @@ func buildRoutes(deps Deps) []route {
 	registerItemDiagramRoutes(&builder, deps)
 	registerPageDiagramRoutes(&builder, deps)
 	registerPageLabelRoutes(&builder, deps)
+	registerCannedResponseRoutes(&builder, deps)
 	registerWorklogRoutes(&builder, deps)
 	registerTimeRoutes(&builder, deps)
 	registerAdminRoutes(&builder, deps)
@@ -809,7 +861,14 @@ func buildRoutes(deps Deps) []route {
 	registerActionRoutes(&builder, deps.Actions)
 	registerTestManagementRoutes(&builder, deps.TestManagement)
 	registerAssetRoutes(&builder, deps.Assets)
-	registerItemRoutes(&builder, deps.ItemApplication, deps.ItemDetail, deps.Access, deps.StoryPointRollup, deps.DBRequestTimeout)
+	registerItemRoutes(&builder, deps.ItemApplication, deps.ItemDetail, deps.ItemLifecycle, deps.Access, deps.StoryPointRollup, deps.DBRequestTimeout)
+	registerQueueRoutes(&builder, deps.ItemApplication)
+	registerSLARoutes(&builder, deps)
+	registerSLACalendarRoutes(&builder, deps)
+	registerSLAWarningThresholdRoutes(&builder, deps)
+	registerSLATeamBindingRoutes(&builder, deps)
+	registerSLAMetricRoutes(&builder, deps)
+	registerTicketImportRoutes(&builder, deps.TicketImport)
 	applyEmbeddedContractMetadata(builder.routes, contractMetadataJSON)
 	return builder.routes
 }
@@ -918,6 +977,17 @@ func applyParameterCorrections(route *Route) {
 		upsertParameter(route, integerQuery("page_size", "Maximum number of resources to return.", maxPageSize, defaultPageSize))
 	}
 	switch route.Method + " " + route.Path {
+	case "POST /workspaces/{workspace_id}/tickets/import/upload",
+		"POST /workspaces/{workspace_id}/tickets/import/start":
+		upsertParameter(route, ParameterMetadata{Name: "workspace_id", In: "path", Required: true, Description: "The workspace identifier.", Schema: map[string]any{"type": "integer", "minimum": 1}})
+	case "GET /workspaces/{workspace_id}/tickets/import/jobs/{job_id}":
+		upsertParameter(route, ParameterMetadata{Name: "workspace_id", In: "path", Required: true, Description: "The workspace identifier.", Schema: map[string]any{"type": "integer", "minimum": 1}})
+		upsertParameter(route, ParameterMetadata{Name: "job_id", In: "path", Required: true, Description: "The import job identifier.", Schema: map[string]any{"type": "string"}})
+	case "GET /workspaces/{workspace_id}/tickets/export":
+		upsertParameter(route, ParameterMetadata{Name: "workspace_id", In: "path", Required: true, Description: "The workspace identifier.", Schema: map[string]any{"type": "integer", "minimum": 1}})
+	case "GET /workspaces/{workspace_id}/items/sla":
+		upsertParameter(route, ParameterMetadata{Name: "workspace_id", In: "path", Required: true, Description: "The workspace identifier.", Schema: map[string]any{"type": "integer", "minimum": 1}})
+		upsertParameter(route, ParameterMetadata{Name: "ids", In: "query", Required: true, Description: "Comma-separated item identifiers to read. At most 200 ids per request; ids outside the workspace are ignored.", Schema: map[string]any{"type": "string", "minLength": 1}})
 	case "POST /workspaces/{workspace_id}/actions/validate":
 		upsertParameter(route, ParameterMetadata{Name: "workspace_id", In: "path", Required: true, Description: "The workspace identifier.", Schema: map[string]any{"type": "integer", "minimum": 1}})
 	case "GET /items/changes":
@@ -1060,6 +1130,17 @@ func applyParameterCorrections(route *Route) {
 		upsertParameter(route, integerQuery("days", "Number of recent civil days included in trend calculations.", 365, 30))
 	case "DELETE /asset-sets/{asset_set_id}/roles/{assignment_id}":
 		upsertParameter(route, enumQuery("type", "Assignment principal type.", "user", "group"))
+	case "POST /workspaces/{workspace_id}/tickets/import/upload",
+		"POST /workspaces/{workspace_id}/tickets/import/start",
+		"GET /workspaces/{workspace_id}/tickets/import/jobs/{job_id}",
+		"GET /workspaces/{workspace_id}/tickets/export":
+		route.Tag = "Work items"
+		route.Summary = map[string]string{
+			"POST /workspaces/{workspace_id}/tickets/import/upload":       "Stage a ticket CSV import upload",
+			"POST /workspaces/{workspace_id}/tickets/import/start":        "Start a ticket CSV import",
+			"GET /workspaces/{workspace_id}/tickets/import/jobs/{job_id}": "Read ticket import progress",
+			"GET /workspaces/{workspace_id}/tickets/export":               "Export tickets as CSV",
+		}[route.Method+" "+route.Path]
 	case "GET /items/changes":
 		route.Description = "Returns visible changed and removed item IDs from a stable (since, through] window. Supply limit to page, passing next_cursor as since and the first watermark as through until has_more is false. Pages count log events before deduplication and membership filtering. Cursors ahead of the server require reset_required and a full reload. Omitting limit preserves the full-reload fallback on overflow."
 		upsertParameter(route, booleanQuery("exclude_personal", "Exclude personal-workspace items from the change window. Values true and 1 enable exclusion.", false))

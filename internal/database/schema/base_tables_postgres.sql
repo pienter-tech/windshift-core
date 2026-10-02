@@ -313,6 +313,7 @@ CREATE TABLE IF NOT EXISTS themes (
 	nav_background_color_dark TEXT NOT NULL DEFAULT '#1f2937',
 	nav_text_color_dark TEXT NOT NULL DEFAULT '#f3f4f6',
 	logo_url TEXT,
+	logo_url_dark TEXT,
 	created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
 	updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
@@ -323,10 +324,11 @@ CREATE TABLE IF NOT EXISTS board_configurations (
 	id SERIAL PRIMARY KEY,
 	workspace_id INTEGER,
 	collection_id INTEGER,
-	backlog_status_ids TEXT,
-	list_columns TEXT,
-	roadmap_config TEXT,
-	card_fields TEXT,
+	backlog_status_ids JSONB,
+	list_columns JSONB,
+	roadmap_config JSONB,
+	card_fields JSONB,
+	view_settings JSONB,
 	show_rightmost_column_last_50 BOOLEAN DEFAULT false,
 	completed_item_retention_days INTEGER,
 	created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,

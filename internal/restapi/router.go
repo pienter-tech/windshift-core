@@ -79,6 +79,9 @@ type Deps struct {
 	// AuthorizationCacheInvalidator is the shared post-commit invalidation
 	// boundary used by every authorization-affecting mutation surface.
 	AuthorizationCacheInvalidator *services.AuthorizationCacheInvalidator
+	// PackProvisioner provisions built-in packs during workspace creation from
+	// a template pack. Optional: nil disables template_pack on the v1 surface.
+	PackProvisioner services.WorkspacePackProvisioner
 	// AI is the AI-tier surface (agentic chat, daily briefing) shared with
 	// the cookie-auth /api mount. Typed as a narrow interface because
 	// internal/handlers imports this package — the concrete

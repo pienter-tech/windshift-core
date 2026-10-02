@@ -91,12 +91,19 @@ func (s *EmailTrackingRetentionSweeper) loop(ticker *time.Ticker, stopChan <-cha
 func (s *EmailTrackingRetentionSweeper) tick() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
+	if _, err := s.SweepNow(ctx); err != nil {
+		slog.Error("retention sweeper: failed to list channels", "error", err)
+	}
+}
 
+// SweepNow runs one sweep pass immediately and returns the number of pruned
+// rows. Backs the daily tick and gives admin diagnostics a run-now hook.
+func (s *EmailTrackingRetentionSweeper) SweepNow(ctx context.Context) (int64, error) {
 	channels, err := s.collectInboundEmailChannels(ctx)
 	if err != nil {
-		slog.Error("retention sweeper: failed to list channels", "error", err)
-		return
+		return 0, err
 	}
+	var total int64
 	for _, ch := range channels {
 		days := ch.RetentionDays
 		if days <= 0 {
@@ -107,11 +114,13 @@ func (s *EmailTrackingRetentionSweeper) tick() {
 			slog.Warn("retention sweeper: channel sweep failed", "channel_id", ch.ID, "error", err)
 			continue
 		}
+		total += deleted
 		if deleted > 0 {
 			slog.Info("retention sweeper: pruned tracking rows",
 				"channel_id", ch.ID, "deleted", deleted, "retention_days", days)
 		}
 	}
+	return total, nil
 }
 
 type channelRetention struct {
@@ -119,11 +128,16 @@ type channelRetention struct {
 	RetentionDays int
 }
 
+// collectInboundEmailChannels gathers the channels whose tracking rows the
+// sweeper trims: inbound email channels (per-channel retention from config)
+// plus portal channels, whose rows are system-generated thread anchors and
+// outbound notification records (instance-default retention).
 func (s *EmailTrackingRetentionSweeper) collectInboundEmailChannels(ctx context.Context) ([]channelRetention, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, COALESCE(config, '')
-		FROM channels
+		SELECT id, COALESCE(config, ''), 'email' FROM channels
 		WHERE type = 'email' AND direction = 'inbound'
+		UNION ALL
+		SELECT id, '', 'portal' FROM channels WHERE type = 'portal'
 	`)
 	if err != nil {
 		return nil, err
@@ -133,12 +147,12 @@ func (s *EmailTrackingRetentionSweeper) collectInboundEmailChannels(ctx context.
 	var out []channelRetention
 	for rows.Next() {
 		var id int
-		var configJSON string
-		if err := rows.Scan(&id, &configJSON); err != nil {
+		var configJSON, channelKind string
+		if err := rows.Scan(&id, &configJSON, &channelKind); err != nil {
 			return nil, err
 		}
-		var days int
-		if configJSON != "" {
+		days := 0
+		if channelKind == "email" && configJSON != "" {
 			var cfg models.ChannelConfig
 			if jsonErr := json.Unmarshal([]byte(configJSON), &cfg); jsonErr == nil {
 				days = cfg.EmailTrackingRetentionDays
@@ -150,8 +164,10 @@ func (s *EmailTrackingRetentionSweeper) collectInboundEmailChannels(ctx context.
 }
 
 // sweepChannel deletes tracking rows older than retentionDays except for
-// anchors (rows whose message_id is referenced by a more recent in_reply_to).
-// Returns the number of rows deleted.
+// thread anchors: rows whose message_id is referenced by a more recent
+// in_reply_to, and synthetic portal anchors (outbound rows with no comment —
+// they are the thread root for the ticket's whole lifetime). Returns the
+// number of rows deleted.
 func (s *EmailTrackingRetentionSweeper) sweepChannel(ctx context.Context, channelID, retentionDays int) (int64, error) {
 	const maxDays = int64(1<<63-1) / int64(24*time.Hour)
 	if int64(retentionDays) > maxDays || int64(retentionDays) < -maxDays {
@@ -162,6 +178,7 @@ func (s *EmailTrackingRetentionSweeper) sweepChannel(ctx context.Context, channe
 		DELETE FROM email_message_tracking
 		WHERE channel_id = ?
 		  AND processed_at < ?
+		  AND (direction <> 'outbound' OR comment_id IS NOT NULL)
 		  AND (message_id = '' OR message_id NOT IN (
 		      SELECT in_reply_to FROM email_message_tracking
 		      WHERE channel_id = ? AND in_reply_to IS NOT NULL AND in_reply_to <> ''

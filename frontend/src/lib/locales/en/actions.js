@@ -33,6 +33,8 @@ export default {
       itemCreated: 'Item Created',
       itemUpdated: 'Item Updated',
       itemLinked: 'Item Linked',
+      slaBreached: 'SLA breached',
+      slaWarning: 'SLA warning',
       manual: 'Manual',
       respondToCascades: 'Respond to action-triggered changes',
       respondToCascadesHint:

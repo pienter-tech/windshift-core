@@ -19,7 +19,7 @@
   import { workspaceDataStore } from '../stores/workspaceDataStore.svelte.js';
   import { dateInputToISOString } from '../utils/dateFormatter.js';
   import { parseDuration } from '../utils/timeUtils.js';
-  import { isBooleanCustomFieldType } from '../utils/customFieldTypes.js';
+  import { defaultCustomFieldValue, isBooleanCustomFieldType } from '../utils/customFieldTypes.js';
   import { t, translateError } from '../stores/i18n.svelte.js';
 
   /**
@@ -462,9 +462,7 @@
           customFieldValues[field.id] =
             previous !== undefined && previous !== null && previous !== ''
               ? previous
-              : isBooleanCustomFieldType(field.field_type)
-                ? false
-                : '';
+              : defaultCustomFieldValue(field.field_type);
         }
       }
       screenFieldsLoadedForKey = key;

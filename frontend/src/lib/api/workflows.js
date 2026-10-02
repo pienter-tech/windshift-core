@@ -34,11 +34,16 @@ export const statuses = {
 
 const workflowCRUD = createCrudClient('/workflows', { v2: true });
 
+// Flatten the v2 nested { from, to } status objects into the id/name fields
+// the settings editors and migration assistant read. from is null for both
+// initial transitions and from_all_statuses rows; from_all_statuses distinguishes them.
 function editableTransition(transition) {
   return {
     ...transition,
     from_status_id: transition.from?.id ?? null,
+    from_status_name: transition.from?.name ?? '',
     to_status_id: transition.to.id,
+    to_status_name: transition.to.name,
   };
 }
 

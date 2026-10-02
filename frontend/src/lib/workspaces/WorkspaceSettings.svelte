@@ -5,6 +5,7 @@
   import { workspacePermissions, workspacesStore, currentWorkspace } from '../stores';
   import { Trash2, AlertTriangle, Clock, Shield } from '@lucide/svelte';
   import { moduleSettings } from '../stores/moduleSettings.js';
+  import { viewSettingsStore } from '../stores/viewSettings.svelte.js';
   import WorkspaceConfigurationAssigner from './WorkspaceConfigurationAssigner.svelte';
   import WorkspaceConfigurationPreview from './WorkspaceConfigurationPreview.svelte';
   import WorkspaceSCMSettings from './WorkspaceSCMSettings.svelte';
@@ -14,6 +15,8 @@
   import IssueSyncSettings from '../settings/IssueSyncSettings.svelte';
   import RecurrenceManager from '../settings/RecurrenceManager.svelte';
   import WorkspaceItemTemplates from './WorkspaceItemTemplates.svelte';
+import WorkspaceCannedResponses from './WorkspaceCannedResponses.svelte';
+  import ServiceLevels from '../features/sla/ServiceLevels.svelte';
   import Button from '../components/Button.svelte';
   import PageHeader from '../layout/PageHeader.svelte';
   import Input from '../components/Input.svelte';
@@ -84,11 +87,34 @@
     'action-credentials': 'workspaceSettings.headers.actionCredentials',
     recurrence: 'workspaceSettings.headers.recurrence',
     templates: 'workspaceSettings.headers.templates',
+    'canned-responses': 'workspaceSettings.headers.cannedResponses',
+    'service-levels': 'workspaceSettings.headers.serviceLevels',
     danger: 'workspaceSettings.headers.danger',
   };
 
   // Permission check for workspace admin
   const canAdmin = $derived(workspacePermissions.canAdminWorkspace(workspaceId));
+
+  // The default view must stay within the workspace's enabled views. The
+  // current value is always offered, even when settings drift out of sync.
+  $effect(() => {
+    if (workspaceId) viewSettingsStore.load(workspaceId, null);
+  });
+  const defaultViewOptions = $derived.by(() => {
+    const enabled = viewSettingsStore.enabledViewIds(workspaceId, null);
+    const optionViews = new Set([...enabled, formData.default_view].filter(Boolean));
+    const labels = {
+      board: t('workspaceSettings.views.board'),
+      backlog: t('workspaceSettings.views.backlog'),
+      list: t('workspaceSettings.views.list'),
+      tree: t('workspaceSettings.views.tree'),
+      map: t('workspaceSettings.views.map'),
+      overview: t('workspaceSettings.views.overview'),
+    };
+    return [...optionViews]
+      .filter((value) => labels[value])
+      .map((value) => ({ value, label: labels[value] }));
+  });
 
   // MainApp renders one WorkspaceSettings instance for every
   // /workspaces/:id/settings/* view, so `workspaceId` changes under a mounted
@@ -387,14 +413,7 @@
           <SelectField
             label={t('workspaceSettings.defaultView')}
             id="workspace-view"
-            options={[
-            { value: 'board', label: t('workspaceSettings.views.board') },
-            { value: 'backlog', label: t('workspaceSettings.views.backlog') },
-            { value: 'list', label: t('workspaceSettings.views.list') },
-            { value: 'tree', label: t('workspaceSettings.views.tree') },
-            { value: 'map', label: t('workspaceSettings.views.map') },
-            { value: 'overview', label: t('workspaceSettings.views.overview') },
-            ]}
+            options={defaultViewOptions}
             bind:value={formData.default_view}
           />
           <DescriptionText>
@@ -544,6 +563,14 @@
     {:else if activeTab === 'templates'}
         <!-- Work item templates (WI-438) -->
         <WorkspaceItemTemplates {workspaceId} />
+
+    {:else if activeTab === 'canned-responses'}
+        <!-- Canned responses (WI-1138) -->
+        <WorkspaceCannedResponses {workspaceId} />
+
+    {:else if activeTab === 'service-levels'}
+        <!-- Service levels (SLA) -->
+        <ServiceLevels {workspaceId} />
 
     {:else if activeTab === 'danger'}
         <!-- Remove Workspace -->
