@@ -15,7 +15,11 @@
   import EmptyState from '../../components/EmptyState.svelte';
   import Button from '../../components/Button.svelte';
 
-  let { workspaceId } = $props();
+  /**
+   * Optional row-click delegate: when provided (mobile shell), tapping a row
+   * hands the item id to the host instead of opening the desktop modal.
+   */
+  let { workspaceId, onopen = null } = $props();
 
   let personalTodos = $state([]);
   let assignedWork = $state([]);
@@ -38,6 +42,9 @@
   const COLLAPSED_KEY = `todo-collapsed-${workspaceId}`;
   let personalCollapsed = $state(false);
   let assignedCollapsed = $state(false);
+  // The completed-history filter starts collapsed on the phone (sm+ shows it
+  // inline regardless); the choice persists with the section state.
+  let filterOpen = $state(false);
 
   // Done-items date range: caps the indefinitely-growing completed list.
   // 'none' | '7' | '30' | '90' | 'all' | 'custom'; default = last 7 days.
@@ -74,6 +81,7 @@
         const parsed = JSON.parse(saved);
         personalCollapsed = parsed.personal ?? false;
         assignedCollapsed = parsed.assigned ?? false;
+        filterOpen = parsed.filter ?? false;
       }
     } catch { /* ignore */ }
   }
@@ -82,9 +90,15 @@
     try {
       localStorage.setItem(COLLAPSED_KEY, JSON.stringify({
         personal: personalCollapsed,
-        assigned: assignedCollapsed
+        assigned: assignedCollapsed,
+        filter: filterOpen
       }));
     } catch { /* ignore */ }
+  }
+
+  function toggleFilterOpen() {
+    filterOpen = !filterOpen;
+    persistCollapsedState();
   }
 
   function togglePersonalCollapsed() {
@@ -271,6 +285,10 @@
   }
 
   function openItem(itemId) {
+    if (onopen) {
+      onopen(itemId);
+      return;
+    }
     selectedItemId = itemId;
     showItemModal = true;
   }
@@ -337,13 +355,37 @@
 </script>
 
 <div style="background-color: var(--ds-surface);">
-  <div class="p-6">
+  <div class="p-4 sm:p-6">
     {#if loading}
       <div class="text-center py-12 animate-pulse" style="color: var(--ds-text-subtle);">{t('todo.loadingTasks')}</div>
     {:else}
       <div class="flex flex-col gap-4">
-        <!-- Completed-items range filter (caps the indefinitely-growing done list) -->
-        <div class="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-4 py-3 rounded-lg" style="background-color: var(--ds-surface-raised);">
+        <!-- Completed-history filter: inline on sm+, collapsed behind a
+             toggle on the phone where the full bar eats the task list. -->
+        <button
+          class="flex w-full items-center justify-between gap-2 px-3 py-2 rounded-lg select-none sm:hidden"
+          style="background-color: var(--ds-surface-raised);"
+          onclick={toggleFilterOpen}
+          data-testid="todo-filter-toggle"
+          aria-expanded={filterOpen}
+          aria-controls="todo-done-filter"
+          type="button"
+        >
+          <span class="text-sm font-medium" style="color: var(--ds-text);">{t('todo.doneFilterLabel')}</span>
+          <span class="flex-shrink-0" style="color: var(--ds-text-subtle);">
+            {#if filterOpen}
+              <ChevronDown class="w-4 h-4" />
+            {:else}
+              <ChevronRight class="w-4 h-4" />
+            {/if}
+          </span>
+        </button>
+        <div
+          id="todo-done-filter"
+          data-testid="todo-done-filter"
+          class="{filterOpen ? 'flex' : 'hidden'} sm:flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-3 py-2.5 sm:px-4 sm:py-3 rounded-lg"
+          style="background-color: var(--ds-surface-raised);"
+        >
           <div class="min-w-48">
             <div class="text-sm font-medium" style="color: var(--ds-text);">{t('todo.doneFilterLabel')}</div>
             <div class="mt-0.5 text-xs" style="color: var(--ds-text-subtle);">{t('todo.completedHistoryHint')}</div>
@@ -380,7 +422,7 @@
         </div>
 
         <!-- Personal Tasks Section -->
-        <div>
+        <div data-testid="todo-personal-section">
           <button
             class="w-full flex items-center gap-2 px-3 py-2 rounded-lg transition-colors select-none section-header"
             onclick={togglePersonalCollapsed}
@@ -393,7 +435,7 @@
               {/if}
             </span>
             <span class="font-semibold text-sm" style="color: var(--ds-text);">{t('todo.myPersonalTasks')}</span>
-            <Badge size="sm" class="ml-auto">{personalTodos.length} {personalTodos.length === 1 ? 'item' : 'items'}</Badge>
+            <Badge size="sm" class="ml-auto">{t('todo.itemCount', { count: personalTodos.length })}</Badge>
           </button>
 
           {#if !personalCollapsed}
@@ -429,6 +471,7 @@
                 {:else}
                   <button
                     onclick={startAddingTodo}
+                    data-testid="todo-add-task"
                     class="w-full flex items-center gap-3 p-3 border-2 border-dashed rounded-lg transition-colors add-task-btn"
                     style="border-color: var(--ds-border); color: var(--ds-text-subtle);"
                   >
@@ -453,6 +496,7 @@
                       {statusCategories}
                       showIcon={false}
                       showStatus={false}
+                      dataTestid="todo-personal-row"
                       onclick={() => openItem(todo.id)}
                     >
                       {#snippet leading()}
@@ -463,13 +507,14 @@
                             checked={isPersonalTaskCompleted(todo)}
                             onchange={() => togglePersonalTask(todo)}
                             size="small"
+                            dataTestid="todo-personal-checkbox"
                           />
                         </div>
                       {/snippet}
                       {#snippet trailing()}
                         <!-- svelte-ignore a11y_click_events_have_key_events -->
                         <!-- svelte-ignore a11y_no_static_element_interactions -->
-                        <div class="flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" onclick={(e) => e.stopPropagation()}>
+                        <div class="flex-shrink-0 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity" onclick={(e) => e.stopPropagation()}>
                           <button
                             onclick={() => deleteTodo(todo, true)}
                             class="p-1 text-ds-text-danger hover:opacity-80 rounded transition-colors delete-btn"
@@ -495,7 +540,7 @@
         </div>
 
         <!-- Assigned to Me Section -->
-        <div>
+        <div data-testid="todo-assigned-section">
           <button
             class="w-full flex items-center gap-2 px-3 py-2 rounded-lg transition-colors select-none section-header"
             onclick={toggleAssignedCollapsed}
@@ -508,7 +553,7 @@
               {/if}
             </span>
             <span class="font-semibold text-sm" style="color: var(--ds-text);">{t('todo.assignedToMe')}</span>
-            <Badge size="sm" class="ml-auto">{assignedWork.length} {assignedWork.length === 1 ? 'item' : 'items'}</Badge>
+            <Badge size="sm" class="ml-auto">{t('todo.itemCount', { count: assignedWork.length })}</Badge>
           </button>
 
           {#if !assignedCollapsed}
@@ -527,12 +572,13 @@
                       {statusCategories}
                       showWorkspace={true}
                       showStatus={true}
+                      dataTestid="todo-assigned-row"
                       onclick={() => openItem(item.id)}
                     >
                       {#snippet trailing()}
                         <!-- svelte-ignore a11y_click_events_have_key_events -->
                         <!-- svelte-ignore a11y_no_static_element_interactions -->
-                        <div class="flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" onclick={(e) => e.stopPropagation()}>
+                        <div class="flex-shrink-0 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity" onclick={(e) => e.stopPropagation()}>
                           <button
                             onclick={() => deleteTodo(item, false)}
                             class="p-1 text-ds-text-danger hover:opacity-80 rounded transition-colors delete-btn"

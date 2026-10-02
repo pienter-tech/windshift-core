@@ -749,6 +749,8 @@ func buildUpdateData(env *Env, args updateItemArgs, wsID int) (data map[string]a
 		changed = append(changed, "parent")
 	}
 	if args.CustomFieldValues != nil {
+		// The update pipeline merges custom_field_values per field server-side,
+		// so the tool forwards exactly the caller's requested fields.
 		out["custom_field_values"] = args.CustomFieldValues
 		changed = append(changed, "custom_fields")
 	}

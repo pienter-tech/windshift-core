@@ -36,6 +36,75 @@ It ships as a single Go binary with the Svelte frontend built in.
 - Connect the tools you already use - integrate GitHub, Gitea, and Forgejo, import Jira projects, and send email or webhook notifications.
 - Add the capabilities you need - extend work management with test management, time tracking, or asset management.
 
+## Take a look
+
+<p align="center"><strong>Plan sprints on the backlog</strong></p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset=".github/assets/screenshots/hero-backlog-framed.webp">
+    <img src=".github/assets/screenshots/hero-backlog-framed-dark.webp" alt="Backlog grouped into sprints, with items ready to schedule" width="100%">
+  </picture>
+</p>
+
+<p align="center"><strong>See every level of the work</strong></p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset=".github/assets/screenshots/hero-tree-framed.webp">
+    <img src=".github/assets/screenshots/hero-tree-framed-dark.webp" alt="Hierarchy tree view showing epics, stories, and sub-tasks" width="100%">
+  </picture>
+</p>
+
+<p align="center"><strong>Track the timeline</strong></p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset=".github/assets/screenshots/hero-roadmap-framed.webp">
+    <img src=".github/assets/screenshots/hero-roadmap-framed-dark.webp" alt="Roadmap timeline with bars spanning start and due dates" width="100%">
+  </picture>
+</p>
+
+<p align="center"><strong>Measure milestone progress</strong></p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset=".github/assets/screenshots/hero-milestone-framed.webp">
+    <img src=".github/assets/screenshots/hero-milestone-framed-dark.webp" alt="Milestone detail with completion progress and work items" width="100%">
+  </picture>
+</p>
+
+<p align="center"><strong>Keep context on the work</strong></p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset=".github/assets/screenshots/hero-item-detail-framed.webp">
+    <img src=".github/assets/screenshots/hero-item-detail-framed-dark.webp" alt="Work item with rich description, fields, and discussion" width="100%">
+  </picture>
+</p>
+
+<p align="center"><strong>Verify releases with test runs</strong></p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset=".github/assets/screenshots/hero-test-run-framed.webp">
+    <img src=".github/assets/screenshots/hero-test-run-framed-dark.webp" alt="Test run with per-case results and success rate" width="100%">
+  </picture>
+</p>
+
+## Language support
+
+<p align="center"><strong>Available in many languages · متوفر بالعديد من اللغات · 支持多种语言<br>Доступно на многих языках · 다양한 언어로 사용 가능</strong></p>
+
+Windshift ships with nine built-in languages — English, Deutsch, Español, Français, Português (Brasil), العربية, Русский, 简体中文, and 한국어 — including right-to-left support for Arabic.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset=".github/assets/screenshots/hero-rtl-ar-framed.webp">
+    <img src=".github/assets/screenshots/hero-rtl-ar-framed-dark.webp" alt="A Windshift work item rendered in Arabic, showing the fully mirrored right-to-left interface">
+  </picture>
+</p>
+
 ## Get started
 
 [Download the latest release](https://windshift.sh/download), then follow the [quick start guide](https://windshift.sh/self-hosting/01-getting-started/02-quick-start). Windshift is designed to run comfortably on anything from a Raspberry Pi to a dedicated server.

@@ -31,6 +31,12 @@ func prepareItemCreation(ctx context.Context, db database.Database, params ItemC
 	if ctx == nil {
 		return nil, fmt.Errorf("item creation requires a context")
 	}
+	if params.StoryPoints != nil && *params.StoryPoints < 0 {
+		return nil, &validation.ValidationError{Field: "story_points", Message: "Story points cannot be negative"}
+	}
+	if params.EstimateMinutes != nil && *params.EstimateMinutes < 0 {
+		return nil, &validation.ValidationError{Field: "estimate_minutes", Message: "Estimate cannot be negative"}
+	}
 
 	creation := &itemCreation{ctx: ctx, db: db, params: params}
 	if err := creation.validateAssignments(); err != nil {

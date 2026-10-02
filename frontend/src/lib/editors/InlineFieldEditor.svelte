@@ -40,8 +40,8 @@
       let updatedItem;
       if (field.startsWith('custom_field_')) {
         const fieldId = field.replace('custom_field_', '');
-        // The shared tracker merges against values issued during other
-        // in-flight requests, so rapid successive saves never drop one.
+        // The server merges custom field patches per field, so a single-field
+        // payload leaves the item's other fields untouched.
         updatedItem = await updateCustomFieldValue(api, item.id, fieldId, value);
       } else {
         updatedItem = await api.items.update(item.id, { [field]: value });

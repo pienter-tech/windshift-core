@@ -22,7 +22,9 @@
   import MobileCommandPalette from './MobileCommandPalette.svelte';
   import MobileCreatePage from './MobileCreatePage.svelte';
   import MobileItemEditPage from './MobileItemEditPage.svelte';
+  import MobileSettingsView from './MobileSettingsView.svelte';
   import ToastContainer from '../features/notifications/ToastContainer.svelte';
+  import { t } from '../stores/i18n.svelte.js';
 
   const view = $derived($currentRoute.view);
   const TAB_VIEWS = ['mobile-my-work', 'mobile-personal', 'mobile-timer', 'mobile-notifications'];
@@ -34,7 +36,8 @@
       view !== 'mobile-chat' &&
       view !== 'mobile-page-detail' &&
       view !== 'mobile-create' &&
-      view !== 'mobile-item-edit',
+      view !== 'mobile-item-edit' &&
+      view !== 'mobile-settings',
   );
   // The Personal tab creates personal tasks; every other tab uses the full
   // work-item form. The Pages tab gets no FAB at all — pages are created from
@@ -97,11 +100,13 @@
       <MobileCreatePage />
     {:else if view === 'mobile-item-edit'}
       <MobileItemEditPage />
+    {:else if view === 'mobile-settings'}
+      <MobileSettingsView />
     {/if}
   </main>
 
   {#if showFab}
-    <button class="fab" onclick={openCreate} data-testid="mobile-create-fab" aria-label="Create item" type="button">
+    <button class="fab" onclick={openCreate} data-testid="mobile-create-fab" aria-label={t('mobile.create.action')} type="button">
       <Plus size={26} />
     </button>
   {/if}
@@ -138,6 +143,9 @@
     flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
+    /* The phone surface never scrolls sideways: rows must clamp to the
+       viewport instead of widening the page. */
+    overflow-x: hidden;
     -webkit-overflow-scrolling: touch;
     /* Clear the fixed bottom nav + iPhone home indicator. */
     padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 4rem);

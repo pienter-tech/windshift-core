@@ -1024,8 +1024,8 @@ class ItemDetailStore {
           return;
         }
 
+        // Custom fields merge per field server-side; send only the edited field.
         updateData.custom_field_values = {
-          ...(this.item.custom_field_values || {}),
           [fieldId]: newValue,
         };
       }
