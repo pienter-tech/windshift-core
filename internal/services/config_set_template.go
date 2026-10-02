@@ -34,6 +34,7 @@ type ConfigSetTplPayload struct {
 	Statuses         []ConfigSetTplStatus       `json:"statuses,omitempty"`
 	ItemTypes        []ConfigSetTplItemType     `json:"item_types,omitempty"`
 	Priorities       []ConfigSetTplPriority     `json:"priorities,omitempty"`
+	LinkTypes        []ConfigSetTplLinkType     `json:"link_types,omitempty"`
 	Screens          []ConfigSetTplScreen       `json:"screens,omitempty"`
 	Workflows        []ConfigSetTplWorkflow     `json:"workflows,omitempty"`
 	ConditionSets    []ConfigSetTplConditionSet `json:"condition_sets,omitempty"`
@@ -86,6 +87,20 @@ type ConfigSetTplPriority struct {
 	Icon        string `json:"icon,omitempty"`
 	Color       string `json:"color,omitempty"`
 	SortOrder   int    `json:"sort_order"`
+}
+
+// ConfigSetTplLinkType carries one link type's semantic definition. The
+// active flag and system marker are instance-local state, not part of the
+// portable definition: import always creates active non-system rows, and
+// verification that required types are present and active belongs to the
+// conformance check, not the template.
+type ConfigSetTplLinkType struct {
+	Name               string   `json:"name"`
+	Description        string   `json:"description,omitempty"`
+	ForwardLabel       string   `json:"forward_label"`
+	ReverseLabel       string   `json:"reverse_label"`
+	Color              string   `json:"color,omitempty"`
+	AllowedEntityTypes []string `json:"allowed_entity_types,omitempty"`
 }
 
 type ConfigSetTplScreen struct {
@@ -145,7 +160,10 @@ type ConfigSetTplTransitionCondition struct {
 // On export, the service rewrites known integer references inside Config:
 //   - role_id   → role_name
 //   - group_id  → group_name
-//   - field_id  → custom_field_name (when source=='custom_field')
+//   - field_id  → custom_field_name (when source=='custom_field' and the
+//     source is a regular_field/custom_field user reference)
+//   - field_identifier → custom_field_name (field_value rules whose
+//     identifier is a numeric custom-field id)
 //
 // Importer reverses these substitutions.
 type ConfigSetTplCondition struct {
@@ -244,6 +262,10 @@ const (
 	UnresolvedKindRole           UnresolvedRefKind = "role"
 	UnresolvedKindGroup          UnresolvedRefKind = "group"
 	UnresolvedKindUser           UnresolvedRefKind = "user"
+	// Workspace-bundle identity references (WI-1335).
+	UnresolvedKindItemType    UnresolvedRefKind = "item_type"
+	UnresolvedKindCustomField UnresolvedRefKind = "custom_field"
+	UnresolvedKindLinkType    UnresolvedRefKind = "link_type"
 )
 
 // UnresolvedRef is a single missing reference. Path is a coarse human-readable
@@ -299,6 +321,30 @@ type ErrDefaultEntityConflict struct {
 
 func (e *ErrDefaultEntityConflict) Error() string {
 	return "configuration set import: bundle conflicts with default-flagged entities on the target"
+}
+
+// LinkTypeConflict records one template link type whose name collides with
+// an existing row in the target's global registry whose definition differs.
+// Both definitions are echoed so the admin can decide which side to rename.
+type LinkTypeConflict struct {
+	Name     string               `json:"name"`
+	Template ConfigSetTplLinkType `json:"template"`
+	Existing ConfigSetTplLinkType `json:"existing"`
+}
+
+// ErrLinkTypeDefinitionConflict is returned by ImportConfigSet before any
+// write when a template link type collides with a same-named registry row
+// carrying a different definition. Import never overwrites existing link
+// types and never duplicates identical ones.
+type ErrLinkTypeDefinitionConflict struct {
+	Conflicts []LinkTypeConflict
+}
+
+func (e *ErrLinkTypeDefinitionConflict) Error() string {
+	if len(e.Conflicts) == 1 {
+		return "configuration set import: 1 link type definition conflict"
+	}
+	return "configuration set import: link type definition conflicts"
 }
 
 // ErrCannotExportDefault is returned by ConfigSetExportService.Export when

@@ -1,21 +1,27 @@
-<script>
+﻿<script>
   import { t } from '../stores/i18n.svelte.js';
   import MilkdownEditor from '../editors/LazyMilkdownEditor.svelte';
   import Input from '../components/Input.svelte';
+  import Checkbox from '../components/Checkbox.svelte';
   import ChipPicker from '../pickers/ChipPicker.svelte';
   import Spinner from '../components/Spinner.svelte';
-  import { LayoutTemplate } from '@lucide/svelte';
+  import { LayoutTemplate, Package } from '@lucide/svelte';
 
   let {
     formData = $bindable({
       name: '',
       key: '',
       description: '',
-      template_workspace_id: null
+      template_workspace_id: null,
+      template_pack: '',
+      restricted_to_creator: false
     }),
     templates = [],
     templatesLoading = false,
     templatesError = null,
+    packs = [],
+    packsLoading = false,
+    packsError = null,
     nameInputRef = $bindable(null)
   } = $props();
 
@@ -41,13 +47,53 @@
     formData.key = e.target.value.toUpperCase();
   }
 
+  // One picker, two template sources: server-embedded packs (fixed by name)
+  // and live workspaces marked as templates (cloned by ID). Values are
+  // prefixed so the two ID spaces never collide.
   let templatePickerItems = $derived.by(() => {
-    if (templates.length === 0) return [];
-    return [
-      { id: null, name: t('createModal.workspaceTemplateBlank') },
-      ...templates
-    ];
+    const blank = {
+      value: 'blank',
+      kind: 'blank',
+      name: t('createModal.workspaceTemplateBlank')
+    };
+    const packItems = (packs || []).map((pack) => ({
+      value: `pack:${pack.name}`,
+      kind: 'pack',
+      name: pack.name,
+      version: pack.version,
+      hasContent: pack.has_content
+    }));
+    const workspaceItems = (templates || []).map((tpl) => ({
+      value: `workspace:${tpl.id}`,
+      kind: 'template',
+      id: tpl.id,
+      name: tpl.name,
+      template_count: tpl.template_count,
+      item_count: tpl.item_count
+    }));
+    return [blank, ...packItems, ...workspaceItems];
   });
+
+  let pickerValue = $derived.by(() => {
+    if (formData.template_pack) return `pack:${formData.template_pack}`;
+    if (formData.template_workspace_id != null) {
+      return `workspace:${formData.template_workspace_id}`;
+    }
+    return 'blank';
+  });
+
+  function onTemplateSelect(item) {
+    if (item?.kind === 'pack') {
+      formData.template_pack = item.name;
+      formData.template_workspace_id = null;
+    } else if (item?.kind === 'template') {
+      formData.template_workspace_id = item.id ?? null;
+      formData.template_pack = '';
+    } else {
+      formData.template_pack = '';
+      formData.template_workspace_id = null;
+    }
+  }
 
   export function validate() {
     return formData.name.trim() !== '' && formData.key.trim() !== '';
@@ -59,7 +105,9 @@
       key: formData.key,
       description: formData.description || '',
       active: true,
-      template_workspace_id: formData.template_workspace_id ?? null
+      template_workspace_id: formData.template_workspace_id ?? null,
+      template_pack: formData.template_pack || null,
+      restricted_to_creator: formData.restricted_to_creator === true
     };
   }
 
@@ -68,7 +116,9 @@
       name: '',
       key: '',
       description: '',
-      template_workspace_id: null
+      template_workspace_id: null,
+      template_pack: '',
+      restricted_to_creator: false
     };
     keyManuallyEdited = false;
   }
@@ -105,8 +155,9 @@
   />
 
   <!-- Template picker: blank workspace is the default and preserves the
-       legacy creation flow. -->
-  {#if templatesLoading}
+       legacy creation flow; built-in packs and live template workspaces are
+       the two provisioning sources. -->
+  {#if templatesLoading || packsLoading}
     <div
       data-testid="workspace-template-loading"
       class="flex items-center gap-2 text-sm px-2 py-1.5 rounded"
@@ -115,7 +166,7 @@
       <Spinner size="sm" />
       <span>{t('createModal.workspaceTemplateLoading')}</span>
     </div>
-  {:else if templatesError}
+  {:else if templatesError || packsError}
     <div
       data-testid="workspace-template-error"
       class="text-sm px-2 py-1.5 rounded"
@@ -126,23 +177,32 @@
   {:else if templatePickerItems.length > 0}
     <div data-testid="workspace-template-section" class="pt-1">
       <ChipPicker
-        value={formData.template_workspace_id}
+        value={pickerValue}
         items={templatePickerItems}
-        getValue={(tpl) => tpl.id}
-        getLabel={(tpl) => tpl.name}
+        getValue={(item) => item.value}
+        getLabel={(item) => item.name}
         icon={LayoutTemplate}
         placeholder={t('createModal.workspaceTemplate')}
         searchable={true}
         searchFields={['name']}
         testId="workspace-template-picker"
-        onSelect={(tpl) => {
-          formData.template_workspace_id = tpl?.id ?? null;
-        }}
+        onSelect={onTemplateSelect}
       >
         {#snippet itemSnippet({ item })}
-          <LayoutTemplate size={14} style="color: var(--ds-text-subtle); flex-shrink: 0;" />
+          {#if item.kind === 'pack'}
+            <Package size={14} style="color: var(--ds-text-subtle); flex-shrink: 0;" />
+          {:else}
+            <LayoutTemplate size={14} style="color: var(--ds-text-subtle); flex-shrink: 0;" />
+          {/if}
           <span class="truncate">{item.name}</span>
-          {#if item.id !== null && item.id !== undefined}
+          {#if item.kind === 'pack'}
+            <span
+              class="text-xs ml-auto pl-2 flex-shrink-0"
+              style="color: var(--ds-text-subtle);"
+            >
+              {t('createModal.workspacePackTemplate')}
+            </span>
+          {:else if item.kind === 'template'}
             <span
               class="text-xs ml-auto pl-2 flex-shrink-0"
               style="color: var(--ds-text-subtle);"
@@ -157,6 +217,17 @@
       </ChipPicker>
     </div>
   {/if}
+
+  <!-- Restrict visibility: gates the workspace to assigned users from the
+       first moment by granting the creator Viewer on creation. -->
+  <div class="pt-1">
+    <Checkbox
+      bind:checked={formData.restricted_to_creator}
+      label={t('createModal.workspaceRestrict')}
+      hint={t('createModal.workspaceRestrictHint')}
+      dataTestid="workspace-restrict-checkbox"
+    />
+  </div>
 
   <!-- Description -->
   <div class="min-h-[60px]">

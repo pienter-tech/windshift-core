@@ -172,6 +172,15 @@ func validateDefinitionHeader(c *Catalog, def ActionDefinition) ValidationErrors
 					Message: err.Error(),
 					Path:    "trigger_config",
 				})
+			} else if def.TriggerType == models.ActionTriggerItemInactive {
+				var cfg models.ActionTriggerConfig
+				if json.Unmarshal([]byte(def.TriggerConfig), &cfg) == nil && cfg.InactiveHours <= 0 {
+					errs = append(errs, ValidationError{
+						Code:    CodeInvalidConfig,
+						Message: "inactive_hours must be at least 1",
+						Path:    "trigger_config",
+					})
+				}
 			}
 		}
 	}

@@ -688,6 +688,8 @@ export default {
     workspaceTemplateBlank: 'Workspace em branco',
     workspaceTemplateLoading: 'Carregando modelos...',
     workspaceTemplateError: 'Falha ao carregar modelos de workspace',
+    workspaceRestrict: 'Restringir visibilidade',
+    workspaceRestrictHint: 'Apenas você e as pessoas atribuídas podem ver este espaço de trabalho',
     workspaceTemplateMeta: '{templates} modelos · {items} itens',
     type: 'Tipo',
     priority: 'Prioridade',

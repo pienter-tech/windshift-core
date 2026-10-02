@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS reviews (
 	user_id INTEGER NOT NULL,
 	review_date DATE NOT NULL,
 	review_type TEXT NOT NULL CHECK (review_type IN ('daily', 'weekly')),
-	review_data TEXT NOT NULL, -- JSON data for unstructured storage
+	review_data JSONB NOT NULL, -- JSON data for unstructured storage
 	created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
 	updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
 	FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -268,6 +268,7 @@ CREATE TABLE IF NOT EXISTS themes (
 	nav_background_color_dark TEXT NOT NULL DEFAULT '#1f2937',
 	nav_text_color_dark TEXT NOT NULL DEFAULT '#f3f4f6',
 	logo_url TEXT,
+	logo_url_dark TEXT,
 	created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
 	updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
@@ -279,10 +280,11 @@ CREATE TABLE IF NOT EXISTS board_configurations (
 	id SERIAL PRIMARY KEY,
 	workspace_id INTEGER,
 	collection_id INTEGER,
-	backlog_status_ids TEXT, -- JSON array of status IDs for backlog
-	list_columns TEXT, -- JSON array of list column configurations
-	roadmap_config TEXT, -- JSON object with roadmap view settings
-	card_fields TEXT, -- JSON array of card field configurations
+	backlog_status_ids JSONB, -- JSON array of status IDs for backlog
+	list_columns JSONB, -- JSON array of list column configurations
+	roadmap_config JSONB, -- JSON object with roadmap view settings
+	card_fields JSONB, -- JSON array of card field configurations
+	view_settings JSONB, -- JSON object of view-scoped settings (enabled_views)
 	show_rightmost_column_last_50 BOOLEAN DEFAULT false,
 	completed_item_retention_days INTEGER,
 	created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
@@ -325,7 +327,7 @@ CREATE TABLE IF NOT EXISTS test_coverage_configurations (
 	id SERIAL PRIMARY KEY,
 	workspace_id INTEGER,
 	collection_id INTEGER,
-	requirement_item_type_ids TEXT, -- JSON array of item type IDs
+	requirement_item_type_ids JSONB, -- JSON array of item type IDs
 	created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
 	updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
 	FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,

@@ -96,8 +96,17 @@ func (s *WorkspaceService) createWorkspaceTx(ctx context.Context, tx database.Tx
 	// CreatorID 0 means "unknown actor" (Jira import jobs); those workspaces
 	// are created without an administrator grant, matching the legacy path.
 	if params.CreatorID > 0 {
-		if err := s.repo.GrantAdministratorRoleTx(tx, newID, params.CreatorID); err != nil {
+		if err := s.repo.GrantBuiltinRoleTx(tx, newID, params.CreatorID, models.RoleBuiltinAdministrator); err != nil {
 			return nil, err
+		}
+		// The Viewer grant is what gates the workspace: without it the
+		// everyone-fallback would expose the new workspace to all users until
+		// someone is assigned. Granting it in the same transaction means the
+		// workspace is never visible to unassigned users, even briefly.
+		if params.RestrictedToCreator != nil && *params.RestrictedToCreator {
+			if err := s.repo.GrantBuiltinRoleTx(tx, newID, params.CreatorID, models.RoleBuiltinViewer); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -126,6 +135,7 @@ func (s *WorkspaceService) createWorkspaceTx(ctx context.Context, tx database.Tx
 	if err != nil {
 		return nil, err
 	}
+	workspace.IsRestricted = params.RestrictedToCreator != nil && *params.RestrictedToCreator && params.CreatorID > 0
 	result.Workspace = workspace
 	return result, nil
 }

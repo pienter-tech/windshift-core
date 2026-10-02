@@ -122,7 +122,9 @@ func (s *Service) EnsurePortalCustomer(
 	id, err := s.portalUsers.FindIDByEmail(email)
 	created := false
 	if errors.Is(err, repository.ErrNotFound) {
-		id, err = s.portalUsers.Create(name, email, organisationID)
+		// Import-created customers carry ticket-import provenance (WI-1553)
+		// so they are visible to provenance reporting and cleanup filters.
+		id, err = s.portalUsers.CreateWithProvenance(name, email, organisationID, models.CustomerCreatedViaTicketImport)
 		created = err == nil
 	}
 	if err != nil {

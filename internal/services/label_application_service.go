@@ -1,9 +1,12 @@
 package services
 
 import (
+	"context"
 	"errors"
+	"time"
 
 	"windshift/internal/database"
+	"windshift/internal/itemevents"
 	"windshift/internal/logger"
 	"windshift/internal/models"
 	"windshift/internal/repository"
@@ -121,34 +124,147 @@ func (s *LabelApplicationService) ListForItem(itemID int) ([]models.Label, error
 	return s.labels.ListForItem(itemID)
 }
 
-// SetForItem validates and replaces an item's complete label set.
-func (s *LabelApplicationService) SetForItem(itemID int, labelIDs []int) ([]models.Label, error) {
+// SetForItem validates and replaces an item's complete label set. The swap
+// and its change fact commit together so SLA evaluation and item history see
+// label changes exactly once.
+func (s *LabelApplicationService) SetForItem(actor AuditActor, itemID int, labelIDs []int) ([]models.Label, error) {
 	if err := s.requireLabels(labelIDs); err != nil {
 		return nil, err
 	}
-	if err := s.labels.ReplaceItemLabels(itemID, labelIDs); err != nil {
+	item, err := repository.NewItemRepository(s.db).FindByIDWithDetails(itemID)
+	if err != nil {
 		return nil, err
 	}
-	return s.labels.ListForItem(itemID)
+	var result []models.Label
+	err = database.WithTx(s.db, func(tx database.Tx) error {
+		before, err := s.labels.ListForItemTx(tx, itemID)
+		if err != nil {
+			return err
+		}
+		if err := s.labels.ReplaceItemLabelsTx(context.Background(), tx, itemID, labelIDs); err != nil {
+			return err
+		}
+		after, err := s.labels.ListForItemTx(tx, itemID)
+		if err != nil {
+			return err
+		}
+		if labelSetsDiffer(before, after) {
+			if err := recordLabelChangeFact(s.db, tx, item, before, after, actor); err != nil {
+				return err
+			}
+		}
+		result = after
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // AddToItem validates and assigns one label to an item.
-func (s *LabelApplicationService) AddToItem(itemID, labelID int) ([]models.Label, error) {
+func (s *LabelApplicationService) AddToItem(actor AuditActor, itemID, labelID int) ([]models.Label, error) {
 	if labelID == 0 {
 		return nil, ErrLabelIDRequired
 	}
 	if err := s.requireLabels([]int{labelID}); err != nil {
 		return nil, err
 	}
-	if err := s.labels.AddItemLabel(itemID, labelID); err != nil {
+	item, err := repository.NewItemRepository(s.db).FindByIDWithDetails(itemID)
+	if err != nil {
 		return nil, err
 	}
-	return s.labels.ListForItem(itemID)
+	var result []models.Label
+	err = database.WithTx(s.db, func(tx database.Tx) error {
+		before, err := s.labels.ListForItemTx(tx, itemID)
+		if err != nil {
+			return err
+		}
+		changed, err := s.labels.AddItemLabelTx(tx, itemID, labelID)
+		if err != nil {
+			return err
+		}
+		after, err := s.labels.ListForItemTx(tx, itemID)
+		if err != nil {
+			return err
+		}
+		if changed {
+			if err := recordLabelChangeFact(s.db, tx, item, before, after, actor); err != nil {
+				return err
+			}
+		}
+		result = after
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // RemoveFromItem detaches one label from an item.
-func (s *LabelApplicationService) RemoveFromItem(itemID, labelID int) error {
-	return s.labels.RemoveItemLabel(itemID, labelID)
+func (s *LabelApplicationService) RemoveFromItem(actor AuditActor, itemID, labelID int) error {
+	item, err := repository.NewItemRepository(s.db).FindByIDWithDetails(itemID)
+	if err != nil {
+		return err
+	}
+	return database.WithTx(s.db, func(tx database.Tx) error {
+		before, err := s.labels.ListForItemTx(tx, itemID)
+		if err != nil {
+			return err
+		}
+		changed, err := s.labels.RemoveItemLabelTx(tx, itemID, labelID)
+		if err != nil {
+			return err
+		}
+		if !changed {
+			return nil
+		}
+		after, err := s.labels.ListForItemTx(tx, itemID)
+		if err != nil {
+			return err
+		}
+		return recordLabelChangeFact(s.db, tx, item, before, after, actor)
+	})
+}
+
+// labelSetsDiffer compares two label lists by membership.
+func labelSetsDiffer(before, after []models.Label) bool {
+	if len(before) != len(after) {
+		return true
+	}
+	ids := make(map[int]bool, len(before))
+	for _, label := range before {
+		ids[label.ID] = true
+	}
+	for _, label := range after {
+		if !ids[label.ID] {
+			return true
+		}
+	}
+	return false
+}
+
+// labelNames projects labels to their ordered names for change facts.
+func labelNames(labels []models.Label) []string {
+	names := make([]string, len(labels))
+	for i, label := range labels {
+		names[i] = label.Name
+	}
+	return names
+}
+
+// recordLabelChangeFact appends the item-updated fact for a label change so
+// SLA evaluation, automation, and item history observe it.
+func recordLabelChangeFact(db database.Database, tx database.Tx, item *models.Item, before, after []models.Label, actor AuditActor) error {
+	metadata := itemEventMetadata(actor.UserID, "application", nil)
+	if metadata.OccurredAt.IsZero() {
+		metadata.OccurredAt = time.Now()
+	}
+	_, err := itemevents.NewRecorder(db).Updated(context.Background(), tx, item, []itemevents.FieldChange{
+		{Field: "labels", OldValue: labelNames(before), NewValue: labelNames(after)},
+	}, metadata)
+	return err
 }
 
 func (s *LabelApplicationService) requireLabels(labelIDs []int) error {

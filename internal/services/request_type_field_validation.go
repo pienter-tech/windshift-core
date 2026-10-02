@@ -299,7 +299,10 @@ func ValidateAndSeparateRequestFields(ctx context.Context, db database.Database,
 		if isRequired {
 			switch fieldType {
 			case "default":
-				if fieldID == "description" && description == "" {
+				// Description is sanitized with sanitize.Comment, which does not
+				// trim, so the blank check must trim explicitly to match title
+				// and custom/virtual fields.
+				if fieldID == "description" && IsBlankSubmittedField(description) {
 					return nil, fmt.Errorf("description is required")
 				}
 			case "custom":

@@ -27,6 +27,8 @@
   import DropIndicator from '../layout/DropIndicator.svelte';
   import DragHandleDots from '../components/DragHandleDots.svelte';
   import CollectionViewSwitcher from '../features/collections/CollectionViewSwitcher.svelte';
+  import { COLLECTION_VIEW_IDS, workspaceViewItems } from '../navigation/workspaceNavigation.js';
+  import { viewSettingsStore } from '../stores/viewSettings.svelte.js';
   import { objectDisplayName } from '../utils/systemLabels.js';
 
   let { workspaceId, collectionId = null } = $props();
@@ -49,6 +51,17 @@
   let completedItemRetentionDays = $state(30);
   let completedItemRetentionError = $state('');
   let customFieldDefinitions = $state([]);
+  let enabledViews = $state([]);
+  // Collection scopes may only toggle collection-scoped views; the workspace
+  // scope also offers the workspace-scoped views-group entry (the queue).
+  let scopeViewItems = $derived(
+    collectionId
+      ? workspaceViewItems.filter((view) => COLLECTION_VIEW_IDS.has(view.id))
+      : workspaceViewItems
+  );
+  let viewsInherited = $state(true);
+  let viewsDirty = $state(false);
+  let viewsResetPending = $state(false);
 
   const PUBLIC_BOARD_CARD_FIELDS = new Set([
     'key',
@@ -171,6 +184,21 @@
         ? data.collection.public_slug
         : null;
       boardConfig = data.boardConfiguration;
+
+      // Effective enabled views: the scope's override, or the inherited
+      // workspace default when the payload marks it inherited.
+      const effectiveViews = boardConfig?.view_settings?.enabled_views;
+      enabledViews = Array.isArray(effectiveViews) && effectiveViews.length > 0
+        ? [...effectiveViews]
+        : workspaceViewItems.map((view) => view.id);
+      if (collectionId) {
+        // The collection effective set inherits workspace-only tools ids;
+        // this scope only reads and persists collection views.
+        enabledViews = enabledViews.filter((id) => COLLECTION_VIEW_IDS.has(id));
+      }
+      viewsInherited = Boolean(boardConfig?.view_settings_inherited) || !boardConfig?.view_settings;
+      viewsDirty = false;
+      viewsResetPending = false;
 
       if (boardConfig) {
         columns = (boardConfig.columns || []).map(col => ({
@@ -658,6 +686,24 @@
 
   // --- Save / Reset / Cancel ---
 
+  function toggleView(viewId) {
+    if (enabledViews.includes(viewId)) {
+      if (enabledViews.length <= 1) return; // at least one view stays enabled
+      enabledViews = enabledViews.filter((id) => id !== viewId);
+    } else {
+      enabledViews = [...enabledViews, viewId];
+    }
+    viewsDirty = true;
+    viewsResetPending = false;
+    hasChanges = true;
+  }
+
+  function resetViewsToInherited() {
+    viewsDirty = true;
+    viewsResetPending = true;
+    hasChanges = true;
+  }
+
   async function saveConfiguration() {
     const retentionDays = Number(completedItemRetentionDays);
     if (
@@ -692,6 +738,15 @@
         completed_item_retention_days: trimCompletedItemsByAge ? retentionDays : null
       };
 
+      // Only carry view settings when this scope owns an override, the user
+      // changed the selection, or an explicit reset was requested — otherwise
+      // inheritance stays untouched.
+      if (viewsResetPending) {
+        payload.view_settings = { enabled_views: null };
+      } else if (viewsDirty || boardConfig?.view_settings) {
+        payload.view_settings = { enabled_views: [...enabledViews] };
+      }
+
       if (boardConfig && boardConfig.id) {
         await api.collections.updateBoardConfiguration(collectionId, boardConfig.id, payload, workspaceId);
       } else {
@@ -699,6 +754,13 @@
         boardConfig = newConfig;
       }
       collectionStore.invalidateBoardConfiguration(workspaceId, collectionId);
+      // Saved view settings change nav rendering for this scope; a
+      // workspace-scope save also changes every inheriting collection.
+      if (collectionId) {
+        viewSettingsStore.invalidate(workspaceId, collectionId);
+      } else {
+        viewSettingsStore.invalidateWorkspace(workspaceId);
+      }
 
       hasChanges = false;
       goToBoard();
@@ -806,7 +868,8 @@
           tabs={[
             { id: 'columns', label: t('settings.boardConfig.columns') },
             { id: 'backlog', label: t('settings.boardConfig.backlog') },
-            { id: 'cardFields', label: t('settings.boardConfig.cardFields'), testid: 'board-config-card-fields-tab' }
+            { id: 'cardFields', label: t('settings.boardConfig.cardFields'), testid: 'board-config-card-fields-tab' },
+            { id: 'views', label: t('settings.boardConfig.views'), testid: 'board-config-views-tab' }
           ]}
           bind:activeTab
         />
@@ -1101,6 +1164,53 @@
               <p class="text-sm mt-4" style="color: var(--ds-text-subtle);">
                 {t('settings.boardConfig.backlogSelected', { count: backlogStatusIDs.length })}
               </p>
+            {/if}
+          </div>
+        </div>
+
+        {:else if activeTab === 'views'}
+        <!-- Views Tab -->
+        <div class="mt-6 mb-6" data-testid="board-config-views">
+          <div class="rounded border p-6" style="background-color: var(--ds-surface-raised); border-color: var(--ds-border);">
+            <h3 class="text-lg font-semibold mb-2" style="color: var(--ds-text);">{t('settings.boardConfig.views')}</h3>
+            <p class="text-sm mb-4" style="color: var(--ds-text-subtle);">
+              {t('settings.boardConfig.viewsHelp')}
+            </p>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+              {#each scopeViewItems as view (view.id)}
+                <Checkbox
+                  checked={enabledViews.includes(view.id)}
+                  onchange={() => toggleView(view.id)}
+                  disabled={!canConfigure || (enabledViews.includes(view.id) && enabledViews.length <= 1)}
+                  dataTestid={`view-toggle-${view.id}`}
+                  label={t(view.labelKey)}
+                  size="small"
+                />
+              {/each}
+            </div>
+
+            {#if collectionId && viewsInherited && !viewsDirty}
+              <div class="mt-4 flex items-center justify-between gap-4">
+                <p class="text-sm" style="color: var(--ds-text-subtle);">
+                  {t('settings.boardConfig.viewsInheritedHint')}
+                </p>
+                <!-- Nothing to reset while inheriting. -->
+              </div>
+            {:else if collectionId && !viewsResetPending}
+              <div class="mt-4 flex items-center justify-between gap-4">
+                <p class="text-sm" style="color: var(--ds-text-subtle);">
+                  {t('settings.boardConfig.viewsOverrideHint')}
+                </p>
+                <Button
+                  variant="secondary"
+                  size="small"
+                  dataTestid="board-config-views-reset"
+                  onclick={resetViewsToInherited}
+                >
+                  {t('settings.boardConfig.resetViews')}
+                </Button>
+              </div>
             {/if}
           </div>
         </div>

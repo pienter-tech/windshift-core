@@ -3,6 +3,7 @@
   import { formatDateSimple } from '../../utils/dateFormatter.js';
   import ItemCard from './ItemCard.svelte';
   import Lozenge from '../../components/Lozenge.svelte';
+  import SLABadge from '../sla/SLABadge.svelte';
   import { getStatusCategory } from '../../utils/statusColors.js';
   import { t } from '../../stores/i18n.svelte.js';
 
@@ -173,6 +174,13 @@
 
       <!-- Title -->
       <h4 class="text-sm flex-1 min-w-0 truncate" style="color: var(--ds-text);">{item.title}</h4>
+
+      <!-- SLA badge (breached / paused / warning / remaining) -->
+      {#if item.id}
+        <span class="flex-shrink-0" data-testid="work-item-sla-{item.id}">
+          <SLABadge itemId={item.id} workspaceId={item.workspace_id} />
+        </span>
+      {/if}
 
       <!-- Optional Workspace Name -->
       {#if showWorkspace && item.workspace_name}

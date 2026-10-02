@@ -59,6 +59,7 @@ type qlCompletionValueReader interface {
 type queryLanguageValueLoader struct {
 	configuration configurationReader
 	statuses      statusReader
+	teams         teamReader
 	catalog       catalogReader
 	planning      planningApplication
 	timeProjects  timeProjectApplication
@@ -121,7 +122,7 @@ func queryLanguageCompletionValues(reader qlCompletionValueReader, localizer obj
 	}
 }
 
-func (l queryLanguageValueLoader) Load(_ context.Context, userID int, source cql.CompletionValueSource, valueField string) ([]qlCompletionValueDTO, error) {
+func (l queryLanguageValueLoader) Load(ctx context.Context, userID int, source cql.CompletionValueSource, valueField string) ([]qlCompletionValueDTO, error) {
 	if !validQLCompletionValueField(source, valueField) {
 		return nil, fmt.Errorf("%w: %s does not support %s", errUnsupportedQLCompletionValueSource, source, valueField)
 	}
@@ -157,6 +158,19 @@ func (l queryLanguageValueLoader) Load(_ context.Context, userID int, source cql
 			values[i] = qlCompletionValue(row.ID, row.Name, "", valueField, row.Name)
 		}
 		return values, nil
+	case cql.CompletionValuesTeams:
+		if l.teams == nil {
+			return []qlCompletionValueDTO{}, nil
+		}
+		rows, err := l.teams.List()
+		if err != nil {
+			return nil, fmt.Errorf("list teams for query completion: %w", err)
+		}
+		values := make([]qlCompletionValueDTO, len(rows))
+		for i, row := range rows {
+			values[i] = qlCompletionValue(row.ID, row.Name, "", valueField, row.Name)
+		}
+		return values, nil
 	case cql.CompletionValuesPriorities:
 		rows, err := l.configuration.ListPriorities()
 		if err != nil {
@@ -178,19 +192,7 @@ func (l queryLanguageValueLoader) Load(_ context.Context, userID int, source cql
 		}
 		return values, nil
 	case cql.CompletionValuesUsers:
-		rows, _, err := l.catalog.ListUsers(userID, services.CatalogPageParams{Limit: math.MaxInt, Sort: "full_name"})
-		if err != nil {
-			return nil, fmt.Errorf("list users for query completion: %w", err)
-		}
-		values := make([]qlCompletionValueDTO, len(rows))
-		for i, row := range rows {
-			label := strings.TrimSpace(row.FullName)
-			if label == "" {
-				label = row.Username
-			}
-			values[i] = qlCompletionValue(row.ID, row.Username, "", valueField, label, row.Username)
-		}
-		return values, nil
+		return l.loadUserCompletionValues(ctx, userID, valueField)
 	case cql.CompletionValuesLabels:
 		workspaces, err := l.visibleWorkspaces(userID)
 		if err != nil {
@@ -232,6 +234,43 @@ func (l queryLanguageValueLoader) visibleWorkspaces(userID int) ([]models.Worksp
 		return nil, fmt.Errorf("list workspaces for query completion: %w", err)
 	}
 	return rows, nil
+}
+
+// loadUserCompletionValues unions the assignable-users roster — the same
+// source the assignee picker uses — across the requester's visible
+// workspaces, so item filters do not require the user.list directory
+// permission.
+func (l queryLanguageValueLoader) loadUserCompletionValues(ctx context.Context, userID int, valueField string) ([]qlCompletionValueDTO, error) {
+	workspaces, err := l.visibleWorkspaces(userID)
+	if err != nil {
+		return nil, err
+	}
+	values := make([]qlCompletionValueDTO, 0)
+	seen := make(map[int]bool)
+	for _, workspace := range workspaces {
+		rows, err := l.catalog.ListAssignableUsers(ctx, userID, workspace.ID)
+		if err != nil {
+			return nil, fmt.Errorf("list assignable users for query completion: %w", err)
+		}
+		for _, row := range rows {
+			if seen[row.ID] {
+				continue
+			}
+			seen[row.ID] = true
+			label := strings.TrimSpace(row.FullName)
+			if label == "" {
+				label = row.Username
+			}
+			values = append(values, qlCompletionValue(row.ID, row.Username, "", valueField, label, row.Username))
+		}
+	}
+	slices.SortStableFunc(values, func(a, b qlCompletionValueDTO) int {
+		if order := strings.Compare(strings.ToLower(a.Label), strings.ToLower(b.Label)); order != 0 {
+			return order
+		}
+		return a.ID - b.ID
+	})
+	return values, nil
 }
 
 func (l queryLanguageValueLoader) loadPlanningValues(userID int, source cql.CompletionValueSource, valueField string) ([]qlCompletionValueDTO, error) {
@@ -326,6 +365,7 @@ func validQLCompletionValueField(source cql.CompletionValueSource, field string)
 		return field == "id" || field == "name" || field == "key"
 	case cql.CompletionValuesStatuses, cql.CompletionValuesStatusCategories,
 		cql.CompletionValuesPriorities, cql.CompletionValuesUsers,
+		cql.CompletionValuesTeams,
 		cql.CompletionValuesMilestones, cql.CompletionValuesIterations,
 		cql.CompletionValuesProjects, cql.CompletionValuesItemTypes,
 		cql.CompletionValuesLabels:
@@ -467,6 +507,8 @@ func completionValueHelp(source cql.CompletionValueSource, valueType, valueField
 		return &qlCompletionValueHelp{Source: source, ValueField: valueField}
 	case cql.CompletionValuesUsers:
 		return &qlCompletionValueHelp{Source: source, ValueField: "id"}
+	case cql.CompletionValuesTeams:
+		return &qlCompletionValueHelp{Source: source, ValueField: valueField}
 	case cql.CompletionValuesMilestones:
 		return &qlCompletionValueHelp{Source: source, ValueField: valueField}
 	case cql.CompletionValuesIterations:

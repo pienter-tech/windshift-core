@@ -127,6 +127,20 @@ func Build() (*Catalog, error) {
 		return nil, err
 	}
 	if err := registerTrigger[models.ActionTriggerConfig](c, triggerSpec{
+		Type:        models.ActionTriggerSLABreached,
+		Label:       "SLA: breached",
+		Description: "Fires when an SLA cycle misses its goal. The {{sla.metric}} variable carries the metric name.",
+	}); err != nil {
+		return nil, err
+	}
+	if err := registerTrigger[models.ActionTriggerConfig](c, triggerSpec{
+		Type:        models.ActionTriggerSLAWarning,
+		Label:       "SLA: warning",
+		Description: "Fires when an SLA cycle reaches a configured percent-of-goal warning threshold.",
+	}); err != nil {
+		return nil, err
+	}
+	if err := registerTrigger[models.ActionTriggerConfig](c, triggerSpec{
 		Type:        models.ActionTriggerManual,
 		Label:       "Manual",
 		Description: "Action does not auto-fire — it must be invoked explicitly via the execute endpoint. Useful for human-in-the-loop or scripted automations.",
@@ -158,6 +172,20 @@ func Build() (*Catalog, error) {
 		Type:        models.ActionTriggerSCMPRMerged,
 		Label:       "SCM: pull request merged",
 		Description: "Fires when a linked pull request transitions to merged. SCM triggers have no authenticated actor, so the action must set an actor_user_id override.",
+	}); err != nil {
+		return nil, err
+	}
+	if err := registerTrigger[models.ActionTriggerConfig](c, triggerSpec{
+		Type:        models.ActionTriggerCommentCreated,
+		Label:       "Comment created",
+		Description: "Fires when a comment is added to an item. Use from_customer to react only to customer replies (portal customer or email-intake sender) or only to agent comments.",
+	}); err != nil {
+		return nil, err
+	}
+	if err := registerTrigger[models.ActionTriggerConfig](c, triggerSpec{
+		Type:        models.ActionTriggerItemInactive,
+		Label:       "Item inactive",
+		Description: "Fires when an open item has had no comment or update for the configured number of hours (inactive_hours). The trigger re-arms after new activity.",
 	}); err != nil {
 		return nil, err
 	}
@@ -291,6 +319,30 @@ func Build() (*Catalog, error) {
 		Type:        models.ActionNodeCreateMilestone,
 		Label:       "Create milestone",
 		Description: "Upsert a workspace milestone from SCM branch/tag events, optionally promoting status and attaching release information.",
+		Category:    CategoryMutation,
+	}); err != nil {
+		return nil, err
+	}
+	if err := registerNode[models.InsertCannedResponseNodeConfig](c, nodeSpec{
+		Type:        models.ActionNodeInsertCannedResponse,
+		Label:       "Insert canned response",
+		Description: "Render a workspace canned response with the execution variables and post it as a comment on the current item. Private snippets are posted as private comments.",
+		Category:    CategoryMutation,
+	}); err != nil {
+		return nil, err
+	}
+	if err := registerNode[models.NotifyCustomerNodeConfig](c, nodeSpec{
+		Type:        models.ActionNodeNotifyCustomer,
+		Label:       "Notify customer",
+		Description: "Email the portal customer who created the item through the threaded reply transport. Skips safely when the item has no customer with an email address.",
+		Category:    CategoryMutation,
+	}); err != nil {
+		return nil, err
+	}
+	if err := registerNode[models.AdjustLabelsNodeConfig](c, nodeSpec{
+		Type:        models.ActionNodeAdjustLabels,
+		Label:       "Adjust labels",
+		Description: "Add or remove labels on the current item.",
 		Category:    CategoryMutation,
 	}); err != nil {
 		return nil, err

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 
 	"windshift/internal/logger"
@@ -15,14 +16,16 @@ import (
 type TeamHandler struct {
 	teamRepo          *repository.TeamRepository
 	leaveRepo         *repository.LeaveRepository
+	slaRepo           *repository.SLARepository
 	permissionService *services.PermissionService
 	auditor           *logger.Auditor
 }
 
-func NewTeamHandler(teamRepo *repository.TeamRepository, leaveRepo *repository.LeaveRepository, permissionService *services.PermissionService, auditor *logger.Auditor) *TeamHandler {
+func NewTeamHandler(teamRepo *repository.TeamRepository, leaveRepo *repository.LeaveRepository, slaRepo *repository.SLARepository, permissionService *services.PermissionService, auditor *logger.Auditor) *TeamHandler {
 	return &TeamHandler{
 		teamRepo:          teamRepo,
 		leaveRepo:         leaveRepo,
+		slaRepo:           slaRepo,
 		permissionService: permissionService,
 		auditor:           auditor,
 	}
@@ -269,6 +272,19 @@ func (h *TeamHandler) Delete(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		respondInternalError(w, r, err)
+		return
+	}
+
+	// A team calendar referenced by a goal target must not be deleted out
+	// from under a workspace's SLA promise; report that as a conflict instead
+	// of letting the calendar FK surface as an internal error.
+	references, err := h.slaRepo.TeamReferencedCalendars(r.Context(), id)
+	if err != nil {
+		respondInternalError(w, r, err)
+		return
+	}
+	if references > 0 {
+		respondConflict(w, r, fmt.Sprintf("team cannot be deleted while %d SLA goal target(s) reference its calendars", references))
 		return
 	}
 

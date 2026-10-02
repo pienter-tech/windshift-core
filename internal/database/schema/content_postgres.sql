@@ -13,15 +13,18 @@ CREATE TABLE IF NOT EXISTS attachments (
 	mime_type TEXT NOT NULL,
 	file_size INTEGER NOT NULL,
 	uploaded_by INTEGER,
+	uploaded_by_portal_customer_id INTEGER,
 	has_thumbnail BOOLEAN DEFAULT false,
 	thumbnail_path TEXT,
 	category TEXT DEFAULT '',
 	created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-	FOREIGN KEY (uploaded_by) REFERENCES users(id) ON DELETE SET NULL
+	FOREIGN KEY (uploaded_by) REFERENCES users(id) ON DELETE SET NULL,
+	FOREIGN KEY (uploaded_by_portal_customer_id) REFERENCES portal_customers(id) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_attachments_item_id ON attachments(item_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_uploaded_by ON attachments(uploaded_by);
+CREATE INDEX IF NOT EXISTS idx_attachments_uploaded_by_portal_customer ON attachments(uploaded_by_portal_customer_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_entity ON attachments(entity_type, item_id);
 
 CREATE TABLE IF NOT EXISTS attachment_settings (

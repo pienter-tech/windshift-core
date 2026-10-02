@@ -7,6 +7,7 @@
   import WorkspacePicker from '../../pickers/WorkspacePicker.svelte';
   import DescriptionText from '../../components/DescriptionText.svelte';
   import Toggle from '../../components/Toggle.svelte';
+  import Lozenge from '../../components/Lozenge.svelte';
 	import TextField from '../../components/TextField.svelte';
 
   let {
@@ -18,7 +19,8 @@
       description: '',
       registration_mode: 'open',
       allowed_domains: ''
-    })
+    }),
+    connectedMailboxes = []
   } = $props();
 
   const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$/;
@@ -97,6 +99,39 @@
         dataTestid="channel-portal-title"
         bind:value={formData.title}
       />
+    </div>
+
+    <div class="pt-4 mt-4 border-t" style="border-color: var(--ds-border);">
+      <h5 class="text-sm font-semibold mb-3" style="color: var(--ds-text);">
+        {t('channel.portalConnectedMailboxes', 'Connected Intake Mailboxes')}
+      </h5>
+      <div data-testid="portal-connected-mailboxes">
+        {#if connectedMailboxes.length === 0}
+          <DescriptionText>
+            {t('channel.portalConnectedMailboxesEmpty', 'No intake mailboxes are connected to this portal.')}
+          </DescriptionText>
+        {:else}
+          <ul class="space-y-2" data-testid="portal-connected-mailbox-list">
+            {#each connectedMailboxes as mailbox (mailbox.id)}
+              <li
+                data-testid="portal-connected-mailbox-{mailbox.id}"
+                class="p-3 rounded text-sm flex items-center justify-between gap-3"
+                style="background: var(--ds-surface-raised); color: var(--ds-text);"
+              >
+                <span class="font-medium truncate">{mailbox.name}</span>
+                <Lozenge color={mailbox.status === 'enabled' ? 'green' : 'gray'} dataTestid="portal-connected-mailbox-status-{mailbox.id}">
+                  {mailbox.status === 'enabled'
+                    ? t('channel.portalMailboxEnabled', 'Enabled')
+                    : t('channel.portalMailboxDisabled', 'Disabled')}
+                </Lozenge>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </div>
+      <DescriptionText>
+        {t('channel.portalConnectedMailboxesHelp', "Email channels linked to this portal. Customers who email those addresses see their tickets here. Configure the link on each email channel.")}
+      </DescriptionText>
     </div>
 
     <div class="pt-4 mt-4 border-t" style="border-color: var(--ds-border);">

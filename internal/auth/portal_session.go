@@ -22,17 +22,21 @@ var (
 	ErrPortalSessionNotFound = errors.New("portal session not found")
 	ErrPortalSessionExpired  = errors.New("portal session expired")
 	ErrPortalSessionInvalid  = errors.New("invalid portal session")
+	// ErrPortalCustomerDeactivated guards session creation: a deactivated
+	// customer must never mint a session on any auth path (WI-1554).
+	ErrPortalCustomerDeactivated = errors.New("portal customer deactivated")
 )
 
 // PortalCustomer represents a portal customer from the database
 type PortalCustomer struct {
-	ID                     int       `json:"id"`
-	Name                   string    `json:"name"`
-	Email                  string    `json:"email"`
-	Phone                  string    `json:"phone,omitempty"`
-	CustomerOrganisationID *int      `json:"customer_organisation_id,omitempty"` //nolint:misspell // database column name
-	CreatedAt              time.Time `json:"created_at"`
-	UpdatedAt              time.Time `json:"updated_at"`
+	ID                     int        `json:"id"`
+	Name                   string     `json:"name"`
+	Email                  string     `json:"email"`
+	Phone                  string     `json:"phone,omitempty"`
+	CustomerOrganisationID *int       `json:"customer_organisation_id,omitempty"` //nolint:misspell // database column name
+	DeactivatedAt          *time.Time `json:"deactivated_at,omitempty"`           // Security deactivation; passkey login refuses deactivated customers (WI-1554)
+	CreatedAt              time.Time  `json:"created_at"`
+	UpdatedAt              time.Time  `json:"updated_at"`
 }
 
 // PortalSession represents an active portal customer session.
@@ -90,6 +94,20 @@ func (sm *PortalSessionManager) CreatePortalSession(portalCustomerID, channelID 
 		ipAddress = host
 	}
 
+	// Deactivated customers must never mint a session, regardless of which
+	// auth path resolved them (magic-link redemption, passkey login, ...).
+	var deactivatedAt sql.NullTime
+	if err := sm.db.QueryRow(`SELECT deactivated_at FROM portal_customers WHERE id = ?`, portalCustomerID).Scan(&deactivatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrPortalSessionInvalid
+		}
+		slog.Error("portal session customer state check failed", slog.String("component", "portal_auth"), slog.Any("error", err))
+		return nil, fmt.Errorf("failed to create portal session: %w", err)
+	}
+	if deactivatedAt.Valid {
+		return nil, ErrPortalCustomerDeactivated
+	}
+
 	slog.Debug("creating portal session", slog.String("component", "portal_auth"), slog.Int("portal_customer_id", portalCustomerID), slog.Int("channel_id", channelID), slog.String("ip_address", ipAddress))
 
 	token, err := generateSessionToken()
@@ -144,7 +162,7 @@ func (sm *PortalSessionManager) ValidatePortalSession(token, ipAddress string) (
 			pc.name, pc.email, pc.phone, pc.customer_organisation_id, pc.created_at, pc.updated_at
 		FROM portal_customer_sessions s
 		JOIN portal_customers pc ON s.portal_customer_id = pc.id
-		WHERE s.session_token IN (?, ?) AND s.is_active = true
+		WHERE s.session_token IN (?, ?) AND s.is_active = true AND pc.deactivated_at IS NULL
 	`
 
 	// New sessions are stored as SHA-256 digests. Keep a bounded plaintext

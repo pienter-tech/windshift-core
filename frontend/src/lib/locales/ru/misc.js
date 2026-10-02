@@ -103,7 +103,7 @@ export default {
   },
 
   assets: {
-    title: 'Управление ресурсами', subtitle: 'Управление наборами, типами, категориями и ресурсами', selectAssetSet: 'Выберите набор ресурсов', newSet: 'Новый набор', createAssetSet: 'Создать набор ресурсов', editSet: 'Изменить набор', deleteSet: 'Удалить набор', noAssetSets: 'Нет наборов ресурсов', noAssetSetsDesc: 'Создайте первый набор, чтобы начать управлять ресурсами.', selectAnAssetSet: 'Выберите набор ресурсов', selectAnAssetSetDesc: 'Выберите набор выше, чтобы просматривать ресурсы и управлять ими.', default: 'По умолчанию', assetTag: 'Тег ресурса', preview: 'Предпросмотр', serialNumber: 'Серийный номер',
+    title: 'Управление ресурсами', subtitle: 'Управление наборами, типами, категориями и ресурсами', selectAssetSet: 'Выберите набор ресурсов', newSet: 'Новый набор', createAssetSet: 'Создать набор ресурсов', editSet: 'Изменить набор', deleteSet: 'Удалить набор', noAssetSets: 'Нет наборов ресурсов', noAssetSetsDesc: 'Создайте первый набор, чтобы начать управлять ресурсами.', selectAnAssetSet: 'Выберите набор ресурсов', selectAnAssetSetDesc: 'Выберите набор выше, чтобы просматривать ресурсы и управлять ими.', default: 'По умолчанию', availableOnPortals: 'Доступно на порталах', availableOnPortalsDesc: 'Разрешить посетителям портала читать ресурсы этого набора через отчёт портала, который на него ссылается.', assetTag: 'Тег ресурса', preview: 'Предпросмотр', serialNumber: 'Серийный номер',
     types: 'Типы', categories: 'Категории', permissions: 'Разрешения', automations: 'Автоматизации',
     newType: 'Новый тип', createType: 'Создать тип', editType: 'Изменить тип', noAssetTypes: 'Нет типов ресурсов', noAssetTypesDesc: 'Создайте типы, чтобы классифицировать ресурсы.', assetType: 'Тип ресурса',
     newCategory: 'Новая категория', createCategory: 'Создать категорию', editCategory: 'Изменить категорию', noCategories: 'Нет категорий', noCategoriesDesc: 'Создайте категории, чтобы упорядочить ресурсы.', parentCategory: 'Родительская категория', noParent: 'Без родителя (верхний уровень)',
@@ -145,7 +145,9 @@ export default {
   },
 
   createModal: {
-    workItem: 'Рабочий элемент', milestone: 'Этап', workspace: 'Рабочее пространство', collection: 'Коллекция', planning: 'Планирование', inProgress: 'В работе', completed: 'Завершено', cancelled: 'Отменено', newChildItem: 'Новый дочерний элемент', new: 'Создать', issueTitle: 'Название задачи', milestoneName: 'Название этапа', workspaceName: 'Название: {type}', workspaceKeyPlaceholder: 'Ключ пространства, например PROJ или TEAM', addDescription: 'Добавить описание…', workspaceTemplate: 'Шаблон', workspaceTemplateBlank: 'Пустое рабочее пространство', workspaceTemplateLoading: 'Загрузка шаблонов…', workspaceTemplateError: 'Не удалось загрузить шаблоны рабочих пространств', workspaceTemplateMeta: 'Шаблонов: {templates} · элементов: {items}', type: 'Тип', template: 'Шаблон', priority: 'Приоритет', noPriority: 'Без приоритета', assignee: 'Исполнитель', unassigned: 'Не назначено', dueDate: 'Срок', milestoneField: 'Этап', noMilestone: 'Без этапа', additionalFields: 'Дополнительные поля', targetDate: 'Целевая дата', status: 'Статус', category: 'Категория', noCategory: 'Без категории', parent: 'Родитель', fillRequiredFields: 'Заполните обязательные поля:', selectWorkspaceFirst: 'Сначала выберите рабочее пространство', create: 'Создать',
+    workItem: 'Рабочий элемент', team: 'Команда', milestone: 'Этап', workspace: 'Рабочее пространство', collection: 'Коллекция', planning: 'Планирование', inProgress: 'В работе', completed: 'Завершено', cancelled: 'Отменено', newChildItem: 'Новый дочерний элемент', new: 'Создать', issueTitle: 'Название задачи', milestoneName: 'Название этапа', workspaceName: 'Название: {type}', workspaceKeyPlaceholder: 'Ключ пространства, например PROJ или TEAM', addDescription: 'Добавить описание…', workspaceTemplate: 'Шаблон', workspaceTemplateBlank: 'Пустое рабочее пространство', workspaceTemplateLoading: 'Загрузка шаблонов…', workspaceTemplateError: 'Не удалось загрузить шаблоны рабочих пространств',
+    workspaceRestrict: 'Ограничить видимость',
+    workspaceRestrictHint: 'Только вы и назначенные пользователи могут видеть это рабочее пространство', workspaceTemplateMeta: 'Шаблонов: {templates} · элементов: {items}', workspacePackTemplate: 'Встроенный пакет', workspacePackMeta: 'v{version} · набор конфигурации и содержимое', workspacePackError: 'Не удалось загрузить встроенные пакеты', type: 'Тип', template: 'Шаблон', priority: 'Приоритет', noPriority: 'Без приоритета', assignee: 'Исполнитель', unassigned: 'Не назначено', dueDate: 'Срок', milestoneField: 'Этап', noMilestone: 'Без этапа', additionalFields: 'Дополнительные поля', targetDate: 'Целевая дата', status: 'Статус', category: 'Категория', noCategory: 'Без категории', parent: 'Родитель', fillRequiredFields: 'Заполните обязательные поля:', selectWorkspaceFirst: 'Сначала выберите рабочее пространство', create: 'Создать',
   },
 
   scm: {
@@ -160,5 +162,42 @@ export default {
   },
   integrations: {
     title: 'Интеграции', linkPage: 'Связать страницу', searchPages: 'Поиск страниц…', noLinksYet: 'Связанных страниц пока нет', connectAccount: 'Подключите учётную запись', connectToLink: 'Подключитесь, чтобы связывать страницы', connect: 'Подключить', disconnect: 'Отключить', connected: 'Подключено', confirmRemoveLink: 'Удалить эту связь?', confirmDisconnect: 'Отключить эту интеграцию?', failedToLoadLinks: 'Не удалось загрузить связи', failedToSearch: 'Не удалось найти страницы', refreshed: 'Связь обновлена', linked: 'Страница связана', removed: 'Связь удалена', disconnected: 'Интеграция отключена', providerManager: 'Внешние интеграции', providerManagerDesc: 'Подключайте сервисы, из которых Windshift будет получать данные', addProvider: 'Добавить интеграцию', editProvider: 'Настроить интеграцию', providerType: 'Сервис', oauthClientId: 'ID клиента OAuth', oauthClientSecret: 'Секрет клиента OAuth', callbackUrl: 'URL перенаправления OAuth', callbackUrlHint: 'Скопируйте этот адрес в настройки приложения', providerConfig: 'Параметры сервиса (JSON)', notion: 'Notion', noProviders: 'Внешние интеграции пока не настроены', selectProvider: 'Выберите сервис', page: 'Страница', database: 'База данных',
+  },
+  supportQueue: {
+    title: 'Очередь',
+    description: 'Разбор неназначенных, ожидающих и просроченных обращений',
+    loading: 'Загрузка очередей…',
+    loadFailed: 'Не удалось загрузить очереди поддержки',
+    empty: 'В этой очереди нет заявок',
+    emptyDescription: 'Заявки, подходящие под условия очереди, появятся здесь по мере поступления.',
+    showingFirst: 'Показаны первые {n} заявок',
+    selectAll: 'Выбрать все заявки',
+    bulkBar: 'Выбрано: {n}',
+    bulkAssignMe: 'Назначить себе',
+    bulkAssignTeam: 'Назначить команде',
+    bulkApplyTeam: 'Применить',
+    bulkClear: 'Снять выделение',
+    bulkSuccess: 'Обновлено заявок: {n}',
+    columnTitle: 'Заявка',
+    columnStatus: 'Статус',
+    columnPriority: 'Приоритет',
+    columnOwner: 'Исполнитель',
+    columnDue: 'Срок',
+    columnUpdated: 'Обновлено',
+    add: 'Добавить очередь',
+    edit: 'Изменить очередь',
+    delete: 'Удалить очередь',
+    deleteConfirm: 'Удалить очередь «{name}»?',
+    removeBuiltin: 'Убрать встроенную очередь',
+    moveLeft: 'Сдвинуть влево',
+    moveRight: 'Сдвинуть вправо',
+    nameLabel: 'Название очереди',
+    namePlaceholder: 'например, Эскалации',
+    filterLabel: 'Фильтр',
+    created: 'Очередь создана',
+    updated: 'Очередь обновлена',
+    deleted: 'Очередь удалена',
+    builtinRemoved: 'Встроенная очередь убрана',
+    saveFailed: 'Не удалось сохранить очередь',
   },
 };

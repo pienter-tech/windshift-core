@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"windshift/internal/database"
@@ -26,6 +27,8 @@ const (
 	CommentCreated = "item.comment_created"
 	Linked         = "item.linked"
 	Unlinked       = "item.unlinked"
+	Merged         = "item.merged"
+	Split          = "item.split"
 
 	PayloadVersion = 1
 )
@@ -279,6 +282,29 @@ type LinkChangedV1 struct {
 	Automation *AutomationContext `json:"automation,omitempty"`
 }
 
+// MergedV1 records one duplicate folded into a canonical ticket. Counts are
+// informational; the durable redirect is items.merged_into_item_id.
+type MergedV1 struct {
+	SourceItemID     int                `json:"source_item_id"`
+	TargetItemID     int                `json:"target_item_id"`
+	MovedComments    int                `json:"moved_comments"`
+	MovedAttachments int                `json:"moved_attachments"`
+	MovedLinks       int                `json:"moved_links"`
+	CommentsPrivate  bool               `json:"comments_private"`
+	Automation       *AutomationContext `json:"automation,omitempty"`
+}
+
+// SplitV1 records a subticket carved out of a source ticket.
+type SplitV1 struct {
+	SourceItemID     int                `json:"source_item_id"`
+	SplitItemID      int                `json:"split_item_id"`
+	MovedComments    int                `json:"moved_comments"`
+	MovedAttachments int                `json:"moved_attachments"`
+	AssigneeID       *int               `json:"assignee_id,omitempty"`
+	PortalCustomerID *int               `json:"portal_customer_id,omitempty"`
+	Automation       *AutomationContext `json:"automation,omitempty"`
+}
+
 // UpdateRecord describes one item update in a set-based source transaction.
 type UpdateRecord struct {
 	Item          *models.Item
@@ -296,6 +322,47 @@ type CreateRecord struct {
 	Metadata     Metadata
 }
 
+// FactObserver runs inside the source transaction after facts are appended.
+// An implementation must never keep the item write from committing: on error
+// it isolates itself and enqueues its own durable repair work.
+type FactObserver interface {
+	ObserveItemFacts(ctx context.Context, tx database.Tx, facts []RecordedFact) error
+}
+
+// RecordedFact is the canonical description of one appended item fact, shaped
+// for in-transaction observers such as the SLA evaluator.
+type RecordedFact struct {
+	Type              string
+	EventKey          string
+	ItemID            int
+	WorkspaceID       int
+	Changes           []FieldChange
+	OldStatusID       *int
+	NewStatusID       *int
+	CommentAuthorKind string
+	Snapshot          ItemSnapshot
+	Metadata          Metadata
+}
+
+var (
+	factObserverMu sync.RWMutex
+	factObserver   FactObserver
+)
+
+// RegisterFactObserver installs the process-wide in-transaction observer. It
+// is called once at startup; later calls replace the observer.
+func RegisterFactObserver(observer FactObserver) {
+	factObserverMu.Lock()
+	defer factObserverMu.Unlock()
+	factObserver = observer
+}
+
+// ClearFactObserver removes the process-wide observer. Tests use it to restore
+// global state.
+func ClearFactObserver() {
+	RegisterFactObserver(nil)
+}
+
 // Recorder appends item facts through the shared durable event store.
 type Recorder struct {
 	store *events.Store
@@ -303,6 +370,19 @@ type Recorder struct {
 
 func NewRecorder(db database.Database) *Recorder {
 	return &Recorder{store: events.NewStore(db)}
+}
+
+func (r *Recorder) observe(ctx context.Context, tx database.Tx, facts []RecordedFact) error {
+	if len(facts) == 0 {
+		return nil
+	}
+	factObserverMu.RLock()
+	observer := factObserver
+	factObserverMu.RUnlock()
+	if observer == nil {
+		return nil
+	}
+	return observer.ObserveItemFacts(ctx, tx, facts)
 }
 
 func (r *Recorder) Created(ctx context.Context, tx database.Tx, item *models.Item, milestoneIDs []int, metadata Metadata) (*events.Event, error) {
@@ -326,7 +406,24 @@ func (r *Recorder) CreatedBatch(ctx context.Context, tx database.Tx, records []C
 		}
 		inputs[i] = input
 	}
-	return r.store.AppendBatch(ctx, tx, inputs)
+	appended, err := r.store.AppendBatch(ctx, tx, inputs)
+	if err != nil {
+		return nil, err
+	}
+	facts := make([]RecordedFact, len(records))
+	for i, record := range records {
+		facts[i] = RecordedFact{
+			Type: Created, ItemID: record.Item.ID, WorkspaceID: record.Item.WorkspaceID,
+			Snapshot: Snapshot(record.Item), Metadata: record.Metadata,
+		}
+		if i < len(appended) {
+			facts[i].EventKey = appended[i].Key
+		}
+	}
+	if err := r.observe(ctx, tx, facts); err != nil {
+		return nil, err
+	}
+	return appended, nil
 }
 
 func (r *Recorder) Updated(ctx context.Context, tx database.Tx, item *models.Item, changes []FieldChange, metadata Metadata) (*events.Event, error) {
@@ -361,7 +458,30 @@ func (r *Recorder) UpdatedBatch(ctx context.Context, tx database.Tx, records []U
 		}
 		inputs[i] = input
 	}
-	return r.store.AppendBatch(ctx, tx, inputs)
+	appended, err := r.store.AppendBatch(ctx, tx, inputs)
+	if err != nil {
+		return nil, err
+	}
+	facts := make([]RecordedFact, len(records))
+	for i, record := range records {
+		fact := RecordedFact{
+			Type: Updated, ItemID: record.Item.ID, WorkspaceID: record.Item.WorkspaceID,
+			Snapshot: Snapshot(record.Item), Changes: record.Changes, Metadata: record.Metadata,
+		}
+		if record.StatusChanged {
+			fact.Type = StatusChanged
+			fact.OldStatusID = record.OldStatusID
+			fact.NewStatusID = record.NewStatusID
+		}
+		if i < len(appended) {
+			fact.EventKey = appended[i].Key
+		}
+		facts[i] = fact
+	}
+	if err := r.observe(ctx, tx, facts); err != nil {
+		return nil, err
+	}
+	return appended, nil
 }
 
 func (r *Recorder) StatusChanged(ctx context.Context, tx database.Tx, item *models.Item, oldStatusID, newStatusID *int, changes []FieldChange, metadata Metadata) (*events.Event, error) {
@@ -374,6 +494,50 @@ func (r *Recorder) Deleted(ctx context.Context, tx database.Tx, item *models.Ite
 	return r.append(ctx, tx, Deleted, item.WorkspaceID, item.ID, metadata, DeletedV1{
 		Item: Snapshot(item), DescendantCount: descendantCount, Automation: metadata.Automation,
 	})
+}
+
+// Merged appends the merge fact to both aggregates so each item's stream
+// records its side of the fold.
+func (r *Recorder) Merged(ctx context.Context, tx database.Tx, workspaceID int, payload MergedV1, metadata Metadata) ([]*events.Event, error) {
+	payload.Automation = metadata.Automation
+	source, err := r.appendNoObserve(ctx, tx, Merged, workspaceID, payload.SourceItemID, metadata, payload)
+	if err != nil {
+		return nil, err
+	}
+	target, err := r.appendNoObserve(ctx, tx, Merged, workspaceID, payload.TargetItemID, metadata, payload)
+	if err != nil {
+		return nil, err
+	}
+	facts := []RecordedFact{
+		{Type: Merged, EventKey: source.Key, ItemID: payload.SourceItemID, WorkspaceID: workspaceID, Metadata: metadata},
+		{Type: Merged, EventKey: target.Key, ItemID: payload.TargetItemID, WorkspaceID: workspaceID, Metadata: metadata},
+	}
+	if err := r.observe(ctx, tx, facts); err != nil {
+		return nil, err
+	}
+	return []*events.Event{source, target}, nil
+}
+
+// Split appends the split fact to both aggregates: the source records what
+// was carved out, the new subticket records where it came from.
+func (r *Recorder) Split(ctx context.Context, tx database.Tx, workspaceID int, payload SplitV1, metadata Metadata) ([]*events.Event, error) {
+	payload.Automation = metadata.Automation
+	source, err := r.appendNoObserve(ctx, tx, Split, workspaceID, payload.SourceItemID, metadata, payload)
+	if err != nil {
+		return nil, err
+	}
+	split, err := r.appendNoObserve(ctx, tx, Split, workspaceID, payload.SplitItemID, metadata, payload)
+	if err != nil {
+		return nil, err
+	}
+	facts := []RecordedFact{
+		{Type: Split, EventKey: source.Key, ItemID: payload.SourceItemID, WorkspaceID: workspaceID, Metadata: metadata},
+		{Type: Split, EventKey: split.Key, ItemID: payload.SplitItemID, WorkspaceID: workspaceID, Metadata: metadata},
+	}
+	if err := r.observe(ctx, tx, facts); err != nil {
+		return nil, err
+	}
+	return []*events.Event{source, split}, nil
 }
 
 func (r *Recorder) CommentCreated(ctx context.Context, tx database.Tx, workspaceID int, payload CommentCreatedV1, metadata Metadata) (*events.Event, error) {
@@ -402,6 +566,7 @@ func (r *Recorder) linkChanged(ctx context.Context, tx database.Tx, eventType st
 		endpoints = append(endpoints, endpoint{link.TargetID, link.SourceID, "incoming", link.SourceType})
 	}
 	eventsOut := make([]*events.Event, 0, len(endpoints))
+	linkFacts := make([]RecordedFact, 0, len(endpoints))
 	for _, endpoint := range endpoints {
 		var workspaceID int
 		if err := tx.QueryRowContext(ctx, "SELECT workspace_id FROM items WHERE id = ?", endpoint.itemID).Scan(&workspaceID); err != nil {
@@ -410,7 +575,7 @@ func (r *Recorder) linkChanged(ctx context.Context, tx database.Tx, eventType st
 			}
 			return nil, fmt.Errorf("load linked item %d workspace: %w", endpoint.itemID, err)
 		}
-		event, err := r.append(ctx, tx, eventType, workspaceID, endpoint.itemID, metadata, LinkChangedV1{
+		event, err := r.appendNoObserve(ctx, tx, eventType, workspaceID, endpoint.itemID, metadata, LinkChangedV1{
 			ItemID: endpoint.itemID, LinkID: link.ID, LinkTypeID: link.LinkTypeID,
 			Direction: endpoint.direction, OtherType: endpoint.otherType, OtherID: endpoint.otherID,
 			SourceType: link.SourceType, SourceID: link.SourceID,
@@ -421,6 +586,13 @@ func (r *Recorder) linkChanged(ctx context.Context, tx database.Tx, eventType st
 			return nil, err
 		}
 		eventsOut = append(eventsOut, event)
+		linkFacts = append(linkFacts, RecordedFact{
+			Type: eventType, EventKey: event.Key, ItemID: endpoint.itemID,
+			WorkspaceID: workspaceID, Metadata: metadata,
+		})
+	}
+	if err := r.observe(ctx, tx, linkFacts); err != nil {
+		return nil, err
 	}
 	return eventsOut, nil
 }
@@ -476,6 +648,19 @@ func (r *Recorder) RemovedLinks(ctx context.Context, tx database.Tx, entityType 
 }
 
 func (r *Recorder) append(ctx context.Context, tx database.Tx, eventType string, workspaceID, itemID int, metadata Metadata, payload any) (*events.Event, error) {
+	event, err := r.appendNoObserve(ctx, tx, eventType, workspaceID, itemID, metadata, payload)
+	if err != nil {
+		return nil, err
+	}
+	fact := RecordedFact{Type: eventType, EventKey: event.Key, ItemID: itemID, WorkspaceID: workspaceID, Metadata: metadata}
+	enrichFactFromPayload(&fact, payload)
+	if err := r.observe(ctx, tx, []RecordedFact{fact}); err != nil {
+		return nil, err
+	}
+	return event, nil
+}
+
+func (r *Recorder) appendNoObserve(ctx context.Context, tx database.Tx, eventType string, workspaceID, itemID int, metadata Metadata, payload any) (*events.Event, error) {
 	input, err := newEvent(eventType, workspaceID, itemID, metadata, payload)
 	if err != nil {
 		return nil, err
@@ -485,6 +670,29 @@ func (r *Recorder) append(ctx context.Context, tx database.Tx, eventType string,
 		return nil, fmt.Errorf("append %s for item %d: %w", eventType, itemID, err)
 	}
 	return event, nil
+}
+
+// enrichFactFromPayload copies the payload fields an in-transaction observer
+// needs without forcing every call site to construct a RecordedFact by hand.
+func enrichFactFromPayload(fact *RecordedFact, payload any) {
+	switch typed := payload.(type) {
+	case CreatedV1:
+		fact.Snapshot = typed.Item
+	case UpdatedV1:
+		fact.Snapshot = typed.Item
+		fact.Changes = typed.Changes
+	case StatusChangedV1:
+		fact.Snapshot = typed.Item
+		fact.Changes = typed.Changes
+		fact.OldStatusID = typed.OldStatusID
+		fact.NewStatusID = typed.NewStatusID
+	case DeletedV1:
+		fact.Snapshot = typed.Item
+	case CommentCreatedV1:
+		fact.CommentAuthorKind = fact.Metadata.ActorKind
+	case LinkChangedV1:
+		fact.ItemID = typed.ItemID
+	}
 }
 
 func newEvent(eventType string, workspaceID, itemID int, metadata Metadata, payload any) (events.NewEvent, error) {

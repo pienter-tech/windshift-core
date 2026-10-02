@@ -13,14 +13,18 @@ import (
 
 	"windshift/internal/database"
 	"windshift/internal/emailutil"
+	"windshift/internal/models"
 	"windshift/internal/repository"
 )
 
 var (
-	ErrMagicLinkExpired          = errors.New("magic link has expired")
-	ErrMagicLinkInvalid          = errors.New("magic link is invalid")
-	ErrMagicLinkAlreadyUsed      = errors.New("magic link has already been used")
-	ErrMagicLinkChannelMismatch  = errors.New("magic link issued for a different portal")
+	ErrMagicLinkExpired         = errors.New("magic link has expired")
+	ErrMagicLinkInvalid         = errors.New("magic link is invalid")
+	ErrMagicLinkAlreadyUsed     = errors.New("magic link has already been used")
+	ErrMagicLinkChannelMismatch = errors.New("magic link issued for a different portal")
+	// ErrPortalCustomerDeactivated refuses link issuance for a deactivated
+	// customer; the session layer refuses them anyway (WI-1554).
+	ErrPortalCustomerDeactivated = errors.New("portal customer deactivated")
 	ErrPortalCustomerNotFound    = errors.New("portal customer not found")
 	ErrMagicLinkGenerationFailed = errors.New("failed to generate magic link token")
 )
@@ -79,6 +83,18 @@ func (s *MagicLinkService) GenerateApprovalMagicLink(portalCustomerID int, chann
 }
 
 func (s *MagicLinkService) generateMagicLink(portalCustomerID int, channelID *int, expiry time.Duration) (string, error) {
+	// Deactivated customers get no link — the auth paths all refuse them
+	// (WI-1554), so issuing a token would only invite a confusing dead end.
+	// Callers treat this like any other failure (generic success for sign-in
+	// requests, so enumeration is not aided).
+	var deactivatedAt sql.NullTime
+	if err := s.db.QueryRow(`SELECT deactivated_at FROM portal_customers WHERE id = ?`, portalCustomerID).Scan(&deactivatedAt); err != nil {
+		return "", fmt.Errorf("failed to load portal customer state: %w", err)
+	}
+	if deactivatedAt.Valid {
+		return "", ErrPortalCustomerDeactivated
+	}
+
 	tokenBytes := make([]byte, MagicLinkTokenLength)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		return "", fmt.Errorf("%w: %w", ErrMagicLinkGenerationFailed, err)
@@ -237,7 +253,7 @@ func (s *MagicLinkService) FindOrCreatePortalCustomer(email, name string, channe
 	}
 
 	repo := repository.NewPortalCustomerRepository(s.db)
-	customerID, created, err := repo.FindOrCreateByEmail(context.Background(), name, email)
+	customerID, created, err := repo.FindOrCreateByEmail(context.Background(), name, email, models.CustomerCreatedViaMagicLink)
 	if err != nil {
 		return 0, err
 	}

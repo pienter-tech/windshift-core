@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"windshift/internal/actionevents"
 	"windshift/internal/database"
@@ -121,7 +122,7 @@ func (c *DurableNotificationConsumer) notificationEvents(ctx context.Context, ev
 	}
 
 	actorID := eventActorUserID(event)
-	actorName := c.actorName(ctx, actorID, event.ActorRef)
+	actorName := c.actorName(ctx, event)
 	switch event.Type {
 	case itemevents.Created:
 		var payload itemevents.CreatedV1
@@ -241,9 +242,23 @@ func decodeNotificationPayload(event events.Event, target any) error {
 	return nil
 }
 
-func (c *DurableNotificationConsumer) actorName(ctx context.Context, actorID int, fallback string) string {
+// actorName resolves the display name for the event's actor. Portal-customer
+// actors carry their row ID in ActorRef, so the customer's display name comes
+// from portal_customers; otherwise the ref string would leak into
+// notifications as a bare number.
+func (c *DurableNotificationConsumer) actorName(ctx context.Context, event events.Event) string {
+	if event.ActorKind == "portal_customer" {
+		if customerID, err := strconv.Atoi(event.ActorRef); err == nil {
+			var name string
+			if err := c.db.QueryRowContext(ctx, "SELECT name FROM portal_customers WHERE id = ?", customerID).Scan(&name); err == nil && name != "" {
+				return name
+			}
+		}
+		return "Portal Customer"
+	}
+	actorID := eventActorUserID(event)
 	if actorID <= 0 {
-		return fallback
+		return event.ActorRef
 	}
 	var username string
 	if err := c.db.QueryRowContext(ctx, "SELECT username FROM users WHERE id = ?", actorID).Scan(&username); err == nil {

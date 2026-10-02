@@ -5,10 +5,12 @@
   import { authStore } from '../stores/auth.svelte.js';
   import { t } from '../stores/i18n.svelte.js';
   import { errorToast } from '../stores/toasts.svelte.js';
+  import { currentWorkspace } from '../stores';
+  import { navigate } from '../router.js';
   import { confirm } from '../composables/useConfirm.js';
   import {
     Bell, Plus, Edit, Trash2, Save, X, Check,
-    AlertCircle, Settings
+    AlertCircle, Settings, ArrowRight
   } from '@lucide/svelte';
   import DataTable from '../components/DataTable.svelte';
   import PageHeader from '../layout/PageHeader.svelte';
@@ -416,6 +418,19 @@
                       <Trash2 class="w-4 h-4" />
                     </button>
                   </div>
+
+                  {#if rule.event_type === 'sla.warning' && $currentWorkspace}
+                    <button
+                      type="button"
+                      class="mt-1 inline-flex items-center gap-1 text-xs"
+                      style="color: var(--ds-text-link);"
+                      data-testid="sla-warning-thresholds-link-{index}"
+                      onclick={() => navigate(`/workspaces/${$currentWorkspace.id}/settings/service-levels?subtab=warnings`)}
+                    >
+                      {t('settings.notifications.configureSlaWarningThresholds')}
+                      <ArrowRight class="w-3 h-3" />
+                    </button>
+                  {/if}
 
                   <!-- Notification Recipients (multiselect) -->
                   <div class="mt-3">

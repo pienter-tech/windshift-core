@@ -122,6 +122,14 @@ func (s *ItemCRUDService) deleteSingleWithAuthorization(itemID int, metadata ite
 			}
 			updated := *child
 			updated.ParentID = nil
+			// Detaching a child changes its parent_id; record it so history
+			// reflects the structural change even though the parent is gone.
+			if err := s.repo.RecordHistory(tx, historyEntryForChange(
+				child.ID, "parent_id", intPtrToString(child.ParentID), "",
+				metadata.OccurredAt, metadata,
+			)); err != nil {
+				return err
+			}
 			if _, err := recorder.Updated(ctx, tx, &updated, itemevents.Changes(child, &updated), metadata); err != nil {
 				return err
 			}
@@ -719,47 +727,16 @@ func (s *ItemCRUDService) GetWithEffectiveProject(id int) (*models.Item, error) 
 	return item, nil
 }
 
-// GetHistory retrieves the change history for an item
+// GetHistory retrieves the change history for an item, with actor names
+// resolved for internal users and portal customers.
 func (s *ItemCRUDService) GetHistory(itemID int) ([]models.ItemHistory, error) {
-	rows, err := s.db.Query(`
-		SELECT h.id, h.item_id, h.user_id, h.changed_at, h.field_name, h.old_value, h.new_value,
-		       u.first_name || ' ' || u.last_name as user_name, u.email as user_email
-		FROM item_history h
-		LEFT JOIN users u ON h.user_id = u.id
-		WHERE h.item_id = ?
-		ORDER BY h.changed_at DESC, h.id DESC
-	`, itemID)
+	history, err := repository.NewItemRepository(s.db).GetHistoryWithDetails(itemID, 0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch item history: %w", err)
 	}
-	defer rows.Close()
-
-	var history []models.ItemHistory
-	for rows.Next() {
-		var h models.ItemHistory
-		var userName, userEmail sql.NullString
-		err := rows.Scan(&h.ID, &h.ItemID, &h.UserID, &h.ChangedAt, &h.FieldName, &h.OldValue, &h.NewValue,
-			&userName, &userEmail)
-		if err != nil {
-			slog.Error("failed to scan item history row", slog.Int("item_id", itemID), slog.Any("error", err))
-			continue
-		}
-		if userName.Valid {
-			h.UserName = userName.String
-		}
-		if userEmail.Valid {
-			h.UserEmail = userEmail.String
-		}
-		history = append(history, h)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("failed to iterate item history: %w", err)
-	}
-
 	if history == nil {
 		history = []models.ItemHistory{}
 	}
-
 	return history, nil
 }
 

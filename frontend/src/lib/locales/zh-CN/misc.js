@@ -698,6 +698,8 @@ export default {
     workspaceTemplateBlank: '空白工作区',
     workspaceTemplateLoading: '正在加载模板...',
     workspaceTemplateError: '加载工作区模板失败',
+    workspaceRestrict: '限制可见性',
+    workspaceRestrictHint: '仅您和被分配的用户可以查看此工作区',
     workspaceTemplateMeta: '{templates} 个模板 · {items} 个事项',
     type: '类型',
     priority: '优先级',

@@ -12,7 +12,7 @@ import (
 const (
 	defaultReadinessSample = 200
 	maxReadinessSample     = 500
-	readinessPageSize      = 100 // legacy JQL search page cap
+	readinessPageSize      = 100 // enhanced JQL search page size
 )
 
 // Readiness handles POST /api/admin/jira-import/readiness. It deep-scans a
@@ -406,17 +406,14 @@ func (h *JiraImportHandler) sampleIssues(ctx context.Context, client jira.Client
 	}
 
 	var out []jira.JiraIssue
-	for startAt := 0; startAt < limit; startAt += readinessPageSize {
-		pageSize := readinessPageSize
-		if remaining := limit - startAt; remaining < pageSize {
-			pageSize = remaining
-		}
-		res, err := client.SearchIssues(ctx, jira.SearchOptions{
-			JQL:        jql,
-			StartAt:    startAt,
-			MaxResults: pageSize,
-			Fields:     []string{"*all"},
-			Expand:     []string{"changelog"},
+	nextPageToken := ""
+	for len(out) < limit {
+		res, err := client.SearchIssuesJQL(ctx, jira.JQLSearchRequest{
+			JQL:           jql,
+			MaxResults:    readinessPageSize,
+			Fields:        []string{"*all"},
+			Expand:        []string{"changelog"},
+			NextPageToken: nextPageToken,
 		})
 		if err != nil {
 			slog.Warn("readiness: issue sample failed",
@@ -427,9 +424,13 @@ func (h *JiraImportHandler) sampleIssues(ctx context.Context, client jira.Client
 			break
 		}
 		out = append(out, res.Issues...)
-		if len(res.Issues) < pageSize {
+		if res.NextPageToken == "" {
 			break // last page
 		}
+		nextPageToken = res.NextPageToken
+	}
+	if len(out) > limit {
+		out = out[:limit]
 	}
 	return out
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -240,7 +241,7 @@ func (s *ConditionSetApplicationService) attachGatedTransitions(items []models.C
 		placeholders[i] = "?"
 		args[i] = items[i].ID
 	}
-	query := fmt.Sprintf(`SELECT cst.condition_set_id, cst.transition_id, fs.name, ts.name FROM condition_set_transitions cst JOIN workflow_transitions wt ON wt.id = cst.transition_id LEFT JOIN statuses fs ON fs.id = wt.from_status_id JOIN statuses ts ON ts.id = wt.to_status_id WHERE cst.condition_set_id IN (%s) ORDER BY cst.condition_set_id, cst.id`, strings.Join(placeholders, ","))
+	query := fmt.Sprintf(`SELECT cst.condition_set_id, cst.transition_id, wt.from_all_statuses, fs.name, ts.name FROM condition_set_transitions cst JOIN workflow_transitions wt ON wt.id = cst.transition_id LEFT JOIN statuses fs ON fs.id = wt.from_status_id JOIN statuses ts ON ts.id = wt.to_status_id WHERE cst.condition_set_id IN (%s) ORDER BY cst.condition_set_id, cst.id`, strings.Join(placeholders, ","))
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return err
@@ -250,7 +251,7 @@ func (s *ConditionSetApplicationService) attachGatedTransitions(items []models.C
 		var setID int
 		var summary models.ConditionSetTransitionSummary
 		var from sql.NullString
-		if err := rows.Scan(&setID, &summary.TransitionID, &from, &summary.ToStatusName); err != nil {
+		if err := rows.Scan(&setID, &summary.TransitionID, &summary.FromAllStatuses, &from, &summary.ToStatusName); err != nil {
 			return err
 		}
 		summary.FromStatusName = from.String
@@ -315,6 +316,9 @@ func validateConditionInput(condition models.Condition) error {
 		if json.Unmarshal(condition.Config, &config) != nil || config.FieldIdentifier == "" || config.Pattern == "" {
 			return governanceValidation("field_value requires field_identifier and pattern")
 		}
+		if _, err := regexp.Compile(config.Pattern); err != nil {
+			return governanceValidation("field_value pattern is not a valid regex")
+		}
 	case models.ConditionTypeScript:
 		var config models.ConditionScriptConfig
 		if json.Unmarshal(condition.Config, &config) != nil || config.Script == "" {
@@ -342,6 +346,21 @@ func validateConditionFieldRef(ref models.FieldRef, conditionType string) error 
 		}
 	default:
 		return governanceValidation(conditionType + ": invalid source")
+	}
+	return nil
+}
+
+// validateConditionMap validates a condition whose config was decoded from a
+// template document. Import and conformance repair build configs this way
+// instead of the live CRUD model, so they share the CRUD validator here.
+// Invalid templates are a client error, so surface them as a 400.
+func validateConditionMap(conditionType, mode string, config map[string]any) error {
+	raw, err := json.Marshal(config)
+	if err != nil {
+		return NewServiceError(400, "invalid "+conditionType+" config")
+	}
+	if err := validateConditionInput(models.Condition{ConditionType: conditionType, Mode: mode, Config: raw}); err != nil {
+		return NewServiceError(400, err.Error())
 	}
 	return nil
 }

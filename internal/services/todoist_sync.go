@@ -66,7 +66,7 @@ type todoistAPI interface {
 type personalStore interface {
 	ListTasks(workspaceID int) ([]repository.PersonalWorkspaceTask, error)
 	CreateTask(workspaceID, userID int, st taskState) (int, error)
-	UpdateTask(itemID int, st taskState, fields []string) error
+	UpdateTask(itemID, userID int, st taskState, fields []string) error
 	DeleteTask(itemID int) error
 }
 
@@ -398,7 +398,7 @@ func (s *TodoistSyncService) reconcilePair(
 		changedFields = append(changedFields, "completed")
 	}
 	if len(changedFields) > 0 {
-		if err := store.UpdateTask(link.ItemID, resolved, changedFields); err != nil {
+		if err := store.UpdateTask(link.ItemID, mustUserID(cfg.UserID), resolved, changedFields); err != nil {
 			slog.Warn("todoist sync: update WS task failed", slog.String("component", "todoist-sync"), slog.Any("error", err))
 		} else {
 			stats.UpdatedInWS++
@@ -558,6 +558,23 @@ func mustUserID(s string) int {
 	return id
 }
 
+// mapTodoistFieldToHistoryField converts a todoist change field to the
+// item_history field_name the regular update path would have written.
+func mapTodoistFieldToHistoryField(field string) string {
+	switch field {
+	case "title":
+		return "title"
+	case "description":
+		return "description"
+	case "due":
+		return "due_date"
+	case "completed":
+		return "status_id"
+	default:
+		return field
+	}
+}
+
 // --- Windshift-side store implementation ------------------------------------
 
 type itemPersonalStore struct {
@@ -586,7 +603,7 @@ func (st *itemPersonalStore) CreateTask(workspaceID, userID int, s taskState) (i
 	return int(id), err
 }
 
-func (st *itemPersonalStore) UpdateTask(itemID int, s taskState, fields []string) error {
+func (st *itemPersonalStore) UpdateTask(itemID, userID int, s taskState, fields []string) error {
 	update := map[string]any{}
 	for _, f := range fields {
 		switch f {
@@ -629,6 +646,38 @@ func (st *itemPersonalStore) UpdateTask(itemID int, s taskState, fields []string
 		}
 	} else if _, err := recorder.Updated(context.Background(), tx, updated, changes, metadata); err != nil {
 		return err
+	}
+	// The integration bypasses ItemUpdateService, so the field changes would
+	// otherwise never reach item history. Rows attribute to the personal
+	// workspace owner whose Todoist drove the change.
+	now := time.Now()
+	for _, field := range fields {
+		var oldValue, newValue string
+		switch field {
+		case "title":
+			oldValue, newValue = original.Title, updated.Title
+		case "description":
+			oldValue, newValue = original.Description, updated.Description
+		case "due":
+			oldValue, newValue = timePtrToString(original.DueDate), timePtrToString(updated.DueDate)
+		case "completed":
+			oldValue, newValue = intPtrToString(original.StatusID), intPtrToString(updated.StatusID)
+		default:
+			continue
+		}
+		if oldValue == newValue {
+			continue
+		}
+		if err := repo.RecordHistory(tx, repository.HistoryEntry{
+			ItemID:    itemID,
+			UserID:    userID,
+			FieldName: mapTodoistFieldToHistoryField(field),
+			OldValue:  oldValue,
+			NewValue:  newValue,
+			ChangedAt: now,
+		}); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return err

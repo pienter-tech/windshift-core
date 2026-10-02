@@ -202,6 +202,8 @@
       case 'item_created': return 'actions.trigger.itemCreated';
       case 'item_updated': return 'actions.trigger.itemUpdated';
       case 'item_linked': return 'actions.trigger.itemLinked';
+      case 'sla_breached': return 'actions.trigger.slaBreached';
+      case 'sla_warning': return 'actions.trigger.slaWarning';
       case 'manual': return 'actions.trigger.manual';
       default: return null;
     }

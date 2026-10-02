@@ -770,6 +770,8 @@ export default {
     workspaceTemplateBlank: 'Espace de travail vierge',
     workspaceTemplateLoading: 'Chargement des modèles…',
     workspaceTemplateError: 'Échec du chargement des modèles d’espace de travail',
+    workspaceRestrict: 'Restreindre la visibilité',
+    workspaceRestrictHint: 'Seuls vous et les personnes assignées peuvent voir cet espace de travail',
     workspaceTemplateMeta: '{templates} modèles · {items} éléments',
     // Field labels
     type: 'Type',

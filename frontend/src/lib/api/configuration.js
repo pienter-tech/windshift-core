@@ -102,6 +102,37 @@ export const itemTemplates = createCrudClient('/item-templates', {
   v2: true,
 });
 
+export const cannedResponses = {
+  getAll: (workspaceId, includeArchived = false) =>
+    fetchV2Data(
+      `/workspaces/${workspaceId}/canned-responses${includeArchived ? '?include_archived=true' : ''}`
+    ),
+  get: (workspaceId, responseId) =>
+    fetchV2Data(`/workspaces/${workspaceId}/canned-responses/${responseId}`),
+  create: (workspaceId, data) =>
+    fetchV2Data(`/workspaces/${workspaceId}/canned-responses`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: data.name,
+        body: data.body,
+        is_private: Boolean(data.is_private),
+      }),
+    }),
+  update: (workspaceId, responseId, data) =>
+    fetchV2Data(`/workspaces/${workspaceId}/canned-responses/${responseId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/merge-patch+json' },
+      body: JSON.stringify(data),
+    }),
+  delete: (workspaceId, responseId) =>
+    fetchV2Data(`/workspaces/${workspaceId}/canned-responses/${responseId}`, { method: 'DELETE' }),
+  preview: (workspaceId, responseId, itemId = 0) =>
+    fetchV2Data(`/workspaces/${workspaceId}/canned-responses/${responseId}/preview`, {
+      method: 'POST',
+      body: JSON.stringify({ item_id: itemId }),
+    }),
+};
+
 export const priorities = createCrudClient('/priorities', { v2: true });
 
 export const hierarchyLevels = createCrudClient('/hierarchy-levels');

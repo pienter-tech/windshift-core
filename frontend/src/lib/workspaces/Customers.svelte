@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { currentRoute, navigate } from '../router.js';
   import { draggable, dropTargetForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter';
-  import { IconEdit as Edit2, IconTrash as Trash2 } from '@tabler/icons-svelte-runes';
+  import { IconEdit as Edit2, IconTrash as Trash2, IconLock as Lock, IconLockOpen2 as Unlock } from '@tabler/icons-svelte-runes';
   import { api } from '../api.js';
   import { confirm } from '../composables/useConfirm.js';
   import { errorToast } from '../stores/toasts.svelte.js';
@@ -317,6 +317,41 @@
     }
   }
 
+  // Deactivation cuts portal access (sign-out + auth refusal) without
+  // exercising the erasure right; reactivation is the explicit inverse.
+  async function handleToggleDeactivation(customer) {
+    const deactivating = !customer.deactivated_at;
+    const confirmed = await confirm({
+      title: deactivating ? t('workspaces.customers.deactivateCustomer') : t('workspaces.customers.activateCustomer'),
+      message: deactivating
+        ? t('workspaces.customers.confirmDeactivateCustomer', { name: customer.name })
+        : t('workspaces.customers.confirmActivateCustomer', { name: customer.name }),
+      confirmText: deactivating ? t('workspaces.customers.deactivateCustomer') : t('workspaces.customers.activateCustomer'),
+      cancelText: t('common.cancel'),
+      variant: deactivating ? 'danger' : 'default'
+    });
+
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      if (deactivating) {
+        await api.portalCustomers.deactivate(customer.id);
+      } else {
+        await api.portalCustomers.activate(customer.id);
+      }
+      await loadPortalCustomers();
+    } catch (err) {
+      console.error('Failed to toggle portal customer deactivation:', err);
+      errorToast(
+        err.message ||
+          String(err) ||
+          (deactivating ? t('workspaces.customers.failedToDeactivateCustomer') : t('workspaces.customers.failedToActivateCustomer'))
+      );
+    }
+  }
+
   function buildCustomerActions(customer) {
     if (!canManage) return [];
 
@@ -327,6 +362,13 @@
         icon: Edit2,
         title: t('common.edit'),
         onClick: () => openDetail(customer)
+      },
+      {
+        id: 'toggle-deactivation',
+        type: 'regular',
+        icon: customer.deactivated_at ? Unlock : Lock,
+        title: customer.deactivated_at ? t('workspaces.customers.activateCustomer') : t('workspaces.customers.deactivateCustomer'),
+        onClick: () => handleToggleDeactivation(customer)
       },
       { type: 'divider' },
       {

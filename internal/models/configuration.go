@@ -617,11 +617,13 @@ type ConditionSet struct {
 
 // ConditionSetTransitionSummary is a minimal transition descriptor for list
 // responses: just enough to render a "From → To" lozenge in the manager UI.
-// FromStatusName is empty for initial transitions (from_status_id IS NULL).
+// FromStatusName is empty for initial transitions and from-all rows (both have
+// from_status_id IS NULL); FromAllStatuses tells them apart.
 type ConditionSetTransitionSummary struct {
-	TransitionID   int    `json:"transition_id"`
-	FromStatusName string `json:"from_status_name,omitempty"`
-	ToStatusName   string `json:"to_status_name"`
+	TransitionID    int    `json:"transition_id"`
+	FromStatusName  string `json:"from_status_name,omitempty"`
+	ToStatusName    string `json:"to_status_name"`
+	FromAllStatuses bool   `json:"from_all_statuses,omitempty"`
 }
 
 // TransitionCondition links a condition set to a specific transition with conditions

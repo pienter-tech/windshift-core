@@ -749,6 +749,8 @@ export default {
     workspaceTemplateBlank: 'مساحة عمل فارغة',
     workspaceTemplateLoading: 'جارٍ تحميل القوالب...',
     workspaceTemplateError: 'فشل تحميل قوالب مساحات العمل',
+    workspaceRestrict: 'تقييد الرؤية',
+    workspaceRestrictHint: 'أنت والأشخاص المعيّنون فقط يمكنهم رؤية مساحة العمل هذه',
     workspaceTemplateMeta: '{templates} قوالب · {items} عناصر',
     // Field labels
     type: 'النوع',

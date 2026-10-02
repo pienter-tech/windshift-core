@@ -1,6 +1,8 @@
 package services
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -73,6 +75,9 @@ func (s *ConfigurationSetProvisioningService) Create(actor AuditActor, cs *model
 	if err := s.validateWorkspaceRefs(cs); err != nil {
 		return nil, err
 	}
+	if err := s.ValidateGovernanceRefs(cs); err != nil {
+		return nil, err
+	}
 
 	id, err := s.repo.CreateFull(cs)
 	if err != nil {
@@ -99,6 +104,45 @@ func (s *ConfigurationSetProvisioningService) Create(actor AuditActor, cs *model
 	})
 
 	return &ConfigurationSetMutationResult{Set: created, Warnings: warnings}, nil
+}
+
+// ImportTemplate sanitizes and applies a portable configuration-set template
+// document — the programmatic (API v2) counterpart of the browser multipart
+// import. Import creates a fresh set under one transaction; warnings carry
+// the non-fatal reuse notes (same-named entities reused rather than created).
+func (s *ConfigurationSetProvisioningService) ImportTemplate(ctx context.Context, actor AuditActor, tpl *ConfigSetTemplate) (*ConfigurationSetMutationResult, error) {
+	if err := SanitizeConfigSetTemplate(tpl); err != nil {
+		return nil, NewServiceError(400, err.Error())
+	}
+
+	importSvc := NewConfigSetImportService(s.db, s.repo)
+	newID, warnings, err := importSvc.Import(ctx, tpl)
+	if err != nil {
+		return nil, err
+	}
+	created, err := s.repo.FindByID(newID)
+	if err != nil {
+		return nil, fmt.Errorf("load imported configuration set: %w", err)
+	}
+
+	if s.permissions != nil {
+		_ = s.permissions.OnConfigurationSetChanged(newID)
+	}
+
+	apiWarnings := make([]models.APIWarning, 0, len(warnings))
+	for _, w := range warnings {
+		apiWarnings = append(apiWarnings, models.APIWarning{
+			Code:    "import_reuse",
+			Message: w,
+			Context: "configuration_set_import",
+		})
+	}
+
+	emitServiceAudit(s.db, actor, logger.ActionConfigSetImport, logger.ResourceConfigurationSet, &newID, created.Name, map[string]any{
+		"warning_count": len(warnings),
+	})
+
+	return &ConfigurationSetMutationResult{Set: created, Warnings: apiWarnings}, nil
 }
 
 // Delete removes a configuration set and its associations, invalidating
@@ -128,6 +172,60 @@ func (s *ConfigurationSetProvisioningService) Delete(actor AuditActor, id int) e
 		"description": cs.Description,
 		"is_default":  cs.IsDefault,
 	})
+	return nil
+}
+
+// ValidateGovernanceRefs verifies that every condition set attached to a
+// configuration set (or to an item-type override) belongs to the workflow
+// that will actually drive that item type. A condition set from another
+// workflow can never match its transition bindings, so attaching one would
+// silently disable the gate.
+func (s *ConfigurationSetProvisioningService) ValidateGovernanceRefs(cs *models.ConfigurationSet) error {
+	effectiveWorkflowID := cs.WorkflowID
+	if effectiveWorkflowID == nil {
+		id, err := NewWorkflowService(s.db).GetDefaultWorkflowID()
+		if err != nil {
+			return fmt.Errorf("resolve default workflow: %w", err)
+		}
+		effectiveWorkflowID = id
+	}
+
+	if cs.ConditionSetID != nil {
+		if err := s.validateConditionSetWorkflow(*cs.ConditionSetID, effectiveWorkflowID, "condition_set_id"); err != nil {
+			return err
+		}
+	}
+	for _, itc := range cs.ItemTypeConfigs {
+		if itc.ConditionSetID == nil {
+			continue
+		}
+		workflowID := effectiveWorkflowID
+		if itc.WorkflowID != nil {
+			workflowID = itc.WorkflowID
+		}
+		field := fmt.Sprintf("item_type_configs[item_type_id=%d].condition_set_id", itc.ItemTypeID)
+		if err := s.validateConditionSetWorkflow(*itc.ConditionSetID, workflowID, field); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *ConfigurationSetProvisioningService) validateConditionSetWorkflow(conditionSetID int, workflowID *int, field string) error {
+	var conditionSetWorkflowID int
+	err := s.db.QueryRow(`SELECT workflow_id FROM condition_sets WHERE id = ?`, conditionSetID).Scan(&conditionSetWorkflowID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return NewServiceError(400, field+": condition set not found")
+	}
+	if err != nil {
+		return fmt.Errorf("validate %s: %w", field, err)
+	}
+	if workflowID == nil {
+		return NewServiceError(400, field+": condition set requires the configuration set to have a workflow")
+	}
+	if conditionSetWorkflowID != *workflowID {
+		return NewServiceError(400, field+": condition set belongs to a different workflow")
+	}
 	return nil
 }
 

@@ -15,7 +15,7 @@
   import ListCustomFieldCell from './ListCustomFieldCell.svelte';
   import { Calendar, User, Target, FolderKanban } from '@lucide/svelte';
   import ItemTypeIcon from '../../components/ItemTypeIcon.svelte';
-  import { formatDate, formatDateOnly } from '../../utils/dateFormatter.js';
+  import { formatDate, formatDateOnly, formatDateTimeLocale } from '../../utils/dateFormatter.js';
   import {
     createStatusPickerConfig,
     priorityPickerConfig as priorityConfig,
@@ -368,6 +368,12 @@
     <div class="flex items-center gap-1 text-sm whitespace-nowrap" style="color: var(--ds-text-subtle);">
       <Calendar class="w-4 h-4 flex-shrink-0" />
       {formatDate(item.created_at) || '-'}
+    </div>
+
+  {:else if column.field_identifier === 'updated_at'}
+    <!-- Updated timestamp (always read-only) -->
+    <div class="text-sm whitespace-nowrap" style="color: var(--ds-text-subtle);">
+      {formatDateTimeLocale(item.updated_at) || '-'}
     </div>
 
   {:else if column.field_identifier === 'project'}

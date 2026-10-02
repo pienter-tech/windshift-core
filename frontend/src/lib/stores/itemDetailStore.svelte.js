@@ -2,6 +2,7 @@ import { api } from '../api.js';
 import { childItemTypesForParent } from '../utils/hierarchy.js';
 import { buildDetailScreenFieldConfig } from '../utils/screenFields.js';
 import { workspaceDataStore } from './workspaceDataStore.svelte.js';
+import { workspacesStore } from './workspaces.svelte.js';
 
 const FIELD_MAP = {
   title: 'title',
@@ -14,6 +15,7 @@ const FIELD_MAP = {
   milestone: 'milestones',
   iteration: 'iteration_id',
   assignee: 'assignee_id',
+  team: 'team_id',
   project: 'project_id',
 };
 
@@ -64,6 +66,7 @@ const RELATED_ITEM_FIELDS = {
   priority: ['priority_id', 'priority_name', 'priority_color'],
   iteration: ['iteration_id', 'iteration_name', 'iteration_end_date'],
   assignee: ['assignee_id', 'assignee_name', 'assignee_email'],
+  team: ['team_id', 'team_name', 'team_color', 'team_avatar_url'],
   project: ['project_id', 'project_name', 'inherit_project'],
 };
 
@@ -79,6 +82,7 @@ const DEFAULT_EDITING_STATE = {
   iteration: { active: false, value: null },
   project: { active: false, value: null },
   assignee: { active: false, value: null },
+  team: { active: false, value: null },
   customFields: { active: {}, values: {} },
 };
 
@@ -161,6 +165,8 @@ class ItemDetailStore {
 
   // Watch
   isWatching = $state(false);
+  // Set when the open ticket is a merged duplicate pointing at its canonical.
+  mergedIntoItemId = $state(null);
   loadingWatchStatus = $state(false);
 
   // Time tracking
@@ -347,6 +353,7 @@ class ItemDetailStore {
       this.availableStatusTransitions = summary.transitions?.available_transitions || [];
       this.pendingApproval = summary.transitions?.pending_approval || null;
       this.isWatching = summary.watching || false;
+      this.mergedIntoItemId = summary.merged_into_item_id || null;
       this.childItems = summary.children || [];
       this.currentItemType = summary.current_item_type || null;
       this.currentHierarchyLevel = summary.current_hierarchy_level || null;
@@ -537,7 +544,7 @@ class ItemDetailStore {
     const promise = Promise.all([
       fallback(api.customerOrganisations.getAll({}, requestOptions), 'customers'),
       fallback(api.items.getAll({ limit: 100 }, requestOptions), 'work items'),
-      fallback(api.workspaces.getAll({}, requestOptions), 'workspaces'),
+      fallback(workspacesStore.load(), 'workspaces'),
     ])
       .then(([customers, workItems, workspaces]) => {
         this.customers = customers || [];
@@ -850,7 +857,13 @@ class ItemDetailStore {
     }
   }
 
-  async saveField(field, directValue = null, assigneeName = null, iterationName = null) {
+  async saveField(
+    field,
+    directValue = null,
+    assigneeName = null,
+    iterationName = null,
+    teamName = null
+  ) {
     if (this.saving) {
       // A save is in flight; remember the latest requested value per field
       // and replay it when that save finishes so rapid edits are not lost.
@@ -858,6 +871,7 @@ class ItemDetailStore {
         directValue: this.#resolveSaveValue(field, directValue),
         assigneeName,
         iterationName,
+        teamName,
       });
       return;
     }
@@ -998,6 +1012,18 @@ class ItemDetailStore {
           assignee_id: newAssignee,
           assignee_name: assigneeName !== undefined ? assigneeName : this.item.assignee_name,
         };
+      } else if (field === 'team') {
+        const newTeamId = directValue !== undefined ? directValue : this.editing.team.value;
+        if (newTeamId === this.item.team_id) {
+          this.cancelEditing('team');
+          return;
+        }
+        updateData.team_id = newTeamId;
+        this.item = {
+          ...this.item,
+          team_id: newTeamId,
+          team_name: teamName !== undefined ? teamName : this.item.team_name,
+        };
       } else if (field.startsWith('custom_field_')) {
         const fieldId = field.replace('custom_field_', '');
         let newValue =
@@ -1078,7 +1104,8 @@ class ItemDetailStore {
           field,
           pending.directValue,
           pending.assigneeName,
-          pending.iterationName
+          pending.iterationName,
+          pending.teamName
         );
       }
     } finally {

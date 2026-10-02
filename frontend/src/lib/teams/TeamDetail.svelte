@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { IconPhoneCheck, IconUsersGroup, IconUsers, IconStack2, IconBellRinging, IconArrowLeft } from '@tabler/icons-svelte-runes';
+  import { IconPhoneCheck, IconUsersGroup, IconUsers, IconStack2, IconBellRinging, IconClock, IconArrowLeft } from '@tabler/icons-svelte-runes';
   import { api } from '../api.js';
   import { navigate } from '../router.js';
   import { authStore, isSystemAdmin, permissionStore } from '../stores';
@@ -13,6 +13,7 @@
   import MembersTab from './MembersTab.svelte';
   import GroupsTab from './GroupsTab.svelte';
   import OnCallTab from './OnCallTab.svelte';
+  import ServiceHoursTab from './ServiceHoursTab.svelte';
 
   let { teamId, section = 'overview' } = $props();
 
@@ -60,6 +61,7 @@
     { id: 'members', label: t('teams.tabs.members'), icon: IconUsers, badge: team?.direct_member_count, testid: 'team-tab-members' },
     { id: 'groups', label: t('teams.tabs.groups'), icon: IconStack2, badge: team?.group_count, testid: 'team-tab-groups' },
     { id: 'on-call', label: t('teams.tabs.onCall'), icon: IconBellRinging, testid: 'team-tab-on-call' },
+    { id: 'service-hours', label: t('teams.tabs.serviceHours'), icon: IconClock, testid: 'team-tab-service-hours' },
   ]);
 
   // svelte-ignore state_referenced_locally
@@ -110,6 +112,8 @@
         <GroupsTab {team} canEdit={hasGlobalManage || myRole === 'admin'} onUpdated={reload} />
       {:else if activeTab === 'on-call'}
         <OnCallTab {team} {canEdit} />
+      {:else if activeTab === 'service-hours'}
+        <ServiceHoursTab {team} {canEdit} />
       {/if}
     </Tabs>
   {/if}

@@ -56,6 +56,14 @@ func (h *ConfigurationSetHandler) Update(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	// A condition set is bound to a workflow; attaching one from a different
+	// workflow would leave its transition bindings unmatched and silently
+	// disable the gate.
+	if err := h.provisioning.ValidateGovernanceRefs(&cs); err != nil {
+		handleServiceError(w, r, err)
+		return
+	}
+
 	// Snapshot the workspaces currently attached to this config set BEFORE
 	// SaveWorkspaceAssignments rewrites the join table. We need this so we can
 	// invalidate permission caches for workspaces that are being detached;

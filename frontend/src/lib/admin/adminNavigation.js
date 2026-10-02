@@ -295,6 +295,12 @@ export const adminGroups = [
         icon: IconActivity,
         descriptionKey: 'settings.adminItems.diagnostics.description',
       },
+      {
+        id: 'packs',
+        labelKey: 'settings.adminItems.packs.title',
+        icon: IconPackage,
+        descriptionKey: 'settings.adminItems.packs.description',
+      },
     ],
   },
 ];

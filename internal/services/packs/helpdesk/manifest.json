@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "kind": "windshift.pack",
+  "name": "helpdesk",
+  "version": "1.0.0",
+  "description": "Email-first customer support: ticket lifecycle, priorities, request context, and a support screen.",
+  "schema": {
+    "configuration_set": "configuration-set.json"
+  },
+  "content": {
+    "workspace_bundle": "workspace-bundle.json"
+  },
+  "conformance": {
+    "configuration_set": "configuration-set.json",
+    "required_statuses": ["Open", "Closed"]
+  }
+}

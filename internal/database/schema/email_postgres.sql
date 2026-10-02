@@ -80,6 +80,10 @@ CREATE TABLE IF NOT EXISTS email_message_tracking (
 	-- attachments_status: see email.sql for the column contract.
 	attachments_status TEXT CHECK(attachments_status IN ('ok','partial','failed') OR attachments_status IS NULL),
 	direction TEXT DEFAULT 'inbound' CHECK(direction IN ('inbound', 'outbound')),
+	-- uid/uid_validity/rate_limited_at: see email.sql for the column contract.
+	uid BIGINT NOT NULL DEFAULT 0,
+	uid_validity BIGINT NOT NULL DEFAULT 0,
+	rate_limited_at TIMESTAMPTZ,
 	processed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE,
 	FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE SET NULL,
@@ -90,6 +94,8 @@ CREATE INDEX IF NOT EXISTS idx_email_message_tracking_channel_id ON email_messag
 CREATE INDEX IF NOT EXISTS idx_email_message_tracking_message_id ON email_message_tracking(message_id);
 CREATE INDEX IF NOT EXISTS idx_email_message_tracking_in_reply_to ON email_message_tracking(in_reply_to);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_email_message_tracking_dedup ON email_message_tracking(channel_id, dedup_key);
+CREATE INDEX IF NOT EXISTS idx_email_message_tracking_sender ON email_message_tracking(from_email);
+CREATE INDEX IF NOT EXISTS idx_email_message_tracking_channel_sender_time ON email_message_tracking(channel_id, LOWER(from_email), processed_at);
 
 -- Durable at-least-once queue for comment replies. See email.sql.
 CREATE TABLE IF NOT EXISTS email_reply_outbox (
@@ -109,8 +115,13 @@ CREATE TABLE IF NOT EXISTS email_reply_outbox (
 	from_name TEXT NOT NULL DEFAULT '',
 	attempt_count INTEGER NOT NULL DEFAULT 0,
 	next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	-- Set while a worker holds a delivery lease; NULL means next_attempt_at
+	-- is retry backoff rather than a claim.
+	lease_owner TEXT,
 	last_error TEXT,
 	delivered_at TIMESTAMPTZ,
+	-- discarded_at: see email.sql for the column contract.
+	discarded_at TIMESTAMPTZ,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	FOREIGN KEY (comment_id) REFERENCES comments(id) ON DELETE CASCADE,

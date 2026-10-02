@@ -761,6 +761,8 @@ export default {
     workspaceTemplateBlank: 'Espacio de trabajo en blanco',
     workspaceTemplateLoading: 'Cargando plantillas...',
     workspaceTemplateError: 'No se pudieron cargar las plantillas de espacios de trabajo',
+    workspaceRestrict: 'Restringir visibilidad',
+    workspaceRestrictHint: 'Solo tú y las personas asignadas pueden ver este espacio de trabajo',
     workspaceTemplateMeta: '{templates} plantillas · {items} elementos',
     // Field labels
     type: 'Tipo',

@@ -32,6 +32,7 @@ export const ADMIN_COMPONENT_LOADERS = {
   security: () => import('../settings/SecuritySettings.svelte'),
   assets: () => import('../features/assets/AssetManager.svelte'),
   diagnostics: () => import('../settings/Diagnostics.svelte'),
+  packs: () => import('../settings/PackManager.svelte'),
   'permission-set-detail': () => import('../settings/PermissionSetEdit.svelte'),
   'configuration-set-detail': () => import('../settings/ConfigurationSetDetail.svelte'),
   'condition-set-detail': () => import('../settings/ConditionSetDetail.svelte'),

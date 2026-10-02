@@ -128,7 +128,7 @@ func setItemLabels(deps Deps) jsonOperation[labelIDsRequest, []labelDTO] {
 		if err != nil {
 			return nil, err
 		}
-		labels, err := deps.Labels.SetForItem(item.ID, input.LabelIDs)
+		labels, err := deps.Labels.SetForItem(auditActorFromRequest(r), item.ID, input.LabelIDs)
 		return mapLabelMutation(labels, err)
 	}
 }
@@ -139,7 +139,7 @@ func addItemLabel(deps Deps) jsonOperation[labelIDRequest, []labelDTO] {
 		if err != nil {
 			return nil, err
 		}
-		labels, err := deps.Labels.AddToItem(item.ID, input.LabelID)
+		labels, err := deps.Labels.AddToItem(auditActorFromRequest(r), item.ID, input.LabelID)
 		return mapLabelMutation(labels, err)
 	}
 }
@@ -154,7 +154,7 @@ func removeItemLabel(deps Deps) commandOperation {
 		if err != nil {
 			return err
 		}
-		if err := deps.Labels.RemoveFromItem(item.ID, labelID); err != nil {
+		if err := deps.Labels.RemoveFromItem(auditActorFromRequest(r), item.ID, labelID); err != nil {
 			return internalError(err)
 		}
 		return nil

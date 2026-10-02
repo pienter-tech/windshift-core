@@ -217,6 +217,16 @@ func MapHistoryToResponse(history *models.ItemHistory) *HistoryResponse {
 			Email:    history.UserEmail,
 		}
 	}
+	if history.ActorKind != "" {
+		resp.ActorKind = history.ActorKind
+	}
+	if history.PortalCustomerID != nil {
+		resp.PortalCustomer = &PortalCustomerSummary{
+			ID:    *history.PortalCustomerID,
+			Name:  history.PortalCustomerName,
+			Email: history.PortalCustomerEmail,
+		}
+	}
 
 	return resp
 }

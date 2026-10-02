@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"windshift/internal/models"
@@ -258,24 +259,53 @@ func scanPortalRequestRow(scanner interface {
 	return row, nil
 }
 
+// PortalRequestVisibility describes which items a portal exposes to its
+// requesters: the portal's own channel, any enabled intake email channel
+// linked to it via email_connected_portal_id, and — as defense-in-depth —
+// only items in workspaces the portal serves (empty = no restriction, for
+// legacy portals).
+type PortalRequestVisibility struct {
+	PortalChannelID       int
+	LinkedEmailChannelIDs []int
+	ServedWorkspaceIDs    []int
+}
+
 // ListChannelRequestsByCreator returns the newest 500 requests an internal
-// user submitted through the given portal channel.
-func (r *ItemRepository) ListChannelRequestsByCreator(creatorID, channelID int) ([]PortalRequestRow, error) {
-	return r.listChannelRequests("i.creator_id = ?", creatorID, channelID)
+// user submitted through the given portal (own channel plus linked intake
+// channels).
+func (r *ItemRepository) ListChannelRequestsByCreator(creatorID int, visibility PortalRequestVisibility) ([]PortalRequestRow, error) {
+	return r.listChannelRequests("i.creator_id = ?", creatorID, visibility)
 }
 
 // ListChannelRequestsByPortalCustomer returns the newest 500 requests a portal
-// customer submitted through the given portal channel.
-func (r *ItemRepository) ListChannelRequestsByPortalCustomer(customerID, channelID int) ([]PortalRequestRow, error) {
-	return r.listChannelRequests("i.creator_portal_customer_id = ?", customerID, channelID)
+// customer submitted through the given portal (own channel plus linked intake
+// channels).
+func (r *ItemRepository) ListChannelRequestsByPortalCustomer(customerID int, visibility PortalRequestVisibility) ([]PortalRequestRow, error) {
+	return r.listChannelRequests("i.creator_portal_customer_id = ?", customerID, visibility)
 }
 
-func (r *ItemRepository) listChannelRequests(ownerClause string, ownerID, channelID int) ([]PortalRequestRow, error) {
+func (r *ItemRepository) listChannelRequests(ownerClause string, ownerID int, visibility PortalRequestVisibility) ([]PortalRequestRow, error) {
+	args := []any{ownerID}
+	channelFilter := "i.channel_id = ?"
+	args = append(args, visibility.PortalChannelID)
+	for _, id := range visibility.LinkedEmailChannelIDs {
+		channelFilter += " OR i.channel_id = ?"
+		args = append(args, id)
+	}
+	where := ownerClause + " AND (" + channelFilter + ")"
+	if len(visibility.ServedWorkspaceIDs) > 0 {
+		placeholders := strings.Repeat("?,", len(visibility.ServedWorkspaceIDs))
+		placeholders = placeholders[:len(placeholders)-1]
+		where += " AND i.workspace_id IN (" + placeholders + ")"
+		for _, id := range visibility.ServedWorkspaceIDs {
+			args = append(args, id)
+		}
+	}
 	rows, err := r.db.Query(portalRequestSelect+`
-		WHERE `+ownerClause+` AND i.channel_id = ?
+		WHERE `+where+`
 		ORDER BY i.created_at DESC
 		LIMIT 500
-	`, ownerID, channelID)
+	`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list channel requests: %w", err)
 	}
@@ -305,23 +335,25 @@ func (r *ItemRepository) GetPortalRequest(itemID int) (*PortalRequestRow, error)
 	return &row, nil
 }
 
-// GetPortalCreatorEmail returns the email of the portal customer who created
-// the item through the given channel. Returns ErrNotFound when the item does
-// not exist, was not created by a portal customer, or belongs to a different
-// channel.
-func (r *ItemRepository) GetPortalCreatorEmail(itemID, channelID int) (string, error) {
+// GetPortalCustomerEmailForItem returns the email of the portal customer who
+// created the item, regardless of which channel it originated on. Returns
+// ErrNotFound when the item does not exist or was not created by a portal
+// customer. Channel-agnostic on purpose: email replies quoting an item's
+// Message-IDs must resolve the creator even when they arrive on a different
+// intake channel than the one that owns the ticket (WI-1546).
+func (r *ItemRepository) GetPortalCustomerEmailForItem(itemID int) (string, error) {
 	var email sql.NullString
 	err := r.db.QueryRow(`
 		SELECT pc.email
 		FROM items i
 		JOIN portal_customers pc ON pc.id = i.creator_portal_customer_id
-		WHERE i.id = ? AND i.channel_id = ?
-	`, itemID, channelID).Scan(&email)
+		WHERE i.id = ?
+	`, itemID).Scan(&email)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && !email.Valid) {
 		return "", ErrNotFound
 	}
 	if err != nil {
-		return "", fmt.Errorf("get portal creator email: %w", err)
+		return "", fmt.Errorf("get portal customer email for item: %w", err)
 	}
 	return email.String, nil
 }
@@ -447,6 +479,65 @@ func (r *ItemRepository) ListOrganisationTickets(orgID int, workspaceIDs []int) 
 			return nil, fmt.Errorf("scan organisation ticket: %w", err)
 		}
 		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// RequesterOpenTicketRow is one duplicate-candidate entry: an open ticket
+// created by the same portal customer as another item.
+type RequesterOpenTicketRow struct {
+	ID                  int
+	WorkspaceID         int
+	WorkspaceKey        string
+	WorkspaceItemNumber int
+	Title               string
+	StatusName          string
+	UpdatedAt           time.Time
+}
+
+// RequesterCustomerID returns the portal customer who created the item, or
+// nil when the item has no portal-customer creator.
+func (r *ItemRepository) RequesterCustomerID(itemID int) (*int, error) {
+	var customerID *int
+	err := r.db.QueryRow(`SELECT creator_portal_customer_id FROM items WHERE id = ?`, itemID).Scan(&customerID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get requester customer id: %w", err)
+	}
+	return customerID, nil
+}
+
+// RequesterOpenTickets lists the requester's other open tickets (status not
+// in a completed category), newest activity first, across all workspaces —
+// callers filter rows to workspaces the agent can view.
+func (r *ItemRepository) RequesterOpenTickets(requesterCustomerID, excludeItemID, limit int) ([]RequesterOpenTicketRow, error) {
+	rows, err := r.db.Query(`
+		SELECT i.id, i.workspace_id, w.key, i.workspace_item_number, i.title,
+		       COALESCE(s.name, ''), i.updated_at
+		FROM items i
+		JOIN workspaces w ON i.workspace_id = w.id
+		LEFT JOIN statuses s ON i.status_id = s.id
+		LEFT JOIN status_categories sc ON s.category_id = sc.id
+		WHERE i.creator_portal_customer_id = ?
+		  AND i.id != ?
+		  AND (sc.is_completed = false OR sc.is_completed IS NULL)
+		ORDER BY i.updated_at DESC
+		LIMIT ?
+	`, requesterCustomerID, excludeItemID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list requester open tickets: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := []RequesterOpenTicketRow{}
+	for rows.Next() {
+		var row RequesterOpenTicketRow
+		if err := rows.Scan(&row.ID, &row.WorkspaceID, &row.WorkspaceKey, &row.WorkspaceItemNumber, &row.Title, &row.StatusName, &row.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan requester open ticket: %w", err)
+		}
+		out = append(out, row)
 	}
 	return out, rows.Err()
 }

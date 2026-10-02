@@ -90,6 +90,7 @@ type ChannelHandler struct {
 	permissionService *services.PermissionService
 	webhookSender     *webhook.WebhookSender
 	emailScheduler    *scheduler.EmailScheduler
+	emailReplies      *services.EmailReplyService
 	encryption        email.Encryptor
 	baseURL           string
 	smtpSender        *windshiftsmtp.NotificationSMTPSender
@@ -144,6 +145,12 @@ func (h *ChannelHandler) SetKnowledgeBasePageValidator(validate func(workspaceID
 // SetEmailScheduler sets the email scheduler (used to avoid circular dependencies)
 func (h *ChannelHandler) SetEmailScheduler(es *scheduler.EmailScheduler) {
 	h.emailScheduler = es
+}
+
+// SetEmailReplyService wires the outbound customer-reply service so the
+// channel surface can list, retry, and discard queued replies.
+func (h *ChannelHandler) SetEmailReplyService(rs *services.EmailReplyService) {
+	h.emailReplies = rs
 }
 
 // SetSMTPSender sets the SMTP sender for sending test emails
@@ -1305,6 +1312,363 @@ func (h *ChannelHandler) ProcessEmailsNow(w http.ResponseWriter, r *http.Request
 	})
 }
 
+// RequeueRateLimitedEmails rewinds the channel's IMAP watermark to the
+// earliest flood-declined message so the next poll retries it. Rate-limited
+// mail was left in the mailbox, so nothing is re-downloaded from the sender:
+// recovery only re-reads what is already there. After the tracking row's
+// claim goes stale the message is re-evaluated against the current cap.
+// POST /channels/{id}/email/requeue-rate-limited
+func (h *ChannelHandler) RequeueRateLimitedEmails(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	if _, ok := h.requireChannelManageAccess(ctx, w, r, id); !ok {
+		return
+	}
+	if !h.requireInboundEmailChannel(ctx, w, r, id) {
+		return
+	}
+
+	state, err := h.channelRepo.GetEmailChannelState(ctx, id)
+	if err != nil && !errors.Is(err, repository.ErrNotFound) {
+		respondInternalError(w, r, err)
+		return
+	}
+	var uidValidity uint32
+	if state != nil {
+		uidValidity = state.UIDValidity
+	}
+
+	earliestUID, found, err := h.channelRepo.GetEarliestRateLimitedUID(ctx, id, uidValidity)
+	if err != nil {
+		respondInternalError(w, r, err)
+		return
+	}
+	if !found {
+		respondJSONOK(w, map[string]any{
+			"requeued":   false,
+			"channel_id": id,
+			"message":    "No rate-limited messages to requeue",
+		})
+		return
+	}
+
+	if err := h.channelRepo.ResetEmailWatermarkToUID(ctx, id, earliestUID-1); err != nil {
+		respondInternalError(w, r, err)
+		return
+	}
+
+	slog.Info("requeued rate-limited email messages",
+		"channel_id", id,
+		"from_uid", earliestUID,
+	)
+	respondJSONOK(w, map[string]any{
+		"requeued":   true,
+		"channel_id": id,
+		"from_uid":   earliestUID,
+		"message":    "Rate-limited messages requeued for reprocessing",
+	})
+}
+
+// requireInboundEmailChannel is the shared channel lookup + shape check for
+// the per-channel email endpoints.
+func (h *ChannelHandler) requireInboundEmailChannel(ctx context.Context, w http.ResponseWriter, r *http.Request, id int) bool {
+	return h.requireChannelOfTypes(ctx, w, r, id, "inbound email channel", "email")
+}
+
+// requireReplyOutboxChannel accepts inbound email channels and portal
+// channels: portal-originated tickets' customer replies live in the origin
+// (portal) channel's outbox (WI-1546), so operators manage them there.
+func (h *ChannelHandler) requireReplyOutboxChannel(ctx context.Context, w http.ResponseWriter, r *http.Request, id int) bool {
+	return h.requireChannelOfTypes(ctx, w, r, id, "inbound email or portal channel", "email", "portal")
+}
+
+// requireChannelOfTypes is the shared channel lookup + shape check for the
+// family of guards above.
+func (h *ChannelHandler) requireChannelOfTypes(ctx context.Context, w http.ResponseWriter, r *http.Request, id int, description string, types ...string) bool {
+	channel, err := h.service.GetByID(ctx, id)
+	if err != nil {
+		respondInternalError(w, r, err)
+		return false
+	}
+	if channel == nil {
+		respondNotFound(w, r, "channel")
+		return false
+	}
+	if channel.Direction != "inbound" {
+		respondValidationError(w, r, fmt.Sprintf("Channel is not an %s", description))
+		return false
+	}
+	for _, t := range types {
+		if channel.Type == t {
+			return true
+		}
+	}
+	respondValidationError(w, r, fmt.Sprintf("Channel is not an %s", description))
+	return false
+}
+
+// ListEmailReplies returns the channel's outbound customer-reply queue:
+// envelope metadata and delivery state, never message bodies.
+// GET /channels/{id}/email/replies?status=pending&page=1&page_size=50
+func (h *ChannelHandler) ListEmailReplies(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	user, ok := h.requireChannelManageAccess(ctx, w, r, id)
+	if !ok {
+		return
+	}
+	if !h.requireReplyOutboxChannel(ctx, w, r, id) {
+		return
+	}
+
+	status := repository.EmailReplyOutboxPending
+	if s := r.URL.Query().Get("status"); s != "" {
+		switch repository.EmailReplyOutboxStatus(s) {
+		case repository.EmailReplyOutboxPending, repository.EmailReplyOutboxDelivered,
+			repository.EmailReplyOutboxDiscarded, repository.EmailReplyOutboxAll:
+			status = repository.EmailReplyOutboxStatus(s)
+		default:
+			respondValidationError(w, r, "status must be pending, delivered, discarded, or all")
+			return
+		}
+	}
+
+	page, pageSize := 1, 50
+	if p := r.URL.Query().Get("page"); p != "" {
+		if v, err := strconv.Atoi(p); err == nil && v > 0 {
+			page = v
+		}
+	}
+	if ps := r.URL.Query().Get("page_size"); ps != "" {
+		if v, err := strconv.Atoi(ps); err == nil && v > 0 && v <= 100 {
+			pageSize = v
+		}
+	}
+
+	isSystemAdmin, err := h.permissionService.IsSystemAdmin(user.ID)
+	if err != nil {
+		respondInternalError(w, r, err)
+		return
+	}
+
+	total, err := h.channelRepo.CountEmailReplies(ctx, id, status)
+	if err != nil {
+		respondInternalError(w, r, err)
+		return
+	}
+	rows, err := h.channelRepo.ListEmailReplies(ctx, id, status, page, pageSize)
+	if err != nil {
+		respondInternalError(w, r, err)
+		return
+	}
+
+	// Same workspace-scoped redaction as the inbound log: the recipient and
+	// subject stay hidden from channel managers without item-view on the
+	// ticket's workspace. Bodies are never returned regardless.
+	workspaceIDs := map[int]bool{}
+	for _, row := range rows {
+		if row.WorkspaceID != nil {
+			workspaceIDs[*row.WorkspaceID] = true
+		}
+	}
+	allowedWS := map[int]bool{}
+	for wsID := range workspaceIDs {
+		allowed, permErr := h.permissionService.HasWorkspacePermission(user.ID, wsID, models.PermissionItemView)
+		if permErr != nil {
+			respondInternalError(w, r, permErr)
+			return
+		}
+		allowedWS[wsID] = allowed
+	}
+
+	type emailReply struct {
+		CommentID     int        `json:"comment_id"`
+		ItemID        int        `json:"item_id"`
+		ToEmail       string     `json:"to_email"`
+		ToName        string     `json:"to_name"`
+		Subject       string     `json:"subject"`
+		AttemptCount  int        `json:"attempt_count"`
+		NextAttemptAt *time.Time `json:"next_attempt_at,omitempty"`
+		LastError     string     `json:"last_error,omitempty"`
+		DeliveredAt   *time.Time `json:"delivered_at,omitempty"`
+		DiscardedAt   *time.Time `json:"discarded_at,omitempty"`
+		CreatedAt     time.Time  `json:"created_at"`
+		WorkspaceKey  string     `json:"workspace_key,omitempty"`
+		Redacted      bool       `json:"redacted,omitempty"`
+	}
+
+	replies := make([]emailReply, 0, len(rows))
+	for _, row := range rows {
+		reply := emailReply{
+			CommentID:    row.CommentID,
+			ItemID:       row.ItemID,
+			ToEmail:      row.ToEmail,
+			ToName:       row.ToName,
+			Subject:      row.Subject,
+			AttemptCount: row.AttemptCount,
+			LastError:    row.LastError.String,
+			CreatedAt:    row.CreatedAt,
+			WorkspaceKey: row.WorkspaceKey,
+		}
+		if row.NextAttemptAt.Valid {
+			t := row.NextAttemptAt.Time
+			reply.NextAttemptAt = &t
+		}
+		if row.DeliveredAt.Valid {
+			t := row.DeliveredAt.Time
+			reply.DeliveredAt = &t
+		}
+		if row.DiscardedAt.Valid {
+			t := row.DiscardedAt.Time
+			reply.DiscardedAt = &t
+		}
+		if !isSystemAdmin && (row.WorkspaceID == nil || !allowedWS[*row.WorkspaceID]) {
+			reply.ToEmail = "[redacted]"
+			reply.ToName = ""
+			reply.Subject = "[redacted]"
+			reply.WorkspaceKey = ""
+			reply.Redacted = true
+		}
+		replies = append(replies, reply)
+	}
+
+	respondJSONOK(w, map[string]any{
+		"replies":   replies,
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
+	})
+}
+
+// RetryEmailReply attempts immediate delivery of a queued customer reply on
+// behalf of an operator, bypassing the backoff schedule once.
+// POST /channels/{id}/email/replies/{commentId}/retry
+func (h *ChannelHandler) RetryEmailReply(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	commentID, ok := requireIDParam(w, r, "commentId")
+	if !ok {
+		return
+	}
+	if _, ok := h.requireChannelManageAccess(ctx, w, r, id); !ok {
+		return
+	}
+	if !h.requireReplyOutboxChannel(ctx, w, r, id) {
+		return
+	}
+	if h.emailReplies == nil {
+		respondError(w, r, &restapi.APIError{
+			StatusCode: http.StatusServiceUnavailable,
+			Code:       "SERVICE_UNAVAILABLE",
+			Message:    "Email reply service not available",
+		})
+		return
+	}
+
+	delivered, err := h.emailReplies.RetryPendingReply(id, commentID)
+	switch {
+	case errors.Is(err, repository.ErrNotFound):
+		respondNotFound(w, r, "email reply")
+		return
+	case errors.Is(err, services.ErrEmailReplyNotRetryable):
+		respondError(w, r, &restapi.APIError{
+			StatusCode: http.StatusConflict,
+			Code:       "EMAIL_REPLY_NOT_RETRYABLE",
+			Message:    "Reply is already delivered or discarded",
+		})
+		return
+	case errors.Is(err, services.ErrEmailReplyInFlight):
+		respondError(w, r, &restapi.APIError{
+			StatusCode: http.StatusConflict,
+			Code:       "EMAIL_REPLY_IN_FLIGHT",
+			Message:    "Reply is being delivered right now; retry once the queue shows its final state",
+		})
+		return
+	case errors.Is(err, services.ErrSMTPNotConfigured):
+		respondError(w, r, &restapi.APIError{
+			StatusCode: http.StatusConflict,
+			Code:       "SMTP_NOT_CONFIGURED",
+			Message:    "Outbound SMTP is not configured; configure it first or discard the reply",
+		})
+		return
+	case err != nil:
+		respondInternalError(w, r, err)
+		return
+	}
+
+	respondJSONOK(w, map[string]any{
+		"delivered":  delivered,
+		"comment_id": commentID,
+		"message":    "Retry attempted; see the queue for the current state",
+	})
+}
+
+// DiscardEmailReply marks a queued customer reply as never-send. The row
+// stays visible for audit and stops retrying.
+// POST /channels/{id}/email/replies/{commentId}/discard
+func (h *ChannelHandler) DiscardEmailReply(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	commentID, ok := requireIDParam(w, r, "commentId")
+	if !ok {
+		return
+	}
+	if _, ok := h.requireChannelManageAccess(ctx, w, r, id); !ok {
+		return
+	}
+	if !h.requireReplyOutboxChannel(ctx, w, r, id) {
+		return
+	}
+
+	outcome, err := h.channelRepo.DiscardEmailReply(ctx, id, commentID)
+	if err != nil {
+		respondInternalError(w, r, err)
+		return
+	}
+	if outcome == repository.EmailReplySending {
+		respondError(w, r, &restapi.APIError{
+			StatusCode: http.StatusConflict,
+			Code:       "EMAIL_REPLY_SENDING",
+			Message:    "Reply is being delivered right now and can no longer be canceled",
+		})
+		return
+	}
+	if outcome != repository.EmailReplyDiscarded {
+		respondError(w, r, &restapi.APIError{
+			StatusCode: http.StatusConflict,
+			Code:       "EMAIL_REPLY_NOT_DISCARDABLE",
+			Message:    "Reply is already delivered, discarded, or does not exist",
+		})
+		return
+	}
+
+	slog.Info("discarded queued email reply", "channel_id", id, "comment_id", commentID)
+	respondJSONOK(w, map[string]any{
+		"discarded":  true,
+		"comment_id": commentID,
+	})
+}
+
 // GetEmailLog returns the email processing log for a channel
 // GET /channels/{id}/email-log?page=1&page_size=50
 func (h *ChannelHandler) GetEmailLog(w http.ResponseWriter, r *http.Request) {
@@ -1374,6 +1738,9 @@ func (h *ChannelHandler) GetEmailLog(w http.ResponseWriter, r *http.Request) {
 		// Healthy is derived: a non-empty last_error means the last poll either
 		// failed or dropped a poison message, so the channel needs attention.
 		Healthy bool `json:"healthy"`
+		// RateLimitedCount is how many messages flood protection declined and
+		// are waiting for operator requeue.
+		RateLimitedCount int `json:"rate_limited_count"`
 	}
 	state := emailChannelState{Healthy: true}
 	if got, err := h.channelRepo.GetEmailChannelState(ctx, id); err == nil {
@@ -1386,6 +1753,12 @@ func (h *ChannelHandler) GetEmailLog(w http.ResponseWriter, r *http.Request) {
 		respondInternalError(w, r, err)
 		return
 	}
+	rateLimitedCount, err := h.channelRepo.CountRateLimitedEmails(ctx, id)
+	if err != nil {
+		respondInternalError(w, r, err)
+		return
+	}
+	state.RateLimitedCount = rateLimitedCount
 
 	total, err := h.channelRepo.CountEmailMessages(ctx, id, search)
 	if err != nil {
@@ -1400,16 +1773,17 @@ func (h *ChannelHandler) GetEmailLog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type emailMessage struct {
-		ID                  int       `json:"id"`
-		FromEmail           string    `json:"from_email"`
-		FromName            string    `json:"from_name"`
-		Subject             string    `json:"subject"`
-		ItemID              *int      `json:"item_id"`
-		CommentID           *int      `json:"comment_id"`
-		ProcessedAt         time.Time `json:"processed_at"`
-		WorkspaceKey        string    `json:"workspace_key,omitempty"`
-		WorkspaceItemNumber int       `json:"workspace_item_number,omitempty"`
-		Redacted            bool      `json:"redacted,omitempty"`
+		ID                  int        `json:"id"`
+		FromEmail           string     `json:"from_email"`
+		FromName            string     `json:"from_name"`
+		Subject             string     `json:"subject"`
+		ItemID              *int       `json:"item_id"`
+		CommentID           *int       `json:"comment_id"`
+		ProcessedAt         time.Time  `json:"processed_at"`
+		RateLimitedAt       *time.Time `json:"rate_limited_at,omitempty"`
+		WorkspaceKey        string     `json:"workspace_key,omitempty"`
+		WorkspaceItemNumber int        `json:"workspace_item_number,omitempty"`
+		Redacted            bool       `json:"redacted,omitempty"`
 	}
 
 	// Collect distinct workspace IDs so we batch the permission checks.
@@ -1439,6 +1813,7 @@ func (h *ChannelHandler) GetEmailLog(w http.ResponseWriter, r *http.Request) {
 			ItemID:              m.ItemID,
 			CommentID:           m.CommentID,
 			ProcessedAt:         m.ProcessedAt,
+			RateLimitedAt:       m.RateLimitedAt,
 			WorkspaceKey:        m.WorkspaceKey,
 			WorkspaceItemNumber: m.WorkspaceItemNumber,
 		}

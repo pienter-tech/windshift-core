@@ -89,6 +89,33 @@ func (a *Authz) CanAdminWorkspace(userID, workspaceID int) (bool, error) {
 	return a.canEditWorkspaceFallback(userID, workspaceID)
 }
 
+// WorkspaceVisibility returns a request-scoped evaluator that answers view
+// and admin checks for many workspaces from one permission snapshot. Paged
+// catalog readers use it to decode the snapshot once per request instead of
+// once per candidate workspace.
+func (a *Authz) WorkspaceVisibility(userID int) (services.WorkspaceVisibility, error) {
+	if a.permissionService != nil {
+		return a.permissionService.WorkspaceVisibility(userID)
+	}
+	return fallbackWorkspaceVisibility{authz: a, userID: userID}, nil
+}
+
+// fallbackWorkspaceVisibility routes per-workspace decisions through the
+// legacy SQL checks used when no permission service is configured (open
+// test setups).
+type fallbackWorkspaceVisibility struct {
+	authz  *Authz
+	userID int
+}
+
+func (f fallbackWorkspaceVisibility) CanView(workspaceID int) (bool, error) {
+	return f.authz.canViewWorkspaceFallback(f.userID, workspaceID), nil
+}
+
+func (f fallbackWorkspaceVisibility) CanAdmin(workspaceID int) (bool, error) {
+	return f.authz.canEditWorkspaceFallback(f.userID, workspaceID)
+}
+
 // HasGlobalPermission checks if a user has a global permission
 // (e.g. PermissionMilestoneCreate, PermissionIterationManage).
 func (a *Authz) HasGlobalPermission(userID int, permission string) (bool, error) {

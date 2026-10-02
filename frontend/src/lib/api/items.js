@@ -133,6 +133,9 @@ export const items = {
   /** @param {number|string} idOrKey */
   get: (idOrKey, requestOptions = {}) =>
     fetchV2Data(`/items/${encodeURIComponent(idOrKey)}`, requestOptions),
+  // Duplicate-candidates panel (WI-1548): the requester's other open tickets.
+  requesterOpenTickets: (id, requestOptions = {}) =>
+    fetchAPI(`/items/${encodeURIComponent(id)}/requester-open-tickets`, requestOptions),
   getDetailSummary: fetchItemDetailSummary,
   getByKey: (workspaceKey, itemNumber, requestOptions = {}) =>
     fetchV2Data(
@@ -257,6 +260,24 @@ export const items = {
         body: JSON.stringify(data),
       }),
     'update'
+  ),
+  // Ticket lifecycle (WI-1135): fold duplicates into this ticket.
+  mergeInto: withCrossTabNotice(
+    (id, sourceItemIds) =>
+      fetchV2Data(`/items/${id}/merge`, {
+        method: 'POST',
+        body: JSON.stringify({ source_item_ids: sourceItemIds }),
+      }),
+    'update'
+  ),
+  // Carve a subticket out of this ticket with selected content.
+  split: withCrossTabNotice(
+    (id, data) =>
+      fetchV2Data(`/items/${id}/split`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    'create'
   ),
   updateFracIndex: withCrossTabNotice(
     (id, data) =>

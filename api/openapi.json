@@ -491,6 +491,14 @@
           },
           "uploader": {
             "$ref": "#/components/schemas/dto.UserSummary"
+          },
+          "uploader_portal_customer": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/dto.PortalCustomerSummary"
+              }
+            ],
+            "description": "UploaderPortalCustomer carries the portal-customer uploader when the\nfile was submitted through a portal or public form."
           }
         },
         "type": "object"
@@ -565,6 +573,10 @@
       },
       "dto.HistoryResponse": {
         "properties": {
+          "actor_kind": {
+            "description": "ActorKind is \"user\" (also when absent, for legacy rows),\n\"portal_customer\", or \"system\". PortalCustomer carries the acting\nportal customer for portal_customer entries.",
+            "type": "string"
+          },
           "changed_at": {
             "type": "string"
           },
@@ -582,6 +594,9 @@
           },
           "old_value": {
             "type": "string"
+          },
+          "portal_customer": {
+            "$ref": "#/components/schemas/dto.PortalCustomerSummary"
           },
           "resolved_new_value": {
             "type": "string"
@@ -1093,6 +1108,20 @@
             "type": "string"
           },
           "title": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "dto.PortalCustomerSummary": {
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "name": {
             "type": "string"
           }
         },
@@ -2126,6 +2155,9 @@
             "maxLength": 100,
             "type": "string"
           },
+          "template_pack": {
+            "type": "string"
+          },
           "template_workspace_id": {
             "type": "integer"
           }
@@ -2231,6 +2263,9 @@
           },
           "is_template": {
             "type": "boolean"
+          },
+          "key": {
+            "type": "string"
           },
           "name": {
             "type": "string"
@@ -3272,6 +3307,8 @@
           "item_updated",
           "item_linked",
           "manual",
+          "sla_breached",
+          "sla_warning",
           "scm_tag_created",
           "scm_release_branch_created",
           "scm_pr_linked",
@@ -3284,6 +3321,8 @@
           "ActionTriggerItemUpdated",
           "ActionTriggerItemLinked",
           "ActionTriggerManual",
+          "ActionTriggerSLABreached",
+          "ActionTriggerSLAWarning",
           "ActionTriggerSCMTagCreated",
           "ActionTriggerSCMReleaseBranchCreated",
           "ActionTriggerSCMPRLinked",
@@ -3372,11 +3411,19 @@
           "uploaded_by": {
             "type": "integer"
           },
+          "uploaded_by_portal_customer_id": {
+            "description": "UploadedByPortalCustomerID carries the portal-customer uploader when\nthe file was submitted through a portal or public form; UploadedBy is\nnil in that case.",
+            "type": "integer"
+          },
           "uploader_email": {
             "type": "string"
           },
           "uploader_name": {
             "description": "Joined fields for API responses",
+            "type": "string"
+          },
+          "uploader_portal_customer_name": {
+            "description": "UploaderPortalCustomerName is the resolved portal-customer uploader\nname for portal/form submissions.",
             "type": "string"
           }
         },
@@ -3476,6 +3523,86 @@
           },
           "timezone": {
             "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "models.Incident": {
+        "properties": {
+          "acknowledged_at": {
+            "type": "string"
+          },
+          "acknowledged_by": {
+            "type": "integer"
+          },
+          "acknowledged_by_name": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "escalation_policy_id": {
+            "type": "integer"
+          },
+          "escalation_repeat_count": {
+            "type": "integer"
+          },
+          "escalation_step": {
+            "type": "integer"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "item_id": {
+            "type": "integer"
+          },
+          "item_key": {
+            "type": "string"
+          },
+          "item_title": {
+            "type": "string"
+          },
+          "next_escalation_at": {
+            "type": "string"
+          },
+          "policy_name": {
+            "description": "Joined fields",
+            "type": "string"
+          },
+          "resolved_at": {
+            "type": "string"
+          },
+          "resolved_by": {
+            "type": "integer"
+          },
+          "resolved_by_name": {
+            "type": "string"
+          },
+          "source": {
+            "description": "manual, automation, webhook, item",
+            "type": "string"
+          },
+          "status": {
+            "description": "triggered, acknowledged, resolved",
+            "type": "string"
+          },
+          "team_id": {
+            "type": "integer"
+          },
+          "team_name": {
+            "type": "string"
+          },
+          "triggered_at": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          },
+          "urgency": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
           }
         },
         "type": "object"
@@ -3583,6 +3710,13 @@
             "type": "string"
           },
           "id": {
+            "type": "integer"
+          },
+          "incident": {
+            "$ref": "#/components/schemas/models.Incident"
+          },
+          "incident_id": {
+            "description": "Current/latest incident. Non-nil means this item is an incident; the\nincident's own history lives in the incidents table.",
             "type": "integer"
           },
           "inherit_project": {
@@ -3750,6 +3884,20 @@
           "story_points": {
             "description": "Estimation",
             "type": "number"
+          },
+          "team_avatar_url": {
+            "type": "string"
+          },
+          "team_color": {
+            "type": "string"
+          },
+          "team_id": {
+            "description": "Team assignment. Mirrors AssigneeID at the team level and is the team\nwhose on-call policy governs an incident on this item.",
+            "type": "integer"
+          },
+          "team_name": {
+            "description": "Team information for API responses",
+            "type": "string"
           },
           "time_project_id": {
             "type": "integer"
@@ -15779,6 +15927,14 @@
             "name": "limit",
             "schema": {
               "type": "integer"
+            }
+          },
+          {
+            "description": "Case-insensitive substring match on name, key, and description",
+            "in": "query",
+            "name": "search",
+            "schema": {
+              "type": "string"
             }
           },
           {

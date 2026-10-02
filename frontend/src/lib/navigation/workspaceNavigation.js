@@ -5,13 +5,16 @@ import {
   IconChartBar as BarChart3,
   IconBook as Book,
   IconCalendar as Calendar,
+  IconClock as Clock,
   IconFileCheck as FileCheck,
   IconFileStack as FileStack,
   IconGitBranch as GitBranch,
+  IconInbox,
   IconKey as Key,
   IconList as List,
   IconListTree as ListTree,
   IconMapPin as MapPin,
+  IconMessageCircle2 as MessageSquareText,
   IconFlag as Milestone,
   IconPackage as Package,
   IconPlayerPlay as Play,
@@ -38,11 +41,19 @@ import {
  */
 
 /**
- * Collection-scoped workspace views (visible inside collections too).
+ * Collection-scoped workspace views (visible inside collections too). The
+ * queue trails the board views: its route follows the selected collection so
+ * collection-scoped queues are reachable, while its visibility toggle stays
+ * in the workspace nav set because queue definitions are workspace-owned.
  * @type {WorkspaceView[]}
  */
 export const workspaceViewItems = [
-  { id: 'backlog', labelKey: 'workspaceSettings.views.backlog', icon: Rows_3 },
+  {
+    id: 'backlog',
+    labelKey: 'workspaceSettings.views.backlog',
+    icon: Rows_3,
+    testId: 'workspace-nav-backlog',
+  },
   {
     id: 'board',
     labelKey: 'workspaceSettings.views.board',
@@ -55,14 +66,42 @@ export const workspaceViewItems = [
     icon: List,
     testId: 'workspace-nav-list',
   },
-  { id: 'tree', labelKey: 'workspaceSettings.views.tree', icon: ListTree },
-  { id: 'map', labelKey: 'workspaceSettings.views.map', icon: MapPin },
+  {
+    id: 'tree',
+    labelKey: 'workspaceSettings.views.tree',
+    icon: ListTree,
+    testId: 'workspace-nav-tree',
+  },
+  {
+    id: 'map',
+    labelKey: 'workspaceSettings.views.map',
+    icon: MapPin,
+    testId: 'workspace-nav-map',
+  },
   {
     id: 'roadmap',
     labelKey: 'collections.roadmap',
     icon: GanttChart,
+    testId: 'workspace-nav-roadmap',
+  },
+  {
+    id: 'queue',
+    labelKey: 'supportQueue.title',
+    tooltipKey: 'supportQueue.description',
+    icon: IconInbox,
+    testId: 'workspace-nav-queue',
+    activeViews: ['workspace-queue'],
   },
 ];
+
+/**
+ * Collection-scoped view ids, the only entries a collection-scope navigation
+ * override may toggle; mirrors models.BoardViewIDs on the backend. The queue
+ * deliberately stays out: it renders in the views group but only the
+ * workspace scope can toggle it.
+ * @type {Set<string>}
+ */
+export const COLLECTION_VIEW_IDS = new Set(['backlog', 'board', 'list', 'tree', 'map', 'roadmap']);
 
 /**
  * Workspace tools which are not scoped to a collection.
@@ -219,6 +258,18 @@ export const workspaceSettingsItems = [
     labelKey: 'workspaceSettings.tabs.templates',
     icon: FileStack,
     view: 'workspace-settings-templates',
+  },
+  {
+    id: 'canned-responses',
+    labelKey: 'workspaceSettings.tabs.cannedResponses',
+    icon: MessageSquareText,
+    view: 'workspace-settings-canned-responses',
+  },
+  {
+    id: 'service-levels',
+    labelKey: 'workspaceSettings.tabs.serviceLevels',
+    icon: Clock,
+    view: 'workspace-settings-service-levels',
   },
   {
     id: 'danger',

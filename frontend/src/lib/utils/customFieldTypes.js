@@ -9,6 +9,15 @@ export function canonicalCustomFieldType(fieldType) {
   return isBooleanCustomFieldType(fieldType) ? BOOLEAN_CUSTOM_FIELD_TYPE : fieldType;
 }
 
+// Array-valued types start as arrays, booleans as false, everything else as an
+// empty string. Sending "" for an untouched multiselect makes the API reject the
+// item; keeping the value undefined breaks bound custom-field renderers.
+export function defaultCustomFieldValue(fieldType) {
+  if (isBooleanCustomFieldType(fieldType)) return false;
+  if (fieldType === 'multiselect' || fieldType === 'multi_user') return [];
+  return '';
+}
+
 // Read compatibility for historical asset/import values. Write paths still
 // emit only actual booleans from the shared Checkbox component.
 export function booleanCustomFieldChecked(raw) {

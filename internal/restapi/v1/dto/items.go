@@ -167,7 +167,12 @@ type HistoryResponse struct {
 	ResolvedOldValue *string      `json:"resolved_old_value,omitempty"`
 	ResolvedNewValue *string      `json:"resolved_new_value,omitempty"`
 	User             *UserSummary `json:"user,omitempty"`
-	ChangedAt        time.Time    `json:"changed_at"`
+	// ActorKind is "user" (also when absent, for legacy rows),
+	// "portal_customer", or "system". PortalCustomer carries the acting
+	// portal customer for portal_customer entries.
+	ActorKind      string                 `json:"actor_kind,omitempty"`
+	PortalCustomer *PortalCustomerSummary `json:"portal_customer,omitempty"`
+	ChangedAt      time.Time              `json:"changed_at"`
 }
 
 // AttachmentResponse is the public API representation of an Attachment
@@ -180,9 +185,12 @@ type AttachmentResponse struct {
 	FileSize         int64        `json:"file_size"`
 	HasThumbnail     bool         `json:"has_thumbnail"`
 	Uploader         *UserSummary `json:"uploader,omitempty"`
-	CreatedAt        time.Time    `json:"created_at"`
-	DownloadURL      string       `json:"download_url,omitempty"`
-	ThumbnailURL     string       `json:"thumbnail_url,omitempty"`
+	// UploaderPortalCustomer carries the portal-customer uploader when the
+	// file was submitted through a portal or public form.
+	UploaderPortalCustomer *PortalCustomerSummary `json:"uploader_portal_customer,omitempty"`
+	CreatedAt              time.Time              `json:"created_at"`
+	DownloadURL            string                 `json:"download_url,omitempty"`
+	ThumbnailURL           string                 `json:"thumbnail_url,omitempty"`
 }
 
 // TransitionResponse represents an available workflow transition

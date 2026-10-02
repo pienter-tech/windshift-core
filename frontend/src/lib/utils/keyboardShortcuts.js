@@ -121,6 +121,9 @@ const shortcuts = {
   templates: {
     add: { key: 'a' },
   },
+  cannedResponses: {
+    add: { key: 'a' },
+  },
   themes: {
     add: { key: 'a' },
   },
@@ -137,6 +140,9 @@ const shortcuts = {
     add: { key: 'a' },
   },
   configurationSets: {
+    add: { key: 'a' },
+  },
+  serviceLevels: {
     add: { key: 'a' },
   },
   conditionSets: {

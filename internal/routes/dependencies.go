@@ -70,6 +70,7 @@ type Deps struct {
 
 	// Standalone handlers (no domain group)
 	Push *handlers.PushHandler
+	SLA  *handlers.SLAHandler
 }
 
 // AuthHandlers groups authentication-related handlers.

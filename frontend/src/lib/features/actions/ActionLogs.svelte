@@ -15,6 +15,8 @@
     const labels = {
       'status_transition': t('actions.trigger.statusTransition'),
       'item_created': t('actions.trigger.itemCreated'),
+      'sla_breached': t('actions.trigger.slaBreached'),
+      'sla_warning': t('actions.trigger.slaWarning'),
       'item_updated': t('actions.trigger.itemUpdated'),
       'item_linked': t('actions.trigger.itemLinked')
     };
