@@ -56,8 +56,9 @@ if git show-ref --verify --quiet "refs/heads/$branch"; then
   exit 1
 fi
 
-git switch --quiet -c "$branch" origin/main
-git branch --quiet --unset-upstream
+# --no-track: the branch gets its own upstream on push, whatever
+# branch.autoSetupMerge says.
+git switch --quiet --no-track -c "$branch" origin/main
 
 title="Sync upstream Windshiftapp/core $ref ($short)"
 message="$title"
