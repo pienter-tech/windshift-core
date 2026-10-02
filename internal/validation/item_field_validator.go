@@ -497,23 +497,33 @@ func (v *ItemFieldValidator) ValidateAndApplyUpdates(
 		}
 	}
 
-	// Custom field values validation
-	if customFields, ok := updateData["custom_field_values"]; ok {
-		if customFields != nil {
-			cfv, ok := customFields.(map[string]any)
-			if !ok {
-				return &ValidationError{Field: "custom_field_values", Message: "must be a JSON object"}
-			}
-			// Validate option ids (select/multiselect) + dedupe multiselect
-			// arrays. Unknown field ids are accepted here; the async cfv
-			// cleanup scheduler is responsible for removing them.
-			if err := ValidateAndNormalizeCustomFieldValues(v.db, cfv); err != nil {
-				return err
-			}
-			item.CustomFieldValues = cfv
-		} else {
-			item.CustomFieldValues = make(map[string]any)
+	// Custom field values are a per-field patch: each key sets that field, a
+	// null value clears it, and keys left out of the payload are preserved.
+	// A null payload is ignored — clearing is per-key, never whole-blob.
+	// Validation and normalization run on the merged result.
+	if rawCustomFields, ok := updateData["custom_field_values"]; ok && rawCustomFields != nil {
+		cfv, ok := rawCustomFields.(map[string]any)
+		if !ok {
+			return &ValidationError{Field: "custom_field_values", Message: "must be a JSON object"}
 		}
+		merged := make(map[string]any, len(item.CustomFieldValues)+len(cfv))
+		for key, value := range item.CustomFieldValues {
+			merged[key] = value
+		}
+		for key, value := range cfv {
+			if value == nil {
+				delete(merged, key)
+				continue
+			}
+			merged[key] = value
+		}
+		// Validate option ids (select/multiselect) + dedupe multiselect
+		// arrays. Unknown field ids are accepted here; the async cfv
+		// cleanup scheduler is responsible for removing them.
+		if err := ValidateAndNormalizeCustomFieldValues(v.db, merged); err != nil {
+			return err
+		}
+		item.CustomFieldValues = merged
 	}
 	if err := ValidateTaskState(v.db, item.WorkspaceID, userID, item.IsTask, item.StatusID); err != nil {
 		return err

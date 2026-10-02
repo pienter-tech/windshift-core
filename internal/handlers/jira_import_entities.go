@@ -372,6 +372,26 @@ func shouldImportJiraStoryPoints(mapping CustomFieldMapping) bool {
 	return mapping.Action != "skip" && isJiraStoryPointsField(mapping)
 }
 
+// importedStoryPoints resolves the issue's story-points estimate from the
+// custom-field mappings. Later mappings win. Windshift never persists
+// negative points, so unusable values are skipped rather than guessed.
+func importedStoryPoints(customFieldMappings []CustomFieldMapping, fields *jira.JiraIssueFields) *float64 {
+	var storyPoints *float64
+	for _, mapping := range customFieldMappings {
+		if !isJiraStoryPointsField(mapping) || !shouldImportJiraStoryPoints(mapping) {
+			continue
+		}
+		raw, ok := fields.CustomFields[mapping.JiraID]
+		if !ok {
+			continue
+		}
+		if sp, ok := numericCustomFieldValue(raw); ok && sp >= 0 {
+			storyPoints = &sp
+		}
+	}
+	return storyPoints
+}
+
 // isJiraSprintField identifies Jira Software's sprint field. Windshift has a
 // first-class iteration_id on items, so sprint data should resolve there rather
 // than into a generic custom field bag.
@@ -1120,20 +1140,13 @@ func (h *JiraImportHandler) importIssue(ctx context.Context, jobID string, works
 	}
 
 	iterationID := extractSprintIterationID(&issue.Fields, customFieldMappings, iterationMap)
+	storyPoints := importedStoryPoints(customFieldMappings, &issue.Fields)
 
-	var storyPoints *float64
 	for _, mapping := range customFieldMappings {
 		if mapping.JiraType == jiraRequestTypeFieldType || strings.EqualFold(strings.TrimSpace(mapping.JiraName), "Request Type") {
 			continue
 		}
 		if isJiraStoryPointsField(mapping) {
-			if shouldImportJiraStoryPoints(mapping) {
-				if raw, ok := issue.Fields.CustomFields[mapping.JiraID]; ok {
-					if sp, ok := numericCustomFieldValue(raw); ok {
-						storyPoints = &sp
-					}
-				}
-			}
 			continue
 		}
 		fieldID, mapped := customFieldIDMap[mapping.JiraID]

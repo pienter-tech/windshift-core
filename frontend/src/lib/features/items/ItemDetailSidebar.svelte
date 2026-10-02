@@ -38,6 +38,7 @@
   import Badge from '../../components/Badge.svelte';
   import ApprovalsTimeline from './ApprovalsTimeline.svelte';
   import SidebarDateField from './SidebarDateField.svelte';
+  import SidebarStoryPointsField from './SidebarStoryPointsField.svelte';
   import { clickOutside } from '../../actions/clickOutside.js';
   
   const iterationConfig = buildIterationPickerConfig({
@@ -216,10 +217,6 @@
     localStorage.setItem(SCHEDULING_COLLAPSED_KEY, String(schedulingUserPref));
   }
 
-  // Story points inline editing
-  let editingStoryPoints = $state(false);
-  let storyPointsEditValue = $state('');
-
   // Estimate inline editing (duration string parsed to minutes)
   let editingEstimate = $state(false);
   let estimateEditValue = $state('');
@@ -243,15 +240,6 @@
       console.error('Failed to save labels:', err);
       errorToast(err?.message || t('items.failedToSaveLabels'));
     }
-  }
-
-  function saveStoryPoints() {
-    editingStoryPoints = false;
-    const raw = storyPointsEditValue;
-    const parsed = raw === '' || raw == null ? null : parseFloat(raw);
-    const value = parsed != null && !Number.isNaN(parsed) && parsed >= 0 ? parsed : null;
-    if (value === (item?.story_points ?? null)) return;
-    onsaveField?.({ field: 'story_points', value });
   }
 
   // Recursive descendant story-point rollup from the detail summary
@@ -393,13 +381,6 @@
       : '';
     estimateError = false;
     editingEstimate = true;
-  }
-
-  // Story Points helpers
-  function startEditingStoryPoints() {
-    if (!canEdit || !isSystemFieldEditable('story_points')) return;
-    storyPointsEditValue = item?.story_points ?? '';
-    editingStoryPoints = true;
   }
 
   // Helper to check if a system field should be shown. Keep the legacy
@@ -1018,51 +999,12 @@
     {/snippet}
 
     {#snippet storyPointsField()}
-      <div class="mb-3">
-        {#if editingStoryPoints}
-          <div class="w-full flex items-center justify-between px-2 py-1.5 text-sm">
-            <Text variant="subtle" size="sm">{t('items.storyPoints')}</Text>
-            <Input
-              type="number"
-              step="0.5"
-              min="0"
-              variant="ghost"
-              class="w-20 text-right text-sm px-1.5 py-0.5"
-              style="color: var(--ds-text);"
-              value={storyPointsEditValue ?? ''}
-              onfocus={(e) => e.currentTarget.select()}
-              oninput={(e) => storyPointsEditValue = e.currentTarget.value}
-              onblur={() => saveStoryPoints()}
-              onkeydown={(e) => {
-                if (e.key === 'Enter') { e.currentTarget.blur(); }
-                if (e.key === 'Escape') { editingStoryPoints = false; }
-              }}
-              autofocus
-              size="small"
-            />
-          </div>
-        {:else}
-          <button
-            onclick={startEditingStoryPoints}
-            class="hover-bg w-full flex items-center justify-between px-2 py-1.5 text-sm transition-colors rounded group"
-            disabled={!canEdit || !isSystemFieldEditable('story_points')}
-          >
-            <Text variant="subtle" size="sm">{t('items.storyPoints')}</Text>
-            <div class="flex items-center gap-2">
-              {#if item?.story_points != null && item?.story_points !== 0}
-                <span style="color: var(--ds-text);">{item.story_points}</span>
-              {:else}
-                <Text variant="subtle" size="sm">{t('common.none')}</Text>
-              {/if}
-            </div>
-          </button>
-          {#if childStoryPointRollup?.contributors > 0}
-            <p class="text-xs mt-0.5 text-right px-2" style="color: var(--ds-text-subtle);" data-testid="story-points-child-rollup">
-              {t('items.storyPointsChildRollup', { points: childStoryPointRollup.points, count: childStoryPointRollup.contributors, plural: childStoryPointRollup.contributors === 1 ? '' : 's' })}
-            </p>
-          {/if}
-        {/if}
-      </div>
+      <SidebarStoryPointsField
+        value={item?.story_points ?? null}
+        editable={canEdit && isSystemFieldEditable('story_points')}
+        rollup={childStoryPointRollup}
+        onSave={(value) => onsaveField?.({ field: 'story_points', value })}
+      />
     {/snippet}
 
     {#each orderedMiddleFields as ident (ident)}

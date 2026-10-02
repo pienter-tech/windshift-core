@@ -83,8 +83,8 @@
     }
   }
 
-  // Handle custom field updates. The merge goes through the shared tracker
-  // so a second rapid edit never persists a blob missing the first edit.
+  // Custom field updates merge per field server-side; only the edited field
+  // is sent.
   async function handleCustomFieldUpdate(fieldIdentifier, value) {
     try {
       const updatedItem = await updateCustomFieldValue(api, item.id, fieldIdentifier, value);
