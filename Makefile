@@ -242,3 +242,6 @@ help:
 	@echo "  make openapi-check  - Validate v1 generation and v2 route/spec parity (used by hooks/CI)"
 	@echo "  make coding-agent-image - Build the thin ws-carrier image (WS_IMAGE for windshift-agent)"
 	@echo "  make help           - Show this help message"
+
+# Pienter fork targets (sync-upstream).
+-include pienter/targets.mk
