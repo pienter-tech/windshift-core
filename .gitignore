@@ -152,16 +152,17 @@ node_modules
 !plugins/.gitkeep
 bin
 WINDSHIFT.md
-AGENTS.md
 
 # Private working documentation
-/docs/
+/docs/*
+!/docs/agents/
+/docs/agents/*
+!/docs/agents/issue-tracker.md
 
 # Local dev docker-compose
 docker-compose.yml
 
 # Old build artifacts
-ws.toml
 ethereal
 windshift.dsl
 endpoints.txt
@@ -198,3 +199,5 @@ blog/
 /cmd/ws/ws
 /playground
 /CONTEXT.md
+
+.wakatime-project
