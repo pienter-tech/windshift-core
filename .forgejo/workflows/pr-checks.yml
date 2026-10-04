@@ -10,8 +10,8 @@ on:
   pull_request:
     branches: [main]
 
-permissions:
-  contents: read
+# No permissions block: Forgejo ignores it and warns. The jobs only read the
+# repository, which the default token allows.
 
 jobs:
   frontend:
