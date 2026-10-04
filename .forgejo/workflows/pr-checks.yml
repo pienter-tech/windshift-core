@@ -3,15 +3,17 @@
 # Forgejo Actions runs .forgejo/workflows/ and ignores .github/workflows/ once
 # this directory exists, so upstream's GitHub workflows no longer run here.
 # GitHub still runs the full upstream CI and the image build after the push
-# mirror syncs; these are the quick checks for reviewing Forgejo PRs.
+# mirror syncs; this is the quick frontend check for reviewing Forgejo PRs.
+# Go lint and the Svelte typecheck fail on the Forgejo runner, so they run
+# only on GitHub.
 name: PR checks
 
 on:
   pull_request:
     branches: [main]
 
-permissions:
-  contents: read
+# No permissions block: Forgejo ignores it and warns. The job only reads the
+# repository, which the default token allows.
 
 jobs:
   frontend:
@@ -36,44 +38,6 @@ jobs:
         run: npm run check
         working-directory: frontend
 
-      - name: Run Svelte typecheck
-        run: npm run typecheck
-        working-directory: frontend
-
       - name: Build
         run: npm run build
         working-directory: frontend
-
-  go:
-    name: Go
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
-
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
-        with:
-          node-version-file: '.nvmrc'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
-
-      # The Go binary embeds the built frontend.
-      - name: Build frontend
-        run: npm ci && npm run build
-        working-directory: frontend
-
-      - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Install golangci-lint
-        run: make install-golangci-lint
-
-      - name: Run Go lint and architecture guards
-        run: make lint
-
-      - name: Build
-        run: go build -ldflags="-s -w" -o windshift .
