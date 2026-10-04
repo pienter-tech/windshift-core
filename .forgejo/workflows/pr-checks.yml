@@ -36,9 +36,8 @@ jobs:
         run: npm run check
         working-directory: frontend
 
-      - name: Run Svelte typecheck
-        run: npm run typecheck
-        working-directory: frontend
+      # No Svelte typecheck here: svelte-check exceeds the Node heap on the
+      # Forgejo runner. GitHub's Frontend CI runs it on every main push.
 
       - name: Build
         run: npm run build
