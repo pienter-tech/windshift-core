@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"windshift/internal/models"
 	"windshift/internal/repository"
@@ -160,8 +161,16 @@ type completeIterationRequest struct {
 	TargetIterationID *int `json:"move_incomplete_to_iteration_id"`
 }
 
-func listMilestones(planning planningApplication, workspaceScoped bool) pageOperation[models.Milestone] {
-	return func(r *http.Request) ([]models.Milestone, Pagination, int, error) {
+// milestoneListEntry is a milestone in a list response, with its last-updated
+// time: the latest change to the milestone or anything in it, counting item
+// changes only for items the viewer can access (WCORE-31).
+type milestoneListEntry struct {
+	models.Milestone
+	LastUpdatedAt time.Time `json:"last_updated_at"`
+}
+
+func listMilestones(planning planningApplication, workspaceScoped bool) pageOperation[milestoneListEntry] {
+	return func(r *http.Request) ([]milestoneListEntry, Pagination, int, error) {
 		user, err := principal(r)
 		if err != nil {
 			return nil, Pagination{}, 0, err
@@ -187,9 +196,9 @@ func listMilestones(planning planningApplication, workspaceScoped bool) pageOper
 		rows, total, err := planning.ListMilestones(user.ID, services.MilestoneListParams{
 			Limit: page.PageSize, Offset: page.Offset, WorkspaceID: workspaceID, CategoryID: categoryID,
 			Status: r.URL.Query().Get("status"), SortBy: page.Sort, SortOrder: sortDirection(page.Desc),
-			IncludeGlobal: includeGlobal, IsGlobal: isGlobal,
+			IncludeGlobal: includeGlobal, IsGlobal: isGlobal, IncludeLastUpdated: true,
 		})
-		return mapMilestones(rows), page, total, planningError(err)
+		return mapMilestoneListEntries(rows), page, total, planningError(err)
 	}
 }
 
@@ -545,10 +554,13 @@ func milestoneReleaseModel(result services.MilestoneReleaseResult) models.Milest
 	}
 }
 
-func mapMilestones(rows []services.MilestoneResult) []models.Milestone {
-	result := make([]models.Milestone, len(rows))
+func mapMilestoneListEntries(rows []services.MilestoneResult) []milestoneListEntry {
+	result := make([]milestoneListEntry, len(rows))
 	for i := range rows {
-		result[i] = milestoneModel(&rows[i])
+		result[i] = milestoneListEntry{Milestone: milestoneModel(&rows[i]), LastUpdatedAt: rows[i].UpdatedAt}
+		if rows[i].LastUpdatedAt != nil {
+			result[i].LastUpdatedAt = *rows[i].LastUpdatedAt
+		}
 	}
 	return result
 }
