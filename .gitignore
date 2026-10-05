@@ -41,6 +41,8 @@ cx
 !frontend/scripts/hardcoded-i18n-ast.spec.js
 !frontend/src/lib/api/integrations.spec.js
 !frontend/src/lib/api/milestones.spec.js
+!frontend/src/lib/features/milestones/milestoneListFilters.spec.js
+!frontend/src/lib/utils/markdownExcerpt.spec.js
 !frontend/src/lib/features/items/zammadPanelContext.spec.js
 !frontend/src/lib/features/items/ZammadLinkResolver.spec.js
 !internal/repository/zammad_repository_test.go
