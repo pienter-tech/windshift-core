@@ -16,6 +16,7 @@
   import { t } from '../../stores/i18n.svelte.js';
   import { durationToString } from '../../utils/timeUtils.js';
   import { toHotkeyString, getShortcutDisplay } from '../../utils/keyboardShortcuts.js';
+  import { isExternalRequest } from '../../utils/requestOrigin.js';
   import Badge from '../../components/Badge.svelte';
   import DescriptionText from '../../components/DescriptionText.svelte';
   import EmptyState from '../../components/EmptyState.svelte';
@@ -369,7 +370,7 @@
     <!-- Tab Content -->
     <div class="pt-6">
       {#if tab === 'comments'}
-        <Comments itemId={item.id} workspaceId={item.workspace_id} isPersonalWorkspace={workspace?.is_personal} isPortalRequest={!!item.request_type_id} enableInternalComments={workspace?.internal_comments_enabled} onCommentsLoaded={handleCommentsLoaded} />
+        <Comments itemId={item.id} workspaceId={item.workspace_id} isPersonalWorkspace={workspace?.is_personal} isPortalRequest={!!item.request_type_id} isExternalRequest={isExternalRequest(item)} enableInternalComments={workspace?.internal_comments_enabled} onCommentsLoaded={handleCommentsLoaded} />
       {:else if tab === 'details'}
         <div class="grid gap-8" data-testid="item-details-overview">
           <section class="overflow-hidden rounded-xl border border-[var(--ds-border)] bg-[var(--ds-surface-raised)]" aria-label={t('items.healthOverview')}>

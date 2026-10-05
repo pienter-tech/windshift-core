@@ -548,10 +548,10 @@ func (r *ItemRepository) buildItemListPagePlan(
 		// workspace ID must also be present in the caller's accessible set.
 		// Collection/QL/filter requests never enter this branch.
 		workspaceArgs := []any{workspaceID}
-		plan.countQuery = "SELECT COUNT(*) FROM items WHERE workspace_id = ?"
+		plan.countQuery = "SELECT COUNT(*) FROM items WHERE workspace_id = ? AND merged_into_item_id IS NULL"
 		plan.countArgs = workspaceArgs
 		plan.pageFromClause = "FROM items i "
-		plan.pageWhereClause = "WHERE i.workspace_id = ?"
+		plan.pageWhereClause = "WHERE i.workspace_id = ? AND i.merged_into_item_id IS NULL"
 		plan.pageArgs = workspaceArgs
 		plan.workspaceCountID = workspaceID
 	}
@@ -622,7 +622,9 @@ func itemSearchFilters(query string) ItemFilters {
 
 // buildWhereClause constructs the WHERE clause and arguments for item queries
 func (r *ItemRepository) buildWhereClause(params ItemListParams) (whereClause string, args []any) {
-	whereClause = "WHERE 1=1"
+	// Merged duplicates are redirects to their canonical ticket: they must not
+	// appear in lists, counts, or stats (WI-1528).
+	whereClause = "WHERE 1=1 AND i.merged_into_item_id IS NULL"
 
 	if len(params.WorkspaceIDs) > 0 {
 		placeholders := make([]string, len(params.WorkspaceIDs))

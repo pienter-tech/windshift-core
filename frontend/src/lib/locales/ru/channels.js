@@ -622,6 +622,10 @@ export default {
     failedToLoadFields: 'Не удалось загрузить поля формы',
     failedToSubmit: 'Не удалось отправить запрос',
     selectOption: 'Выберите вариант…',
+    shareWithOrganisation: 'Поделиться с моей организацией',
+    shareWithOrganisationHint:
+      'Другие контакты вашей организации смогут видеть этот запрос и отвечать на него.',
+    sharedWithOrganisationNote: 'Этот запрос будет виден контактам вашей организации.',
   },
 
   requestTypeFields: {

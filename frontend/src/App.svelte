@@ -47,6 +47,7 @@
   let i18nReady = $state(false);
   let authenticatedShellUIReady = $state(false);
   let authenticatedShellUILoading = $state(false);
+  let authenticatedShellUIError = $state(false);
   let authenticatedShellUIAudience = $state(null);
   let authenticatedShellUILoadGeneration = 0;
   let startupAttempt = 0;
@@ -139,11 +140,12 @@
     }
   }
 
-  async function prepareAuthenticatedShellUI(userId) {
+  async function prepareAuthenticatedShellUI(userId, { force = false } = {}) {
     const audience = `user:${userId ?? 'authenticated'}`;
     if (
+      !force &&
       authenticatedShellUIAudience === audience &&
-      (authenticatedShellUIReady || authenticatedShellUILoading)
+      (authenticatedShellUIReady || authenticatedShellUILoading || authenticatedShellUIError)
     ) {
       return;
     }
@@ -152,13 +154,29 @@
     authenticatedShellUIAudience = audience;
     authenticatedShellUIReady = false;
     authenticatedShellUILoading = true;
-    await loadAuthenticatedShellUI(userId);
+    authenticatedShellUIError = false;
+    // Bound the shell deadline: a stalled request must not leave the desktop
+    // shell on an infinite spinner.
+    const hydrated = await loadAuthenticatedShellUI(userId, {
+      force,
+      timeout: BOOTSTRAP_TIMEOUT_MS,
+    });
 
     if (generation !== authenticatedShellUILoadGeneration) return;
     if (!$authStore.isAuthenticated || authStore.currentUser?.id !== userId) return;
 
     authenticatedShellUILoading = false;
-    authenticatedShellUIReady = true;
+    if (hydrated) {
+      authenticatedShellUIReady = true;
+    } else {
+      // Keep the desktop shell unmounted and offer an in-place retry instead of
+      // silently mounting degraded navigation.
+      authenticatedShellUIError = true;
+    }
+  }
+
+  function retryAuthenticatedShellUI() {
+    void prepareAuthenticatedShellUI(authStore.currentUser?.id, { force: true });
   }
 
   // Show login dialog when setup is completed but user is not authenticated and app is initialized
@@ -189,12 +207,14 @@
     } else if (
       authenticatedShellUIAudience !== null ||
       authenticatedShellUIReady ||
-      authenticatedShellUILoading
+      authenticatedShellUILoading ||
+      authenticatedShellUIError
     ) {
       authenticatedShellUILoadGeneration += 1;
       authenticatedShellUIAudience = null;
       authenticatedShellUIReady = false;
       authenticatedShellUILoading = false;
+      authenticatedShellUIError = false;
       resetAuthenticatedShellUILoad();
     }
   });
@@ -438,6 +458,30 @@
   <!-- Mobile PWA surface (phone-focused shell, bypasses desktop MainApp chrome) -->
   {:else if $authStore.isAuthenticated && appInitialized && isMobileRoute($currentRoute.view)}
     <LazyRootView loader={ROOT_VIEW_LOADERS.mobile} label="mobile workspace" />
+  <!-- Shell capability bootstrap failed: recover in place instead of spinning. -->
+  {:else if $authStore.isAuthenticated && appInitialized && authenticatedShellUIError}
+    <div
+      class="min-h-screen flex items-center justify-center w-full px-6"
+      data-testid="shell-bootstrap-error"
+    >
+      <div class="text-center max-w-sm">
+        <h1 class="text-xl font-semibold mb-2">
+          {getStartupCopy('errors.failedToLoad', i18nReady, t)}
+        </h1>
+        <p class="text-ds-text-subtle mb-5">
+          {getStartupCopy('errors.NETWORK_ERROR', i18nReady, t)}
+        </p>
+        <Button
+          variant="primary"
+          size="large"
+          class="min-h-11"
+          onclick={retryAuthenticatedShellUI}
+          dataTestid="shell-bootstrap-retry"
+        >
+          {getStartupCopy('common.retry', i18nReady, t)}
+        </Button>
+      </div>
+    </div>
   <!-- Mount desktop navigation only after its permission/capability snapshot is stable. -->
   {:else if $authStore.isAuthenticated && appInitialized && !authenticatedShellUIReady}
     <BrandedLoader

@@ -220,10 +220,12 @@
 
         <div>
           <label
+            for={`bdd-example-notes-${row.exampleIndex}`}
             class="text-xs font-semibold uppercase tracking-wider"
             style="color: var(--ds-text-subtle);">{t('common.notes')}</label
           >
           <textarea
+            id={`bdd-example-notes-${row.exampleIndex}`}
             rows={2}
             class="w-full text-sm p-2 rounded border resize-y"
             style="background-color: var(--ds-surface-raised); color: var(--ds-text); border-color: var(--ds-border);"

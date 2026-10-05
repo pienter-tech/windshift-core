@@ -384,6 +384,10 @@ const (
 	ActionCommentDelete     = "comment.delete"
 	ActionAttachmentDelete  = "attachment.delete"
 
+	// External request participants (WI-1136).
+	ActionItemParticipantAdd    = "item.participant_add"
+	ActionItemParticipantRemove = "item.participant_remove"
+
 	// Item type management
 	ActionItemTypeCreate = "item_type.create"
 	ActionItemTypeUpdate = "item_type.update"

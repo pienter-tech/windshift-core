@@ -468,15 +468,11 @@ func (p *Processor) findParentItem(ctx context.Context, email *ParsedEmail) *int
 }
 
 // senderIsThreadParticipant reports whether senderEmail is allowed to post
-// onto the given item via an email reply. The checks are item-scoped.
-//
-// Extension point for ticket participants (WI-1136): once a participants
-// field ships, add a clause accepting senders who are authorized participants
-// on the item — they must be able to reply to threads they are part of, and
-// the outbound notifier must fan out to them. The anchor rows minted for
-// portal tickets carry from_email=” so they can never satisfy the
-// prior-participant clause implicitly; participants will be granted
-// explicitly through that field.
+// onto the given item via an email reply. The checks are item-scoped: a prior
+// sender on the thread, the original creator, or an explicitly added external
+// request participant (WI-1136). The anchor rows minted for portal tickets
+// carry from_email=” so they can never satisfy the prior-participant clause
+// implicitly; participants are granted explicitly through item_participants.
 func (p *Processor) senderIsThreadParticipant(ctx context.Context, itemID int, senderEmail string) bool {
 	if senderEmail == "" {
 		return false
@@ -494,6 +490,10 @@ func (p *Processor) senderIsThreadParticipant(ctx context.Context, itemID int, s
 		if normalizedEmail(creatorEmail) == senderEmail {
 			return true
 		}
+	}
+	// Explicit external request participant.
+	if isParticipant, err := repository.NewItemParticipantRepository(p.db).IsParticipantEmail(itemID, senderEmail); err == nil && isParticipant {
+		return true
 	}
 	return false
 }

@@ -275,6 +275,7 @@ func (s *ItemTypeChangeService) ApplyChange(itemID, userID, targetTypeID int, ne
 		kind = ItemChangeStatus
 	}
 	PublishItemChange(itemID, kind)
+	PublishWorkspaceChange(original.WorkspaceID, WorkspaceChangeItems)
 
 	return history, nil
 }

@@ -1,4 +1,5 @@
 <script>
+  import { untrack } from 'svelte';
   import { createCombobox, melt } from '@melt-ui/svelte';
   import { Check, ChevronDown, X, Search } from '@lucide/svelte';
   import Spinner from '../components/Spinner.svelte';
@@ -29,6 +30,10 @@
 
     // Item configuration
     searchFields = ['name'],
+    // (item) => string | null. When set, options are rendered under a header
+    // per returned label (first-appearance order); null/empty leaves the item
+    // ungrouped and without a header.
+    groupBy = null,
     getValue = (item) => item?.id,
     getLabel = (item) => item?.name ?? '',
     // (value) => string | null. Labels a selected value that is not present in
@@ -52,9 +57,14 @@
     //   inputTestid — applied to the combobox-mode input
     //   searchTestid — applied to the popover-mode search input
     //   optionTestid — (opt) => string, applied per option row
+    //   menuTestid — the portalled menu container
+    //   scrollTestid — the option-list scroll container
     inputTestid = undefined,
     searchTestid = undefined,
+    searchPlaceholder = '',
     optionTestid = null,
+    menuTestid = undefined,
+    scrollTestid = undefined,
 
     // Create functionality
     allowCreate = false,
@@ -188,9 +198,29 @@
   // Rendered slice of options: the DOM mounts at most maxVisibleOptions rows.
   // Narrowing the search resets the reveal window; ArrowDown past the end of
   // the slice grows it, so keyboard users can still reach every option.
-  let revealedCount = $state(maxVisibleOptions);
+  // Initial reveal window only; later changes to the prop must not reset it.
+  let revealedCount = $state(untrack(() => maxVisibleOptions));
   const visibleOptions = $derived(options.slice(0, revealedCount));
   const hiddenOptionCount = $derived(options.length - visibleOptions.length);
+
+  // Group the rendered slice for display. The keyboard highlight index still
+  // refers to visibleOptions, so headers never shift selection.
+  const groupedVisibleOptions = $derived.by(() => {
+    const groups = [];
+    const byLabel = new Map();
+    visibleOptions.forEach((opt, index) => {
+      const label = groupBy && !opt.isUnassigned ? groupBy(opt.item) : null;
+      const key = label || '__ungrouped__';
+      let group = byLabel.get(key);
+      if (!group) {
+        group = { key, label, items: [] };
+        byLabel.set(key, group);
+        groups.push(group);
+      }
+      group.items.push({ opt, index });
+    });
+    return groups;
+  });
 
   $effect(() => {
     // New filter results collapse the reveal window back to the first page.
@@ -600,7 +630,7 @@
 
   <!-- Dropdown Menu -->
   {#if $open}
-    <div bind:this={menuRef} use:melt={$menu} data-testid="picker-dropdown"
+    <div bind:this={menuRef} use:melt={$menu} data-testid={menuTestid || 'picker-dropdown'}
          class="fixed z-[70] min-w-[250px] rounded border shadow-lg flex flex-col overflow-y-auto overscroll-contain"
          style="background-color: var(--ds-surface-raised); border-color: var(--ds-border);">
       {#if popoverMode}
@@ -610,7 +640,7 @@
             <Search size={14} class="absolute left-2.5 top-1/2 -translate-y-1/2" style="color: var(--ds-text-subtle);" />
             <input bind:this={searchInputRef} bind:value={popoverSearchTerm} type="text"
                    data-testid={searchTestid}
-                   placeholder={t('pickers.search')}
+                   placeholder={searchPlaceholder || t('pickers.search')}
                    onkeydown={handleKeydown}
                    class="w-full pl-8 pr-3 py-2 rounded text-sm outline-none"
                    style="background-color: var(--ds-background-input); border: 1px solid var(--ds-border); color: var(--ds-text);"
@@ -622,34 +652,41 @@
       {#if loading}
         <div class="p-4 text-center" style="color: var(--ds-text-subtle);">{t('common.loading')}</div>
       {:else if options.length > 0}
-        <div role="listbox" data-testid="picker-option-list" class="min-h-0 max-h-60 overflow-y-auto overscroll-contain">
-          {#each visibleOptions as opt, index (opt.value ?? 'unassigned')}
-            {@const itemSelected = multiple ? isItemSelected(opt.value) : $isSelected(opt)}
-            {@const isHighlighted = highlightedIndex === index}
-            {@const disabledByMax = atMaxSelections && !itemSelected}
-            <div use:melt={$option(opt)} data-option-value={opt.value ?? ''}
-                 data-option-id={opt.value ?? ''}
-                 data-testid={optionTestid ? optionTestid(opt) : undefined}
-                 onclick={() => { if (!disabledByMax) selectOption(opt); }}
-                 onmouseenter={() => { highlightViaKeyboard = false; highlightedIndex = index; }}
-                 class="px-4 py-3 cursor-pointer border-b last:border-b-0 transition-colors duration-150"
-                 style="border-color: var(--ds-border); {disabledByMax ? 'opacity: 0.4; pointer-events: none;' : ''} {itemSelected ? 'background-color: var(--ds-background-selected); color: var(--ds-text);' : isHighlighted ? 'background-color: var(--ds-surface-raised-hovered); color: var(--ds-text);' : 'color: var(--ds-text);'}">
-              <div class="flex items-center justify-between">
-                <div class="flex items-center gap-3 flex-1 min-w-0">
-                  {#if opt.isUnassigned}
-                    <span class="font-medium truncate" style="color: var(--ds-text-subtle);">{resolvedUnassignedLabel}</span>
-                  {:else if itemSnippet}
-                    {@render itemSnippet({ item: opt.item, isSelected: itemSelected })}
-                  {:else}
-                    {#if iconSnippet}{@render iconSnippet({ item: opt.item })}{/if}
-                    <div class="flex flex-col min-w-0">
-                      <span class="font-medium truncate">{opt.label}</span>
-                    </div>
-                  {/if}
-                </div>
-                {#if itemSelected}<Check class="w-4 h-4 text-ds-interactive flex-shrink-0" />{/if}
+        <div role="listbox" data-testid={scrollTestid || 'picker-option-list'} class="min-h-0 max-h-60 overflow-y-auto overscroll-contain">
+          {#each groupedVisibleOptions as group (group.key)}
+            {#if group.label}
+              <div class="px-3 py-2 text-xs font-semibold uppercase tracking-wide" style="background-color: var(--ds-background-neutral); color: var(--ds-text-subtle);">
+                {group.label}
               </div>
-            </div>
+            {/if}
+            {#each group.items as { opt, index } (opt.value ?? 'unassigned')}
+              {@const itemSelected = multiple ? isItemSelected(opt.value) : $isSelected(opt)}
+              {@const isHighlighted = highlightedIndex === index}
+              {@const disabledByMax = atMaxSelections && !itemSelected}
+              <div use:melt={$option(opt)} data-option-value={opt.value ?? ''}
+                   data-option-id={opt.value ?? ''}
+                   data-testid={optionTestid ? optionTestid(opt) : undefined}
+                   onclick={() => { if (!disabledByMax) selectOption(opt); }}
+                   onmouseenter={() => { highlightViaKeyboard = false; highlightedIndex = index; }}
+                   class="px-4 py-3 cursor-pointer border-b last:border-b-0 transition-colors duration-150"
+                   style="border-color: var(--ds-border); {disabledByMax ? 'opacity: 0.4; pointer-events: none;' : ''} {itemSelected ? 'background-color: var(--ds-background-selected); color: var(--ds-text);' : isHighlighted ? 'background-color: var(--ds-surface-raised-hovered); color: var(--ds-text);' : 'color: var(--ds-text);'}">
+                <div class="flex items-center justify-between">
+                  <div class="flex items-center gap-3 flex-1 min-w-0">
+                    {#if opt.isUnassigned}
+                      <span class="font-medium truncate" style="color: var(--ds-text-subtle);">{resolvedUnassignedLabel}</span>
+                    {:else if itemSnippet}
+                      {@render itemSnippet({ item: opt.item, isSelected: itemSelected })}
+                    {:else}
+                      {#if iconSnippet}{@render iconSnippet({ item: opt.item })}{/if}
+                      <div class="flex flex-col min-w-0">
+                        <span class="font-medium truncate">{opt.label}</span>
+                      </div>
+                    {/if}
+                  </div>
+                  {#if itemSelected}<Check class="w-4 h-4 text-ds-interactive flex-shrink-0" />{/if}
+                </div>
+              </div>
+            {/each}
           {/each}
           {#if hiddenOptionCount > 0}
             <div data-testid="picker-more-hint" class="px-4 py-2.5 text-xs text-center border-t" style="border-color: var(--ds-border); color: var(--ds-text-subtle);">

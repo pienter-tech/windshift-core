@@ -1,4 +1,5 @@
 <script>
+  import { onDestroy } from 'svelte';
   import { ChevronLeft, Search, X } from '@lucide/svelte';
   import { api } from '../api.js';
   import { navigate } from '../router.js';
@@ -17,6 +18,19 @@
   let inputEl = $state(null);
   let version = 0;
   let debounceTimer = null;
+  let controller = null;
+
+  // Supersede the current generation: drop any queued debounce, abort the
+  // in-flight request and make its late resolution a no-op.
+  function invalidate() {
+    version += 1;
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
+    controller?.abort();
+    controller = null;
+  }
 
   function back() {
     if (window.history.length > 1) window.history.back();
@@ -40,13 +54,17 @@
 
   async function run(q) {
     const trimmed = q.trim();
+    invalidate();
     if (!trimmed) {
       results = [];
       pageResults = [];
       searched = false;
+      loading = false;
       return;
     }
-    const v = ++version;
+    const v = version;
+    const ac = new AbortController();
+    controller = ac;
     loading = true;
     try {
       // Items and pages search in parallel; pages fan out per workspace and
@@ -57,8 +75,8 @@
         ...$workspacesStore.regularWorkspaces,
       ];
       const [itemsRes, pagesRes] = await Promise.allSettled([
-        api.search.items({ query: trimmed, limit: 30 }),
-        searchPagesAcrossWorkspaces(workspaces, trimmed),
+        api.search.items({ query: trimmed, limit: 30, signal: ac.signal }),
+        searchPagesAcrossWorkspaces(workspaces, trimmed, { signal: ac.signal }),
       ]);
       if (v !== version) return;
       results = itemsRes.status === 'fulfilled' ? normalize(itemsRes.value) : [];
@@ -70,22 +88,32 @@
       results = [];
       searched = true;
     } finally {
-      if (v === version) loading = false;
+      if (v === version) {
+        loading = false;
+        controller = null;
+      }
     }
   }
 
   function onInput() {
-    clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => run(query), 250);
+    invalidate();
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      void run(query);
+    }, 250);
   }
 
   function clear() {
+    invalidate();
     query = '';
     results = [];
     pageResults = [];
     searched = false;
+    loading = false;
     inputEl?.focus();
   }
+
+  onDestroy(invalidate);
 
   $effect(() => {
     inputEl?.focus();
@@ -110,7 +138,7 @@
       class="mobile-search-input !p-0"
     />
     {#if query}
-      <button class="clear" onclick={clear} aria-label={t('common.clear')} type="button"><X size={16} /></button>
+      <button class="clear" onclick={clear} aria-label={t('common.clear')} data-testid="mobile-search-clear" type="button"><X size={16} /></button>
     {/if}
   </div>
 </header>

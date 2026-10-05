@@ -146,6 +146,16 @@
   });
 
 
+  // Hydrate only the assignees the visible swimlanes reference; the full
+  // directory is never enumerated for the map.
+  $effect(() => {
+    const ids = Object.values(childItemsByParent)
+      .flat()
+      .map((item) => item.assignee_id)
+      .filter(Boolean);
+    if (ids.length > 0) void workspaceDataStore.hydrateUsers(ids);
+  });
+
   // Centralized gradient styling
   const styles = useGradientStyles();
 

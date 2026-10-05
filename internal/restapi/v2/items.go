@@ -1038,5 +1038,9 @@ func itemError(err error) error {
 		errors.Is(err, services.ErrMissingItemType) || errors.Is(err, services.ErrInvalidItemType) || errors.Is(err, services.ErrProjectNotFound) {
 		return newError(http.StatusBadRequest, "validation_failed", err.Error())
 	}
+	var serviceErr *services.ServiceError
+	if errors.As(err, &serviceErr) {
+		return newError(serviceErr.StatusCode, "conflict", serviceErr.Message)
+	}
 	return internalError(err)
 }

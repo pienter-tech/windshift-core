@@ -43,7 +43,7 @@ func (r *ItemRepository) GetDetailPanelAvailability(workspaceID, itemID int) (sc
 const itemBaseColumns = `id, workspace_id, workspace_item_number, item_type_id, title, description, status_id,
        priority_id, due_date, start_date, end_date, is_task, iteration_id, project_id, inherit_project,
        time_project_id, assignee_id, creator_id, creator_portal_customer_id, custom_field_values, parent_id, related_work_item_id,
-       story_points, estimate_minutes, frac_index, created_at, updated_at`
+       story_points, estimate_minutes, frac_index, created_at, updated_at, channel_id`
 
 func scanItemBase(scanner interface {
 	Scan(dest ...any) error
@@ -56,12 +56,13 @@ func scanItemBase(scanner interface {
 	var storyPoints sql.NullFloat64
 	var estimateMinutes sql.NullInt64
 	var fracIndex sql.NullString
+	var channelID sql.NullInt64
 
 	err := scanner.Scan(
 		&item.ID, &item.WorkspaceID, &item.WorkspaceItemNumber, &itemTypeID, &item.Title, &item.Description,
 		&statusID, &priorityID, &dueDate, &startDate, &endDate, &item.IsTask, &iterationID,
 		&projectID, &item.InheritProject, &timeProjectID, &assigneeID, &creatorID, &creatorPortalCustomerID, &customFieldValuesJSON, &parentID,
-		&relatedWorkItemID, &storyPoints, &estimateMinutes, &fracIndex, &item.CreatedAt, &item.UpdatedAt,
+		&relatedWorkItemID, &storyPoints, &estimateMinutes, &fracIndex, &item.CreatedAt, &item.UpdatedAt, &channelID,
 	)
 	if err != nil {
 		return nil, err
@@ -78,6 +79,7 @@ func scanItemBase(scanner interface {
 	assignNullableInt(&item.CreatorID, creatorID)
 	assignNullableInt(&item.CreatorPortalCustomerID, creatorPortalCustomerID)
 	assignNullableInt(&item.RelatedWorkItemID, relatedWorkItemID)
+	assignNullableInt(&item.ChannelID, channelID)
 	assignNullableTime(&item.DueDate, dueDate)
 	assignNullableTime(&item.StartDate, startDate)
 	assignNullableTime(&item.EndDate, endDate)
@@ -124,6 +126,21 @@ func (r *ItemRepository) FindByIDContext(ctx context.Context, id int) (*models.I
 		return nil, mapItemErr(err, "find item")
 	}
 	return item, nil
+}
+
+// MergedIntoItemID returns the canonical item this one was merged into, or nil
+// when it is not a merged duplicate. Merged duplicates are read-only redirects
+// (WI-1528), so writes must consult this before mutating an item.
+func (r *ItemRepository) MergedIntoItemID(ctx context.Context, id int) (*int, error) {
+	var mergedInto *int
+	err := r.db.QueryRowContext(ctx, `SELECT merged_into_item_id FROM items WHERE id = ?`, id).Scan(&mergedInto)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load merge state for item %d: %w", id, err)
+	}
+	return mergedInto, nil
 }
 
 // ItemCaptureSnapshot is the stable item projection used by the Jira capture
@@ -326,7 +343,10 @@ const itemDetailsSelectBody = `
 	       rw.workspace_id as related_work_item_workspace_id,
 	       rw.workspace_item_number as related_work_item_number,
 	       i.team_id, i.incident_id,
-	       t.name as team_name, t.color as team_color, t.avatar_url as team_avatar
+	       t.name as team_name, t.color as team_color, t.avatar_url as team_avatar,
+	       pcc.name as creator_portal_customer_name, pcc.email as creator_portal_customer_email,
+	       pcc.customer_organisation_id as creator_customer_organisation_id,
+	       co.name as creator_customer_organisation_name
 	FROM items i
 	JOIN workspaces w ON i.workspace_id = w.id
 	LEFT JOIN iterations iter ON i.iteration_id = iter.id
@@ -340,7 +360,9 @@ const itemDetailsSelectBody = `
 	LEFT JOIN item_types it ON i.item_type_id = it.id
 	LEFT JOIN items rw ON i.related_work_item_id = rw.id
 	LEFT JOIN workspaces rw_ws ON rw.workspace_id = rw_ws.id
-	LEFT JOIN teams t ON i.team_id = t.id`
+	LEFT JOIN teams t ON i.team_id = t.id
+	LEFT JOIN portal_customers pcc ON i.creator_portal_customer_id = pcc.id
+	LEFT JOIN customer_organisations co ON pcc.customer_organisation_id = co.id`
 
 // scanItemDetailsRow scans the shared projection. Milestones are attached by
 // the caller to avoid a per-row query.
@@ -365,6 +387,9 @@ func scanItemDetailsRow(scanner rowScanner) (models.Item, bool, error) {
 	var creatorPortalCustomerID, channelID, requestTypeID sql.NullInt64
 	var teamID, incidentID sql.NullInt64
 	var teamName, teamColor, teamAvatar sql.NullString
+	var creatorPortalCustomerName, creatorPortalCustomerEmail sql.NullString
+	var creatorCustomerOrganisationID sql.NullInt64
+	var creatorCustomerOrganisationName sql.NullString
 
 	var storyPoints sql.NullFloat64
 	var estimateMinutes sql.NullInt64
@@ -392,6 +417,10 @@ func scanItemDetailsRow(scanner rowScanner) (models.Item, bool, error) {
 		&teamName,
 		&teamColor,
 		&teamAvatar,
+		&creatorPortalCustomerName,
+		&creatorPortalCustomerEmail,
+		&creatorCustomerOrganisationID,
+		&creatorCustomerOrganisationName,
 	)
 	if err != nil {
 		return models.Item{}, false, err
@@ -440,6 +469,10 @@ func scanItemDetailsRow(scanner rowScanner) (models.Item, bool, error) {
 	assignNullableString(&item.TeamName, teamName)
 	assignNullableString(&item.TeamColor, teamColor)
 	assignNullableString(&item.TeamAvatarURL, teamAvatar)
+	assignNullableString(&item.CreatorPortalCustomerName, creatorPortalCustomerName)
+	assignNullableString(&item.CreatorPortalCustomerEmail, creatorPortalCustomerEmail)
+	assignNullableInt(&item.CreatorCustomerOrganisationID, creatorCustomerOrganisationID)
+	assignNullableString(&item.CreatorCustomerOrganisationName, creatorCustomerOrganisationName)
 
 	assignNullableInt(&item.RelatedWorkItemID, relatedWorkItemID)
 	assignNullableString(&item.RelatedWorkItemTitle, relatedWorkItemTitle)
@@ -1887,6 +1920,11 @@ func (r *ItemRepository) ClearRelatedWorkItem(itemID int) error {
 // Portal-customer actors resolve to their customer name; system rows have no
 // user and display through the empty-name fallback the frontend applies.
 func (r *ItemRepository) GetHistoryWithApprovals(itemID int, includeAgentOwner bool) ([]models.ItemHistory, error) {
+	// The metered model/tokens/cost for an agent-written change are deliberately
+	// NOT joined here: aggregating llm_usage is not scoped to the item, so doing
+	// it inline would scan the whole metering table on every history load, which
+	// is a hot path. The response carries only agent_run_id; the client fetches
+	// that run's usage on demand from the indexed per-run endpoint.
 	query := `
 		SELECT
 			ih.id, ih.item_id, ih.user_id, ih.changed_at, ih.field_name, ih.old_value, ih.new_value,
@@ -1896,7 +1934,9 @@ func (r *ItemRepository) GetHistoryWithApprovals(itemID int, includeAgentOwner b
 			COALESCE(NULLIF(TRIM(COALESCE(owner.first_name, '') || ' ' || COALESCE(owner.last_name, '')), ''), owner.username, '') AS agent_owner_name,
 			ih.actor_kind,
 			ih.actor_portal_customer_id,
-			COALESCE(NULLIF(TRIM(pc.name), ''), pc.email, '') AS portal_customer_name
+			COALESCE(NULLIF(TRIM(pc.name), ''), pc.email, '') AS portal_customer_name,
+			COALESCE(ih.source, '') AS source,
+			ih.agent_run_id
 		FROM item_history ih
 		LEFT JOIN users u ON ih.user_id = u.id
 		LEFT JOIN users owner ON owner.id = u.agent_owner_user_id
@@ -1917,7 +1957,9 @@ func (r *ItemRepository) GetHistoryWithApprovals(itemID int, includeAgentOwner b
 			COALESCE(NULLIF(TRIM(COALESCE(owner.first_name, '') || ' ' || COALESCE(owner.last_name, '')), ''), owner.username, '') AS agent_owner_name,
 			CASE WHEN d.actor_portal_customer_id IS NOT NULL THEN 'portal_customer' ELSE 'user' END AS actor_kind,
 			d.actor_portal_customer_id,
-			COALESCE(NULLIF(TRIM(pc.name), ''), pc.email, '') AS portal_customer_name
+			COALESCE(NULLIF(TRIM(pc.name), ''), pc.email, '') AS portal_customer_name,
+			'' AS source,
+			NULL AS agent_run_id
 		FROM approval_decisions d
 		JOIN approval_requests ar ON ar.id = d.approval_request_id
 		LEFT JOIN users u ON u.id = d.actor_user_id
@@ -1936,9 +1978,9 @@ func (r *ItemRepository) GetHistoryWithApprovals(itemID int, includeAgentOwner b
 	history := []models.ItemHistory{}
 	for rows.Next() {
 		var entry models.ItemHistory
-		var userID, portalCustomerID sql.NullInt64
+		var userID, portalCustomerID, runID sql.NullInt64
 		var actorKind sql.NullString
-		if err := rows.Scan(&entry.ID, &entry.ItemID, &userID, &entry.ChangedAt, &entry.FieldName, &entry.OldValue, &entry.NewValue, &entry.UserName, &entry.UserEmail, &entry.IsAgent, &entry.AgentOwnerName, &actorKind, &portalCustomerID, &entry.PortalCustomerName); err != nil {
+		if err := rows.Scan(&entry.ID, &entry.ItemID, &userID, &entry.ChangedAt, &entry.FieldName, &entry.OldValue, &entry.NewValue, &entry.UserName, &entry.UserEmail, &entry.IsAgent, &entry.AgentOwnerName, &actorKind, &portalCustomerID, &entry.PortalCustomerName, &entry.Source, &runID); err != nil {
 			return nil, err
 		}
 		if userID.Valid {
@@ -1948,6 +1990,10 @@ func (r *ItemRepository) GetHistoryWithApprovals(itemID int, includeAgentOwner b
 		if portalCustomerID.Valid {
 			id := int(portalCustomerID.Int64)
 			entry.PortalCustomerID = &id
+		}
+		if runID.Valid {
+			v := int(runID.Int64)
+			entry.AgentRunID = &v
 		}
 		if !includeAgentOwner {
 			entry.AgentOwnerName = ""

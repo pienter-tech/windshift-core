@@ -22,6 +22,8 @@
   import ItemIntegrationLinks from './ItemIntegrationLinks.svelte';
   import ZammadItemPanel from './ZammadItemPanel.svelte';
 	import RequesterOpenTickets from './RequesterOpenTickets.svelte';
+  import CustomerContextSection from './CustomerContextSection.svelte';
+  import ParticipantsSection from './ParticipantsSection.svelte';
   import AddSCMLinkModal from '../../dialogs/AddSCMLinkModal.svelte';
   import AddIntegrationLinkModal from '../../dialogs/AddIntegrationLinkModal.svelte';
   import CreateBranchModal from '../../dialogs/CreateBranchModal.svelte';
@@ -35,6 +37,7 @@
   import { booleanCustomFieldChecked, isBooleanCustomFieldType } from '../../utils/customFieldTypes.js';
   import { customFieldLinkHref } from '../../utils/customFieldLinks.js';
   import { isSystemFieldConfigured, systemFieldIdentifiers } from '../../utils/screenFields.js';
+  import { isExternalRequest } from '../../utils/requestOrigin.js';
   import StatusBadge from '../../components/StatusBadge.svelte';
   import { objectDisplayName } from '../../utils/systemLabels.js';
   import Badge from '../../components/Badge.svelte';
@@ -1252,64 +1255,56 @@
                     onStartEdit={() => startEditingCustomField(screenField.field_identifier)}
                     onCancel={() => oncancelEdit?.({ field: `custom_field_${screenField.field_identifier}` })}
                   />
-                {:else if ['user', 'multi_user', 'asset'].includes(fieldDef.field_type)}
-                  <div class="flex w-full min-w-0 items-center gap-4 px-2 text-sm">
-                    <span
-                      class="max-w-[45%] shrink-0 truncate"
-                      data-testid={`item-custom-field-label-${fieldDef.id}`}
-                    >
-                      <Text variant="subtle" size="sm">{fieldDef.name}</Text>
-                    </span>
-                    <div class="min-w-0 flex-1 text-right">
-                      <CustomFieldRenderer
-                        field={fieldDef}
-                        value={currentValue}
-                        readonly={true}
-                        disabled={!canEdit || !fieldEditable}
-                        noPadding={true}
-                        displayAlignment="end"
-                        truncateDisplay={true}
-                        displayTestId={`item-custom-field-display-${fieldDef.id}`}
-                        {milestones}
-                        {iterations}
-                        itemId={item?.id}
-                        onStartEdit={() => startEditingCustomField(screenField.field_identifier)}
-                      />
-                    </div>
-                  </div>
                 {:else}
                   {@const hasValue = currentValue !== null && currentValue !== undefined && currentValue !== ''}
                   {@const displayValue = hasValue ? formatCustomFieldValue(fieldDef, currentValue) : t('common.none')}
                   {@const valueHref = customFieldLinkHref(fieldDef.field_type, currentValue)}
+                  <!-- Unified read-only row: label left, value right. The row owns
+                       padding and hover; the value renderer adds no chrome. -->
                   <div
-                    class="group flex min-w-0 items-center gap-4 rounded px-2 py-1.5 text-sm transition-colors hover:bg-[var(--ds-background-neutral-hovered)]"
+                    class="hover-bg group flex w-full min-w-0 items-center justify-between gap-2 rounded px-2 py-1.5 text-sm transition-colors"
                   >
-                    {#if valueHref}
-                      <button
-                        type="button"
-                        onclick={() => startEditingCustomField(screenField.field_identifier)}
-                        data-testid={`item-custom-field-edit-${fieldDef.id}`}
-                        class="max-w-[45%] shrink-0 truncate rounded-sm text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 disabled:cursor-default"
-                        style="color: var(--ds-text-subtle); outline-color: var(--ds-border-focused);"
-                        disabled={!canEdit || !fieldEditable}
-                      >
-                        {fieldDef.name}
-                      </button>
-                    {:else}
-                      <Text variant="subtle" size="sm" class="max-w-[45%] shrink-0 truncate">{fieldDef.name}</Text>
-                    {/if}
+                    <button
+                      type="button"
+                      onclick={() => startEditingCustomField(screenField.field_identifier)}
+                      data-testid={valueHref
+                        ? `item-custom-field-edit-${fieldDef.id}`
+                        : `item-custom-field-label-${fieldDef.id}`}
+                      class="max-w-[45%] shrink-0 truncate rounded-sm text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 disabled:cursor-default"
+                      style="outline-color: var(--ds-border-focused);"
+                      disabled={!canEdit || !fieldEditable}
+                    >
+                      <Text variant="subtle" size="sm">{fieldDef.name}</Text>
+                    </button>
 
-                    <div class="min-w-0 flex-1 text-right" style="color: {hasValue ? 'var(--ds-text)' : 'var(--ds-text-subtle)'};">
-                      <TruncatedFieldValue
-                        value={displayValue}
-                        href={valueHref}
-                        onactivate={valueHref ? null : () => startEditingCustomField(screenField.field_identifier)}
-                        disabled={!canEdit || !fieldEditable}
-                        subtle={!hasValue}
-                        testId={valueHref
-                          ? `item-custom-field-value-${fieldDef.id}`
-                          : `item-custom-field-edit-${fieldDef.id}`}
-                      />
+                    <div class="min-w-0 flex-1 text-right">
+                      {#if ['user', 'multi_user', 'asset'].includes(fieldDef.field_type)}
+                        <CustomFieldRenderer
+                          field={fieldDef}
+                          value={currentValue}
+                          readonly={true}
+                          disabled={!canEdit || !fieldEditable}
+                          bare={true}
+                          displayAlignment="end"
+                          truncateDisplay={true}
+                          displayTestId={`item-custom-field-display-${fieldDef.id}`}
+                          {milestones}
+                          {iterations}
+                          itemId={item?.id}
+                          onStartEdit={() => startEditingCustomField(screenField.field_identifier)}
+                        />
+                      {:else}
+                        <TruncatedFieldValue
+                          value={displayValue}
+                          href={valueHref}
+                          onactivate={valueHref ? null : () => startEditingCustomField(screenField.field_identifier)}
+                          disabled={!canEdit || !fieldEditable}
+                          subtle={!hasValue}
+                          testId={valueHref
+                            ? `item-custom-field-value-${fieldDef.id}`
+                            : `item-custom-field-edit-${fieldDef.id}`}
+                        />
+                      {/if}
                     </div>
                   </div>
                 {/if}
@@ -1366,9 +1361,20 @@
       <ZammadItemPanel itemId={item.id} workspaceId={item.workspace_id} {canEdit} />
     {/if}
 
-    <!-- Duplicate candidates (WI-1548): the requester's other open tickets -->
-    {#if item?.id}
+    <!-- Customer context (WI-1139): requester, organisation history, and
+         linked assets. External requests only; expands on demand. The
+         WI-1548 duplicate-candidates panel belongs to the same customer
+         context, so it shares the guard. -->
+    {#if item?.id && isExternalRequest(item)}
       <RequesterOpenTickets itemId={item.id} />
+      <CustomerContextSection {item} />
+    {/if}
+
+    <!-- External request participants (WI-1136). Internal items have no
+         external audience, so the section only appears for requests that
+         originated from the portal or a helpdesk mailbox. -->
+    {#if item?.id && isExternalRequest(item)}
+      <ParticipantsSection itemId={item.id} {canEdit} />
     {/if}
 
     {#if item?.id}

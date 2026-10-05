@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"time"
 
 	"windshift/internal/database"
 	"windshift/internal/logger"
+	"windshift/internal/models"
 	"windshift/internal/sanitize"
 )
 
@@ -36,6 +38,10 @@ type WorkspaceBundle struct {
 	// any content is created.
 	ConfigurationSet *ConfigSetTemplate     `json:"configuration_set_template,omitempty"`
 	Payload          WorkspaceBundlePayload `json:"payload"`
+	// Warnings records content the export could not represent portably (for
+	// example an item whose item type was deleted). The bundle still imports;
+	// the warning tells the operator what was left behind.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 type WorkspaceBundleSource struct {
@@ -279,11 +285,12 @@ func (s *WorkspaceBundleExportService) Export(ctx context.Context, workspaceID i
 		return nil, fmt.Errorf("export page labels: %w", err)
 	}
 
-	items, usedItemLabels, idToRef, err := s.exportItems(ctx, workspaceID)
+	items, usedItemLabels, idToRef, warnings, err := s.exportItems(ctx, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("export items: %w", err)
 	}
 	bundle.Payload.Items = items
+	bundle.Warnings = warnings
 	if len(usedItemLabels) > 0 {
 		bundle.Payload.Labels, err = s.exportItemLabelCatalog(ctx, usedItemLabels)
 		if err != nil {
@@ -443,110 +450,234 @@ func (s *WorkspaceBundleExportService) exportPageLabels(ctx context.Context, wor
 	return out, rows.Err()
 }
 
+// bundleExportItem is one item during export, before refs are assigned.
+type bundleExportItem struct {
+	id          int
+	parentID    sql.NullInt64
+	item        WorkspaceBundleItem
+	fieldValues map[string]any
+}
+
 // exportItems dumps the workspace's items with name-based references. Items
-// are ordered by id, so parents (always created before their children) are
-// listed before the items referencing them. The returned set is the item
-// label names actually used; the id → ref table maps links onto refs.
-func (s *WorkspaceBundleExportService) exportItems(ctx context.Context, workspaceID int) (items []WorkspaceBundleItem, usedLabels map[string]bool, idToRef map[int]string, err error) {
+// are emitted parents-first regardless of id order (re-parenting can put a
+// child before its parent), and custom-field values are encoded by name or
+// option label so the bundle round-trips across instances. The returned set is
+// the item label names actually used; the id → ref table maps links onto refs.
+// Items whose item type was deleted are skipped and reported in warnings
+// instead of being dropped silently by an inner join.
+func (s *WorkspaceBundleExportService) exportItems(ctx context.Context, workspaceID int) (items []WorkspaceBundleItem, usedLabels map[string]bool, idToRef map[int]string, warnings []string, err error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT i.id, i.title, COALESCE(i.description, ''), it.name AS item_type_name,
-		       p.name AS priority_name, COALESCE(u.email, '') AS assignee_email,
+		SELECT i.id, i.title, COALESCE(i.description, ''), COALESCE(it.name, '') AS item_type_name,
+		       COALESCE(p.name, '') AS priority_name, COALESCE(u.email, '') AS assignee_email,
 		       i.custom_field_values AS custom_field_values, i.parent_id
 		FROM items i
-		JOIN item_types it ON it.id = i.item_type_id
+		LEFT JOIN item_types it ON it.id = i.item_type_id
 		LEFT JOIN priorities p ON p.id = i.priority_id
 		LEFT JOIN users u ON u.id = i.assignee_id
 		WHERE i.workspace_id = ?
 		ORDER BY i.id
 	`, workspaceID)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	defer func() { _ = rows.Close() }()
 
-	var out []WorkspaceBundleItem
-	var itemIDs []int
-	idToRef = map[int]string{}
-	var parentIDs []sql.NullInt64
+	var ordered []*bundleExportItem
+	byID := map[int]*bundleExportItem{}
 	for rows.Next() {
 		var (
-			item     WorkspaceBundleItem
-			id       int
-			cfRaw    sql.NullString
-			parentID sql.NullInt64
+			r     bundleExportItem
+			cfRaw sql.NullString
 		)
-		if err := rows.Scan(&id, &item.Title, &item.Description, &item.ItemTypeName,
-			&item.PriorityName, &item.AssigneeEmail, &cfRaw, &parentID); err != nil {
-			return nil, nil, nil, err
+		if err := rows.Scan(&r.id, &r.item.Title, &r.item.Description, &r.item.ItemTypeName,
+			&r.item.PriorityName, &r.item.AssigneeEmail, &cfRaw, &r.parentID); err != nil {
+			return nil, nil, nil, nil, err
 		}
-		item.Ref = fmt.Sprintf("item-%d", len(out)+1)
-		itemIDs = append(itemIDs, id)
-		idToRef[id] = item.Ref
-		parentIDs = append(parentIDs, parentID)
+		if r.item.ItemTypeName == "" {
+			warnings = append(warnings, fmt.Sprintf("item %d (%s) has no item type and was skipped", r.id, r.item.Title))
+			continue
+		}
 		if cfRaw.Valid && cfRaw.String != "" {
 			values := map[string]any{}
 			if err := json.Unmarshal([]byte(cfRaw.String), &values); err == nil && len(values) > 0 {
-				item.FieldValues = values
+				r.fieldValues = values
 			}
 		}
-		out = append(out, item)
+		byID[r.id] = &r
+		ordered = append(ordered, &r)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
-	// Parent refs: parents precede children in id order, so every parent of
-	// an exported item is in the id → ref table.
-	for i := range out {
-		if !parentIDs[i].Valid {
-			continue
+	// Depth-first emission keeps parents before their children while preserving
+	// id order among siblings. A cycle cannot be emitted twice; leftovers are
+	// appended in id order so a malformed tree still exports.
+	var out []*bundleExportItem
+	emitted := map[int]bool{}
+	var emit func(r *bundleExportItem)
+	emit = func(r *bundleExportItem) {
+		if emitted[r.id] {
+			return
 		}
-		if ref, ok := idToRef[int(parentIDs[i].Int64)]; ok {
-			out[i].ParentRef = ref
+		emitted[r.id] = true
+		if r.parentID.Valid {
+			if parent, ok := byID[int(r.parentID.Int64)]; ok {
+				emit(parent)
+			}
+		}
+		out = append(out, r)
+	}
+	for _, r := range ordered {
+		emit(r)
+	}
+
+	idToRef = map[int]string{}
+	for i, r := range out {
+		r.item.Ref = fmt.Sprintf("item-%d", i+1)
+		idToRef[r.id] = r.item.Ref
+	}
+	for _, r := range out {
+		if r.parentID.Valid {
+			if ref, ok := idToRef[int(r.parentID.Int64)]; ok {
+				r.item.ParentRef = ref
+			}
 		}
 	}
-	if err := s.rewriteItemFieldNames(ctx, out); err != nil {
-		return nil, nil, nil, err
+
+	fieldDefs, err := s.loadCustomFieldDefs(ctx)
+	if err != nil {
+		return nil, nil, nil, nil, err
 	}
 	labelNames, err := s.itemLabelNames(ctx, workspaceID)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	usedLabels = map[string]bool{}
-	for i := range out {
-		names := labelNames[itemIDs[i]]
-		if len(names) > 0 {
-			out[i].Labels = names
+	for _, r := range out {
+		if len(r.fieldValues) > 0 {
+			rewritten := make(map[string]any, len(r.fieldValues))
+			for key, value := range r.fieldValues {
+				def, ok := fieldDefs[key]
+				if !ok {
+					continue // orphaned value for a deleted field
+				}
+				encoded, err := encodeChoiceFieldValue(def, value)
+				if err != nil {
+					return nil, nil, nil, nil, err
+				}
+				rewritten[def.Name] = encoded
+			}
+			r.item.FieldValues = rewritten
+		}
+		if names := labelNames[r.id]; len(names) > 0 {
+			r.item.Labels = names
 			for _, n := range names {
 				usedLabels[n] = true
 			}
 		}
+		items = append(items, r.item)
 	}
-	return out, usedLabels, idToRef, nil
+	return items, usedLabels, idToRef, warnings, nil
 }
 
-// rewriteItemFieldNames replaces custom-field id keys with field names.
-func (s *WorkspaceBundleExportService) rewriteItemFieldNames(ctx context.Context, items []WorkspaceBundleItem) error {
-	for i := range items {
-		if items[i].FieldValues == nil {
-			continue
-		}
-		rewritten := make(map[string]any, len(items[i].FieldValues))
-		for key, value := range items[i].FieldValues {
-			var name string
-			if err := s.db.QueryRowContext(ctx,
-				`SELECT name FROM custom_field_definitions WHERE id = ?`, key,
-			).Scan(&name); err != nil {
-				if errors.Is(err, sql.ErrNoRows) {
-					continue // orphaned value for a deleted field
-				}
-				return err
-			}
-			rewritten[name] = value
-		}
-		items[i].FieldValues = rewritten
+// customFieldDef is the subset of a custom-field definition needed to encode
+// and decode choice values.
+type customFieldDef struct {
+	ID        int
+	Name      string
+	FieldType string
+	Options   string
+}
+
+func (s *WorkspaceBundleExportService) loadCustomFieldDefs(ctx context.Context) (map[string]customFieldDef, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, name, field_type, COALESCE(options, '') FROM custom_field_definitions
+	`)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	defer func() { _ = rows.Close() }()
+	out := map[string]customFieldDef{}
+	for rows.Next() {
+		var def customFieldDef
+		if err := rows.Scan(&def.ID, &def.Name, &def.FieldType, &def.Options); err != nil {
+			return nil, err
+		}
+		out[strconv.Itoa(def.ID)] = def
+	}
+	return out, rows.Err()
+}
+
+// encodeChoiceFieldValue turns a select/multiselect option id (or list of ids)
+// into its option label(s) so the bundle is portable across instances whose
+// option ids differ. Non-choice values pass through unchanged.
+func encodeChoiceFieldValue(def customFieldDef, value any) (any, error) {
+	switch def.FieldType {
+	case "select":
+		id, ok := coerceFieldOptionID(value)
+		if !ok {
+			return value, nil
+		}
+		label, ok := selectOptionLabel(def.Options, id)
+		if !ok {
+			return nil, fmt.Errorf("custom field %q: option id %d has no label", def.Name, id)
+		}
+		return label, nil
+	case "multiselect":
+		items, ok := value.([]any)
+		if !ok {
+			return value, nil
+		}
+		labels := make([]any, 0, len(items))
+		for _, item := range items {
+			id, ok := coerceFieldOptionID(item)
+			if !ok {
+				return value, nil
+			}
+			label, ok := selectOptionLabel(def.Options, id)
+			if !ok {
+				return nil, fmt.Errorf("custom field %q: option id %d has no label", def.Name, id)
+			}
+			labels = append(labels, label)
+		}
+		return labels, nil
+	default:
+		return value, nil
+	}
+}
+
+// coerceFieldOptionID accepts JSON numbers and legacy numeric strings.
+func coerceFieldOptionID(value any) (int, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return int(typed), true
+	case int:
+		return typed, true
+	case int64:
+		return int(typed), true
+	case string:
+		n, err := strconv.Atoi(typed)
+		if err != nil {
+			return 0, false
+		}
+		return n, true
+	default:
+		return 0, false
+	}
+}
+
+func selectOptionLabel(optionsJSON string, id int) (string, bool) {
+	opts, err := models.ParseSelectOptions(optionsJSON)
+	if err != nil {
+		return "", false
+	}
+	for _, item := range opts.Items {
+		if item.ID == id {
+			return item.Label, true
+		}
+	}
+	return "", false
 }
 
 func (s *WorkspaceBundleExportService) itemLabelNames(ctx context.Context, workspaceID int) (map[int][]string, error) {

@@ -1,27 +1,51 @@
 <script>
-  import TimeCustomers from './TimeCustomers.svelte';
-  import TimeProjects from './TimeProjects.svelte';
-  import TimeEntry from '../time/TimeEntry.svelte';
-  import Timesheet from './Timesheet.svelte';
-  import TimeReports from './TimeReports.svelte';
   import { IconUser as User, IconBriefcase as Briefcase, IconClock as Clock, IconCalendarEvent as CalendarDays, IconChartBar as BarChart3 } from '@tabler/icons-svelte-runes';
   import { currentRoute, navigate } from '../../router.js';
   import { t } from '../../stores/i18n.svelte.js';
   import { permissionStore, isSystemAdmin } from '../../stores';
   import NavigationSidebar from '../../layout/NavigationSidebar.svelte';
+  import Spinner from '../../components/Spinner.svelte';
+  import Button from '../../components/Button.svelte';
+
+  // Each tab is a literal dynamic import so entering Time ships only the active
+  // tab's code; loaded modules are cached for later visits.
+  const TAB_LOADERS = {
+    'time-entry': () => import('./TimeEntry.svelte'),
+    timesheet: () => import('./Timesheet.svelte'),
+    organizations: () => import('./TimeCustomers.svelte'),
+    projects: () => import('./TimeProjects.svelte'),
+    reports: () => import('./TimeReports.svelte'),
+  };
 
   let activeTab = $state('time-entry');
+  let tabComponents = $state({});
+  let tabErrors = $state({});
+
+  async function loadTab(id) {
+    try {
+      const module = await TAB_LOADERS[id]();
+      tabComponents = { ...tabComponents, [id]: module.default };
+    } catch (error) {
+      console.error(`Failed to load time tab "${id}":`, error);
+      tabErrors = { ...tabErrors, [id]: true };
+    }
+  }
+
+  function retryTab(id) {
+    tabErrors = { ...tabErrors, [id]: false };
+    void loadTab(id);
+  }
 
   const canManageCustomers = $derived($permissionStore.userPermissionKeys?.has('customers.manage') || $isSystemAdmin);
   const canManageProjects = $derived($permissionStore.userPermissionKeys?.has('project.manage') || $isSystemAdmin);
 
   const tabs = $derived.by(() => {
     const allTabs = [
-      { id: 'time-entry', label: t('time.entry.title'), icon: Clock, component: TimeEntry, route: '/time' },
-      { id: 'timesheet', label: t('time.timesheet.title'), icon: CalendarDays, component: Timesheet, route: '/time/timesheet' },
-      { id: 'organizations', label: t('time.organizations.title'), icon: User, component: TimeCustomers, route: '/time/organizations', permission: canManageCustomers },
-      { id: 'projects', label: t('time.projects.title'), icon: Briefcase, component: TimeProjects, route: '/time/projects', permission: canManageProjects },
-      { id: 'reports', label: t('time.reports.title'), icon: BarChart3, component: TimeReports, route: '/time/worklogs', permission: canManageProjects }
+      { id: 'time-entry', label: t('time.entry.title'), icon: Clock, route: '/time' },
+      { id: 'timesheet', label: t('time.timesheet.title'), icon: CalendarDays, route: '/time/timesheet' },
+      { id: 'organizations', label: t('time.organizations.title'), icon: User, route: '/time/organizations', permission: canManageCustomers },
+      { id: 'projects', label: t('time.projects.title'), icon: Briefcase, route: '/time/projects', permission: canManageProjects },
+      { id: 'reports', label: t('time.reports.title'), icon: BarChart3, route: '/time/worklogs', permission: canManageProjects }
     ];
 
     return allTabs.filter(tab => !tab.permission || tab.permission);
@@ -43,6 +67,13 @@
     } else if (path === '/time/worklogs') {
       activeTab = 'reports';
     }
+  });
+
+  // Load the active tab's code on demand and keep it for later visits.
+  $effect(() => {
+    const id = activeTab;
+    if (!TAB_LOADERS[id] || tabComponents[id] || tabErrors[id]) return;
+    void loadTab(id);
   });
 
   function handleTabClick(tab) {
@@ -72,14 +103,29 @@
 
   <!-- Main Content -->
   <div class="flex-1 min-h-0 overflow-y-auto">
-    {#each tabs as tab (tab.id)}
-      {#if activeTab === tab.id}
-        {@const TabComponent = tab.component}
-        <div class="p-6">
-          <TabComponent />
-        </div>
-      {/if}
-    {/each}
+    {#if !TAB_LOADERS[activeTab]}
+      <!-- Unknown/legacy tab (e.g. /time/categories): render nothing. -->
+    {:else if tabComponents[activeTab]}
+      {@const TabComponent = tabComponents[activeTab]}
+      <div class="p-6">
+        <TabComponent />
+      </div>
+    {:else if tabErrors[activeTab]}
+      <div class="p-6 text-center" data-testid="time-tab-error">
+        <p class="mb-4" style="color: var(--ds-text-subtle);">{t('errors.failedToLoad')}</p>
+        <Button
+          variant="primary"
+          onclick={() => retryTab(activeTab)}
+          dataTestid="time-tab-retry"
+        >
+          {t('common.retry')}
+        </Button>
+      </div>
+    {:else}
+      <div class="p-6 flex justify-center" data-testid="time-tab-loading">
+        <Spinner />
+      </div>
+    {/if}
   </div>
 </div>
 

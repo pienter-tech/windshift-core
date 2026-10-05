@@ -16,7 +16,9 @@ import { clearStores, getStoreValue } from './storeUtils.js';
  */
 
 function createPortalAuthStore() {
-  let userBootstrap = null;
+  // userBootstrap is a store so consumers can react to request_sharing changes
+  // (WI-1139) as well as read it through the combined store value.
+  const userBootstrap = writable(null);
   const customer = writable(null);
   const user = writable(null); // internal user
   const isAuthenticated = writable(false);
@@ -31,7 +33,17 @@ function createPortalAuthStore() {
 
   // Create a combined derived store for easy subscription
   const combined = derived(
-    [customer, user, isAuthenticated, isInternal, loading, error, emailSent, showPasskeyBanner],
+    [
+      customer,
+      user,
+      isAuthenticated,
+      isInternal,
+      loading,
+      error,
+      emailSent,
+      showPasskeyBanner,
+      userBootstrap,
+    ],
     ([
       $customer,
       $user,
@@ -41,6 +53,7 @@ function createPortalAuthStore() {
       $error,
       $emailSent,
       $showPasskeyBanner,
+      $userBootstrap,
     ]) => ({
       customer: $customer,
       user: $user,
@@ -50,6 +63,7 @@ function createPortalAuthStore() {
       error: $error,
       emailSent: $emailSent,
       showPasskeyBanner: $showPasskeyBanner,
+      userBootstrap: $userBootstrap,
     })
   );
 
@@ -99,7 +113,7 @@ function createPortalAuthStore() {
     },
 
     get userBootstrap() {
-      return userBootstrap;
+      return getStoreValue(userBootstrap);
     },
 
     /**
@@ -112,7 +126,7 @@ function createPortalAuthStore() {
 
       try {
         const response = await api.portal.getUserBootstrap(slug);
-        userBootstrap = response;
+        userBootstrap.set(response);
         if (response.authenticated) {
           if (response.is_internal) {
             // Internal user authenticated
@@ -143,8 +157,8 @@ function createPortalAuthStore() {
         isAuthenticated.set(false);
         isInternal.set(false);
         showPasskeyBanner.set(false);
-        userBootstrap = { authenticated: false, my_requests: [], my_approvals: [] };
-        return userBootstrap;
+        userBootstrap.set({ authenticated: false, my_requests: [], my_approvals: [] });
+        return getStoreValue(userBootstrap);
       } finally {
         loading.set(false);
       }
@@ -308,7 +322,7 @@ function createPortalAuthStore() {
       isInternal.set(false);
       loading.set(false);
       emailSent.set(false);
-      userBootstrap = null;
+      userBootstrap.set(null);
     },
 
     /**
@@ -334,7 +348,7 @@ function createPortalAuthStore() {
       isInternal.set(false);
       loading.set(false);
       emailSent.set(false);
-      userBootstrap = null;
+      userBootstrap.set(null);
     },
   };
 }

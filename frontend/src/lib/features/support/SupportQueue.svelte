@@ -530,7 +530,7 @@
               {entry.name}
               <span
                 class="ml-1.5 inline-block rounded-full text-xs px-1.5"
-                style="background-color: var(--ctx-surface-overlay, var(--ds-surface-overlay)); backdrop-filter: var(--ctx-backdrop, none);"
+                style="background-color: var(--ctx-surface-overlay, var(--ds-surface-overlay)); color: var(--ds-text); backdrop-filter: var(--ctx-backdrop, none);"
                 data-testid={`support-queue-count-${queueRef(entry)}`}
               >
                 {entry.count}
@@ -575,11 +575,11 @@
         style="border-color: var(--ctx-border, var(--ds-border)); background-color: var(--ctx-surface, var(--ds-background-neutral)); backdrop-filter: var(--ctx-backdrop, none);"
         data-testid="support-queue-bulk-bar"
       >
-        <span class="text-sm" style="color: var(--ctx-text, var(--ds-text));">{t('supportQueue.bulkBar', { n: selectedIds.size })}</span>
+        <span class="text-sm" style="color: var(--ds-text);">{t('supportQueue.bulkBar', { n: selectedIds.size })}</span>
         <Button
           variant="ghost"
           size="small"
-          style="border-color: var(--ctx-border, var(--ds-border));"
+          style="border-color: var(--ctx-border, var(--ds-border)); color: var(--ds-text);"
           dataTestid="support-queue-bulk-assign-me"
           disabled={bulkRunning}
           onclick={bulkAssignToMe}
@@ -588,7 +588,7 @@
         </Button>
         <select
           class="px-2 py-1 rounded text-sm border transition-colors"
-          style="border-color: var(--ctx-border, var(--ds-border)); background-color: var(--ctx-surface-overlay, var(--ds-surface-overlay)); color: var(--ctx-text, var(--ds-text)); backdrop-filter: var(--ctx-backdrop, none);"
+          style="border-color: var(--ctx-border, var(--ds-border)); background-color: var(--ctx-surface-overlay, var(--ds-surface-overlay)); color: var(--ds-text); backdrop-filter: var(--ctx-backdrop, none);"
           data-testid="support-queue-bulk-team-select"
           bind:value={bulkTeamId}
         >
@@ -600,7 +600,7 @@
         <Button
           variant="ghost"
           size="small"
-          style="border-color: var(--ctx-border, var(--ds-border));"
+          style="border-color: var(--ctx-border, var(--ds-border)); color: var(--ds-text);"
           dataTestid="support-queue-bulk-team-apply"
           disabled={bulkRunning || !bulkTeamId}
           onclick={bulkAssignToTeam}
@@ -610,6 +610,7 @@
         <Button
           variant="ghost"
           size="small"
+          style="color: var(--ds-text);"
           dataTestid="support-queue-bulk-clear"
           onclick={clearSelection}
         >

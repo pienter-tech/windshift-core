@@ -263,9 +263,3 @@
   onconfirm={confirmDelete}
   oncancel={() => (pendingDelete = null)}
 />
-
-<style>
-  label :global(textarea) {
-    font-family: var(--ds-font-mono, monospace);
-  }
-</style>

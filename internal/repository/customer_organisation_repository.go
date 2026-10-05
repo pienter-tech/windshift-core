@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"windshift/internal/database"
@@ -25,7 +26,7 @@ func NewCustomerOrganisationRepository(db database.Database) *CustomerOrganisati
 	return &CustomerOrganisationRepository{db: db}
 }
 
-const customerOrgColumns = "id, name, email, description, active, avatar_url, custom_field_values, created_at, updated_at"
+const customerOrgColumns = "id, name, email, description, active, avatar_url, custom_field_values, settings, created_at, updated_at"
 
 // List returns every customer_organisation, name-ordered. Rows whose
 // custom_field_values JSON fails to parse are returned with the field empty
@@ -92,13 +93,17 @@ func (r *CustomerOrganisationRepository) Create(c *models.CustomerOrganisation) 
 	if err != nil {
 		return 0, time.Time{}, err
 	}
+	settings, err := encodeSettings(c.Settings)
+	if err != nil {
+		return 0, time.Time{}, err
+	}
 	now := time.Now()
 	var id int64
 	//nolint:misspell // British spelling matches the table name.
 	err = r.db.QueryRow(`
-		INSERT INTO customer_organisations (name, email, description, active, avatar_url, custom_field_values, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
-	`, c.Name, c.Email, c.Description, c.Active, c.AvatarURL, cfv, now, now).Scan(&id)
+		INSERT INTO customer_organisations (name, email, description, active, avatar_url, custom_field_values, settings, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
+	`, c.Name, c.Email, c.Description, c.Active, c.AvatarURL, cfv, settings, now, now).Scan(&id)
 	if err != nil {
 		return 0, time.Time{}, fmt.Errorf("create customer_organisation: %w", err)
 	}
@@ -113,13 +118,17 @@ func (r *CustomerOrganisationRepository) Update(id int, c *models.CustomerOrgani
 	if err != nil {
 		return time.Time{}, err
 	}
+	settings, err := encodeSettings(c.Settings)
+	if err != nil {
+		return time.Time{}, err
+	}
 	now := time.Now()
 	//nolint:misspell // British spelling matches the table name.
 	result, err := r.db.ExecWrite(`
 		UPDATE customer_organisations
-		SET name = ?, email = ?, description = ?, active = ?, avatar_url = ?, custom_field_values = ?, updated_at = ?
+		SET name = ?, email = ?, description = ?, active = ?, avatar_url = ?, custom_field_values = ?, settings = ?, updated_at = ?
 		WHERE id = ?
-	`, c.Name, c.Email, c.Description, c.Active, c.AvatarURL, cfv, now, id)
+	`, c.Name, c.Email, c.Description, c.Active, c.AvatarURL, cfv, settings, now, id)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("update customer_organisation %d: %w", id, err)
 	}
@@ -166,10 +175,10 @@ func scanCustomerOrganisation(scanner interface {
 	Scan(dest ...any) error
 }) (models.CustomerOrganisation, error) {
 	var c models.CustomerOrganisation
-	var email, description, avatarURL, cfvStr sql.NullString
+	var email, description, avatarURL, cfvStr, settingsStr sql.NullString
 	if err := scanner.Scan(
 		&c.ID, &c.Name, &email, &description, &c.Active,
-		&avatarURL, &cfvStr, &c.CreatedAt, &c.UpdatedAt,
+		&avatarURL, &cfvStr, &settingsStr, &c.CreatedAt, &c.UpdatedAt,
 	); err != nil {
 		return c, err
 	}
@@ -187,6 +196,9 @@ func scanCustomerOrganisation(scanner interface {
 		// the row still surfaces in admin lists for repair.
 		_ = json.Unmarshal([]byte(cfvStr.String), &c.CustomFieldValues)
 	}
+	if settingsStr.Valid && settingsStr.String != "" {
+		_ = json.Unmarshal([]byte(settingsStr.String), &c.Settings)
+	}
 	return c, nil
 }
 
@@ -201,4 +213,72 @@ func encodeCustomFieldValues(values map[string]any) (any, error) {
 		return nil, fmt.Errorf("encode custom_field_values: %w", err)
 	}
 	return string(b), nil
+}
+
+// encodeSettings returns the JSON string form for the NOT NULL settings
+// column, defaulting to an empty object so the column constraint holds.
+func encodeSettings(settings map[string]any) (string, error) {
+	if len(settings) == 0 {
+		return "{}", nil
+	}
+	b, err := json.Marshal(settings)
+	if err != nil {
+		return "", fmt.Errorf("encode customer_organisation settings: %w", err)
+	}
+	return string(b), nil
+}
+
+// ExistingContactRoleIDs returns the subset of the given ids that exist in
+// contact_roles. Callers use it to reject an organisation role allowlist that
+// references a deleted or unknown role.
+func (r *CustomerOrganisationRepository) ExistingContactRoleIDs(ids []int) (map[int]struct{}, error) {
+	out := make(map[int]struct{}, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	//nolint:gosec // placeholders are generated, not user input
+	rows, err := r.db.Query("SELECT id FROM contact_roles WHERE id IN ("+strings.Join(placeholders, ",")+")", args...)
+	if err != nil {
+		return nil, fmt.Errorf("check contact role ids: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan contact role id: %w", err)
+		}
+		out[id] = struct{}{}
+	}
+	return out, rows.Err()
+}
+
+// UpdateSettings overwrites only the settings blob, leaving the other editable
+// fields untouched. Returns ErrNotFound when no row matches the given id.
+func (r *CustomerOrganisationRepository) UpdateSettings(id int, settings map[string]any) (time.Time, error) {
+	encoded, err := encodeSettings(settings)
+	if err != nil {
+		return time.Time{}, err
+	}
+	now := time.Now()
+	//nolint:misspell // British spelling matches the table name.
+	result, err := r.db.ExecWrite(`
+		UPDATE customer_organisations SET settings = ?, updated_at = ? WHERE id = ?
+	`, encoded, now, id)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("update customer_organisation %d settings: %w", id, err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return time.Time{}, fmt.Errorf("update customer_organisation %d settings rows affected: %w", id, err)
+	}
+	if rowsAffected == 0 {
+		return time.Time{}, ErrNotFound
+	}
+	return now, nil
 }

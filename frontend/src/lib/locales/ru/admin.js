@@ -66,6 +66,10 @@ export default {
         title: 'Приоритеты',
         description: 'Настройка уровней приоритета, их значков и цветов',
       },
+      contactLevels: {
+        title: 'Уровни контактов',
+        description: 'Управление уровнями контактов портала для доступа к запросам организации',
+      },
       configurationSets: {
         title: 'Наборы конфигураций',
         description: 'Управление наборами конфигураций',
@@ -1194,6 +1198,22 @@ export default {
     roleUpdated: 'Роль обновлена',
     roleDeleted: 'Роль удалена',
     cannotDeleteSystemRole: 'Системные роли нельзя удалить',
+  },
+
+  // Portal contact levels (WI-1139)
+  contactLevels: {
+    title: 'Уровни контактов',
+    subtitle: 'Управление уровнями контактов портала для доступа к запросам организации',
+    createLevel: 'Создать уровень',
+    editLevel: 'Изменить уровень',
+    noLevels: 'Уровней контактов пока нет',
+    namePlaceholder: 'например, Менеджер, Биллинг, Наблюдатель',
+    nameRequired: 'Укажите название уровня контакта.',
+    failedToLoad: 'Не удалось загрузить уровни контактов.',
+    failedToSave: 'Не удалось сохранить уровень контакта.',
+    deleteFailed: 'Не удалось удалить уровень контакта.',
+    confirmDelete: 'Удалить «{name}»? Контакты потеряют этот уровень.',
+    system: 'Системный',
   },
 
   permissions: {

@@ -30,7 +30,9 @@ export default {
     "loadingCreateForm": "생성 양식 불러오는 중...",
     "loading": "불러오는 중...",
     "retry": "다시 시도",
-    "knowledgeBase": "지식 베이스"
+    "knowledgeBase": "지식 베이스",
+    "scrollDownForMore": "아래로 스크롤하여 더 보기",
+    "scrollUpForMore": "위로 스크롤하여 더 보기"
   },
   "commandPalette": {
     "searchPlaceholder": "전체 검색...",
@@ -546,6 +548,10 @@ export default {
       "testCoverage": {
         "name": "테스트 커버리지",
         "description": "테스트 케이스로 검증되는 요구사항"
+      },
+      "supportMetrics": {
+        "name": "지원 지표",
+        "description": "고객 티켓의 백로그, 최초 응답, 해결 및 SLA 준수"
       }
     },
     "customization": {

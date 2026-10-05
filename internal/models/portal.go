@@ -259,8 +259,125 @@ type CustomerOrganisation struct {
 	Active            bool           `json:"active"`
 	AvatarURL         string         `json:"avatar_url,omitempty"`
 	CustomFieldValues map[string]any `json:"custom_field_values,omitempty"`
-	CreatedAt         time.Time      `json:"created_at"`
-	UpdatedAt         time.Time      `json:"updated_at"`
+	// Settings is the flexible per-organisation attribute blob. Known keys
+	// (see ParseOrgRequestSharingSettings) are typed; unknown keys are preserved.
+	Settings  map[string]any `json:"settings,omitempty"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+}
+
+// Portal organisation request-sharing modes stored in
+// CustomerOrganisation.Settings under "request_sharing".
+const (
+	// OrgRequestSharingDisabled is the default: only the creator and external
+	// participants can see a request.
+	OrgRequestSharingDisabled = "disabled"
+	// OrgRequestSharingRequesterChoice lets the creator share a request with
+	// their organisation at creation time.
+	OrgRequestSharingRequesterChoice = "requester_choice"
+	// OrgRequestSharingAutomatic shares every request with the organisation.
+	OrgRequestSharingAutomatic = "automatic"
+)
+
+// Portal organisation request-sharing audiences stored under
+// "request_sharing_audience". Only meaningful when sharing is enabled.
+const (
+	// OrgRequestSharingAudienceOrganisation exposes shared requests to every
+	// contact in the organisation.
+	OrgRequestSharingAudienceOrganisation = "organisation"
+	// OrgRequestSharingAudienceRoles restricts shared requests to contacts
+	// holding at least one role in "request_visible_role_ids".
+	OrgRequestSharingAudienceRoles = "roles"
+)
+
+// OrgRequestSharingSettings is the typed view of the request-sharing subset of
+// CustomerOrganisation.Settings. Missing or invalid keys fall back to the
+// defaults (disabled / organisation).
+type OrgRequestSharingSettings struct {
+	RequestSharing         string
+	RequestSharingAudience string
+	RequestVisibleRoleIDs  []int
+}
+
+// DefaultOrgRequestSharingSettings returns the settings an empty blob means.
+func DefaultOrgRequestSharingSettings() OrgRequestSharingSettings {
+	return OrgRequestSharingSettings{
+		RequestSharing:         OrgRequestSharingDisabled,
+		RequestSharingAudience: OrgRequestSharingAudienceOrganisation,
+	}
+}
+
+// ParseOrgRequestSharingSettings reads the known request-sharing keys from a
+// settings blob, applying defaults for missing or invalid values. Unknown keys
+// are ignored here and preserved by MergeOrgRequestSharingSettings.
+func ParseOrgRequestSharingSettings(settings map[string]any) OrgRequestSharingSettings {
+	out := DefaultOrgRequestSharingSettings()
+	if v, ok := settings["request_sharing"].(string); ok {
+		switch v {
+		case OrgRequestSharingDisabled, OrgRequestSharingRequesterChoice, OrgRequestSharingAutomatic:
+			out.RequestSharing = v
+		}
+	}
+	if v, ok := settings["request_sharing_audience"].(string); ok {
+		switch v {
+		case OrgRequestSharingAudienceOrganisation, OrgRequestSharingAudienceRoles:
+			out.RequestSharingAudience = v
+		}
+	}
+	for _, raw := range asAnySlice(settings["request_visible_role_ids"]) {
+		if id, ok := asInt(raw); ok {
+			out.RequestVisibleRoleIDs = append(out.RequestVisibleRoleIDs, id)
+		}
+	}
+	return out
+}
+
+// MergeOrgRequestSharingSettings writes the typed settings back into a settings
+// blob, preserving any unknown keys already present.
+func MergeOrgRequestSharingSettings(settings map[string]any, in OrgRequestSharingSettings) map[string]any {
+	if settings == nil {
+		settings = map[string]any{}
+	}
+	settings["request_sharing"] = in.RequestSharing
+	settings["request_sharing_audience"] = in.RequestSharingAudience
+	if len(in.RequestVisibleRoleIDs) == 0 {
+		delete(settings, "request_visible_role_ids")
+	} else {
+		settings["request_visible_role_ids"] = in.RequestVisibleRoleIDs
+	}
+	return settings
+}
+
+// asAnySlice normalises a JSON-decoded array to []any. A []int is accepted too
+// so callers can pass a freshly built settings value without a JSON round trip.
+func asAnySlice(v any) []any {
+	switch value := v.(type) {
+	case []any:
+		return value
+	case []int:
+		out := make([]any, len(value))
+		for i, id := range value {
+			out[i] = id
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+// asInt accepts the numeric shapes JSON decoding produces (float64) plus the
+// native int shapes callers may pass directly.
+func asInt(v any) (int, bool) {
+	switch value := v.(type) {
+	case float64:
+		return int(value), true
+	case int:
+		return value, true
+	case int64:
+		return int(value), true
+	default:
+		return 0, false
+	}
 }
 
 // ContactRole represents a role that can be assigned to portal customers
@@ -269,6 +386,7 @@ type ContactRole struct {
 	Name        string    `json:"name"`
 	Description string    `json:"description,omitempty"`
 	IsSystem    bool      `json:"is_system"`
+	SortOrder   int       `json:"sort_order"`
 	CreatedAt   time.Time `json:"created_at"`
 }
 

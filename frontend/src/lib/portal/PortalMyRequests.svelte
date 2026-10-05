@@ -9,6 +9,7 @@
     MessageSquare,
     Paperclip,
     Tag,
+    Users,
   } from '@lucide/svelte';
   import StateDisplay from '../components/StateDisplay.svelte';
   import Badge from '../components/Badge.svelte';
@@ -311,6 +312,11 @@
                   {/if}
                   {#if request.request_type_name}
                     <span class="flex items-center gap-1"><Tag class="w-3.5 h-3.5" />{request.request_type_name}</span>
+                  {/if}
+                  {#if request.shared}
+                    <span class="flex items-center gap-1" data-testid="portal-request-shared">
+                      <Users class="w-3.5 h-3.5" />Shared with your organisation
+                    </span>
                   {/if}
                 </div>
               </div>

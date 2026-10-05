@@ -192,6 +192,13 @@ export const contactRoles = {
 export const customerOrganisations = {
   ...createCrudClient('/customer-organisations'),
   getContacts: (id) => fetchAPI(`/customer-organisations/${id}/contacts`),
-  getTickets: (id) => fetchAPI(`/customer-organisations/${id}/tickets`),
+  getTickets: (id, requestOptions = {}) =>
+    fetchAPI(`/customer-organisations/${id}/tickets`, requestOptions),
   getProjects: (id) => fetchAPI(`/customer-organisations/${id}/projects`),
+  // Portal request-sharing settings (WI-1139).
+  setRequestSharing: (id, data) =>
+    fetchAPI(`/customer-organisations/${id}/request-sharing`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
 };

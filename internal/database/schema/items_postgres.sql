@@ -39,6 +39,9 @@ CREATE TABLE IF NOT EXISTS items (
 	-- Portal/channel fields
 	channel_id INTEGER,
 	request_type_id INTEGER,
+	-- Set at creation when the portal requester shares the request with their
+	-- organisation (WI-1139). Immutable afterwards.
+	portal_org_shared BOOLEAN NOT NULL DEFAULT false,
 	-- Priority field (new system)
 	priority_id INTEGER,
 	-- Date fields
@@ -175,6 +178,8 @@ CREATE TABLE IF NOT EXISTS item_history (
 	field_name TEXT NOT NULL,
 	old_value TEXT,
 	new_value TEXT,
+	source TEXT,
+	agent_run_id INTEGER,
 	FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE,
 	FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE RESTRICT,
 	FOREIGN KEY (actor_portal_customer_id) REFERENCES portal_customers(id) ON DELETE SET NULL

@@ -256,6 +256,15 @@ export const adminGroups = [
         descriptionFallback: 'Configure inbound and outbound channels, portals, and webhooks',
       },
       {
+        id: 'contact-levels',
+        labelKey: 'settings.adminItems.contactLevels.title',
+        labelFallback: 'Contact levels',
+        icon: IconUsers,
+        descriptionKey: 'settings.adminItems.contactLevels.description',
+        descriptionFallback:
+          'Manage the portal contact levels used for organisation request sharing',
+      },
+      {
         id: 'notification-settings',
         labelKey: 'settings.adminItems.notificationSettings.title',
         icon: IconBell,

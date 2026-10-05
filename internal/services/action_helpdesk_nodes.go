@@ -75,6 +75,14 @@ func (e *InsertCannedResponseExecutor) Execute(node *models.ActionNode, ctx *mod
 		return fmt.Errorf("insert_canned_response: %w", err)
 	}
 
+	// A private/internal trigger comment must never turn a public snippet into
+	// a customer-visible reply; post it as an internal note instead.
+	privacyDowngraded := false
+	if triggerCommentIsPrivate(ctx) && !isPrivate {
+		isPrivate = true
+		privacyDowngraded = true
+	}
+
 	result, err := e.comments.Create(CreateCommentParams{
 		ItemID:        itemID,
 		AuthorID:      actor,
@@ -92,6 +100,9 @@ func (e *InsertCannedResponseExecutor) Execute(node *models.ActionNode, ctx *mod
 		"canned_response_id": config.CannedResponseID,
 		"is_private":         isPrivate,
 		"comment_id":         result.CommentID,
+	}
+	if privacyDowngraded {
+		stepResult.Output["privacy_downgraded"] = true
 	}
 	return nil
 }
@@ -132,6 +143,12 @@ func (e *NotifyCustomerExecutor) Execute(node *models.ActionNode, ctx *models.Ex
 	}
 	if config.Message == "" {
 		return fmt.Errorf("notify_customer: message is required")
+	}
+
+	// A private/internal trigger comment must never email the customer.
+	if triggerCommentIsPrivate(ctx) {
+		stepResult.Output = map[string]any{"delivered": false, "skip_reason": "trigger_comment_private"}
+		return nil
 	}
 
 	message := e.api.SubstituteVariables(config.Message, ctx)

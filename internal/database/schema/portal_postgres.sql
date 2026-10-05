@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS contact_roles (
 	name TEXT NOT NULL UNIQUE,
 	description TEXT,
 	is_system BOOLEAN DEFAULT false,
+	sort_order INTEGER NOT NULL DEFAULT 0,
 	created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 

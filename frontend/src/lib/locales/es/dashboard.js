@@ -59,6 +59,10 @@ export default {
         name: 'Acceso rápido',
         description: 'Enlaces rápidos a los espacios de trabajo disponibles',
       },
+      supportOverview: {
+        name: 'Resumen de soporte',
+        description: 'Backlog, primera respuesta, resolución y cumplimiento de SLA de los tickets de clientes',
+      },
     },
     customization: {
       widgets: 'Widgets',
@@ -69,6 +73,10 @@ export default {
       work: {
         name: 'Trabajo',
         description: 'Elementos, hitos y tareas que tienes asignados',
+      },
+      support: {
+        name: 'Soporte',
+        description: 'Métricas de helpdesk para tus colas de clientes',
       },
       navigation: {
         name: 'Navegación',
@@ -100,6 +108,20 @@ export default {
       assignedEmpty: 'No tienes nada asignado en este momento',
       personalTasksLoadError: 'No se pudieron cargar tus tareas personales',
       personalTasksEmpty: 'Tu lista personal de tareas está vacía',
+      supportMetricsLoadError: 'No se pudieron cargar las métricas de soporte',
+      supportMetricsEmpty: 'Aún no hay tickets de clientes en este ámbito',
+      supportOverviewSetupTitle: 'Elige los espacios de trabajo del informe',
+      supportOverviewSetupSubtitle: 'Este widget solo muestra métricas de helpdesk de los espacios de trabajo que elijas.',
+      supportSourcesUnavailable: 'Ya no están disponibles {count} de tus espacios de trabajo configurados',
+      supportBacklog: 'Backlog',
+      supportUnassigned: 'Sin asignar',
+      supportCreated: 'Creados',
+      supportResolved: 'Resueltos',
+      supportSlaCompliance: 'SLA cumplido',
+      supportSlaNone: '—',
+      supportFirstResponseP50: 'Primera respuesta p50',
+      supportExportCSV: 'Exportar CSV',
+      supportLiveDelayed: 'Actualizaciones en vivo en pausa',
       dailyBriefingUnavailable: 'Tu resumen diario no está disponible en este momento. Necesita una integración de IA. Si acabas de configurar una, vuelve a intentarlo en unos instantes.',
       updatedAt: 'Actualizado {time}',
       priorityLabel: 'Prioridad: {priority}',

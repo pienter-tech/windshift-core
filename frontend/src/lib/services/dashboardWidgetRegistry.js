@@ -106,6 +106,15 @@ export const dashboardWidgetRegistry = [
     defaultWidth: 4,
     minWidth: 3,
   },
+  {
+    type: 'support-overview',
+    nameKey: 'dashboard.widgetCatalog.supportOverview.name',
+    descriptionKey: 'dashboard.widgetCatalog.supportOverview.description',
+    category: dashboardWidgetCategories.SUPPORT,
+    icon: 'LifeBuoy',
+    defaultWidth: 4,
+    minWidth: 3,
+  },
 ];
 
 export function getDashboardWidgetMetadata(type) {

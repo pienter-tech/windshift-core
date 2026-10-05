@@ -146,8 +146,8 @@
   const hasGradient = $derived.by(() => gradientStyle !== null);
   const sidebarBgClass = $derived.by(() => hasGradient ? 'backdrop-blur-sm' : '');
   const sidebarBgStyle = $derived.by(() => hasGradient
-    ? 'background-color: color-mix(in srgb, var(--ds-surface) 95%, transparent); border-color: var(--ds-border);'
-    : 'background-color: var(--ds-surface); border-color: var(--ds-border);');
+    ? 'background-color: color-mix(in srgb, var(--ds-surface) 95%, transparent); border-color: var(--ds-border); --scrollable-sidebar-fade-color: var(--ds-surface);'
+    : 'background-color: var(--ds-surface); border-color: var(--ds-border); --scrollable-sidebar-fade-color: var(--ds-surface);');
 
   onMount(async () => {
     if (workspaceId) {

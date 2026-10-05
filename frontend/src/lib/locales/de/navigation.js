@@ -33,6 +33,8 @@ export default {
     loading: 'Wird geladen...',
     retry: 'Erneut versuchen',
     knowledgeBase: 'Wissensdatenbank',
+    scrollDownForMore: 'Nach unten scrollen, um mehr zu sehen',
+    scrollUpForMore: 'Nach oben scrollen, um mehr zu sehen',
   },
   commandPalette: {
     searchPlaceholder: 'Alles durchsuchen...',
@@ -424,5 +426,11 @@ export default {
     getStartedMember: 'Hier sind die für Sie verfügbaren Workspaces',
     selectWorkspace: 'Wählen Sie einen Workspace zum Starten',
     noWorkspacesAvailable: 'Es sind noch keine Workspaces verfügbar. Bitte kontaktieren Sie Ihren Administrator, um Zugang zu einem Workspace zu erhalten.',
+  },
+  workspaceDashboard: {
+    widgets: {
+      supportMetrics: { name: 'Support-Kennzahlen', description: 'Backlog, Erstantwort, Lösung und SLA-Einhaltung für Kundentickets' },
+      zammadSupportOverview: { name: 'Zammad-Supportübersicht', description: 'Workspaceweiter Stand verknüpfter Tickets und beobachtete Änderungen' },
+    },
   },
 };

@@ -55,7 +55,7 @@ func (r *ItemRepository) ComputeWorkspaceItemStats(workspaceID int, filterSQL st
 	totalQuery := `
 		SELECT COUNT(*)
 		` + ItemListFilterFromClause() + `
-		WHERE i.workspace_id = ?`
+		WHERE i.workspace_id = ? AND i.merged_into_item_id IS NULL`
 	totalArgs := []any{workspaceID}
 	if filterSQL != "" {
 		totalQuery += " AND (" + filterSQL + ")"
@@ -69,7 +69,7 @@ func (r *ItemRepository) ComputeWorkspaceItemStats(workspaceID int, filterSQL st
 	statusQuery := `
 		SELECT sc.name, COUNT(i.id) as item_count
 		` + ItemListFilterFromClause() + `
-		WHERE i.workspace_id = ?`
+		WHERE i.workspace_id = ? AND i.merged_into_item_id IS NULL`
 	statusArgs := []any{workspaceID}
 	if filterSQL != "" {
 		statusQuery += " AND (" + filterSQL + ")"
@@ -107,7 +107,7 @@ func (r *ItemRepository) ComputeWorkspaceItemStats(workspaceID int, filterSQL st
 			COUNT(i.id) as item_count
 		` + ItemListFilterFromClause() + `
 		LEFT JOIN users u ON i.assignee_id = u.id
-		WHERE i.workspace_id = ?
+		WHERE i.workspace_id = ? AND i.merged_into_item_id IS NULL
 		  AND i.created_at >= ?`
 	assignmentArgs := []any{workspaceID, since}
 	if filterSQL != "" {
@@ -147,7 +147,7 @@ func (r *ItemRepository) ComputeWorkspaceItemStats(workspaceID int, filterSQL st
 			COUNT(i.id) as item_count,
 			SUM(CASE WHEN COALESCE(sc.is_completed, FALSE) = TRUE THEN 1 ELSE 0 END) as completed_count
 		` + ItemListFilterFromClause() + `
-		WHERE i.workspace_id = ?
+		WHERE i.workspace_id = ? AND i.merged_into_item_id IS NULL
 		  AND i.created_at >= ?
 		  AND i.time_project_id IS NOT NULL`
 	projectArgs := []any{workspaceID, since}
@@ -187,7 +187,7 @@ func (r *ItemRepository) ComputeWorkspaceItemStats(workspaceID int, filterSQL st
 			COALESCE(pri.name, 'None') as priority,
 			COUNT(i.id) as item_count
 		` + ItemListFilterFromClause() + `
-		WHERE i.workspace_id = ?
+		WHERE i.workspace_id = ? AND i.merged_into_item_id IS NULL
 		  AND i.created_at >= ?`
 	priorityArgs := []any{workspaceID, since}
 	if filterSQL != "" {

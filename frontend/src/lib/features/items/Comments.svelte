@@ -29,7 +29,7 @@
 	// Get shortcut configuration (use same as description save)
 	const submitShortcut = getShortcut('description', 'save');
 
-	let { itemId, workspaceId = null, isPersonalWorkspace = false, isPortalRequest = false, enableInternalComments = false, onCommentsLoaded } = $props();
+	let { itemId, workspaceId = null, isPersonalWorkspace = false, isPortalRequest = false, isExternalRequest = false, enableInternalComments = false, onCommentsLoaded } = $props();
 
 	let comments = $state([]);
 	let newCommentContent = $state('');
@@ -670,7 +670,10 @@
 				</div>
 				<div class="flex items-center justify-between mt-3">
 					<div class="flex items-center gap-4">
-						{#if workspaceId && !isPersonalWorkspace}
+						<!-- Canned responses are support-reply snippets, so they only
+						     belong on external requests. The picker hides itself when the
+						     workspace has none. -->
+						{#if workspaceId && !isPersonalWorkspace && isExternalRequest}
 							<CannedResponsePicker
 								{workspaceId}
 								onSelect={insertCannedResponse}
@@ -679,9 +682,10 @@
 						<div class="text-xs" style="color: var(--ds-text-subtle);">
 							{t('comments.markdownSupported')}
 						</div>
-						{#if isPortalRequest || enableInternalComments}
+						{#if isExternalRequest || isPortalRequest || enableInternalComments}
 							<Checkbox
 								bind:checked={isInternalComment}
+								dataTestid="comment-internal-note"
 								label={t('comments.internalNote')}
 								hint={isPortalRequest ? t('comments.internalNoteHint') : t('comments.internalNoteHintGeneral')}
 								size="small"

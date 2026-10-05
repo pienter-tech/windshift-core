@@ -44,6 +44,9 @@
     onFieldLinksChanged = null,
     optionData = {}, optionLoading = {}, onRequestOptions = null, loadAssetOptions = null,
     displayAlignment = 'start', truncateDisplay = false, displayTestId = undefined,
+    // Bare display hands layout to the caller: no padding, hover, or rounding.
+    // Used by sidebar rows that own the row chrome.
+    bare = false,
     // Self-editing mode: the component owns the display→editor toggle, the
     // way list cells need it. Callers that drive editing externally (item
     // detail sidebar) keep using onStartEdit + readonly and leave this off.
@@ -593,7 +596,7 @@
     {#if (onStartEdit || isSelfEditing) && !disabled}
       <button
         type="button"
-        class="flex w-full min-w-0 items-center gap-2 {displayAlignment === 'end' ? 'justify-end text-right' : 'justify-start text-left'} {truncateDisplay ? 'whitespace-nowrap overflow-hidden' : ''} {noPadding ? '' : 'px-3'} py-2 text-sm hover:bg-ds-background-neutral-hovered transition-colors rounded"
+        class="flex w-full min-w-0 items-center gap-2 {displayAlignment === 'end' ? 'justify-end text-right' : 'justify-start text-left'} {truncateDisplay ? 'whitespace-nowrap overflow-hidden' : ''} {bare || noPadding ? '' : 'px-3'} {bare ? '' : 'py-2'} text-sm {bare ? '' : 'hover:bg-ds-background-neutral-hovered transition-colors rounded'}"
         onclick={handleActivate}
         data-testid={displayTestId}
       >
@@ -601,7 +604,7 @@
       </button>
     {:else}
       <div
-        class="min-w-0 {displayAlignment === 'end' ? 'text-right' : ''} {truncateDisplay ? 'whitespace-nowrap overflow-hidden' : ''} {noPadding ? '' : 'px-3'} py-2 text-sm {disabled ? 'opacity-50' : ''}"
+        class="min-w-0 {displayAlignment === 'end' ? 'text-right' : ''} {truncateDisplay ? 'whitespace-nowrap overflow-hidden' : ''} {bare || noPadding ? '' : 'px-3'} {bare ? '' : 'py-2'} text-sm {disabled ? 'opacity-50' : ''}"
         data-testid={displayTestId}
       >
         {@render readOnlyContent(false)}

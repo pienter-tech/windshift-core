@@ -59,6 +59,10 @@ export default {
         name: 'Быстрый доступ',
         description: 'Ссылки на доступные рабочие пространства',
       },
+      supportOverview: {
+        name: 'Обзор поддержки',
+        description: 'Бэклог, первый ответ, решение и соблюдение SLA для клиентских заявок',
+      },
     },
     customization: {
       widgets: 'Виджеты',
@@ -69,6 +73,10 @@ export default {
       work: {
         name: 'Работа',
         description: 'Элементы, этапы и назначенная вам работа',
+      },
+      support: {
+        name: 'Поддержка',
+        description: 'Метрики службы поддержки для очередей клиентов',
       },
       navigation: {
         name: 'Навигация',
@@ -102,6 +110,20 @@ export default {
       storyPointsEmpty: 'Открытых стори-поинтов пока не назначено',
       personalTasksLoadError: 'Не удалось загрузить личные задачи',
       personalTasksEmpty: 'Ваш список личных задач пуст',
+      supportMetricsLoadError: 'Не удалось загрузить метрики поддержки',
+      supportMetricsEmpty: 'В этой области пока нет клиентских заявок',
+      supportOverviewSetupTitle: 'Выберите рабочие пространства для отчёта',
+      supportOverviewSetupSubtitle: 'Этот виджет показывает метрики поддержки только для выбранных рабочих пространств.',
+      supportSourcesUnavailable: 'Часть настроенных рабочих пространств больше недоступна ({count})',
+      supportBacklog: 'Бэклог',
+      supportUnassigned: 'Не назначено',
+      supportCreated: 'Создано',
+      supportResolved: 'Решено',
+      supportSlaCompliance: 'SLA соблюдён',
+      supportSlaNone: '—',
+      supportFirstResponseP50: 'Первый ответ p50',
+      supportExportCSV: 'Экспорт в CSV',
+      supportLiveDelayed: 'Обновления в реальном времени приостановлены',
       dailyBriefingUnavailable: 'Сводка дня сейчас недоступна. Для неё требуется интеграция с ИИ. Если вы только что настроили интеграцию, попробуйте немного позже.',
       updatedAt: 'Обновлено: {time}',
       priorityLabel: 'Приоритет: {priority}',

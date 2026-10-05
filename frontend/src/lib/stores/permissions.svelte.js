@@ -16,6 +16,10 @@ function createPermissionStore() {
   const error = writable(null);
   const hasAssetSets = writable(false);
   const hasActivePortals = writable(false);
+  // Whether any portal channel exists, enabled or not. The customer/
+  // organisation entry uses this so a temporarily disabled portal does not
+  // hide the management surface.
+  const hasPortals = writable(false);
   const managesChannels = writable(false);
   const logbookAvailable = writable(false);
   let allPermissionsLoaded = false;
@@ -27,13 +31,14 @@ function createPermissionStore() {
   });
 
   const canAccessCustomers = derived(
-    [authStore, userPermissionKeys, hasActivePortals],
-    ([$authStore, $userPermissionKeys, $hasActivePortals]) => {
+    [authStore, userPermissionKeys, hasPortals],
+    ([$authStore, $userPermissionKeys, $hasPortals]) => {
       const user = $authStore.currentUser;
       if (!user) return false;
 
-      // Hide if no active portals
-      if (!$hasActivePortals) return false;
+      // Hide only when no portal exists at all; a disabled portal still needs
+      // to be manageable from here.
+      if (!$hasPortals) return false;
 
       // System admins can always access
       if (user.is_system_admin) return true;
@@ -190,6 +195,11 @@ function createPermissionStore() {
     // Set whether active portals exist
     setHasActivePortals(value) {
       hasActivePortals.set(value);
+    },
+
+    // Set whether any portal exists (enabled or not)
+    setHasPortals(value) {
+      hasPortals.set(value);
     },
 
     // Set whether the current user manages at least one channel

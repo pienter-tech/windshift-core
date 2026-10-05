@@ -26,6 +26,7 @@
   import CustomFieldRenderer from '../items/CustomFieldRenderer.svelte';
   import AssetDetailContent from './AssetDetailContent.svelte';
   import { retainValuesForType } from './assetFormValues.js';
+  import { loadAssetTypeFields } from './assetTypeFields.js';
   import { isBooleanCustomFieldType } from '../../utils/customFieldTypes.js';
   import { toHotkeyString } from '../../utils/keyboardShortcuts.js';
   import { formatDateSimple } from '../../utils/dateFormatter.js';
@@ -175,22 +176,15 @@
       allCustomFields = [];
       return;
     }
+    const isStale = () => requestSeq !== allCustomFieldsRequestSeq || selectedSetId !== setId;
     try {
-      const seenFieldIds = new Set();
-      const fields = [];
-      for (const type of types) {
-        const typeFields = await api.assetTypes.getFields(type.id);
-        for (const f of (typeFields || [])) {
-          if (!seenFieldIds.has(f.custom_field_id)) {
-            seenFieldIds.add(f.custom_field_id);
-            fields.push(f);
-          }
-        }
-      }
-      if (requestSeq !== allCustomFieldsRequestSeq || selectedSetId !== setId) return;
+      const fields = await loadAssetTypeFields(types, (typeId) => api.assetTypes.getFields(typeId), {
+        isStale,
+      });
+      if (isStale()) return;
       allCustomFields = fields;
     } catch (error) {
-      if (requestSeq !== allCustomFieldsRequestSeq || selectedSetId !== setId) return;
+      if (isStale()) return;
       console.error('Failed to load custom fields for filter:', error);
       allCustomFields = [];
     }

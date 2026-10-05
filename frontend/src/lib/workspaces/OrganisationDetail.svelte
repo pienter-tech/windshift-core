@@ -1,5 +1,5 @@
 <script>
-  import { IconUsers as Users, IconMail as Mail, IconSearch as Search, IconGripVertical as GripVertical, IconPlus as Plus, IconEdit as Edit2, IconTrash as Trash2, IconDots as MoreHorizontal, IconFile as FileIcon, IconTicket as Ticket, IconFileText as FileText, IconNote as StickyNote, IconExternalLink as ExternalLink } from '@tabler/icons-svelte-runes';
+  import { IconUsers as Users, IconMail as Mail, IconSearch as Search, IconGripVertical as GripVertical, IconPlus as Plus, IconEdit as Edit2, IconTrash as Trash2, IconDots as MoreHorizontal, IconFile as FileIcon, IconTicket as Ticket, IconFileText as FileText, IconNote as StickyNote, IconExternalLink as ExternalLink, IconShare as Share } from '@tabler/icons-svelte-runes';
   import { toHotkeyString } from '../utils/keyboardShortcuts.js';
   import Button from '../components/Button.svelte';
   import Input from '../components/Input.svelte';
@@ -12,6 +12,10 @@
   import Spinner from '../components/Spinner.svelte';
   import Lozenge from '../components/Lozenge.svelte';
   import DataTable from '../components/DataTable.svelte';
+  import Select from '../components/Select.svelte';
+  import Label from '../components/Label.svelte';
+  import Checkbox from '../components/Checkbox.svelte';
+  import { errorToast, successToast } from '../stores/toasts.svelte.js';
   import { t } from '../stores/i18n.svelte.js';
   import { api } from '../api.js';
   import { logbook } from '../api/logbook.js';
@@ -41,12 +45,86 @@
   // logbook isn't configured server-side so users don't land on a misleading
   // empty state for an unsupported feature.
   let tabs = $derived([
-    { id: 'contacts', label: t('workspaces.customers.contacts') || 'Contacts', icon: Users },
+    { id: 'contacts', label: t('workspaces.customers.contacts') || 'Contacts', icon: Users, testid: 'org-detail-contacts-tab' },
     ...(capabilitiesStore.logbookAvailable
-      ? [{ id: 'files', label: t('common.files') || 'Files', icon: FileIcon }]
+      ? [{ id: 'files', label: t('common.files') || 'Files', icon: FileIcon, testid: 'org-detail-files-tab' }]
       : []),
-    { id: 'tickets', label: t('common.tickets') || 'Tickets', icon: Ticket },
+    { id: 'tickets', label: t('common.tickets') || 'Tickets', icon: Ticket, testid: 'org-detail-tickets-tab' },
+    ...(canManage ? [{ id: 'sharing', label: t('workspaces.customers.sharing') || 'Sharing', icon: Share, testid: 'org-detail-sharing-tab' }] : []),
   ]);
+
+  // Request sharing tab (WI-1139). Settings live in the organisation's flexible
+  // settings blob; only customers.manage holders see the tab.
+  let sharingMode = $state('disabled');
+  let sharingAudience = $state('organisation');
+  let sharingRoleIDs = $state([]);
+  let sharingSaving = $state(false);
+  let sharingSaved = $state(false);
+  let contactRoles = $state([]);
+  let contactRolesLoaded = $state(false);
+  let initializedSharingOrgID = $state(null);
+
+  $effect(() => {
+    if (!organisation?.id || organisation.id === initializedSharingOrgID) return;
+    initializedSharingOrgID = organisation.id;
+    const settings = organisation.settings || {};
+    sharingMode = settings.request_sharing || 'disabled';
+    sharingAudience = settings.request_sharing_audience || 'organisation';
+    sharingRoleIDs = Array.isArray(settings.request_visible_role_ids)
+      ? [...settings.request_visible_role_ids]
+      : [];
+  });
+
+  $effect(() => {
+    if (activeTab !== 'sharing' || contactRolesLoaded) return;
+    contactRolesLoaded = true;
+    api.contactRoles
+      .getAll()
+      .then((roles) => {
+        contactRoles = Array.isArray(roles) ? roles : (roles?.data ?? []);
+      })
+      .catch((err) => {
+        console.error('Failed to load contact roles:', err);
+        contactRoles = [];
+      });
+  });
+
+  let sharingModeOptions = $derived([
+    { value: 'disabled', label: t('workspaces.customers.sharingDisabled') || 'Disabled' },
+    { value: 'requester_choice', label: t('workspaces.customers.sharingRequesterChoice') || 'Contacts choose per request' },
+    { value: 'automatic', label: t('workspaces.customers.sharingAutomatic') || 'Always shared with the organisation' },
+  ]);
+
+  let sharingAudienceOptions = $derived([
+    { value: 'organisation', label: t('workspaces.customers.sharingAudienceOrganisation') || 'Everyone in the organisation' },
+    { value: 'roles', label: t('workspaces.customers.sharingAudienceRoles') || 'Only selected contact levels' },
+  ]);
+
+  function toggleSharingRole(roleID) {
+    sharingSaved = false;
+    sharingRoleIDs = sharingRoleIDs.includes(roleID)
+      ? sharingRoleIDs.filter((id) => id !== roleID)
+      : [...sharingRoleIDs, roleID];
+  }
+
+  async function saveSharing() {
+    if (sharingSaving || !organisation?.id) return;
+    sharingSaving = true;
+    sharingSaved = false;
+    try {
+      await api.customerOrganisations.setRequestSharing(organisation.id, {
+        request_sharing: sharingMode,
+        request_sharing_audience: sharingAudience,
+        visible_role_ids: sharingAudience === 'roles' ? sharingRoleIDs : [],
+      });
+      sharingSaved = true;
+      successToast(t('workspaces.customers.sharingSaved') || 'Request sharing updated');
+    } catch (err) {
+      errorToast(err?.message || t('workspaces.customers.sharingSaveFailed') || 'Failed to update request sharing');
+    } finally {
+      sharingSaving = false;
+    }
+  }
 
   // Files tab state
   let orgDocuments = $state([]);
@@ -397,6 +475,62 @@
         {/snippet}
       </DataTable>
     {/if}
+  {:else if activeTab === 'sharing'}
+    <div class="max-w-xl space-y-5" data-testid="org-request-sharing">
+      <div class="space-y-2">
+        <Label for="org-sharing-mode">{t('workspaces.customers.sharingMode') || 'Request sharing'}</Label>
+        <Select id="org-sharing-mode" bind:value={sharingMode} options={sharingModeOptions} />
+        <p class="text-xs" style="color: var(--ds-text-subtle);">
+          {t('workspaces.customers.sharingModeHelp') ||
+            'Controls whether requests raised by this organisation\u2019s contacts are shared with the organisation.'}
+        </p>
+      </div>
+
+      {#if sharingMode !== 'disabled'}
+        <div class="space-y-2">
+          <Label for="org-sharing-audience">{t('workspaces.customers.sharingAudience') || 'Who can see shared requests'}</Label>
+          <Select id="org-sharing-audience" bind:value={sharingAudience} options={sharingAudienceOptions} />
+        </div>
+
+        {#if sharingAudience === 'roles'}
+          <div class="space-y-2">
+            <Label>{t('workspaces.customers.sharingRoles') || 'Allowed contact levels'}</Label>
+            {#if contactRoles.length === 0}
+              <p class="text-xs" style="color: var(--ds-text-subtle);">
+                {t('workspaces.customers.sharingNoRoles') || 'No contact levels defined yet.'}
+              </p>
+            {:else}
+              <div class="space-y-2">
+                {#each contactRoles as role (role.id)}
+                  <Checkbox
+                    checked={sharingRoleIDs.includes(role.id)}
+                    onchange={() => toggleSharingRole(role.id)}
+                    label={role.name}
+                    size="small"
+                    dataTestid={`org-sharing-role-${role.id}`}
+                  />
+                {/each}
+              </div>
+            {/if}
+          </div>
+        {/if}
+      {/if}
+
+      <div class="flex items-center gap-3">
+        <Button
+          variant="primary"
+          size="small"
+          onclick={saveSharing}
+          disabled={sharingSaving}
+          dataTestid="org-sharing-save"
+        >
+          {sharingSaving ? (t('common.saving') || 'Saving…') : (t('common.save') || 'Save')}
+        </Button>
+        {#if sharingSaved}
+          <span class="text-xs" style="color: var(--ds-text-subtle);">{t('common.saved') || 'Saved'}</span>
+        {/if}
+      </div>
+    </div>
   {/if}
 </Tabs>
 

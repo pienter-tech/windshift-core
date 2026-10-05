@@ -214,7 +214,7 @@
             {#each customerOrgFields as field}
               <CustomFieldRenderer
                 {field}
-                bind:value={formData.custom_field_values[field.name]}
+                value={formData.custom_field_values[field.name] ?? ''}
                 readonly={false}
                 onChange={(val) => {
                   formData.custom_field_values[field.name] = val;

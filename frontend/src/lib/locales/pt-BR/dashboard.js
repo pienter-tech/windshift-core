@@ -59,6 +59,10 @@ export default {
         name: 'Acesso rápido',
         description: 'Links rápidos para os espaços de trabalho disponíveis',
       },
+      supportOverview: {
+        name: 'Visão geral de suporte',
+        description: 'Backlog, primeira resposta, resolução e cumprimento de SLA dos tickets de clientes',
+      },
     },
     customization: {
       widgets: 'Widgets',
@@ -69,6 +73,10 @@ export default {
       work: {
         name: 'Trabalho',
         description: 'Itens, marcos e tarefas atribuídos a você',
+      },
+      support: {
+        name: 'Suporte',
+        description: 'Métricas de helpdesk para suas filas de clientes',
       },
       navigation: {
         name: 'Navegação',
@@ -100,6 +108,20 @@ export default {
       assignedEmpty: 'Nada foi atribuído a você no momento',
       personalTasksLoadError: 'Não foi possível carregar suas tarefas pessoais',
       personalTasksEmpty: 'Sua lista pessoal de tarefas está vazia',
+      supportMetricsLoadError: 'Não foi possível carregar as métricas de suporte',
+      supportMetricsEmpty: 'Ainda não há tickets de clientes neste escopo',
+      supportOverviewSetupTitle: 'Escolha os espaços de trabalho do relatório',
+      supportOverviewSetupSubtitle: 'Este widget mostra métricas de helpdesk apenas para os espaços de trabalho que você escolher.',
+      supportSourcesUnavailable: '{count} dos seus espaços de trabalho configurados não estão mais disponíveis',
+      supportBacklog: 'Backlog',
+      supportUnassigned: 'Não atribuído',
+      supportCreated: 'Criados',
+      supportResolved: 'Resolvidos',
+      supportSlaCompliance: 'SLA cumprido',
+      supportSlaNone: '—',
+      supportFirstResponseP50: 'Primeira resposta p50',
+      supportExportCSV: 'Exportar CSV',
+      supportLiveDelayed: 'Atualizações ao vivo pausadas',
       dailyBriefingUnavailable: 'Seu resumo diário não está disponível no momento. Ele depende de uma integração de IA. Se você acabou de configurar uma, tente novamente em instantes.',
       updatedAt: 'Atualizado em {time}',
       priorityLabel: 'Prioridade: {priority}',

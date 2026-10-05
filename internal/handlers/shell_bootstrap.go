@@ -37,6 +37,7 @@ type ShellBootstrapResponse struct {
 	AttachmentStatus  *services.AttachmentStatus         `json:"attachment_status"`
 	AI                AIStatusResponse                   `json:"ai"`
 	HasAssetSets      bool                               `json:"has_asset_sets"`
+	HasPortals        bool                               `json:"has_portals"`
 	HasActivePortals  bool                               `json:"has_active_portals"`
 	ManagesChannels   bool                               `json:"manages_channels"`
 	WorkItemStaleness services.WorkItemStalenessSettings `json:"work_item_staleness"`
@@ -104,6 +105,12 @@ func (h *ShellBootstrapHandler) Get(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("shell bootstrap: portal availability unavailable", "user_id", user.ID, "error", err)
 		} else {
 			response.HasActivePortals = hasPortals
+		}
+		anyPortals, err := h.hub.HasPortals(r.Context())
+		if err != nil {
+			slog.Warn("shell bootstrap: portal existence unavailable", "user_id", user.ID, "error", err)
+		} else {
+			response.HasPortals = anyPortals
 		}
 	}
 	if h.channels != nil {

@@ -17,7 +17,7 @@ export const setup = {
 };
 
 export const shellBootstrap = {
-  get: () => fetchAPI('/shell-bootstrap'),
+  get: (options) => fetchAPI('/shell-bootstrap', options),
 };
 
 export const system = {

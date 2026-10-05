@@ -668,6 +668,10 @@ export default {
     failedToLoadFields: 'Failed to load form fields',
     failedToSubmit: 'Failed to submit request',
     selectOption: 'Select an option...',
+    shareWithOrganisation: 'Share with my organisation',
+    shareWithOrganisationHint:
+      'Your organisation’s other contacts will be able to see and reply to this request.',
+    sharedWithOrganisationNote: 'This request will be visible to your organisation’s contacts.',
   },
 
   requestTypeFields: {

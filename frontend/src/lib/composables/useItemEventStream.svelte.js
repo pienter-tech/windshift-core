@@ -4,9 +4,10 @@ import { itemLiveUpdates } from '../stores/itemLiveUpdates.svelte.js';
 const DEBOUNCE_MS = 250;
 
 /**
- * Subscribes to an item's event stream and batches targeted reloads. A reconnect
- * performs one full reconcile; the initial connection does not duplicate the
- * initial load. Polling remains the fallback while disconnected.
+ * Subscribes to an item's event stream and batches targeted reloads. Every
+ * healthy connection (including the first) performs one full reconcile so a
+ * mutation between the initial snapshot and the subscription is not missed.
+ * Polling remains the fallback while disconnected or after a refresh failure.
  *
  * @param {() => (number|string|null|undefined)} getItemId
  * @param {{ onReconcile?: Function, onItem?: Function, onChildren?: Function, onComment?: Function, onLinks?: Function, onZammad?: Function, onDeleted?: Function }} handlers
@@ -25,21 +26,31 @@ export function useItemEventStream(getItemId, handlers = {}) {
     let timer = null;
     const connectionTracker = createConnectionReconcileTracker();
 
-    const flush = () => {
+    const flush = async () => {
       timer = null;
       const kinds = new Set(pending);
       pending.clear();
-      // A full reconcile reloads everything, so skip the narrower reloads.
-      if (kinds.has('reconcile')) {
-        handlers.onReconcile?.();
-        return;
+      try {
+        // A full reconcile reloads everything, so skip the narrower reloads.
+        if (kinds.has('reconcile')) {
+          await handlers.onReconcile?.();
+          return;
+        }
+        const refreshes = [];
+        if (kinds.has('item')) refreshes.push(handlers.onItem?.());
+        if (kinds.has('children')) refreshes.push(handlers.onChildren?.());
+        if (kinds.has('comment')) refreshes.push(handlers.onComment?.());
+        if (kinds.has('links')) refreshes.push(handlers.onLinks?.());
+        if (kinds.has('zammad')) refreshes.push(handlers.onZammad?.());
+        if (kinds.has('deleted')) refreshes.push(handlers.onDeleted?.());
+        await Promise.all(refreshes);
+      } catch (error) {
+        // The transport is healthy but a data refresh failed, so the view may
+        // be stale. Resume the polling fallback and reconcile on next connect.
+        connectionTracker.markDisconnected();
+        setConnected(false);
+        console.warn('Item event stream refresh failed; falling back to polling:', error);
       }
-      if (kinds.has('item')) handlers.onItem?.();
-      if (kinds.has('children')) handlers.onChildren?.();
-      if (kinds.has('comment')) handlers.onComment?.();
-      if (kinds.has('links')) handlers.onLinks?.();
-      if (kinds.has('zammad')) handlers.onZammad?.();
-      if (kinds.has('deleted')) handlers.onDeleted?.();
     };
     const schedule = (...kinds) => {
       for (const k of kinds) pending.add(k);
@@ -105,18 +116,13 @@ export function normalizeItemEventStreamID(itemId) {
  * recovery after a gap. Exported as a pure helper for regression tests.
  */
 export function createConnectionReconcileTracker() {
-  let connectedOnce = false;
-  let disconnected = false;
-
   return {
+    // Reconcile on the first healthy connection too: a mutation can land
+    // between the initial snapshot and the subscription, and the stream only
+    // replays changes that happen after it is established.
     markConnected() {
-      const shouldReconcile = connectedOnce || disconnected;
-      connectedOnce = true;
-      disconnected = false;
-      return shouldReconcile;
+      return true;
     },
-    markDisconnected() {
-      disconnected = true;
-    },
+    markDisconnected() {},
   };
 }

@@ -690,6 +690,7 @@ func (st *itemPersonalStore) UpdateTask(itemID, userID int, s taskState, fields 
 		kind = ItemChangeStatus
 	}
 	PublishItemChange(itemID, kind)
+	PublishWorkspaceChange(updated.WorkspaceID, WorkspaceChangeItems)
 	return nil
 }
 

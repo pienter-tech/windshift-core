@@ -59,6 +59,10 @@ export default {
         name: '快速访问',
         description: '快速打开你有权访问的工作区',
       },
+      supportOverview: {
+        name: '支持概览',
+        description: '客户工单的待办、首次响应、解决情况和 SLA 合规性',
+      },
     },
     customization: {
       widgets: '小部件',
@@ -69,6 +73,10 @@ export default {
       work: {
         name: '工作',
         description: '事项、里程碑和分配给你的任务',
+      },
+      support: {
+        name: '支持',
+        description: '客户队列的服务台指标',
       },
       navigation: {
         name: '导航',
@@ -100,6 +108,20 @@ export default {
       assignedEmpty: '目前没有分配给你的事项',
       personalTasksLoadError: '无法加载你的个人任务',
       personalTasksEmpty: '你的个人待办列表为空',
+      supportMetricsLoadError: '无法加载支持指标',
+      supportMetricsEmpty: '此范围内还没有客户工单',
+      supportOverviewSetupTitle: '选择要统计的工作区',
+      supportOverviewSetupSubtitle: '此小部件仅显示你选择的工作区的服务台指标。',
+      supportSourcesUnavailable: '你配置的 {count} 个工作区已不再可用',
+      supportBacklog: '待办列表',
+      supportUnassigned: '未分配',
+      supportCreated: '已创建',
+      supportResolved: '已解决',
+      supportSlaCompliance: 'SLA 达标',
+      supportSlaNone: '—',
+      supportFirstResponseP50: '首次响应 p50',
+      supportExportCSV: '导出 CSV',
+      supportLiveDelayed: '实时更新已暂停',
       dailyBriefingUnavailable: '你的每日简报目前不可用。它依赖 AI 集成。如果你刚完成设置，请稍后再试。',
       updatedAt: '更新于 {time}',
       priorityLabel: '优先级：{priority}',

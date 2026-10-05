@@ -551,6 +551,7 @@ func (s *WorkflowService) PerformTransition(
 	if err != nil {
 		return nil, fmt.Errorf("reload item: %w", err)
 	}
+	PublishWorkspaceChange(updated.WorkspaceID, WorkspaceChangeItems)
 
 	newStatusID := req.ToStatusID
 	result := &PerformTransitionResult{
@@ -622,12 +623,14 @@ func (s *WorkflowService) CommitTransition(
 	}
 
 	if err := itemRepo.RecordHistory(tx, repository.HistoryEntry{
-		ItemID:    itemID,
-		UserID:    actorUserID,
-		FieldName: "status_id",
-		OldValue:  fmt.Sprintf("%d", oldStatusID),
-		NewValue:  fmt.Sprintf("%d", newStatusID),
-		ChangedAt: changedAt,
+		ItemID:     itemID,
+		UserID:     actorUserID,
+		FieldName:  "status_id",
+		OldValue:   fmt.Sprintf("%d", oldStatusID),
+		NewValue:   fmt.Sprintf("%d", newStatusID),
+		ChangedAt:  changedAt,
+		Source:     historySourceForAgent(metadata),
+		AgentRunID: historyRunForAgent(metadata),
 	}); err != nil {
 		return fmt.Errorf("record transition history: %w", err)
 	}
@@ -642,6 +645,49 @@ func (s *WorkflowService) CommitTransition(
 	changes := []itemevents.FieldChange{{Field: "status_id", OldValue: oldStatus, NewValue: newStatus}}
 	if _, err := itemevents.NewRecorder(s.db).StatusChanged(ctx, tx, item, &oldStatus, &newStatus, changes, metadata); err != nil {
 		return err
+	}
+	if err := s.recordSupportTransitionFacts(tx, itemID, oldStatusID, newStatusID, changedAt); err != nil {
+		return err
+	}
+	return nil
+}
+
+// statusCompleted reports whether a status belongs to a completed category.
+func (s *WorkflowService) statusCompleted(tx database.Tx, statusID int) (bool, error) {
+	if statusID == 0 {
+		return false, nil
+	}
+	var completed bool
+	err := tx.QueryRow(`
+		SELECT COALESCE(sc.is_completed, false)
+		FROM statuses st
+		LEFT JOIN status_categories sc ON sc.id = st.category_id
+		WHERE st.id = ?`, statusID).Scan(&completed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return completed, err
+}
+
+// recordSupportTransitionFacts writes the append-only ticket facts for
+// support metrics (WI-1133): resolved on first entry into a completed
+// category, reopened on every exit. The repository no-ops for items that
+// are not customer-facing tickets.
+func (s *WorkflowService) recordSupportTransitionFacts(tx database.Tx, itemID, oldStatusID, newStatusID int, changedAt time.Time) error {
+	oldCompleted, err := s.statusCompleted(tx, oldStatusID)
+	if err != nil {
+		return fmt.Errorf("resolve old status category: %w", err)
+	}
+	newCompleted, err := s.statusCompleted(tx, newStatusID)
+	if err != nil {
+		return fmt.Errorf("resolve new status category: %w", err)
+	}
+	events := repository.NewItemSupportEventRepository(s.db)
+	switch {
+	case newCompleted && !oldCompleted:
+		return events.RecordResolved(tx, itemID, changedAt)
+	case oldCompleted && !newCompleted:
+		return events.RecordReopened(tx, itemID, changedAt)
 	}
 	return nil
 }

@@ -108,7 +108,11 @@ type NotificationHandler struct {
 	service          NotificationService
 	permService      *services.PermissionService
 	notificationAuth *services.NotificationAuthorizer
+	sseHub           *services.SSEHub
 }
+
+// SetSSEHub wires the in-memory hub that backs the notification event stream.
+func (nh *NotificationHandler) SetSSEHub(hub *services.SSEHub) { nh.sseHub = hub }
 
 // NewNotificationManager creates a new notification manager with BigCache
 func NewNotificationManager(db database.Database, nmCfg NotificationManagerConfig) (*NotificationManager, error) {
@@ -351,6 +355,9 @@ func (nm *NotificationManager) AddNotificationsContext(ctx context.Context, noti
 	byUser := make(map[int][]models.Notification)
 	for _, notification := range stored {
 		byUser[notification.UserID] = append(byUser[notification.UserID], notification)
+	}
+	for userID := range byUser {
+		services.PublishUserChange(userID, services.UserChangeNotifications)
 	}
 	for userID, additions := range byUser {
 		cache, ok := nm.cacheSnapshot(userID)

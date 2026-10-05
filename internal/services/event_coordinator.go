@@ -25,6 +25,9 @@ type ActionContext struct {
 	CausationEventKey string
 	CascadeDepth      int
 	SourceApplication string
+	// TriggerCommentIsPrivate keeps a cascade internal when its root trigger
+	// was a private/internal comment.
+	TriggerCommentIsPrivate bool
 }
 
 // EventCoordinator centralizes side effect handling (notifications, webhooks, activity tracking, actions)
@@ -134,6 +137,7 @@ func (ec *EventCoordinator) emitItemCreatedInternal(item *models.Item, actorUser
 			event.ExecutionChainID = actionCtx.ExecutionChainID
 			event.CascadeDepth = actionCtx.CascadeDepth
 			event.SourceApplication = actionCtx.SourceApplication
+			event.TriggerCommentIsPrivate = actionCtx.TriggerCommentIsPrivate
 		}
 		ec.actionService.EmitActionEvent(event)
 	}
@@ -212,6 +216,7 @@ func applyActionContext(event *models.ActionEvent, actionContext *ActionContext)
 	event.ExecutionChainID = actionContext.ExecutionChainID
 	event.CascadeDepth = actionContext.CascadeDepth
 	event.SourceApplication = actionContext.SourceApplication
+	event.TriggerCommentIsPrivate = actionContext.TriggerCommentIsPrivate
 }
 
 // EmitItemDeleted emits events for a deleted item.

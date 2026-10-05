@@ -11,7 +11,9 @@
     'item_updated': t('actions.trigger.itemUpdated'),
     'item_linked': t('actions.trigger.itemLinked'),
     'sla_breached': t('actions.trigger.slaBreached'),
-    'sla_warning': t('actions.trigger.slaWarning')
+    'sla_warning': t('actions.trigger.slaWarning'),
+    'comment_created': t('actions.trigger.commentCreated'),
+    'item_inactive': t('actions.trigger.itemInactive')
   };
 
   // Reverse mapping from backend name to display label

@@ -108,6 +108,8 @@ func RegisterPortalRoutes(deps *Deps) {
 	api.HandleH("POST /customer-organisations", customersPerm(http.HandlerFunc(deps.TimeTracking.Customer.Create)))
 	api.HandleH("GET /customer-organisations/{id}", auth(http.HandlerFunc(deps.TimeTracking.Customer.Get)))
 	api.HandleH("PUT /customer-organisations/{id}", customersPerm(http.HandlerFunc(deps.TimeTracking.Customer.Update)))
+	// Portal organisation request-sharing settings (WI-1139).
+	api.HandleH("PUT /customer-organisations/{id}/request-sharing", customersPerm(http.HandlerFunc(deps.TimeTracking.Customer.UpdateRequestSharing)))
 	api.HandleH("DELETE /customer-organisations/{id}", customersPerm(http.HandlerFunc(deps.TimeTracking.Customer.Delete)))
 	// Handler-level access permits organization members and managers.
 	api.HandleH("GET /customer-organisations/{id}/contacts", auth(http.HandlerFunc(deps.Portal.PortalCustomer.GetOrganisationContacts)))

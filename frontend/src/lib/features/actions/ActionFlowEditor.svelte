@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { Pencil, RefreshCw, MessageSquare, Bell, HelpCircle, Database, PlusSquare, Box, Globe, Sparkles, Bot, Milestone, UsersRound, X } from '@lucide/svelte';
+  import { Pencil, RefreshCw, MessageSquare, Bell, HelpCircle, Database, PlusSquare, Box, Globe, Sparkles, Bot, Milestone, UsersRound, Send, FileText, Tag, X } from '@lucide/svelte';
   import { toHotkeyString, getShortcutDisplay } from '../../utils/keyboardShortcuts.js';
   import { api } from '../../api.js';
   import FieldSelector from '../../pickers/FieldSelector.svelte';
@@ -21,6 +21,9 @@
   import AIExtractNode from './nodes/AIExtractNode.svelte';
   import AIAgentNode from './nodes/AIAgentNode.svelte';
   import CreateMilestoneNode from './nodes/CreateMilestoneNode.svelte';
+  import NotifyCustomerNode from './nodes/NotifyCustomerNode.svelte';
+  import InsertCannedResponseNode from './nodes/InsertCannedResponseNode.svelte';
+  import AdjustLabelsNode from './nodes/AdjustLabelsNode.svelte';
   import CreateMilestoneConfigPanel from './CreateMilestoneConfigPanel.svelte';
   import UpdateAssetConfigPanel from './UpdateAssetConfigPanel.svelte';
   import CreateAssetConfigPanel from './CreateAssetConfigPanel.svelte';
@@ -54,6 +57,8 @@
   let itemTypes = $state([]);
   let statusCategories = $state([]);
   let assignableUsers = $state([]);
+  let cannedResponses = $state([]);
+  let workspaceLabels = $state([]);
 
   // Actor override: null means the action runs under the triggering user's
   // permissions. Only users with the global action.set_actor permission can
@@ -98,6 +103,9 @@
     ai_extract: AIExtractNode,
     ai_agent: AIAgentNode,
     create_milestone: CreateMilestoneNode,
+    notify_customer: NotifyCustomerNode,
+    insert_canned_response: InsertCannedResponseNode,
+    adjust_labels: AdjustLabelsNode,
   };
 
   // Mirror each node's accentColor in the minimap so the overview reflects
@@ -119,6 +127,9 @@
     ai_extract: 'purple',
     ai_agent: 'magenta',
     create_milestone: 'green',
+    notify_customer: 'magenta',
+    insert_canned_response: 'orange',
+    adjust_labels: 'purple',
   };
 
   function minimapNodeColor(node) {
@@ -154,6 +165,9 @@
     related_items: RefreshCw,
     round_robin_assign: UsersRound,
     create_milestone: Milestone,
+    notify_customer: Send,
+    insert_canned_response: FileText,
+    adjust_labels: Tag,
   };
 
   // i18n keys for node types. When a type isn't in this map, the palette
@@ -174,6 +188,10 @@
     transition_item: 'actions.nodes.transitionItem',
     related_items: 'actions.nodes.relatedItems',
     round_robin_assign: 'actions.nodes.roundRobinAssign',
+    create_milestone: 'actions.nodes.createMilestone',
+    notify_customer: 'actions.nodes.notifyCustomer',
+    insert_canned_response: 'actions.nodes.insertCannedResponse',
+    adjust_labels: 'actions.nodes.adjustLabels',
   };
 
   // nodePalette is built from the catalog response on mount. Trigger nodes
@@ -204,6 +222,8 @@
       case 'item_linked': return 'actions.trigger.itemLinked';
       case 'sla_breached': return 'actions.trigger.slaBreached';
       case 'sla_warning': return 'actions.trigger.slaWarning';
+      case 'comment_created': return 'actions.trigger.commentCreated';
+      case 'item_inactive': return 'actions.trigger.itemInactive';
       case 'manual': return 'actions.trigger.manual';
       default: return null;
     }
@@ -295,6 +315,27 @@
     }
   }
 
+  async function loadCannedResponses() {
+    if (!action?.workspace_id) return;
+    try {
+      const list = await api.cannedResponses.getAll(action.workspace_id, true) || [];
+      cannedResponses = list.filter((response) => response.is_active !== false);
+    } catch (err) {
+      console.error('Failed to load canned responses for action editor', err);
+      cannedResponses = [];
+    }
+  }
+
+  async function loadWorkspaceLabels() {
+    if (!action?.workspace_id) return;
+    try {
+      workspaceLabels = await api.labels.getAll(action.workspace_id) || [];
+    } catch (err) {
+      console.error('Failed to load labels for action editor', err);
+      workspaceLabels = [];
+    }
+  }
+
   onMount(() => {
     if (action?.workspace_id) {
       loadCatalog();
@@ -307,6 +348,8 @@
       loadItemTypes();
       loadStatusCategories();
       loadAssignableUsers();
+      loadCannedResponses();
+      loadWorkspaceLabels();
     }
 
     // Live-reload after every AI chat agent run, regardless of tool calls:
@@ -332,6 +375,15 @@
       return [{ value: '', label: t('actions.config.noCapabilitiesForWorkspace') }];
     }
     return empty.concat(list.map((c) => ({ value: String(c.id), label: c.name })));
+  }
+
+  // Toggle a label ID in one of the adjust_labels config lists.
+  function toggleLabelID(store, nodeId, config, field, labelId, checked) {
+    const current = Array.isArray(config?.[field]) ? config[field] : [];
+    const next = checked
+      ? Array.from(new Set([...current, labelId]))
+      : current.filter((id) => id !== labelId);
+    store.updateNodeConfig(nodeId, { [field]: next });
   }
 
   // Block save on invalid or duplicate output field names. doSave() in
@@ -744,6 +796,38 @@
         />
       </div>
     {/if}
+    {#if (selectedNode.data?.triggerType || action?.trigger_type) === 'comment_created'}
+      <div>
+        <label for="config-comment-author" class="block text-xs font-medium mb-1">{t('actions.config.commentAuthor')}</label>
+        <Select
+          id="config-comment-author"
+          options={[
+            { value: '', label: t('actions.config.commentAnyAuthor') },
+            { value: 'customer', label: t('actions.config.commentCustomer') },
+            { value: 'agent', label: t('actions.config.commentAgent') },
+          ]}
+          value={selectedNode.data?.config?.from_customer === true ? 'customer' : selectedNode.data?.config?.from_customer === false ? 'agent' : ''}
+          onchange={(v) => store.updateNodeConfig(selectedNode.id, { from_customer: v === '' ? null : v === 'customer' })}
+          size="small"
+        />
+      </div>
+      <p class="text-xs mt-1 sidebar-hints">{t('actions.config.commentPrivacyHint')}</p>
+    {/if}
+    {#if (selectedNode.data?.triggerType || action?.trigger_type) === 'item_inactive'}
+      <div>
+        <label for="config-inactive-hours" class="block text-xs font-medium mb-1">{t('actions.config.inactiveHours')}</label>
+        <Input
+          id="config-inactive-hours"
+          dataTestid="trigger-inactive-hours"
+          type="number"
+          min="1"
+          value={selectedNode.data?.config?.inactive_hours || ''}
+          oninput={(e) => store.updateNodeConfig(selectedNode.id, { inactive_hours: e.currentTarget.value ? parseInt(e.currentTarget.value) : 0 })}
+          placeholder={t('actions.config.inactiveHoursPlaceholder')}
+        />
+        <p class="text-xs mt-1 sidebar-hints">{t('actions.config.inactiveHoursHint')}</p>
+      </div>
+    {/if}
     <div class="pt-4 border-t cascade-option">
       <Checkbox
         checked={selectedNode.data?.config?.respond_to_cascades || false}
@@ -994,6 +1078,94 @@
       <CreateAssetConfigPanel {selectedNode} flowStore={store} bind:showPlaceholderModal />
     {:else if selectedNode.type === 'create_milestone'}
       <CreateMilestoneConfigPanel {selectedNode} flowStore={store} bind:showPlaceholderModal />
+    {:else if selectedNode.type === 'notify_customer'}
+      <div>
+        <label for="config-notify-customer-subject" class="block text-xs font-medium mb-1">{t('actions.config.notifySubject')}</label>
+        <Input
+          id="config-notify-customer-subject"
+          dataTestid="notify-customer-subject"
+          type="text"
+          value={selectedNode.data?.config?.subject || ''}
+          oninput={(e) => store.updateNodeConfig(selectedNode.id, { subject: e.currentTarget.value })}
+          placeholder={t('actions.config.notifySubjectPlaceholder')}
+        />
+      </div>
+      <div>
+        <div class="flex items-center gap-1 mb-1">
+          <label for="config-notify-customer-message" class="block text-xs font-medium">{t('actions.config.notifyMessage')}</label>
+          <button
+            onclick={() => showPlaceholderModal = true}
+            class="text-[var(--ds-text-subtlest)] hover:text-[var(--ds-interactive)] transition-colors"
+            title={t('actions.placeholders.showReference')}
+          >
+            <HelpCircle class="w-3.5 h-3.5" />
+          </button>
+        </div>
+        <Textarea
+          id="config-notify-customer-message"
+          data-testid="notify-customer-message"
+          rows={4}
+          value={selectedNode.data?.config?.message || ''}
+          oninput={(e) => store.updateNodeConfig(selectedNode.id, { message: e.currentTarget.value })}
+          placeholder={t('actions.config.notifyPlaceholder')}
+          size="small"
+        />
+      </div>
+      <p class="text-xs sidebar-hints">{t('actions.config.notifyCustomerPrivacyHint')}</p>
+    {:else if selectedNode.type === 'insert_canned_response'}
+      <div>
+        <label for="config-canned-response" class="block text-xs font-medium mb-1">{t('actions.config.cannedResponse')}</label>
+        <Select
+          id="config-canned-response"
+          options={[
+            { value: '', label: t('actions.config.selectCannedResponse') },
+            ...cannedResponses.map((response) => ({
+              value: String(response.id),
+              label: response.is_private ? `${response.name} (${t('actions.config.private')})` : response.name,
+            })),
+          ]}
+          value={selectedNode.data?.config?.canned_response_id ? String(selectedNode.data.config.canned_response_id) : ''}
+          onchange={(v) => store.updateNodeConfig(selectedNode.id, { canned_response_id: v ? parseInt(v) : 0 })}
+          size="small"
+        />
+      </div>
+      <p class="text-xs mt-1 sidebar-hints">{t('actions.config.cannedResponseHint')}</p>
+    {:else if selectedNode.type === 'adjust_labels'}
+      {@const addLabelIDs = selectedNode.data?.config?.add_label_ids || []}
+      {@const removeLabelIDs = selectedNode.data?.config?.remove_label_ids || []}
+      <div>
+        <span class="block text-xs font-medium mb-1">{t('actions.config.addLabels')}</span>
+        {#if workspaceLabels.length === 0}
+          <p class="text-xs sidebar-hints">{t('actions.config.noLabels')}</p>
+        {:else}
+          <div class="flex flex-col gap-1" data-testid="adjust-labels-add">
+            {#each workspaceLabels as label (label.id)}
+              <Checkbox
+                checked={addLabelIDs.includes(label.id)}
+                onchange={(checked) => toggleLabelID(store, selectedNode.id, selectedNode.data?.config, 'add_label_ids', label.id, checked)}
+                label={label.name}
+                dataTestid={`adjust-label-add-${label.id}`}
+                size="small"
+              />
+            {/each}
+          </div>
+        {/if}
+      </div>
+      <div>
+        <span class="block text-xs font-medium mb-1">{t('actions.config.removeLabels')}</span>
+        <div class="flex flex-col gap-1" data-testid="adjust-labels-remove">
+          {#each workspaceLabels as label (label.id)}
+            <Checkbox
+              checked={removeLabelIDs.includes(label.id)}
+              onchange={(checked) => toggleLabelID(store, selectedNode.id, selectedNode.data?.config, 'remove_label_ids', label.id, checked)}
+              label={label.name}
+              dataTestid={`adjust-label-remove-${label.id}`}
+              size="small"
+            />
+          {/each}
+        </div>
+      </div>
+      <p class="text-xs sidebar-hints">{t('actions.config.adjustLabelsHint')}</p>
     {:else if selectedNode.type === 'related_items'}
       <div>
         <label for="config-related-relation" class="block text-xs font-medium mb-1">Relation</label>

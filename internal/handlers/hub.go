@@ -97,6 +97,17 @@ func (h *HubHandler) HasActivePortals(ctx context.Context) (bool, error) {
 	return count > 0, err
 }
 
+// HasPortals reports whether any portal channel exists, enabled or disabled.
+// The customer/organisation management entry stays reachable while every portal
+// is temporarily disabled, so the operator can reactivate one from there.
+func (h *HubHandler) HasPortals(ctx context.Context) (bool, error) {
+	var count int
+	err := h.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM channels WHERE type = 'portal'
+	`).Scan(&count)
+	return count > 0, err
+}
+
 // GetHub returns the hub configuration and all enabled portals
 // GET /api/hub
 func (h *HubHandler) GetHub(w http.ResponseWriter, r *http.Request) {

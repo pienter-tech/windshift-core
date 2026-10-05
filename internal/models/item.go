@@ -109,6 +109,10 @@ type Item struct {
 	ReporterAvatar             string `json:"reporter_avatar,omitempty"`               // Avatar URL of reporter
 	CreatorPortalCustomerName  string `json:"creator_portal_customer_name,omitempty"`  // Name of portal customer creator
 	CreatorPortalCustomerEmail string `json:"creator_portal_customer_email,omitempty"` // Email of portal customer creator
+	// Customer organisation of the portal-customer creator, for the ticket
+	// customer-context panel. Empty for internal creators.
+	CreatorCustomerOrganisationID   *int   `json:"creator_customer_organisation_id,omitempty"`
+	CreatorCustomerOrganisationName string `json:"creator_customer_organisation_name,omitempty"`
 	// Portal submission tracking joined fields
 	ChannelName     string `json:"channel_name,omitempty"`      // Name of the portal/channel
 	RequestTypeName string `json:"request_type_name,omitempty"` // Name of the request type
@@ -167,6 +171,16 @@ type ItemHistory struct {
 	PortalCustomerEmail string `json:"portal_customer_email,omitempty"`
 	// AgentOwnerName is permission-filtered by the item-history handler.
 	AgentOwnerName string `json:"agent_owner_name,omitempty"`
+	// Source names the acting surface when an agent made the change on the
+	// user's behalf ("ai_chat", "mcp", "standard_agent"). Empty for a direct
+	// write. The UI marks these rows so a viewer can tell a change the user
+	// typed from one the AI made for them under their name.
+	Source string `json:"source,omitempty"`
+	// AgentRunID links an agent-authored change back to the turn that caused
+	// it. It is a link, not the telemetry itself: the history response stays a
+	// single-table read, and the model/tokens/cost behind the turn are fetched
+	// on demand from the run's usage endpoint.
+	AgentRunID *int `json:"agent_run_id,omitempty"`
 	// Resolved values for display (when value is an ID)
 	ResolvedOldValue *string `json:"resolved_old_value,omitempty"` // Human-readable version of old_value
 	ResolvedNewValue *string `json:"resolved_new_value,omitempty"` // Human-readable version of new_value

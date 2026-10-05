@@ -244,6 +244,9 @@ func (s *ItemCRUDService) deleteItemRelationsTx(tx database.Tx, itemID int) erro
 	if err := s.repo.DeleteItemWatches(tx, itemID); err != nil {
 		return err
 	}
+	if err := repository.NewItemParticipantRepository(s.db).DeleteForItem(tx, itemID); err != nil {
+		return err
+	}
 	if err := s.repo.DeleteItemHistory(tx, itemID); err != nil {
 		return err
 	}
@@ -255,6 +258,7 @@ func (s *ItemCRUDService) deleteItemRelationsTx(tx database.Tx, itemID int) erro
 
 func (s *ItemCRUDService) finishItemDeletion(workspaceID int, itemIDs []int, parentID *int) {
 	repository.InvalidateItemListCountCache(s.db, workspaceID)
+	PublishWorkspaceChange(workspaceID, WorkspaceChangeItems)
 	for _, id := range itemIDs {
 		PublishItemDeletion(id, workspaceID)
 	}

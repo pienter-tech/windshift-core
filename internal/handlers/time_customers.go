@@ -241,3 +241,110 @@ func (h *TimeCustomerHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// orgRequestSharingRequest is the body of PUT /customer-organisations/{id}/request-sharing.
+type orgRequestSharingRequest struct {
+	RequestSharing         string `json:"request_sharing"`
+	RequestSharingAudience string `json:"request_sharing_audience"`
+	VisibleRoleIDs         []int  `json:"visible_role_ids"`
+}
+
+// UpdateRequestSharing updates the organisation's portal request-sharing
+// settings (WI-1139). Requires customers.manage, matching the rest of the
+// customer-organisation admin surface.
+func (h *TimeCustomerHandler) UpdateRequestSharing(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.checkCustomerPermission(w, r)
+	if !ok {
+		return
+	}
+
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+
+	req, ok := decodeJSON[orgRequestSharingRequest](w, r)
+	if !ok {
+		return
+	}
+
+	sharing := models.OrgRequestSharingSettings{
+		RequestSharing:         req.RequestSharing,
+		RequestSharingAudience: req.RequestSharingAudience,
+		RequestVisibleRoleIDs:  req.VisibleRoleIDs,
+	}
+	if sharing.RequestSharing == "" {
+		sharing.RequestSharing = models.OrgRequestSharingDisabled
+	}
+	switch sharing.RequestSharing {
+	case models.OrgRequestSharingDisabled, models.OrgRequestSharingRequesterChoice, models.OrgRequestSharingAutomatic:
+	default:
+		respondValidationError(w, r, "invalid request_sharing")
+		return
+	}
+	if sharing.RequestSharingAudience == "" {
+		sharing.RequestSharingAudience = models.OrgRequestSharingAudienceOrganisation
+	}
+	switch sharing.RequestSharingAudience {
+	case models.OrgRequestSharingAudienceOrganisation, models.OrgRequestSharingAudienceRoles:
+	default:
+		respondValidationError(w, r, "invalid request_sharing_audience")
+		return
+	}
+
+	if sharing.RequestSharing == models.OrgRequestSharingDisabled {
+		sharing.RequestSharingAudience = models.OrgRequestSharingAudienceOrganisation
+		sharing.RequestVisibleRoleIDs = nil
+	}
+	if sharing.RequestSharingAudience == models.OrgRequestSharingAudienceRoles {
+		requested := make(map[int]struct{}, len(sharing.RequestVisibleRoleIDs))
+		for _, roleID := range sharing.RequestVisibleRoleIDs {
+			requested[roleID] = struct{}{}
+		}
+		if len(requested) == 0 {
+			respondValidationError(w, r, "request_visible_role_ids is required for the roles audience")
+			return
+		}
+		existing, err := h.repo.ExistingContactRoleIDs(sharing.RequestVisibleRoleIDs)
+		if err != nil {
+			respondInternalError(w, r, err)
+			return
+		}
+		if len(existing) != len(requested) {
+			respondValidationError(w, r, "one or more request_visible_role_ids do not exist")
+			return
+		}
+	} else {
+		sharing.RequestVisibleRoleIDs = nil
+	}
+
+	c, err := h.repo.GetByID(id)
+	if errors.Is(err, repository.ErrNotFound) {
+		respondNotFound(w, r, "customer")
+		return
+	}
+	if err != nil {
+		respondInternalError(w, r, err)
+		return
+	}
+
+	merged := models.MergeOrgRequestSharingSettings(c.Settings, sharing)
+	if _, err := h.repo.UpdateSettings(id, merged); err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			respondNotFound(w, r, "customer")
+			return
+		}
+		respondInternalError(w, r, err)
+		return
+	}
+
+	if user != nil {
+		h.auditor.Log(r, user, logger.ActionTimeCustomerUpdate, logger.ResourceTimeCustomer, &id, "request-sharing")
+	}
+
+	respondJSONOK(w, map[string]any{
+		"request_sharing":          sharing.RequestSharing,
+		"request_sharing_audience": sharing.RequestSharingAudience,
+		"visible_role_ids":         sharing.RequestVisibleRoleIDs,
+	})
+}

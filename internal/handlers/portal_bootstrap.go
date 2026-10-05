@@ -29,6 +29,9 @@ type PortalUserBootstrapResponse struct {
 	Customer      map[string]any                  `json:"customer,omitempty"`
 	MyRequests    []services.PortalRequestSummary `json:"my_requests"`
 	MyApprovals   []*models.ApprovalRequest       `json:"my_approvals"`
+	// RequestSharing is the organisation's portal sharing mode (WI-1139):
+	// disabled, requester_choice, or automatic. Empty for internal users.
+	RequestSharing string `json:"request_sharing,omitempty"`
 }
 
 // GetBootstrap returns a branded sign-in shell to anonymous or unauthorized
@@ -189,6 +192,12 @@ func (h *PortalHandler) portalAuthSnapshot(ctx context.Context, r *http.Request)
 		"name":                        portalSession.Customer.Name,
 		"passkey_count":               info.PasskeyCount,
 		"dismissed_passkey_prompt_at": info.DismissedPasskeyPromptAt,
+	}
+	sharing, err := h.portalService.PortalCustomerOrgRequestSharing(ctx, portalSession.Customer.ID)
+	if err != nil {
+		slog.Warn("portal user bootstrap: request sharing unavailable", "portal_customer_id", portalSession.Customer.ID, "error", err)
+	} else {
+		response.RequestSharing = sharing.RequestSharing
 	}
 	return response, nil
 }

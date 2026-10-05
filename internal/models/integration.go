@@ -1043,6 +1043,10 @@ type ActionEvent struct {
 	ExecutionChainID  string `json:"execution_chain_id,omitempty"`  // UUID to look up cached chain state for cycle detection
 	CascadeDepth      int    `json:"cascade_depth,omitempty"`       // Depth level of this event (0 = user-triggered)
 	SourceApplication string `json:"source_application,omitempty"`  // "workspace", "logbook", or "asset"
+	// TriggerCommentIsPrivate carries the privacy of a comment_created
+	// trigger across cascades. Customer-visible nodes must not emit
+	// outward-facing output when it is set.
+	TriggerCommentIsPrivate bool `json:"trigger_comment_is_private,omitempty"`
 }
 
 // ExecutionContext holds context during action execution
@@ -1063,6 +1067,10 @@ type ExecutionContext struct {
 	StepResults      []StepResult   `json:"step_results,omitempty"`
 	// ChainID is set when this action is part of a cascade chain (for emitting chained events)
 	ChainID string `json:"-"` // Not serialized - internal use only
+	// TriggerCommentIsPrivate is true when this execution, directly or through
+	// a cascade, descends from a private/internal comment. Nodes that produce
+	// customer-visible output must stay internal or skip.
+	TriggerCommentIsPrivate bool `json:"-"`
 	// TotalSteps counts every node execution within this action invocation,
 	// including iterator body nodes summed across iterations. Bounded by the
 	// engine's per-flow step budget so a misconfigured nested iterator can't

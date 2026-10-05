@@ -59,6 +59,10 @@ export default {
         name: 'Schnellzugriff',
         description: 'Direkte Verknüpfungen zu erreichbaren Arbeitsbereichen',
       },
+      supportOverview: {
+        name: 'Support-Übersicht',
+        description: 'Backlog, Erstantwort, Lösung und SLA-Einhaltung für Kundentickets',
+      },
     },
     customization: {
       widgets: 'Widgets',
@@ -69,6 +73,10 @@ export default {
       work: {
         name: 'Arbeit',
         description: 'Einträge, Meilensteine und Ihnen zugewiesene Aufgaben',
+      },
+      support: {
+        name: 'Support',
+        description: 'Helpdesk-Kennzahlen für Ihre Kundenwarteschlangen',
       },
       navigation: {
         name: 'Navigation',
@@ -100,6 +108,20 @@ export default {
       assignedEmpty: 'Ihnen ist derzeit nichts zugewiesen',
       personalTasksLoadError: 'Ihre persönlichen Aufgaben konnten nicht geladen werden',
       personalTasksEmpty: 'Ihre persönliche Aufgabenliste ist leer',
+      supportMetricsLoadError: 'Support-Kennzahlen konnten nicht geladen werden',
+      supportMetricsEmpty: 'Noch keine Kundentickets in diesem Umfang',
+      supportOverviewSetupTitle: 'Wählen Sie die Arbeitsbereiche für den Bericht aus',
+      supportOverviewSetupSubtitle: 'Dieses Widget zeigt Helpdesk-Kennzahlen nur für die ausgewählten Arbeitsbereiche.',
+      supportSourcesUnavailable: 'Nicht mehr verfügbar: {count} Ihrer konfigurierten Arbeitsbereiche',
+      supportBacklog: 'Backlog',
+      supportUnassigned: 'Nicht zugewiesen',
+      supportCreated: 'Erstellt',
+      supportResolved: 'Gelöst',
+      supportSlaCompliance: 'SLA erfüllt',
+      supportSlaNone: '—',
+      supportFirstResponseP50: 'Erstantwort p50',
+      supportExportCSV: 'Als CSV exportieren',
+      supportLiveDelayed: 'Live-Aktualisierungen pausiert',
       dailyBriefingUnavailable: 'Ihr täglicher Überblick ist derzeit nicht verfügbar. Er benötigt eine KI-Integration. Falls Sie gerade eine eingerichtet haben, versuchen Sie es in Kürze erneut.',
       updatedAt: 'Aktualisiert: {time}',
       priorityLabel: 'Priorität: {priority}',

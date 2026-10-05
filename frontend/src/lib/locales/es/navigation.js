@@ -35,6 +35,8 @@ export default {
     loading: 'Cargando...',
     retry: 'Reintentar',
     knowledgeBase: 'Base de conocimiento',
+    scrollDownForMore: 'Desplázate hacia abajo para ver más',
+    scrollUpForMore: 'Desplázate hacia arriba para ver más',
   },
   commandPalette: {
     searchPlaceholder: 'Buscar en todo...',
@@ -426,5 +428,11 @@ export default {
     getStartedMember: 'Estos son los espacios de trabajo disponibles para ti',
     selectWorkspace: 'Selecciona un espacio de trabajo para comenzar',
     noWorkspacesAvailable: 'Aún no hay espacios de trabajo disponibles. Contacta a tu administrador para obtener acceso a un espacio de trabajo.',
+  },
+
+  workspaceDashboard: {
+    widgets: {
+      supportMetrics: { name: 'Métricas de soporte', description: 'Backlog, primera respuesta, resolución y cumplimiento de SLA de los tickets de clientes' },
+    },
   },
 };

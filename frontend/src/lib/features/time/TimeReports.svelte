@@ -511,6 +511,7 @@
         loading={exportLoading}
         icon={Download}
         size="medium"
+        dataTestid="time-report-export-csv"
       >
         {t('time.reports.exportCSV')}
       </Button>
@@ -609,6 +610,7 @@
         loading={loading}
         icon={Filter}
         size="medium"
+        dataTestid="time-report-apply-filters"
       >
         {t('time.reports.applyFilters')}
       </Button>
@@ -720,6 +722,7 @@
         loading={projectLoading}
         icon={Filter}
         size="medium"
+        dataTestid="project-report-apply-filters"
       >
         {t('time.reports.applyFilters')}
       </Button>

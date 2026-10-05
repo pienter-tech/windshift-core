@@ -241,6 +241,23 @@ export const items = {
       method: 'POST',
       body: JSON.stringify({ parent_id: newParentId }),
     }),
+  // External request participants (WI-1136).
+  listParticipants: (id) => fetchV2Data(`/items/${id}/participants`),
+  addParticipant: withCrossTabNotice(
+    (id, data) =>
+      fetchV2Data(`/items/${id}/participants`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    'update'
+  ),
+  removeParticipant: withCrossTabNotice(
+    (id, customerId) =>
+      fetchAPIV2(`/items/${id}/participants/${customerId}`, {
+        method: 'DELETE',
+      }),
+    'update'
+  ),
   copy: withCrossTabNotice(
     (id) =>
       fetchV2Data(`/items/${id}/copy`, {

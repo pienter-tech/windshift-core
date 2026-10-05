@@ -164,6 +164,12 @@ var cannedResponsesSchema string
 //go:embed schema/queues.sql
 var queuesSchema string
 
+//go:embed schema/item_participants.sql
+var itemParticipantsSchema string
+
+//go:embed schema/item_support_events.sql
+var itemSupportEventsSchema string
+
 //go:embed schema/action_trigger_marks.sql
 var actionTriggerMarksSchema string
 

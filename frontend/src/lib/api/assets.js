@@ -109,7 +109,8 @@ export const assets = {
 };
 
 export const itemLinkedAssets = {
-  get: (itemId) => fetchV2Data(`/items/${itemId}/linked-assets`),
+  get: (itemId, requestOptions = {}) =>
+    fetchV2Data(`/items/${itemId}/linked-assets`, requestOptions),
 };
 
 export const assetImport = {

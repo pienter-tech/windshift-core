@@ -35,7 +35,8 @@
   let collectionName = $derived(collectionStore.collectionName);
   let itemCount = $derived(collectionStore.collectionTotal);
 
-  const sidebarBgStyle = 'background-color: var(--ds-surface); border-color: var(--ds-border);';
+  const sidebarBgStyle =
+    'background-color: var(--ds-surface); border-color: var(--ds-border); --scrollable-sidebar-fade-color: var(--ds-surface);';
 </script>
 
 {#snippet resizeHandle()}

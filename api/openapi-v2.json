@@ -2238,6 +2238,10 @@
                 "nullable": true,
                 "type": "number"
               },
+              "model": {
+                "description": "The model value.",
+                "type": "string"
+              },
               "prompt_tokens": {
                 "description": "The prompt tokens value.",
                 "type": "integer"
@@ -9644,6 +9648,15 @@
                   "format": "date-time",
                   "type": "string"
                 },
+                "creator_customer_organisation_id": {
+                  "description": "The creator customer organisation id value.",
+                  "nullable": true,
+                  "type": "integer"
+                },
+                "creator_customer_organisation_name": {
+                  "description": "The creator customer organisation name value.",
+                  "type": "string"
+                },
                 "creator_email": {
                   "description": "The creator email value.",
                   "type": "string"
@@ -10962,6 +10975,15 @@
                 "created_at": {
                   "description": "The created at value.",
                   "format": "date-time",
+                  "type": "string"
+                },
+                "creator_customer_organisation_id": {
+                  "description": "The creator customer organisation id value.",
+                  "nullable": true,
+                  "type": "integer"
+                },
+                "creator_customer_organisation_name": {
+                  "description": "The creator customer organisation name value.",
                   "type": "string"
                 },
                 "creator_email": {
@@ -12412,6 +12434,15 @@
                   "format": "date-time",
                   "type": "string"
                 },
+                "creator_customer_organisation_id": {
+                  "description": "The creator customer organisation id value.",
+                  "nullable": true,
+                  "type": "integer"
+                },
+                "creator_customer_organisation_name": {
+                  "description": "The creator customer organisation name value.",
+                  "type": "string"
+                },
                 "creator_email": {
                   "description": "The creator email value.",
                   "type": "string"
@@ -13597,6 +13628,15 @@
                   "format": "date-time",
                   "type": "string"
                 },
+                "creator_customer_organisation_id": {
+                  "description": "The creator customer organisation id value.",
+                  "nullable": true,
+                  "type": "integer"
+                },
+                "creator_customer_organisation_name": {
+                  "description": "The creator customer organisation name value.",
+                  "type": "string"
+                },
                 "creator_email": {
                   "description": "The creator email value.",
                   "type": "string"
@@ -14613,6 +14653,15 @@
                     "created_at": {
                       "description": "The created at value.",
                       "format": "date-time",
+                      "type": "string"
+                    },
+                    "creator_customer_organisation_id": {
+                      "description": "The creator customer organisation id value.",
+                      "nullable": true,
+                      "type": "integer"
+                    },
+                    "creator_customer_organisation_name": {
+                      "description": "The creator customer organisation name value.",
                       "type": "string"
                     },
                     "creator_email": {
@@ -15675,6 +15724,15 @@
                     "created_at": {
                       "description": "The created at value.",
                       "format": "date-time",
+                      "type": "string"
+                    },
+                    "creator_customer_organisation_id": {
+                      "description": "The creator customer organisation id value.",
+                      "nullable": true,
+                      "type": "integer"
+                    },
+                    "creator_customer_organisation_name": {
+                      "description": "The creator customer organisation name value.",
                       "type": "string"
                     },
                     "creator_email": {
@@ -16794,6 +16852,15 @@
                   "created_at": {
                     "description": "The created at value.",
                     "format": "date-time",
+                    "type": "string"
+                  },
+                  "creator_customer_organisation_id": {
+                    "description": "The creator customer organisation id value.",
+                    "nullable": true,
+                    "type": "integer"
+                  },
+                  "creator_customer_organisation_name": {
+                    "description": "The creator customer organisation name value.",
                     "type": "string"
                   },
                   "creator_email": {
@@ -19164,6 +19231,11 @@
                   "description": "The agent owner name value.",
                   "type": "string"
                 },
+                "agent_run_id": {
+                  "description": "The agent run id value.",
+                  "nullable": true,
+                  "type": "integer"
+                },
                 "changed_at": {
                   "description": "The changed at value.",
                   "format": "date-time",
@@ -19216,6 +19288,10 @@
                 "resolved_old_value": {
                   "description": "The resolved old value value.",
                   "nullable": true,
+                  "type": "string"
+                },
+                "source": {
+                  "description": "The source value.",
                   "type": "string"
                 },
                 "user_email": {
@@ -19767,6 +19843,64 @@
         ],
         "type": "object"
       },
+      "GetItemsItemIdParticipantsResult": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "added_by": {
+                  "description": "The added by value.",
+                  "nullable": true,
+                  "type": "integer"
+                },
+                "added_by_name": {
+                  "description": "The added by name value.",
+                  "type": "string"
+                },
+                "created_at": {
+                  "description": "The created at value.",
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "customer_email": {
+                  "description": "The customer email value.",
+                  "type": "string"
+                },
+                "customer_name": {
+                  "description": "The customer name value.",
+                  "type": "string"
+                },
+                "id": {
+                  "description": "The id value.",
+                  "type": "integer"
+                },
+                "item_id": {
+                  "description": "The item id value.",
+                  "type": "integer"
+                },
+                "portal_customer_id": {
+                  "description": "The portal customer id value.",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "created_at",
+                "id",
+                "item_id",
+                "portal_customer_id"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "GetItemsItemIdPersonalTasksResult": {
         "additionalProperties": false,
         "properties": {
@@ -19861,6 +19995,15 @@
                 "created_at": {
                   "description": "The created at value.",
                   "format": "date-time",
+                  "type": "string"
+                },
+                "creator_customer_organisation_id": {
+                  "description": "The creator customer organisation id value.",
+                  "nullable": true,
+                  "type": "integer"
+                },
+                "creator_customer_organisation_name": {
+                  "description": "The creator customer organisation name value.",
                   "type": "string"
                 },
                 "creator_email": {
@@ -21091,6 +21234,15 @@
               "created_at": {
                 "description": "The created at value.",
                 "format": "date-time",
+                "type": "string"
+              },
+              "creator_customer_organisation_id": {
+                "description": "The creator customer organisation id value.",
+                "nullable": true,
+                "type": "integer"
+              },
+              "creator_customer_organisation_name": {
+                "description": "The creator customer organisation name value.",
                 "type": "string"
               },
               "creator_email": {
@@ -22815,6 +22967,15 @@
                   "format": "date-time",
                   "type": "string"
                 },
+                "creator_customer_organisation_id": {
+                  "description": "The creator customer organisation id value.",
+                  "nullable": true,
+                  "type": "integer"
+                },
+                "creator_customer_organisation_name": {
+                  "description": "The creator customer organisation name value.",
+                  "type": "string"
+                },
                 "creator_email": {
                   "description": "The creator email value.",
                   "type": "string"
@@ -23856,6 +24017,15 @@
                 "created_at": {
                   "description": "The created at value.",
                   "format": "date-time",
+                  "type": "string"
+                },
+                "creator_customer_organisation_id": {
+                  "description": "The creator customer organisation id value.",
+                  "nullable": true,
+                  "type": "integer"
+                },
+                "creator_customer_organisation_name": {
+                  "description": "The creator customer organisation name value.",
                   "type": "string"
                 },
                 "creator_email": {
@@ -28588,6 +28758,279 @@
         },
         "required": [
           "data"
+        ],
+        "type": "object"
+      },
+      "GetSupportMetricsAggregateResult": {
+        "additionalProperties": false,
+        "nullable": true,
+        "properties": {
+          "bucket": {
+            "description": "The bucket value.",
+            "type": "string"
+          },
+          "buckets": {
+            "description": "The buckets value.",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "backlog_end": {
+                  "description": "The backlog end value.",
+                  "type": "integer"
+                },
+                "bucket_start": {
+                  "description": "The bucket start value.",
+                  "type": "string"
+                },
+                "created": {
+                  "description": "The created value.",
+                  "type": "integer"
+                },
+                "first_response_p50_ms": {
+                  "description": "The first response p50 ms value.",
+                  "nullable": true,
+                  "type": "number"
+                },
+                "reopened": {
+                  "description": "The reopened value.",
+                  "type": "integer"
+                },
+                "resolution_p50_ms": {
+                  "description": "The resolution p50 ms value.",
+                  "nullable": true,
+                  "type": "number"
+                },
+                "resolved": {
+                  "description": "The resolved value.",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "backlog_end",
+                "bucket_start",
+                "created",
+                "reopened",
+                "resolved"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "from": {
+            "description": "The from value.",
+            "type": "string"
+          },
+          "generated_at": {
+            "description": "The generated at value.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "queues": {
+            "description": "The queues value.",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "builtin": {
+                  "description": "The builtin value.",
+                  "type": "boolean"
+                },
+                "count": {
+                  "description": "The count value.",
+                  "type": "integer"
+                },
+                "id": {
+                  "description": "The id value.",
+                  "type": "integer"
+                },
+                "key": {
+                  "description": "The key value.",
+                  "type": "string"
+                },
+                "name": {
+                  "description": "The name value.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "builtin",
+                "count",
+                "id",
+                "name"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "segments": {
+            "description": "The segments value.",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "backlog": {
+                  "description": "The backlog value.",
+                  "type": "integer"
+                },
+                "created": {
+                  "description": "The created value.",
+                  "type": "integer"
+                },
+                "key": {
+                  "description": "The key value.",
+                  "type": "string"
+                },
+                "label": {
+                  "description": "The label value.",
+                  "type": "string"
+                },
+                "reopened": {
+                  "description": "The reopened value.",
+                  "type": "integer"
+                },
+                "sla_breached": {
+                  "description": "The sla breached value.",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "backlog",
+                "created",
+                "key",
+                "label",
+                "reopened",
+                "sla_breached"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "summary": {
+            "additionalProperties": false,
+            "description": "The summary value.",
+            "properties": {
+              "backlog": {
+                "description": "The backlog value.",
+                "type": "integer"
+              },
+              "created": {
+                "description": "The created value.",
+                "type": "integer"
+              },
+              "first_response": {
+                "additionalProperties": false,
+                "description": "The first response value.",
+                "nullable": true,
+                "properties": {
+                  "count": {
+                    "description": "The count value.",
+                    "type": "integer"
+                  },
+                  "p50_ms": {
+                    "description": "The p50 ms value.",
+                    "type": "number"
+                  },
+                  "p90_ms": {
+                    "description": "The p90 ms value.",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "count",
+                  "p50_ms",
+                  "p90_ms"
+                ],
+                "type": "object"
+              },
+              "reopened": {
+                "description": "The reopened value.",
+                "type": "integer"
+              },
+              "resolution": {
+                "additionalProperties": false,
+                "description": "The resolution value.",
+                "nullable": true,
+                "properties": {
+                  "count": {
+                    "description": "The count value.",
+                    "type": "integer"
+                  },
+                  "p50_ms": {
+                    "description": "The p50 ms value.",
+                    "type": "number"
+                  },
+                  "p90_ms": {
+                    "description": "The p90 ms value.",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "count",
+                  "p50_ms",
+                  "p90_ms"
+                ],
+                "type": "object"
+              },
+              "resolved": {
+                "description": "The resolved value.",
+                "type": "integer"
+              },
+              "sla": {
+                "additionalProperties": false,
+                "description": "The sla value.",
+                "nullable": true,
+                "properties": {
+                  "breached": {
+                    "description": "The breached value.",
+                    "type": "integer"
+                  },
+                  "completed": {
+                    "description": "The completed value.",
+                    "type": "integer"
+                  },
+                  "compliant_pct": {
+                    "description": "The compliant pct value.",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "breached",
+                  "completed",
+                  "compliant_pct"
+                ],
+                "type": "object"
+              },
+              "unassigned": {
+                "description": "The unassigned value.",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "backlog",
+              "created",
+              "reopened",
+              "resolved",
+              "unassigned"
+            ],
+            "type": "object"
+          },
+          "timezone": {
+            "description": "The timezone value.",
+            "type": "string"
+          },
+          "to": {
+            "description": "The to value.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "bucket",
+          "buckets",
+          "from",
+          "generated_at",
+          "queues",
+          "segments",
+          "summary",
+          "timezone",
+          "to"
         ],
         "type": "object"
       },
@@ -34892,6 +35335,13 @@
               }
             },
             "type": "object"
+          },
+          "warnings": {
+            "description": "The warnings value.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -41243,6 +41693,15 @@
                   "format": "date-time",
                   "type": "string"
                 },
+                "creator_customer_organisation_id": {
+                  "description": "The creator customer organisation id value.",
+                  "nullable": true,
+                  "type": "integer"
+                },
+                "creator_customer_organisation_name": {
+                  "description": "The creator customer organisation name value.",
+                  "type": "string"
+                },
                 "creator_email": {
                   "description": "The creator email value.",
                   "type": "string"
@@ -43823,6 +44282,15 @@
                       "format": "date-time",
                       "type": "string"
                     },
+                    "creator_customer_organisation_id": {
+                      "description": "The creator customer organisation id value.",
+                      "nullable": true,
+                      "type": "integer"
+                    },
+                    "creator_customer_organisation_name": {
+                      "description": "The creator customer organisation name value.",
+                      "type": "string"
+                    },
                     "creator_email": {
                       "description": "The creator email value.",
                       "type": "string"
@@ -44883,6 +45351,15 @@
                     "created_at": {
                       "description": "The created at value.",
                       "format": "date-time",
+                      "type": "string"
+                    },
+                    "creator_customer_organisation_id": {
+                      "description": "The creator customer organisation id value.",
+                      "nullable": true,
+                      "type": "integer"
+                    },
+                    "creator_customer_organisation_name": {
+                      "description": "The creator customer organisation name value.",
                       "type": "string"
                     },
                     "creator_email": {
@@ -46002,6 +46479,15 @@
                   "created_at": {
                     "description": "The created at value.",
                     "format": "date-time",
+                    "type": "string"
+                  },
+                  "creator_customer_organisation_id": {
+                    "description": "The creator customer organisation id value.",
+                    "nullable": true,
+                    "type": "integer"
+                  },
+                  "creator_customer_organisation_name": {
+                    "description": "The creator customer organisation name value.",
                     "type": "string"
                   },
                   "creator_email": {
@@ -48183,6 +48669,15 @@
               "created_at": {
                 "description": "The created at value.",
                 "format": "date-time",
+                "type": "string"
+              },
+              "creator_customer_organisation_id": {
+                "description": "The creator customer organisation id value.",
+                "nullable": true,
+                "type": "integer"
+              },
+              "creator_customer_organisation_name": {
+                "description": "The creator customer organisation name value.",
                 "type": "string"
               },
               "creator_email": {
@@ -53530,6 +54025,15 @@
                 "format": "date-time",
                 "type": "string"
               },
+              "creator_customer_organisation_id": {
+                "description": "The creator customer organisation id value.",
+                "nullable": true,
+                "type": "integer"
+              },
+              "creator_customer_organisation_name": {
+                "description": "The creator customer organisation name value.",
+                "type": "string"
+              },
               "creator_email": {
                 "description": "The creator email value.",
                 "type": "string"
@@ -54750,6 +55254,15 @@
               "created_at": {
                 "description": "The created at value.",
                 "format": "date-time",
+                "type": "string"
+              },
+              "creator_customer_organisation_id": {
+                "description": "The creator customer organisation id value.",
+                "nullable": true,
+                "type": "integer"
+              },
+              "creator_customer_organisation_name": {
+                "description": "The creator customer organisation name value.",
                 "type": "string"
               },
               "creator_email": {
@@ -69466,6 +69979,15 @@
                         "format": "date-time",
                         "type": "string"
                       },
+                      "creator_customer_organisation_id": {
+                        "description": "The creator customer organisation id value.",
+                        "nullable": true,
+                        "type": "integer"
+                      },
+                      "creator_customer_organisation_name": {
+                        "description": "The creator customer organisation name value.",
+                        "type": "string"
+                      },
                       "creator_email": {
                         "description": "The creator email value.",
                         "type": "string"
@@ -70507,6 +71029,15 @@
                 "created_at": {
                   "description": "The created at value.",
                   "format": "date-time",
+                  "type": "string"
+                },
+                "creator_customer_organisation_id": {
+                  "description": "The creator customer organisation id value.",
+                  "nullable": true,
+                  "type": "integer"
+                },
+                "creator_customer_organisation_name": {
+                  "description": "The creator customer organisation name value.",
                   "type": "string"
                 },
                 "creator_email": {
@@ -71564,6 +72095,15 @@
                     "created_at": {
                       "description": "The created at value.",
                       "format": "date-time",
+                      "type": "string"
+                    },
+                    "creator_customer_organisation_id": {
+                      "description": "The creator customer organisation id value.",
+                      "nullable": true,
+                      "type": "integer"
+                    },
+                    "creator_customer_organisation_name": {
+                      "description": "The creator customer organisation name value.",
                       "type": "string"
                     },
                     "creator_email": {
@@ -72633,6 +73173,15 @@
                     "created_at": {
                       "description": "The created at value.",
                       "format": "date-time",
+                      "type": "string"
+                    },
+                    "creator_customer_organisation_id": {
+                      "description": "The creator customer organisation id value.",
+                      "nullable": true,
+                      "type": "integer"
+                    },
+                    "creator_customer_organisation_name": {
+                      "description": "The creator customer organisation name value.",
                       "type": "string"
                     },
                     "creator_email": {
@@ -73805,6 +74354,15 @@
                 "format": "date-time",
                 "type": "string"
               },
+              "creator_customer_organisation_id": {
+                "description": "The creator customer organisation id value.",
+                "nullable": true,
+                "type": "integer"
+              },
+              "creator_customer_organisation_name": {
+                "description": "The creator customer organisation name value.",
+                "type": "string"
+              },
               "creator_email": {
                 "description": "The creator email value.",
                 "type": "string"
@@ -74921,6 +75479,15 @@
               "created_at": {
                 "description": "The created at value.",
                 "format": "date-time",
+                "type": "string"
+              },
+              "creator_customer_organisation_id": {
+                "description": "The creator customer organisation id value.",
+                "nullable": true,
+                "type": "integer"
+              },
+              "creator_customer_organisation_name": {
+                "description": "The creator customer organisation name value.",
                 "type": "string"
               },
               "creator_email": {
@@ -76469,6 +77036,15 @@
                     "format": "date-time",
                     "type": "string"
                   },
+                  "creator_customer_organisation_id": {
+                    "description": "The creator customer organisation id value.",
+                    "nullable": true,
+                    "type": "integer"
+                  },
+                  "creator_customer_organisation_name": {
+                    "description": "The creator customer organisation name value.",
+                    "type": "string"
+                  },
                   "creator_email": {
                     "description": "The creator email value.",
                     "type": "string"
@@ -77628,6 +78204,87 @@
         ],
         "type": "object"
       },
+      "PostItemsItemIdParticipantsPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "description": "The email value.",
+            "type": "string"
+          },
+          "name": {
+            "description": "The name value.",
+            "type": "string"
+          },
+          "portal_customer_id": {
+            "description": "The portal customer id value.",
+            "nullable": true,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "email",
+          "name"
+        ],
+        "type": "object"
+      },
+      "PostItemsItemIdParticipantsResult": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "added_by": {
+                  "description": "The added by value.",
+                  "nullable": true,
+                  "type": "integer"
+                },
+                "added_by_name": {
+                  "description": "The added by name value.",
+                  "type": "string"
+                },
+                "created_at": {
+                  "description": "The created at value.",
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "customer_email": {
+                  "description": "The customer email value.",
+                  "type": "string"
+                },
+                "customer_name": {
+                  "description": "The customer name value.",
+                  "type": "string"
+                },
+                "id": {
+                  "description": "The id value.",
+                  "type": "integer"
+                },
+                "item_id": {
+                  "description": "The item id value.",
+                  "type": "integer"
+                },
+                "portal_customer_id": {
+                  "description": "The portal customer id value.",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "created_at",
+                "id",
+                "item_id",
+                "portal_customer_id"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "PostItemsItemIdRecurrenceGenerateResult": {
         "additionalProperties": false,
         "properties": {
@@ -78083,6 +78740,15 @@
                   "created_at": {
                     "description": "The created at value.",
                     "format": "date-time",
+                    "type": "string"
+                  },
+                  "creator_customer_organisation_id": {
+                    "description": "The creator customer organisation id value.",
+                    "nullable": true,
+                    "type": "integer"
+                  },
+                  "creator_customer_organisation_name": {
+                    "description": "The creator customer organisation name value.",
                     "type": "string"
                   },
                   "creator_email": {
@@ -79252,6 +79918,15 @@
                 "format": "date-time",
                 "type": "string"
               },
+              "creator_customer_organisation_id": {
+                "description": "The creator customer organisation id value.",
+                "nullable": true,
+                "type": "integer"
+              },
+              "creator_customer_organisation_name": {
+                "description": "The creator customer organisation name value.",
+                "type": "string"
+              },
               "creator_email": {
                 "description": "The creator email value.",
                 "type": "string"
@@ -80361,6 +81036,15 @@
                     "created_at": {
                       "description": "The created at value.",
                       "format": "date-time",
+                      "type": "string"
+                    },
+                    "creator_customer_organisation_id": {
+                      "description": "The creator customer organisation id value.",
+                      "nullable": true,
+                      "type": "integer"
+                    },
+                    "creator_customer_organisation_name": {
+                      "description": "The creator customer organisation name value.",
                       "type": "string"
                     },
                     "creator_email": {
@@ -87931,6 +88615,13 @@
               }
             },
             "type": "object"
+          },
+          "warnings": {
+            "description": "The warnings value.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -107359,6 +108050,197 @@
         ]
       }
     },
+    "/items/{item_id}/participants": {
+      "get": {
+        "description": "List item participants. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "operationId": "getItemsItemIdParticipants",
+        "parameters": [
+          {
+            "description": "The item identifier.",
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetItemsItemIdParticipantsResult"
+                }
+              }
+            },
+            "description": "List item participants response."
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationError"
+          },
+          "403": {
+            "$ref": "#/components/responses/PermissionError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimitError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "List item participants",
+        "tags": [
+          "Work items"
+        ],
+        "x-required-scopes": [
+          "items:read"
+        ]
+      },
+      "post": {
+        "description": "Add item participant. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "operationId": "postItemsItemIdParticipants",
+        "parameters": [
+          {
+            "description": "The item identifier.",
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PostItemsItemIdParticipantsPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PostItemsItemIdParticipantsResult"
+                }
+              }
+            },
+            "description": "Add item participant response."
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequestError"
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationError"
+          },
+          "403": {
+            "$ref": "#/components/responses/PermissionError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLargeError"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaTypeError"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimitError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Add item participant",
+        "tags": [
+          "Work items"
+        ],
+        "x-required-scopes": [
+          "items:write"
+        ]
+      }
+    },
+    "/items/{item_id}/participants/{customer_id}": {
+      "delete": {
+        "description": "Remove item participant. The server verifies resource ownership and deletion preconditions before removing the resource.",
+        "operationId": "deleteItemsItemIdParticipantsCustomerId",
+        "parameters": [
+          {
+            "description": "The item identifier.",
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The portal customer identifier.",
+            "in": "path",
+            "name": "customer_id",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Request completed successfully with no response body."
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationError"
+          },
+          "403": {
+            "$ref": "#/components/responses/PermissionError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimitError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Remove item participant",
+        "tags": [
+          "Work items"
+        ],
+        "x-required-scopes": [
+          "items:write"
+        ]
+      }
+    },
     "/items/{item_id}/personal-tasks": {
       "get": {
         "description": "List item personal tasks. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
@@ -113360,6 +114242,49 @@
         ],
         "x-required-scopes": [
           "statuses:write"
+        ]
+      }
+    },
+    "/support/metrics/aggregate": {
+      "get": {
+        "description": "Get the support metrics aggregate. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "operationId": "getSupportMetricsAggregate",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetSupportMetricsAggregateResult"
+                }
+              }
+            },
+            "description": "Get the support metrics aggregate response."
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationError"
+          },
+          "403": {
+            "$ref": "#/components/responses/PermissionError"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimitError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Get the support metrics aggregate",
+        "tags": [
+          "Work items"
+        ],
+        "x-required-scopes": [
+          "items:read"
         ]
       }
     },

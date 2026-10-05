@@ -64,6 +64,10 @@ export default {
         title: 'Priorities',
         description: 'Configure priority levels with icons and colors',
       },
+      contactLevels: {
+        title: 'Contact levels',
+        description: 'Manage the portal contact levels used for organisation request sharing',
+      },
       configurationSets: { title: 'Configuration Sets', description: 'Manage configuration sets' },
       statuses: {
         title: 'Statuses',
@@ -1151,6 +1155,22 @@ export default {
     roleUpdated: 'Role updated successfully',
     roleDeleted: 'Role deleted successfully',
     cannotDeleteSystemRole: 'System roles cannot be deleted',
+  },
+
+  // Portal contact levels (WI-1139)
+  contactLevels: {
+    title: 'Contact levels',
+    subtitle: 'Manage the portal contact levels used for organisation request sharing',
+    createLevel: 'Create level',
+    editLevel: 'Edit level',
+    noLevels: 'No contact levels yet',
+    namePlaceholder: 'e.g. Manager, Billing, Viewer',
+    nameRequired: 'Contact level name is required.',
+    failedToLoad: 'Failed to load contact levels.',
+    failedToSave: 'Failed to save contact level.',
+    deleteFailed: 'Failed to delete contact level.',
+    confirmDelete: 'Delete “{name}”? Contacts holding this level lose it.',
+    system: 'System',
   },
 
   // Permissions

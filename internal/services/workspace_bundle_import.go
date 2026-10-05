@@ -11,6 +11,7 @@ import (
 
 	"windshift/internal/database"
 	"windshift/internal/logger"
+	"windshift/internal/models"
 	"windshift/internal/repository"
 )
 
@@ -217,6 +218,7 @@ func (s *WorkspaceBundleImportService) validateReferences(ctx context.Context, w
 	providedItemTypes := map[string]bool{}
 	providedCustomFields := map[string]bool{}
 	providedLinkTypes := map[string]bool{}
+	providedPriorities := map[string]bool{}
 	if tpl := bundle.ConfigurationSet; tpl != nil {
 		for _, it := range tpl.Payload.ItemTypes {
 			providedItemTypes[lowerStr(it.Name)] = true
@@ -226,6 +228,9 @@ func (s *WorkspaceBundleImportService) validateReferences(ctx context.Context, w
 		}
 		for _, lt := range tpl.Payload.LinkTypes {
 			providedLinkTypes[lowerStr(lt.Name)] = true
+		}
+		for _, p := range tpl.Payload.Priorities {
+			providedPriorities[lowerStr(p.Name)] = true
 		}
 	}
 
@@ -290,6 +295,25 @@ func (s *WorkspaceBundleImportService) validateReferences(ctx context.Context, w
 		}
 	}
 
+	seenPriorities := map[string]bool{}
+	for _, item := range bundle.Payload.Items {
+		name := strings.TrimSpace(item.PriorityName)
+		key := lowerStr(name)
+		if key == "" || seenPriorities[key] {
+			continue
+		}
+		seenPriorities[key] = true
+		if providedPriorities[key] {
+			continue
+		}
+		if id, _ := s.lookupPriorityID(ctx, name); id == 0 {
+			missing = append(missing, UnresolvedRef{
+				Kind: UnresolvedKindPriority, Name: name,
+				Path: fmt.Sprintf("items/%s", item.Ref),
+			})
+		}
+	}
+
 	seenEmails := map[string]bool{}
 	for _, item := range bundle.Payload.Items {
 		email := item.AssigneeEmail
@@ -314,6 +338,15 @@ func (s *WorkspaceBundleImportService) validateReferences(ctx context.Context, w
 func (s *WorkspaceBundleImportService) lookupCustomFieldID(ctx context.Context, name string) (int, error) {
 	var id int
 	err := s.db.QueryRowContext(ctx, `SELECT id FROM custom_field_definitions WHERE LOWER(name) = LOWER(?)`, name).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return id, err
+}
+
+func (s *WorkspaceBundleImportService) lookupPriorityID(ctx context.Context, name string) (int, error) {
+	var id int
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM priorities WHERE LOWER(name) = LOWER(?)`, name).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}
@@ -538,10 +571,18 @@ func (s *WorkspaceBundleImportService) importItems(ctx context.Context, imp *wor
 			ItemTypeID:  &typeID,
 		}
 		if item.PriorityName != "" {
-			var priorityID int
-			if err := s.db.QueryRowContext(ctx, `SELECT id FROM priorities WHERE LOWER(name) = LOWER(?)`, item.PriorityName).Scan(&priorityID); err == nil {
-				input.PriorityID = &priorityID
+			priorityID, err := s.lookupPriorityID(ctx, item.PriorityName)
+			if err != nil {
+				imp.failedItems[item.Ref] = true
+				imp.outcome("item", item.Ref, item.Title, "failed", "priority lookup failed: "+err.Error())
+				continue
 			}
+			if priorityID == 0 {
+				imp.failedItems[item.Ref] = true
+				imp.outcome("item", item.Ref, item.Title, "failed", fmt.Sprintf("priority %q is not available", item.PriorityName))
+				continue
+			}
+			input.PriorityID = &priorityID
 		}
 		if item.AssigneeEmail != "" {
 			var userID int
@@ -555,27 +596,52 @@ func (s *WorkspaceBundleImportService) importItems(ctx context.Context, imp *wor
 				imp.outcome("item", item.Ref, item.Title, "failed", "parent item failed to import")
 				continue
 			}
-			if id, ok := imp.itemIDs[item.ParentRef]; ok {
-				input.ParentID = &id
+			id, ok := imp.itemIDs[item.ParentRef]
+			if !ok {
+				// Never silently flatten a subtree: a child whose parent has not
+				// been imported yet (out-of-order bundle) is a hard failure.
+				imp.failedItems[item.Ref] = true
+				imp.outcome("item", item.Ref, item.Title, "failed", fmt.Sprintf("parent ref %q was not imported before this item", item.ParentRef))
+				continue
 			}
+			input.ParentID = &id
 		}
 		if len(item.FieldValues) > 0 {
 			values := make(map[string]any, len(item.FieldValues))
+			var fieldProblem string
 			for fieldName, value := range item.FieldValues {
-				var fieldID int
-				if err := s.db.QueryRowContext(ctx, `SELECT id FROM custom_field_definitions WHERE LOWER(name) = LOWER(?)`, fieldName).Scan(&fieldID); err != nil {
-					continue
+				var def customFieldDef
+				if err := s.db.QueryRowContext(ctx,
+					`SELECT id, name, field_type, COALESCE(options, '') FROM custom_field_definitions WHERE LOWER(name) = LOWER(?)`,
+					fieldName,
+				).Scan(&def.ID, &def.Name, &def.FieldType, &def.Options); err != nil {
+					fieldProblem = fmt.Sprintf("custom field %q is not available", fieldName)
+					break
 				}
-				values[strconv.Itoa(fieldID)] = value
+				decoded, err := decodeChoiceFieldValue(def, value)
+				if err != nil {
+					fieldProblem = err.Error()
+					break
+				}
+				values[strconv.Itoa(def.ID)] = decoded
+			}
+			if fieldProblem != "" {
+				imp.failedItems[item.Ref] = true
+				imp.outcome("item", item.Ref, item.Title, "failed", fieldProblem)
+				continue
 			}
 			input.CustomFieldValues = values
 		}
+		var droppedLabels []string
 		if len(item.Labels) > 0 {
 			ids := make([]int, 0, len(item.Labels))
 			for _, name := range item.Labels {
-				if labelID, err := s.labels.FindIDByName(name); err == nil && labelID > 0 {
-					ids = append(ids, labelID)
+				labelID, err := s.labels.FindIDByName(name)
+				if err != nil || labelID == 0 {
+					droppedLabels = append(droppedLabels, name)
+					continue
 				}
+				ids = append(ids, labelID)
 			}
 			input.LabelIDs = ids
 		}
@@ -587,9 +653,65 @@ func (s *WorkspaceBundleImportService) importItems(ctx context.Context, imp *wor
 			continue
 		}
 		imp.itemIDs[item.Ref] = created.Item.ID
-		imp.outcome("item", item.Ref, item.Title, "imported", "")
+		detail := ""
+		if len(droppedLabels) > 0 {
+			detail = "labels not available: " + strings.Join(droppedLabels, ", ")
+		}
+		imp.outcome("item", item.Ref, item.Title, "imported", detail)
 	}
 	return nil
+}
+
+// decodeChoiceFieldValue turns a select/multiselect option label (or list of
+// labels) back into the target instance's option id(s). Non-choice values pass
+// through unchanged; a label absent from the field's option set is an error so
+// the item is reported instead of storing a broken value.
+func decodeChoiceFieldValue(def customFieldDef, value any) (any, error) {
+	switch def.FieldType {
+	case "select":
+		label, ok := value.(string)
+		if !ok {
+			return value, nil
+		}
+		id, ok := selectOptionIDByLabel(def.Options, label)
+		if !ok {
+			return nil, fmt.Errorf("custom field %q: option %q is not in the field's option set", def.Name, label)
+		}
+		return id, nil
+	case "multiselect":
+		items, ok := value.([]any)
+		if !ok {
+			return value, nil
+		}
+		ids := make([]int, 0, len(items))
+		for _, item := range items {
+			label, ok := item.(string)
+			if !ok {
+				return value, nil
+			}
+			id, ok := selectOptionIDByLabel(def.Options, label)
+			if !ok {
+				return nil, fmt.Errorf("custom field %q: option %q is not in the field's option set", def.Name, label)
+			}
+			ids = append(ids, id)
+		}
+		return ids, nil
+	default:
+		return value, nil
+	}
+}
+
+func selectOptionIDByLabel(optionsJSON, label string) (int, bool) {
+	opts, err := models.ParseSelectOptions(optionsJSON)
+	if err != nil {
+		return 0, false
+	}
+	for _, item := range opts.Items {
+		if item.Label == label {
+			return item.ID, true
+		}
+	}
+	return 0, false
 }
 
 func (s *WorkspaceBundleImportService) importItemLinks(imp *workspaceBundleImporter) {
