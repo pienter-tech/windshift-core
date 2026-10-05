@@ -3,6 +3,7 @@ package services
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"windshift/internal/models"
@@ -126,9 +127,15 @@ func (s *MilestoneCommentService) requireAuthor(userID, milestoneID, commentID i
 	return nil
 }
 
+// milestoneCommentBreakRegex matches the `<br />` hard breaks RichText keeps
+// for the Markdown editor; a comment of only breaks counts as empty.
+var milestoneCommentBreakRegex = regexp.MustCompile(`(?i)<br\s*/?>`)
+
+// cleanMilestoneCommentContent uses RichText rather than Comment so the
+// editor's `<br />` hard breaks survive; Comment strips them.
 func cleanMilestoneCommentContent(content string) (string, error) {
-	clean := sanitize.Comment.Sanitize(content)
-	if strings.TrimSpace(clean) == "" {
+	clean := sanitize.RichText.Sanitize(content)
+	if strings.TrimSpace(milestoneCommentBreakRegex.ReplaceAllString(clean, "")) == "" {
 		return "", planningValidationError("content", "content is required")
 	}
 	return clean, nil

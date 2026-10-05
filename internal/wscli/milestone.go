@@ -236,7 +236,7 @@ func init() {
 	milestoneCmd.AddCommand(milestoneUpdateCmd)
 
 	// List filters
-	milestoneListCmd.Flags().StringVarP(&milestoneStatusFilter, "status", "s", "", "filter by status (planning, in-progress, completed, canceled)")
+	milestoneListCmd.Flags().StringVarP(&milestoneStatusFilter, "status", "s", "", "filter by status (planning, in-progress, completed, cancelled)") //nolint:misspell // Status values use British spelling.
 	milestoneListCmd.Flags().BoolVar(&milestoneGlobalOnly, "global", false, "show only global milestones")
 
 	// Get flags
