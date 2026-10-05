@@ -20,6 +20,7 @@
   import MentionPicker from '../pickers/MentionPicker.svelte';
   import { mentionDecorationPlugin } from './milkdown-mention-mark.js';
   import { linkSanitizerPlugin } from './milkdown-link-sanitizer.js';
+  import { imageBlockerPlugin } from './milkdown-image-blocker.js';
   import { rewriteBreakHTML } from './milkdown-hardbreak.js';
   import { excalidrawBlock } from './milkdown-excalidraw-block.svelte.js';
   import PageDiagramModal from '../features/pages/PageDiagramModal.svelte';
@@ -570,6 +571,8 @@
           }
           // With uploads explicitly off, swallow pasted/dropped files instead of
           // letting the plugin's default uploader embed them as base64 images.
+          // (imageBlockerPlugin would reject the insert anyway, but it would also
+          // drop the upload plugin's placeholder cleanup in the same transaction.)
           if (!readonly && !allowImageUpload) {
             ctx.update(uploadConfig.key, (prev) => ({
               ...prev,
@@ -589,6 +592,9 @@
 
       if (enableDiagrams) {
         builder.use(excalidrawBlock);
+      }
+      if (!readonly && !allowImageUpload) {
+        builder.use(imageBlockerPlugin);
       }
 
       editor = await builder.create();
