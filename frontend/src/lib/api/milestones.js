@@ -1,4 +1,4 @@
-import { fetchAllV2Pages, fetchV2Data } from './core.js';
+import { fetchAllV2Pages, fetchAPIV2, fetchV2Data } from './core.js';
 import { createCrudClient } from './createCrudClient.js';
 
 export const milestoneCategories = createCrudClient('/milestone-categories');
@@ -106,6 +106,19 @@ export const milestones = {
     }),
   unlinkPage: (id, linkId) =>
     fetchV2Data(`/milestones/${id}/page-links/${linkId}`, { method: 'DELETE' }),
+  // Activity feed (WCORE-21): one page of the shared feed, newest first.
+  // Resolves to { entries, page, totalPages, totalItems }.
+  getActivity: async (id, { page = 1, pageSize = 50 } = {}) => {
+    const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+    const document = await fetchAPIV2(`/milestones/${id}/activity?${params}`);
+    const pagination = document?.pagination ?? {};
+    return {
+      entries: document?.data ?? [],
+      page: pagination.page ?? page,
+      totalPages: pagination.total_pages ?? 0,
+      totalItems: pagination.total_items ?? 0,
+    };
+  },
   reorder: (scope, orderedIds) => {
     const path = scope?.is_global
       ? '/milestones/reorder'
