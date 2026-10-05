@@ -25,6 +25,7 @@
   import MilestoneReleaseModal from './MilestoneReleaseModal.svelte';
 	import TextField from '../../components/TextField.svelte';
   import MilkdownEditor from '../../editors/LazyMilkdownEditor.svelte';
+  import MilestoneComments from './MilestoneComments.svelte';
 
   let { milestoneId, workspaceId = null } = $props();
 
@@ -343,6 +344,16 @@
         emptyTitle={t('milestones.noItemsAssigned')}
         emptyDescription={t('milestones.assignItemsHint')}
         ontoggle={toggleCategory}
+      />
+    {/if}
+
+    <!-- Comments (global and local milestones; no notifications). Kept outside
+         the loading branch so a reload after editing the milestone keeps the
+         thread and any draft mounted. -->
+    {#if progress && !error}
+      <MilestoneComments
+        {milestoneId}
+        workspaceId={progress.is_global ? null : (progress.workspace_id ?? null)}
       />
     {/if}
   </div>

@@ -175,6 +175,9 @@ var queuesSchemaPostgres string
 //go:embed schema/action_trigger_marks_postgres.sql
 var actionTriggerMarksSchemaPostgres string
 
+//go:embed schema/milestone_comments_postgres.sql
+var milestoneCommentsSchemaPostgres string
+
 //go:embed schema/agents_postgres.sql
 var agentsSchemaPostgres string
 
@@ -582,6 +585,7 @@ func (p *PostgresDB) getPostgresSchemaFiles() []schemaFile {
 		{"canned_responses_postgres.sql", cannedResponsesSchemaPostgres},
 		{"queues_postgres.sql", queuesSchemaPostgres},
 		{"action_trigger_marks_postgres.sql", actionTriggerMarksSchemaPostgres},
+		{"milestone_comments_postgres.sql", milestoneCommentsSchemaPostgres},
 		{"agents_postgres.sql", agentsSchemaPostgres},
 		{"events_postgres.sql", eventsSchemaPostgres},
 		{"action_event_targets_postgres.sql", actionEventTargetsSchemaPostgres},
