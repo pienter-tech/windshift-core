@@ -525,22 +525,16 @@ func (s *PlanningService) SetMilestoneStatus(milestoneID, workspaceID int, statu
 	if !validMilestoneStatus(status) {
 		return planningValidationError("status", milestoneStatusValidationMessage)
 	}
-	res, err := s.db.ExecWrite(`
-		UPDATE milestones
-		SET status = ?, updated_at = CURRENT_TIMESTAMP
-		WHERE id = ? AND workspace_id = ?
-	`, status, milestoneID, workspaceID)
-	if err != nil {
-		return fmt.Errorf("failed to set milestone status: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to read update result: %w", err)
-	}
-	if n == 0 {
-		return fmt.Errorf("milestone not found in workspace: %d: %w", milestoneID, repository.ErrNotFound)
-	}
-	return nil
+	return database.WithTx(s.db, func(tx database.Tx) error {
+		n, err := recordMilestoneStatusTransition(tx, milestoneID, "AND workspace_id = ?", []any{workspaceID}, status, nil)
+		if err != nil {
+			return fmt.Errorf("failed to set milestone status: %w", err)
+		}
+		if n == 0 {
+			return fmt.Errorf("milestone not found in workspace: %d: %w", milestoneID, repository.ErrNotFound)
+		}
+		return nil
+	})
 }
 
 // AttachRelease inserts a milestone_releases row without flipping the
@@ -600,32 +594,57 @@ func (s *PlanningService) UpdateMilestone(params UpdateMilestoneParams) (*Milest
 	}); err != nil {
 		return nil, err
 	}
-	var (
-		res sql.Result
-		err error
-	)
-	if params.WorkspaceID == nil {
-		res, err = s.db.ExecWrite(`
+	scope := "is_global = true"
+	scopeArgs := []any{params.ID}
+	if params.WorkspaceID != nil {
+		scope = "workspace_id = ? AND is_global = false"
+		scopeArgs = append(scopeArgs, *params.WorkspaceID)
+	}
+	var actorID *int
+	if params.AuditActor != nil && params.AuditActor.UserID > 0 {
+		id := params.AuditActor.UserID
+		actorID = &id
+	}
+	err := database.WithTx(s.db, func(tx database.Tx) error {
+		// Read the current values in the same transaction so the milestone
+		// history (WCORE-21) records exactly what this update changed.
+		var oldDescription, oldTargetDate sql.NullString
+		var oldStatus string
+		err := tx.QueryRow(`SELECT description, target_date, status FROM milestones WHERE id = ? AND `+scope, scopeArgs...).
+			Scan(&oldDescription, &oldTargetDate, &oldStatus)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("milestone not found: %d: %w", params.ID, repository.ErrNotFound)
+		}
+		if err != nil {
+			return fmt.Errorf("failed to read milestone: %w", err)
+		}
+		args := append([]any{params.Name, params.Description, params.TargetDate, params.Status, params.CategoryID}, scopeArgs...)
+		res, err := tx.ExecWrite(`
 			UPDATE milestones SET name = ?, description = ?, target_date = ?, status = ?, category_id = ?,
 			       updated_at = CURRENT_TIMESTAMP
-			WHERE id = ? AND is_global = true
-		`, params.Name, params.Description, params.TargetDate, params.Status, params.CategoryID, params.ID)
-	} else {
-		res, err = s.db.ExecWrite(`
-			UPDATE milestones SET name = ?, description = ?, target_date = ?, status = ?, category_id = ?,
-			       updated_at = CURRENT_TIMESTAMP
-			WHERE id = ? AND workspace_id = ? AND is_global = false
-		`, params.Name, params.Description, params.TargetDate, params.Status, params.CategoryID, params.ID, *params.WorkspaceID)
-	}
+			WHERE id = ? AND `+scope, args...)
+		if err != nil {
+			return fmt.Errorf("failed to update milestone: %w", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("failed to read update result: %w", err)
+		}
+		if n == 0 {
+			return fmt.Errorf("milestone not found: %d: %w", params.ID, repository.ErrNotFound)
+		}
+		newTargetDate := ""
+		if params.TargetDate != nil {
+			newTargetDate = *params.TargetDate
+		}
+		return repository.RecordMilestoneHistory(tx, milestoneHistoryChanges(params.ID, actorID, []milestoneFieldChange{
+			{repository.MilestoneHistoryDescription, oldDescription.String, params.Description},
+			{repository.MilestoneHistoryStatus, oldStatus, params.Status},
+			{repository.MilestoneHistoryTargetDate, milestoneDateValue(oldTargetDate.String), milestoneDateValue(newTargetDate)},
+		})...)
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to update milestone: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return nil, fmt.Errorf("failed to read update result: %w", err)
-	}
-	if n == 0 {
-		return nil, fmt.Errorf("milestone not found: %d: %w", params.ID, repository.ErrNotFound)
+		return nil, err
 	}
 	updated, err := s.GetMilestone(params.ID)
 	if err != nil {
@@ -636,6 +655,79 @@ func (s *PlanningService) UpdateMilestone(params UpdateMilestoneParams) (*Milest
 		emitServiceAudit(s.db, *params.AuditActor, logger.ActionMilestoneUpdate, logger.ResourceMilestone, &resourceID, updated.Name, nil)
 	}
 	return updated, nil
+}
+
+// milestoneFieldChange is one field's old and new value in a milestone update.
+type milestoneFieldChange struct {
+	field    string
+	oldValue string
+	newValue string
+}
+
+// milestoneHistoryChanges keeps the fields whose value changed, as milestone
+// history rows (WCORE-21).
+func milestoneHistoryChanges(milestoneID int, actorID *int, changes []milestoneFieldChange) []repository.MilestoneHistoryEntry {
+	now := time.Now().UTC()
+	entries := []repository.MilestoneHistoryEntry{}
+	for _, change := range changes {
+		if change.oldValue == change.newValue {
+			continue
+		}
+		entries = append(entries, repository.MilestoneHistoryEntry{
+			MilestoneID: milestoneID,
+			UserID:      actorID,
+			FieldName:   change.field,
+			OldValue:    change.oldValue,
+			NewValue:    change.newValue,
+			ChangedAt:   now,
+		})
+	}
+	return entries
+}
+
+// milestoneDateValue normalizes a stored or submitted target date to
+// YYYY-MM-DD. Drivers return DATE columns as "2026-10-30" or as a timestamp
+// string such as "2026-10-30T00:00:00Z".
+func milestoneDateValue(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) > 10 {
+		return value[:10]
+	}
+	return value
+}
+
+// recordMilestoneStatusTransition sets a milestone's status inside tx and
+// records the change in milestone history when the status actually changes.
+// actorID nil records a system change (automation, release flows without a
+// user).
+func recordMilestoneStatusTransition(tx database.Tx, milestoneID int, scope string, scopeArgs []any, status string, actorID *int) (int64, error) {
+	var oldStatus string
+	err := tx.QueryRow(`SELECT status FROM milestones WHERE id = ? `+scope, append([]any{milestoneID}, scopeArgs...)...).Scan(&oldStatus)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("failed to read milestone status: %w", err)
+	}
+	res, err := tx.ExecWrite(`
+		UPDATE milestones SET status = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ? `+scope, append([]any{status, milestoneID}, scopeArgs...)...)
+	if err != nil {
+		return 0, fmt.Errorf("failed to update milestone status: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("failed to inspect milestone status update: %w", err)
+	}
+	if n == 0 {
+		return 0, nil
+	}
+	if err := repository.RecordMilestoneHistory(tx, milestoneHistoryChanges(milestoneID, actorID, []milestoneFieldChange{
+		{repository.MilestoneHistoryStatus, oldStatus, status},
+	})...); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 // ListMilestoneReleases fetches all releases for a given milestone, ordered by created_at DESC.
@@ -945,16 +1037,9 @@ func (s *PlanningService) CompleteMilestoneRelease(ctx context.Context, attemptI
 		if updated == 0 {
 			return fmt.Errorf("milestone release attempt is no longer owned")
 		}
-		result, err = tx.ExecWriteContext(ctx, `
-			UPDATE milestones SET status = 'completed', updated_at = CURRENT_TIMESTAMP
-			WHERE id = ?
-		`, params.ID)
+		updated, err = recordMilestoneStatusTransition(tx, params.ID, "", nil, "completed", params.CreatedBy)
 		if err != nil {
-			return fmt.Errorf("failed to update milestone status: %w", err)
-		}
-		updated, err = result.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("failed to inspect milestone status update: %w", err)
+			return err
 		}
 		if updated == 0 {
 			return fmt.Errorf("milestone not found: %d: %w", params.ID, repository.ErrNotFound)
@@ -988,14 +1073,8 @@ func (s *PlanningService) ReleaseMilestone(params ReleaseMilestoneParams) (*Mile
 		if err != nil {
 			return fmt.Errorf("failed to insert milestone release: %w", err)
 		}
-		_, err = tx.ExecWrite(`
-			UPDATE milestones SET status = 'completed', updated_at = CURRENT_TIMESTAMP
-			WHERE id = ?
-		`, params.ID)
-		if err != nil {
-			return fmt.Errorf("failed to update milestone status: %w", err)
-		}
-		return nil
+		_, err = recordMilestoneStatusTransition(tx, params.ID, "", nil, "completed", params.CreatedBy)
+		return err
 	})
 	if err != nil {
 		return nil, err

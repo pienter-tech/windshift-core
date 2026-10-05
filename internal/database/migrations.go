@@ -2297,6 +2297,48 @@ var Catalog = []Migration{
 			CREATE INDEX IF NOT EXISTS idx_milestone_comments_author ON milestone_comments(author_id);
 		`,
 	},
+	{
+		Version:       "20261005_milestone_activity",
+		Name:          "Milestone history and item milestone-change index for the milestone Activity tab (WCORE-21)",
+		CheckSQLite:   sqliteTableCheck("milestone_history"),
+		CheckPostgres: pgTableCheck("milestone_history"),
+		SQLite: `
+			CREATE TABLE milestone_history (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				milestone_id INTEGER NOT NULL,
+				user_id INTEGER,
+				field_name TEXT NOT NULL,
+				old_value TEXT,
+				new_value TEXT,
+				changed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+				FOREIGN KEY (milestone_id) REFERENCES milestones(id) ON DELETE CASCADE,
+				FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+			);
+			CREATE INDEX idx_milestone_history_milestone ON milestone_history(milestone_id, changed_at, id);
+			CREATE INDEX idx_milestone_history_user ON milestone_history(user_id);
+			CREATE INDEX IF NOT EXISTS idx_item_history_milestones
+				ON item_history(changed_at DESC, id DESC)
+				WHERE field_name = 'milestones';
+		`,
+		Postgres: `
+			CREATE TABLE milestone_history (
+				id SERIAL PRIMARY KEY,
+				milestone_id INTEGER NOT NULL,
+				user_id INTEGER,
+				field_name TEXT NOT NULL,
+				old_value TEXT,
+				new_value TEXT,
+				changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				FOREIGN KEY (milestone_id) REFERENCES milestones(id) ON DELETE CASCADE,
+				FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+			);
+			CREATE INDEX IF NOT EXISTS idx_milestone_history_milestone ON milestone_history(milestone_id, changed_at, id);
+			CREATE INDEX IF NOT EXISTS idx_milestone_history_user ON milestone_history(user_id);
+			CREATE INDEX IF NOT EXISTS idx_item_history_milestones
+				ON item_history(changed_at DESC, id DESC)
+				WHERE field_name = 'milestones';
+		`,
+	},
 }
 
 // viewSettingsToolsBackfillIDs lists the workspace tools ids as they existed

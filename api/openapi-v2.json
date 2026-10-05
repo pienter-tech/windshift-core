@@ -25939,6 +25939,130 @@
         ],
         "type": "object"
       },
+      "GetMilestonesMilestoneIdActivityResult": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "actor_id": {
+                  "description": "The actor id value.",
+                  "nullable": true,
+                  "type": "integer"
+                },
+                "actor_kind": {
+                  "description": "The actor kind value.",
+                  "type": "string"
+                },
+                "actor_name": {
+                  "description": "The actor name value.",
+                  "type": "string"
+                },
+                "comment_id": {
+                  "description": "The comment id value.",
+                  "nullable": true,
+                  "type": "integer"
+                },
+                "id": {
+                  "description": "The id value.",
+                  "type": "string"
+                },
+                "item": {
+                  "additionalProperties": false,
+                  "description": "The item value.",
+                  "nullable": true,
+                  "properties": {
+                    "id": {
+                      "description": "The id value.",
+                      "type": "integer"
+                    },
+                    "key": {
+                      "description": "The key value.",
+                      "type": "string"
+                    },
+                    "title": {
+                      "description": "The title value.",
+                      "type": "string"
+                    },
+                    "workspace_id": {
+                      "description": "The workspace id value.",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "key",
+                    "title",
+                    "workspace_id"
+                  ],
+                  "type": "object"
+                },
+                "new_value": {
+                  "description": "The new value value.",
+                  "nullable": true,
+                  "type": "string"
+                },
+                "occurred_at": {
+                  "description": "The occurred at value.",
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "old_value": {
+                  "description": "The old value value.",
+                  "nullable": true,
+                  "type": "string"
+                },
+                "page": {
+                  "additionalProperties": false,
+                  "description": "The page value.",
+                  "nullable": true,
+                  "properties": {
+                    "id": {
+                      "description": "The id value.",
+                      "type": "integer"
+                    },
+                    "title": {
+                      "description": "The title value.",
+                      "type": "string"
+                    },
+                    "workspace_id": {
+                      "description": "The workspace id value.",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "title",
+                    "workspace_id"
+                  ],
+                  "type": "object"
+                },
+                "type": {
+                  "description": "The type value.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "actor_kind",
+                "id",
+                "occurred_at",
+                "type"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "pagination": {
+            "$ref": "#/components/schemas/Pagination"
+          }
+        },
+        "required": [
+          "data",
+          "pagination"
+        ],
+        "type": "object"
+      },
       "GetMilestonesMilestoneIdCommentsResult": {
         "additionalProperties": false,
         "properties": {
@@ -110295,6 +110419,86 @@
         ],
         "x-required-scopes": [
           "milestones:write"
+        ]
+      }
+    },
+    "/milestones/{milestone_id}/activity": {
+      "get": {
+        "description": "List milestone activity, newest first. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "operationId": "getMilestonesMilestoneIdActivity",
+        "parameters": [
+          {
+            "description": "The milestone identifier.",
+            "in": "path",
+            "name": "milestone_id",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "One-based page number.",
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Maximum number of resources to return.",
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetMilestonesMilestoneIdActivityResult"
+                }
+              }
+            },
+            "description": "List milestone activity, newest first response."
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationError"
+          },
+          "403": {
+            "$ref": "#/components/responses/PermissionError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimitError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "List milestone activity, newest first",
+        "tags": [
+          "Planning"
+        ],
+        "x-required-scopes": [
+          "milestones:read"
         ]
       }
     },
