@@ -117,10 +117,23 @@ func TestMilestoneCommentCreateSanitizesAndRejectsEmptyContent(t *testing.T) {
 	if created.Content == "" || strings.Contains(created.Content, "<script>") {
 		t.Fatalf("expected sanitized Markdown, got %q", created.Content)
 	}
-	if _, err := service.Create(authorUserID, readableMilestone, "  <b></b> "); err == nil {
-		t.Fatal("expected empty content to be rejected")
-	} else if _, ok := AsPlanningValidationError(err); !ok {
-		t.Fatalf("expected a validation error, got %v", err)
+	for _, empty := range []string{"  <b></b> ", "<br />\n<br>"} {
+		if _, err := service.Create(authorUserID, readableMilestone, empty); err == nil {
+			t.Fatalf("expected empty content %q to be rejected", empty)
+		} else if _, ok := AsPlanningValidationError(err); !ok {
+			t.Fatalf("expected a validation error for %q, got %v", empty, err)
+		}
+	}
+}
+
+func TestMilestoneCommentKeepsEditorHardBreaks(t *testing.T) {
+	service, _ := newTestMilestoneCommentService()
+	created, err := service.Create(authorUserID, readableMilestone, "line one<br />line two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Content != "line one<br />line two" {
+		t.Fatalf("expected the editor's hard break to survive, got %q", created.Content)
 	}
 }
 
