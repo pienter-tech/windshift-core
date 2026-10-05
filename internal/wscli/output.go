@@ -84,6 +84,10 @@ func (o *Output) printTable(data any) {
 		o.printCommentsTable(w, v)
 	case *Comment:
 		o.printCommentDetailTable(w, v)
+	case []MilestoneComment:
+		o.printMilestoneCommentsTable(w, v)
+	case *MilestoneComment:
+		o.printMilestoneCommentDetailTable(w, v)
 	case []Attachment:
 		o.printAttachmentsTable(w, v)
 	case []Label:
@@ -194,6 +198,10 @@ func (o *Output) printCSV(data any) {
 		o.printCommentsCSV(w, v)
 	case *Comment:
 		o.printCommentCSV(w, v)
+	case []MilestoneComment:
+		o.printMilestoneCommentsCSV(w, v)
+	case *MilestoneComment:
+		o.printMilestoneCommentCSV(w, v)
 	case []Attachment:
 		o.printAttachmentsCSV(w, v)
 	case []Milestone:
@@ -432,6 +440,18 @@ func (o *Output) printCommentCSV(w *csv.Writer, c *Comment) {
 	}
 	_ = w.Write([]string{"ID", "ITEM_ID", "AUTHOR", "CREATED", "UPDATED", "CONTENT"})
 	_ = w.Write([]string{fmt.Sprintf("%d", c.ID), fmt.Sprintf("%d", c.ItemID), author, c.CreatedAt.Format(time.RFC3339), c.UpdatedAt.Format(time.RFC3339), c.Content})
+}
+
+func (o *Output) printMilestoneCommentsCSV(w *csv.Writer, comments []MilestoneComment) {
+	_ = w.Write([]string{"ID", "AUTHOR", "CREATED", "CONTENT"})
+	for _, c := range comments {
+		_ = w.Write([]string{fmt.Sprintf("%d", c.ID), c.AuthorName, c.CreatedAt.Format("2006-01-02 15:04"), c.Content})
+	}
+}
+
+func (o *Output) printMilestoneCommentCSV(w *csv.Writer, c *MilestoneComment) {
+	_ = w.Write([]string{"ID", "MILESTONE_ID", "AUTHOR", "CREATED", "UPDATED", "CONTENT"})
+	_ = w.Write([]string{fmt.Sprintf("%d", c.ID), fmt.Sprintf("%d", c.MilestoneID), c.AuthorName, c.CreatedAt.Format(time.RFC3339), c.UpdatedAt.Format(time.RFC3339), c.Content})
 }
 
 func (o *Output) printUserTable(w *tabwriter.Writer, u *User) {
@@ -776,6 +796,26 @@ func (o *Output) printCommentDetailTable(w *tabwriter.Writer, c *Comment) {
 	_, _ = fmt.Fprintf(w, "Item ID:\t%d\n", c.ItemID)
 	if c.Author != nil {
 		_, _ = fmt.Fprintf(w, "Author:\t%s\n", c.Author.FullName)
+	}
+	_, _ = fmt.Fprintf(w, "Created:\t%s\n", c.CreatedAt.Format("2006-01-02 15:04:05"))
+	_, _ = fmt.Fprintf(w, "Updated:\t%s\n", c.UpdatedAt.Format("2006-01-02 15:04:05"))
+	_, _ = fmt.Fprintf(w, "Content:\n%s\n", c.Content)
+}
+
+func (o *Output) printMilestoneCommentsTable(w *tabwriter.Writer, comments []MilestoneComment) {
+	_, _ = fmt.Fprintln(w, "ID\tAUTHOR\tCREATED\tCONTENT")
+	_, _ = fmt.Fprintln(w, "--\t------\t-------\t-------")
+	for _, c := range comments {
+		created := c.CreatedAt.Format("2006-01-02 15:04")
+		_, _ = fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", c.ID, c.AuthorName, created, truncateString(c.Content, 50))
+	}
+}
+
+func (o *Output) printMilestoneCommentDetailTable(w *tabwriter.Writer, c *MilestoneComment) {
+	_, _ = fmt.Fprintf(w, "ID:\t%d\n", c.ID)
+	_, _ = fmt.Fprintf(w, "Milestone ID:\t%d\n", c.MilestoneID)
+	if c.AuthorName != "" {
+		_, _ = fmt.Fprintf(w, "Author:\t%s\n", c.AuthorName)
 	}
 	_, _ = fmt.Fprintf(w, "Created:\t%s\n", c.CreatedAt.Format("2006-01-02 15:04:05"))
 	_, _ = fmt.Fprintf(w, "Updated:\t%s\n", c.UpdatedAt.Format("2006-01-02 15:04:05"))

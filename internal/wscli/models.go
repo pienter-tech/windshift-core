@@ -478,6 +478,19 @@ type Comment struct {
 	UpdatedAt time.Time    `json:"updated_at"`
 }
 
+// MilestoneComment is one Markdown comment on a milestone, as returned by
+// /rest/api/v2/milestones/{milestone_id}/comments (WCORE-20).
+type MilestoneComment struct {
+	ID          int       `json:"id"`
+	MilestoneID int       `json:"milestone_id"`
+	AuthorID    int       `json:"author_id"`
+	AuthorName  string    `json:"author_name,omitempty"`
+	IsAgent     bool      `json:"is_agent,omitempty"`
+	Content     string    `json:"content"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
 // ============================================
 // Diagrams
 // ============================================
