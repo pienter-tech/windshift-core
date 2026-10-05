@@ -117,7 +117,7 @@ func (s *PlanningApplicationService) CreateMilestone(userID int, actor AuditActo
 		return nil, err
 	}
 	params.Name = sanitize.PlainTextField.Sanitize(params.Name)
-	params.Description = sanitize.Comment.Sanitize(params.Description)
+	params.Description = sanitize.RichText.Sanitize(params.Description)
 	params.AuditActor = &actor
 	return s.planning.CreateMilestone(params)
 }
@@ -132,7 +132,7 @@ func (s *PlanningApplicationService) UpdateMilestone(userID int, actor AuditActo
 	}
 	params.WorkspaceID = existing.WorkspaceID
 	params.Name = sanitize.PlainTextField.Sanitize(params.Name)
-	params.Description = sanitize.Comment.Sanitize(params.Description)
+	params.Description = sanitize.RichText.Sanitize(params.Description)
 	params.AuditActor = &actor
 	return s.planning.UpdateMilestone(params)
 }
