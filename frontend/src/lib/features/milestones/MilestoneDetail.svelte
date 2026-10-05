@@ -29,6 +29,7 @@
   import MilestonePages from './MilestonePages.svelte';
   import MilestoneActivity from './MilestoneActivity.svelte';
   import TabStrip from '../../components/TabStrip.svelte';
+  import { canManageMilestone, milestoneWorkspaceId } from './milestoneScope.js';
 
   let { milestoneId, workspaceId = null } = $props();
 
@@ -57,18 +58,17 @@
     category_id: null
   });
 
-  const canManage = $derived.by(() => {
-    if (!progress) return false;
-    if ($isSystemAdmin) return true;
-    if (progress.is_global) {
-      return $permissionStore.userPermissionKeys?.has('milestone.create');
-    } else {
-      const wsId = progress.workspace_id || workspaceId;
-      if (!wsId) return false;
-      return workspacePermissions.canAdminWorkspace(wsId) || 
-             workspacePermissions.hasPermission(wsId, 'item.edit');
-    }
-  });
+  // Scope comes from the milestone record: the progress response has no
+  // is_global or workspace_id (WCORE-29).
+  const milestoneWsId = $derived(milestoneWorkspaceId(milestone));
+
+  const canManage = $derived(
+    canManageMilestone(milestone, {
+      isSystemAdmin: $isSystemAdmin,
+      hasGlobalPermission: (key) => $permissionStore.userPermissionKeys?.has(key) ?? false,
+      hasWorkspacePermission: (wsId, key) => workspacePermissions.hasPermission(wsId, key)
+    })
+  );
 
   let statusOptions = $derived([
     { value: 'planning', label: t('milestones.status.planning'), lozengeColor: 'grey' },
@@ -129,8 +129,8 @@
         target_date: progress.target_date ? progress.target_date.split('T')[0] : '',
         status: progress.status,
         category_id: null, // We don't have this in progress response, but it's optional
-        is_global: progress.is_global ?? !workspaceId,
-        workspace_id: progress.workspace_id ?? (workspaceId ? parseInt(workspaceId, 10) : null)
+        is_global: milestone?.is_global ?? !workspaceId,
+        workspace_id: milestoneWsId ?? (workspaceId ? parseInt(workspaceId, 10) : null)
       };
       showEditModal = true;
     }
@@ -370,10 +370,10 @@
 
         <!-- Pages (workspace milestones only; global milestones have no
              workspace). Outside the loading branch like Comments below. -->
-        {#if !progress.is_global && progress.workspace_id}
+        {#if milestoneWsId != null}
           <MilestonePages
             {milestoneId}
-            workspaceId={progress.workspace_id}
+            workspaceId={milestoneWsId}
             canEdit={canManage}
           />
         {/if}
@@ -383,7 +383,7 @@
              milestone keeps the thread and any draft mounted. -->
         <MilestoneComments
           {milestoneId}
-          workspaceId={progress.is_global ? null : (progress.workspace_id ?? null)}
+          workspaceId={milestoneWsId}
         />
       </div>
 

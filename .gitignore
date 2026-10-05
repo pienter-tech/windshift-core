@@ -45,6 +45,7 @@ cx
 !frontend/src/lib/api/milestones.spec.js
 !frontend/src/lib/features/milestones/milestoneListFilters.spec.js
 !frontend/src/lib/features/milestones/milestoneActivity.spec.js
+!frontend/src/lib/features/milestones/milestoneScope.spec.js
 !frontend/src/lib/utils/markdownExcerpt.spec.js
 !frontend/src/lib/features/items/zammadPanelContext.spec.js
 !frontend/src/lib/features/items/ZammadLinkResolver.spec.js
