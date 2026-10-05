@@ -24,8 +24,8 @@ Every task belongs to a confirmed Goal through its milestone
 suitable Goal exists, create or confirm one with `workflow-to-spec` first.
 
 The milestone is the Goal: it groups the tasks and has its own lifecycle,
-`planning`, `in-progress`, `completed`, `canceled`. Its description does not
-render Markdown, so it holds one short plain-text outcome and `Spec: page <id>`.
+`planning`, `in-progress`, `completed`, `canceled`. Its description renders
+Markdown; it holds one short outcome and `Spec: page <id>`.
 
 The Goal page carries `## Outcome`, `## Scope`, `## Decisions`, `## Notes`,
 `## Links`, and `## Log`. `## Outcome` is the destination; `## Scope` is the
