@@ -1,0 +1,53 @@
+# Pienter fork only; never send upstream.
+#
+# Tags every merge to main as the next fork release, vX.Y.Z-pienter.N. The push
+# mirror carries the tag to GitHub, where docker.yml publishes `latest` and
+# cli-release.yml publishes the ws CLI.
+#
+# X.Y.Z is the newest upstream release merged into main; N counts the fork
+# releases on top of it and restarts at 1 when a sync brings in a new upstream
+# release. Upstream tags are not mirrored into the fork, so they are fetched
+# from Windshiftapp/core for the lookup only and never pushed.
+name: Release tag
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  tag:
+    name: Tag release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Fetch upstream release tags
+        run: git fetch --quiet --no-tags https://github.com/Windshiftapp/core.git 'refs/tags/v*:refs/tags/v*'
+
+      - name: Tag and push the next fork release
+        run: |
+          set -euo pipefail
+          existing=$(git tag -l --points-at HEAD 'v*-pienter.*' | head -n 1)
+          if [ -n "$existing" ]; then
+            echo "HEAD is already tagged $existing"
+            exit 0
+          fi
+          base=$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-*' HEAD)
+          # Another merge can claim the same number between computing it and
+          # pushing it; refetch the fork tags and try the next one.
+          for attempt in 1 2 3; do
+            last=$(git tag -l "${base}-pienter.*" | sed "s/^${base}-pienter\.//" | sort -n | tail -n 1)
+            tag="${base}-pienter.$(( ${last:-0} + 1 ))"
+            git tag "$tag" HEAD
+            if git push origin "refs/tags/${tag}"; then
+              echo "Tagged $(git rev-parse --short HEAD) as $tag"
+              exit 0
+            fi
+            git tag -d "$tag"
+            git fetch --quiet --tags origin
+          done
+          echo "Could not push a release tag after 3 attempts" >&2
+          exit 1
