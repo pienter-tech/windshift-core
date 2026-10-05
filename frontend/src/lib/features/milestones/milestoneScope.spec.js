@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { canManageMilestone, milestoneWorkspaceId } from './milestoneScope.js';
+import {
+  canManageMilestone,
+  canReorderMilestoneRow,
+  milestoneWorkspaceId,
+} from './milestoneScope.js';
 
 // Shapes match the real v2 responses: the milestone record carries the scope,
 // the progress report does not (WCORE-29).
@@ -83,5 +87,25 @@ describe('canManageMilestone', () => {
 
   it('denies management before the milestone record loads', () => {
     expect(canManageMilestone(null, access({ admin: true }))).toBe(false);
+  });
+});
+
+describe('canReorderMilestoneRow', () => {
+  const rights = (canReorderGlobal, canReorderLocal) => ({ canReorderGlobal, canReorderLocal });
+
+  it('shows the grip on global rows only with the global reorder right', () => {
+    expect(canReorderMilestoneRow(globalMilestone, rights(true, false))).toBe(true);
+    // Workspace item editor without global milestone rights.
+    expect(canReorderMilestoneRow(globalMilestone, rights(false, true))).toBe(false);
+  });
+
+  it('shows the grip on workspace rows only with the local reorder right', () => {
+    expect(canReorderMilestoneRow(workspaceMilestone, rights(false, true))).toBe(true);
+    // Global milestone manager without item edit rights in the workspace.
+    expect(canReorderMilestoneRow(workspaceMilestone, rights(true, false))).toBe(false);
+  });
+
+  it('shows no grip without a row', () => {
+    expect(canReorderMilestoneRow(null, rights(true, true))).toBe(false);
   });
 });
