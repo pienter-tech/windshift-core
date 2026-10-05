@@ -27,6 +27,7 @@ cx
 !/internal/database/milestone_comments_schema_test.go
 !/internal/repository/milestone_comment_repository_test.go
 !/internal/services/milestone_comment_service_test.go
+!/internal/services/milestone_page_link_service_test.go
 !/internal/utils/repository_path_test.go
 *_test.sh
 *.test.js

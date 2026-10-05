@@ -513,6 +513,12 @@ type milestoneCommentApplication interface {
 	Delete(userID, milestoneID, commentID int) error
 }
 
+type milestonePageLinkApplication interface {
+	List(userID, milestoneID int) ([]models.MilestonePageLink, error)
+	Create(userID, milestoneID, pageID int) (*models.MilestonePageLink, error)
+	Delete(userID, milestoneID, linkID int) error
+}
+
 type linkApplication interface {
 	ListLinkTypes(bool) ([]models.LinkType, error)
 	ListLinksForEntityWithChecks(int, string, int) ([]models.ItemLink, []models.ItemLink, error)
@@ -604,6 +610,7 @@ type Deps struct {
 	Collections                  collectionApplication
 	Planning                     planningApplication
 	MilestoneComments            milestoneCommentApplication
+	MilestonePageLinks           milestonePageLinkApplication
 	Links                        linkApplication
 	AgentRuns                    agentRunApplication
 	AgentSkills                  agentSkillReader
@@ -764,6 +771,9 @@ func RegisterRoutes(deps Deps) error {
 	if deps.MilestoneComments == nil {
 		return errors.New("v2: MilestoneComments is required")
 	}
+	if deps.MilestonePageLinks == nil {
+		return errors.New("v2: MilestonePageLinks is required")
+	}
 	if deps.Links == nil {
 		return errors.New("v2: Links is required")
 	}
@@ -866,6 +876,7 @@ func buildRoutes(deps Deps) []route {
 	registerCollectionRoutes(&builder, deps.Collections)
 	registerPlanningRoutes(&builder, deps.Planning)
 	registerMilestoneCommentRoutes(&builder, deps)
+	registerMilestonePageLinkRoutes(&builder, deps)
 	registerLinkRoutes(&builder, deps.Links, deps.CatalogMutations)
 	registerAgentRunRoutes(&builder, deps.AgentRuns)
 	registerAgentSkillRoutes(&builder, deps.AgentSkills)

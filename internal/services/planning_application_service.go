@@ -112,6 +112,20 @@ func (s *PlanningApplicationService) AuthorizeMilestoneRead(userID, id int) (*Mi
 	return result, nil
 }
 
+// AuthorizeMilestoneWrite loads a milestone and confirms the user may edit it,
+// with the same check UpdateMilestone uses: global milestones need the global
+// milestone.create permission, local ones item edit in their workspace.
+func (s *PlanningApplicationService) AuthorizeMilestoneWrite(userID, id int) (*MilestoneResult, error) {
+	result, err := s.planning.GetMilestone(id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.requireWrite(userID, result.IsGlobal, result.WorkspaceID, models.PermissionMilestoneCreate); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 func (s *PlanningApplicationService) CreateMilestone(userID int, actor AuditActor, params CreateMilestoneParams) (*MilestoneResult, error) {
 	if err := s.requireWrite(userID, params.IsGlobal, params.WorkspaceID, models.PermissionMilestoneCreate); err != nil {
 		return nil, err

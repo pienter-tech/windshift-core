@@ -96,6 +96,16 @@ export const milestones = {
     }),
   deleteComment: (id, commentId) =>
     fetchV2Data(`/milestones/${id}/comments/${commentId}`, { method: 'DELETE' }),
+  // Page links (WCORE-19): workspace milestones only; pages come from the
+  // milestone's own workspace. Global milestones always list no links.
+  getPageLinks: (id) => fetchV2Data(`/milestones/${id}/page-links`),
+  linkPage: (id, pageId) =>
+    fetchV2Data(`/milestones/${id}/page-links`, {
+      method: 'POST',
+      body: JSON.stringify({ page_id: pageId }),
+    }),
+  unlinkPage: (id, linkId) =>
+    fetchV2Data(`/milestones/${id}/page-links/${linkId}`, { method: 'DELETE' }),
   reorder: (scope, orderedIds) => {
     const path = scope?.is_global
       ? '/milestones/reorder'
