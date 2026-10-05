@@ -30,9 +30,19 @@
   import MilestoneFormDialog from './MilestoneFormDialog.svelte';
   import { toHotkeyString } from '../../utils/keyboardShortcuts.js';
   import EmptyState from '../../components/EmptyState.svelte';
+  import SearchInput from '../../components/SearchInput.svelte';
+  import DropdownMenu from '../../layout/DropdownMenu.svelte';
+  import { markdownExcerpt } from '../../utils/markdownExcerpt.js';
   import PageHeader from '../../layout/PageHeader.svelte';
   import { useEventListener } from 'runed';
   import { loadMilestoneTestStatistics } from './milestoneStatisticsData.js';
+  import {
+    GLOBAL_WORKSPACE_KEY,
+    MILESTONE_STATUSES,
+    filterMilestones,
+    milestoneWorkspaceOptions,
+    parseStatusFilter
+  } from './milestoneListFilters.js';
   import {
     preservePlanningScope
   } from '../../utils/planningScope.js';
@@ -79,6 +89,39 @@
     }
   }
 
+  // Global view filters (WCORE-18). The status selection is persisted like
+  // the workspace view's "hide completed" toggle; a missing or invalid value
+  // hides completed and cancelled milestones. Empty selections show all.
+  const STATUS_FILTER_KEY = 'milestones.statusFilter';
+  let selectedStatuses = $state(readStoredStatusFilter());
+  let selectedWorkspaceKeys = $state([]);
+  let searchQuery = $state('');
+
+  function readStoredStatusFilter() {
+    try {
+      return parseStatusFilter(localStorage.getItem(STATUS_FILTER_KEY));
+    } catch {
+      return parseStatusFilter(null);
+    }
+  }
+
+  function toggleStatusFilter(status, checked) {
+    selectedStatuses = checked
+      ? [...selectedStatuses, status]
+      : selectedStatuses.filter((s) => s !== status);
+    try {
+      localStorage.setItem(STATUS_FILTER_KEY, JSON.stringify(selectedStatuses));
+    } catch {
+      // Ignore localStorage errors (private mode, quota, etc).
+    }
+  }
+
+  function toggleWorkspaceFilter(key, checked) {
+    selectedWorkspaceKeys = checked
+      ? [...selectedWorkspaceKeys, key]
+      : selectedWorkspaceKeys.filter((k) => k !== key);
+  }
+
   // Drag-and-drop reorder state. One set of cleanups per render; the
   // milestone rows are re-wired whenever the visible list changes.
   let dragCleanups = [];
@@ -120,11 +163,9 @@
 
   async function loadData() {
     try {
-      // In workspace view, filter milestones by workspace_id and include global
-      const filters = isGlobalView ? { is_global: true } : { workspace_id: workspaceId, include_global: true };
       const [_, milestones] = await Promise.all([
         categoriesStore.init(),
-        api.milestones.getAll(filters)
+        api.milestones.getAll(listFilters())
       ]);
       // Update the store with filtered milestones
       milestonesStore.set(milestones || []);
@@ -132,6 +173,13 @@
     } catch (error) {
       console.error('Failed to load data:', error);
     }
+  }
+
+  // Global view: global milestones plus milestones from every workspace the
+  // viewer can access (the unscoped list). Workspace view: the workspace's
+  // milestones plus global ones.
+  function listFilters() {
+    return isGlobalView ? {} : { workspace_id: workspaceId, include_global: true };
   }
 
   async function loadTestStatistics() {
@@ -274,9 +322,8 @@
     showReleaseModal = false;
     releasingMilestone = null;
     // Refresh milestones to show updated status
-    const filters = isGlobalView ? { is_global: true } : { workspace_id: workspaceId, include_global: true };
     try {
-      const milestones = await api.milestones.getAll(filters);
+      const milestones = await api.milestones.getAll(listFilters());
       milestonesStore.set(milestones || []);
     } catch (err) {
       console.error('Failed to refresh milestones:', err);
@@ -322,13 +369,80 @@
       : $milestonesStore
   );
 
-  // Layer "hide completed" over the category filter before the local/global
-  // split so both sections (and the global-view table) honor the toggle.
-  // Completed milestones remain reachable from the detail nav and detail page;
-  // the toggle only affects this list view.
+  // Layer the list filters over the category filter: the global view uses
+  // its workspace/status/search filters, the workspace view the "hide
+  // completed" toggle (before its local/global split). Hidden milestones
+  // remain reachable from the detail page; the filters only affect this list.
   let visibleMilestones = $derived(
-    hideCompleted ? filteredMilestones.filter(m => m.status !== 'completed') : filteredMilestones
+    isGlobalView
+      ? filterMilestones(filteredMilestones, {
+          statuses: selectedStatuses,
+          workspaceKeys: selectedWorkspaceKeys,
+          search: searchQuery
+        })
+      : hideCompleted
+        ? filteredMilestones.filter(m => m.status !== 'completed')
+        : filteredMilestones
   );
+
+  let listIsFiltered = $derived(
+    isGlobalView
+      ? selectedStatuses.length > 0 || selectedWorkspaceKeys.length > 0 || searchQuery.trim() !== ''
+      : hideCompleted
+  );
+
+  // Workspace filter options: Global plus each workspace that has milestones
+  // in the loaded list.
+  let workspaceFilterItems = $derived([
+    { key: GLOBAL_WORKSPACE_KEY, name: t('milestones.global') },
+    ...milestoneWorkspaceOptions($milestonesStore, workspaces)
+  ].map(({ key, name }) => ({
+    id: `workspace-${key}`,
+    type: 'checkbox',
+    title: name,
+    checked: selectedWorkspaceKeys.includes(key),
+    closeOnSelect: false,
+    testid: `milestone-workspace-filter-${key}`,
+    onChange: (checked) => toggleWorkspaceFilter(key, checked)
+  })));
+
+  let workspaceFilterLabel = $derived.by(() => {
+    if (selectedWorkspaceKeys.length === 0) return t('milestones.allWorkspaces');
+    if (selectedWorkspaceKeys.length === 1) {
+      return (
+        workspaceFilterItems.find((item) => item.checked)?.title ??
+        t('milestones.workspaceFilterCount', { count: 1 })
+      );
+    }
+    return t('milestones.workspaceFilterCount', { count: selectedWorkspaceKeys.length });
+  });
+
+  let statusFilterItems = $derived(MILESTONE_STATUSES.map((status) => ({
+    id: `status-${status}`,
+    type: 'checkbox',
+    title: getStatusInfo(status).label,
+    checked: selectedStatuses.includes(status),
+    closeOnSelect: false,
+    testid: `milestone-status-filter-${status}`,
+    onChange: (checked) => toggleStatusFilter(status, checked)
+  })));
+
+  let statusFilterLabel = $derived(
+    selectedStatuses.length === 0
+      ? t('milestones.allStatuses')
+      : selectedStatuses.length === 1
+        ? getStatusInfo(selectedStatuses[0]).label
+        : t('milestones.statusFilterCount', { count: selectedStatuses.length })
+  );
+
+  function workspaceLabel(milestone) {
+    if (milestone.is_global) return t('milestones.global');
+    return (
+      milestone.workspace_name ||
+      workspaces.find((workspace) => String(workspace.id) === String(milestone.workspace_id))?.name ||
+      `#${milestone.workspace_id}`
+    );
+  }
 
   let localMilestones = $derived(
     visibleMilestones.filter(m => !m.is_global)
@@ -340,11 +454,15 @@
 
   // Whether the current user may reorder milestones in the active scope(s).
   // Mirrors the backend permission gates (workspaceItemEdit for local,
-  // globalMilestoneManage / milestone.create for global).
+  // globalMilestoneManage / milestone.create for global). Workspace
+  // milestones listed on the global page are reordered on their workspace
+  // page, where their whole scope is shown together.
   const canReorderLocal = $derived(
-    $isSystemAdmin ||
-    workspacePermissions.canAdminWorkspace(workspaceId) ||
-    workspacePermissions.hasPermission(workspaceId, 'item.edit')
+    !isGlobalView && (
+      $isSystemAdmin ||
+      workspacePermissions.canAdminWorkspace(workspaceId) ||
+      workspacePermissions.hasPermission(workspaceId, 'item.edit')
+    )
   );
   const canReorderGlobal = $derived(canManageGlobal);
 
@@ -490,6 +608,12 @@
       label: t('milestones.columnMilestone'),
       slot: 'name'
     },
+    ...isGlobalView ? [{
+      key: 'workspace',
+      label: t('milestones.workspace'),
+      width: 'w-48',
+      slot: 'workspace'
+    }] : [],
     { 
       key: 'target_date', 
       label: t('milestones.columnTargetDate'),
@@ -543,14 +667,16 @@
       >
         {#snippet actions()}
           <div class="flex items-center gap-2">
-            <div data-testid="milestone-hide-completed-toggle" title={t('milestones.hideCompletedHelp')}>
-              <Toggle
-                checked={hideCompleted}
-                label={t('milestones.hideCompleted')}
-                labelPosition="left"
-                onchange={handleHideCompletedChange}
-              />
-            </div>
+            {#if !isGlobalView}
+              <div data-testid="milestone-hide-completed-toggle" title={t('milestones.hideCompletedHelp')}>
+                <Toggle
+                  checked={hideCompleted}
+                  label={t('milestones.hideCompleted')}
+                  labelPosition="left"
+                  onchange={handleHideCompletedChange}
+                />
+              </div>
+            {/if}
             {#if canCreate}
               <Button
                 variant="primary"
@@ -567,9 +693,40 @@
         {/snippet}
       </PageHeader>
 
+      {#if isGlobalView}
+        <div class="flex items-center gap-3 flex-wrap mb-4" data-testid="milestone-filters">
+          <SearchInput
+            bind:value={searchQuery}
+            placeholder={t('milestones.searchMilestones')}
+            class="flex-1 min-w-[200px] max-w-md"
+            dataTestid="milestone-search"
+          />
+          <DropdownMenu
+            items={workspaceFilterItems}
+            triggerIcon={Building2}
+            triggerText={workspaceFilterLabel}
+            placement="bottom-start"
+            maxWidth="max-w-xs"
+            triggerClass="px-3 py-2 border"
+            triggerStyle="border-color: var(--ds-border); color: var(--ds-text);"
+            triggerTestid="milestone-workspace-filter"
+          />
+          <DropdownMenu
+            items={statusFilterItems}
+            triggerIcon={Milestone}
+            triggerText={statusFilterLabel}
+            placement="bottom-start"
+            maxWidth="max-w-xs"
+            triggerClass="px-3 py-2 border"
+            triggerStyle="border-color: var(--ds-border); color: var(--ds-text);"
+            triggerTestid="milestone-status-filter"
+          />
+        </div>
+      {/if}
+
 
       {#snippet reorderCell(item)}
-        {#if item}
+        {#if item && (item.is_global || !isGlobalView)}
           <span
             data-milestone-drag-handle
             class="inline-flex items-center justify-center cursor-grab active:cursor-grabbing"
@@ -588,11 +745,24 @@
               href="/milestones/{item.id}{workspaceId ? `?workspaceId=${workspaceId}` : ''}"
               class="font-medium hover:underline cursor-pointer"
               style="color: var(--ds-text);"
-              title={item.description || ''}
+              title={markdownExcerpt(item.description) || undefined}
             >
               {item.name}
             </a>
           {/key}
+        {/if}
+      {/snippet}
+
+      {#snippet workspaceCell(item)}
+        {#if item}
+          <span class="inline-flex items-center gap-1.5 text-sm" style="color: var(--ds-text-subtle);">
+            {#if item.is_global}
+              <Globe class="w-4 h-4 flex-shrink-0" />
+            {:else}
+              <Building2 class="w-4 h-4 flex-shrink-0" />
+            {/if}
+            <span class="truncate">{workspaceLabel(item)}</span>
+          </span>
         {/if}
       {/snippet}
 
@@ -659,7 +829,7 @@
       {#if visibleMilestones.length === 0}
         <EmptyState
           icon={Milestone}
-          title={isGlobalView && activeCategoryId ? t('milestones.noMilestonesInCategory') : (hideCompleted ? t('milestones.noVisibleMilestones') : t('milestones.noMilestones'))}
+          title={isGlobalView && activeCategoryId ? t('milestones.noMilestonesInCategory') : (listIsFiltered ? t('milestones.noVisibleMilestones') : t('milestones.noMilestones'))}
           description={isGlobalView && activeCategoryId ? t('categories.noCategorizedWork') : t('milestones.noMilestonesDescription')}
         >
           {#snippet action()}
@@ -681,6 +851,7 @@
         >
         {#snippet reorder(item)}{@render reorderCell(item)}{/snippet}
         {#snippet name(item)}{@render nameCell(item)}{/snippet}
+        {#snippet workspace(item)}{@render workspaceCell(item)}{/snippet}
         {#snippet status(item)}<div class="flex items-center gap-2">{@render statusCell(item)}</div>{/snippet}
         {#snippet category(item)}<div class="flex items-center gap-2">{@render categoryCell(item)}</div>{/snippet}
         {#snippet days_remaining(item)}{@render daysRemainingCell(item)}{/snippet}
