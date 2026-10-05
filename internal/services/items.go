@@ -105,6 +105,7 @@ type ItemCreationParams struct {
 	CreatorPortalCustomerID *int
 	ChannelID               *int       // Portal-specific: track portal/channel
 	RequestTypeID           *int       // Portal-specific: track request type
+	PortalOrgShared         bool       // Portal-specific: creator shared the request with their organisation (WI-1139)
 	DueDate                 *time.Time // Due date for the item
 	StartDate               *time.Time // Start date for the item
 	EndDate                 *time.Time // End date for the item

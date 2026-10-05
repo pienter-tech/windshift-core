@@ -1,4 +1,5 @@
 <script>
+  import { onDestroy } from 'svelte';
   import { Loader, Search } from '@lucide/svelte';
   import { api } from '../api.js';
   import { navigate } from '../router.js';
@@ -33,6 +34,19 @@
   let inputEl = $state(null);
   let debounceTimer = null;
   let searchSeq = 0;
+  let searchController = null;
+
+  // Supersede the current search: drop the queued debounce, abort the
+  // in-flight request and make its late resolution a no-op.
+  function invalidate() {
+    searchSeq += 1;
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
+    searchController?.abort();
+    searchController = null;
+  }
 
   const isOpen = $derived(mobilePalette.isOpen);
 
@@ -66,30 +80,39 @@
 
   async function runSearch(q) {
     const trimmed = q.trim();
+    invalidate();
     if (trimmed.length < MIN_QUERY_LEN) {
       workItems = [];
       pageResults = [];
       searching = false;
       return;
     }
-    const seq = ++searchSeq;
+    const seq = searchSeq;
+    const ac = new AbortController();
+    searchController = ac;
     searching = true;
     try {
       const [itemsRes, pagesRes] = await Promise.allSettled([
-        api.search.items({ query: trimmed, limit: 6 }),
-        searchPagesAcrossWorkspaces(workspacesForSearch, trimmed),
+        api.search.items({ query: trimmed, limit: 6, signal: ac.signal }),
+        searchPagesAcrossWorkspaces(workspacesForSearch, trimmed, { signal: ac.signal }),
       ]);
       if (seq !== searchSeq) return;
       workItems = itemsRes.status === 'fulfilled' ? (itemsRes.value ?? []) : [];
       pageResults = pagesRes.status === 'fulfilled' ? (pagesRes.value ?? []) : [];
     } finally {
-      if (seq === searchSeq) searching = false;
+      if (seq === searchSeq) {
+        searching = false;
+        searchController = null;
+      }
     }
   }
 
   function onInput() {
-    clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => runSearch(query), SEARCH_DEBOUNCE_MS);
+    invalidate();
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      void runSearch(query);
+    }, SEARCH_DEBOUNCE_MS);
     highlightIndex = 0;
   }
 
@@ -121,13 +144,22 @@
 
   $effect(() => {
     if (isOpen) {
+      invalidate();
       query = '';
       workItems = [];
       pageResults = [];
+      searching = false;
       highlightIndex = 0;
-      setTimeout(() => inputEl?.focus(), 50);
+      const focusTimer = setTimeout(() => inputEl?.focus(), 50);
+      return () => clearTimeout(focusTimer);
     }
+    // Closing must not let a queued debounce or in-flight search repopulate
+    // the sheet when it is reopened.
+    invalidate();
+    searching = false;
   });
+
+  onDestroy(invalidate);
 </script>
 
 <svelte:window onkeydown={onKeydown} />

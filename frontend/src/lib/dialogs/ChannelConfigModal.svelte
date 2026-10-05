@@ -306,7 +306,10 @@
   // be cleared; the backend validates manage permission at save time.
   async function loadConnectedPortalOptions() {
     try {
-      portalOptions = await api.channels.getAll({ type: 'portal', direction: 'inbound', include_disabled: true });
+      const portals = await api.channels.getAll({ type: 'portal', direction: 'inbound', include_disabled: true });
+      // A list response may arrive as null (empty result); the picker iterates
+      // this prop, so coerce to an array before handing it to the child.
+      portalOptions = Array.isArray(portals) ? portals : [];
     } catch (error) {
       console.error('Failed to load portal channels:', error);
       portalOptions = [];

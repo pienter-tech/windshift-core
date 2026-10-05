@@ -35,6 +35,8 @@ export default {
     loading: 'جاري التحميل...',
     retry: 'إعادة المحاولة',
     knowledgeBase: 'قاعدة المعرفة',
+    scrollDownForMore: 'مرر لأسفل لرؤية المزيد',
+    scrollUpForMore: 'مرر لأعلى لرؤية المزيد',
   },
   commandPalette: {
     searchPlaceholder: 'البحث في كل شيء...',
@@ -426,5 +428,11 @@ export default {
     getStartedMember: 'إليك مساحات العمل المتاحة لك',
     selectWorkspace: 'اختر مساحة عمل للبدء',
     noWorkspacesAvailable: 'لا توجد مساحات عمل متاحة بعد. يرجى الاتصال بالمسؤول للحصول على صلاحية الوصول إلى مساحة عمل.',
+  },
+
+  workspaceDashboard: {
+    widgets: {
+      supportMetrics: { name: 'مقاييس الدعم', description: 'قائمة الانتظار وأول رد والحل والالتزام بـ SLA لتذاكر العملاء' },
+    },
   },
 };

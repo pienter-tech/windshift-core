@@ -50,8 +50,10 @@
   import UpcomingDeadlinesWidget from '../widgets/UpcomingDeadlinesWidget.svelte';
   import IterationTimelineWidget from '../widgets/IterationTimelineWidget.svelte';
   import TestCoverageWidget from '../widgets/TestCoverageWidget.svelte';
+  import ZammadSupportWidget from '../widgets/ZammadSupportWidget.svelte';
   import SavedSearchWidget from '../widgets/dashboard/SavedSearchWidget.svelte';
   import StoryPointsWidget from '../widgets/StoryPointsWidget.svelte';
+	import SupportMetricsWidget from '../widgets/SupportMetricsWidget.svelte';
 
   // Customization sidebar
   import WorkspaceCustomizationSidebar from './WorkspaceCustomizationSidebar.svelte';
@@ -845,6 +847,12 @@
                       <MilestoneProgressWidget {milestones} />
                     {:else if widget.type === 'story-points-by-assignee'}
                       <StoryPointsWidget {workspaceId} />
+                    {:else if widget.type === 'support-metrics'}
+                      <SupportMetricsWidget
+                        {workspaceId}
+                        {collectionId}
+                        config={widget.config ?? {}}
+                      />
                     {:else if widget.type === 'recent-items'}
                       <RecentItemsWidget {workspaceId} {collectionFilter} />
                     {:else if widget.type === 'my-tasks'}
@@ -857,6 +865,8 @@
                       <IterationTimelineWidget {workspaceId} />
                     {:else if widget.type === 'test-coverage'}
                       <TestCoverageWidget {workspaceId} collectionId={collectionId} />
+                    {:else if widget.type === 'zammad-support-overview'}
+                      <ZammadSupportWidget {workspaceId} />
                     {:else if widget.type === 'saved-search'}
                       <SavedSearchWidget
                         {workspaceId}

@@ -23,6 +23,7 @@ export const ADMIN_COMPONENT_LOADERS = {
   'hierarchy-levels': () => import('../settings/HierarchyLevelManager.svelte'),
   'item-types': () => import('../settings/ItemTypeManager.svelte'),
   priorities: () => import('../settings/PriorityManager.svelte'),
+  'contact-levels': () => import('../settings/ContactLevelManager.svelte'),
   sso: () => import('../settings/SSOContainer.svelte'),
   'scm-providers': () => import('../settings/SCMProviderManager.svelte'),
   'integration-providers': () => import('../settings/IntegrationsManager.svelte'),

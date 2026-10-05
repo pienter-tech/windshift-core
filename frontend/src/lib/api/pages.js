@@ -193,9 +193,15 @@ export const pages = {
    * Title-substring page search scoped to a workspace. Server-side and
    * permission-filtered. Used by the page picker in the link dialog and
    * the page-side work-item popover.
+   *
+   * @param {number} workspaceId
+   * @param {string} query
+   * @param {{ limit?: number, signal?: AbortSignal }} [options]
    */
-  searchPages: (workspaceId, query, { limit = 20 } = {}) =>
-    fetchV2Data(`/workspaces/${workspaceId}/pages/search${buildQueryString({ q: query, limit })}`),
+  searchPages: (workspaceId, query, { limit = 20, signal } = {}) =>
+    fetchV2Data(`/workspaces/${workspaceId}/pages/search${buildQueryString({ q: query, limit })}`, {
+      signal,
+    }),
 };
 
 /**

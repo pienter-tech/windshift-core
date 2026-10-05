@@ -213,14 +213,10 @@ async function performFetchAPI(base, endpoint, options = {}) {
     // work while the browser tears down the underlying HTTP request.
     if (err?.name === 'AbortError') throw err;
     // Chromium can surface fetches cancelled by a document navigation as a
-    // TypeError instead of AbortError. Once the document is hidden, no caller
-    // can use the response, so preserve the cancellation semantics rather than
-    // reporting a spurious connectivity failure during reload/unload.
-    if (
-      err instanceof TypeError &&
-      (documentUnloading ||
-        (typeof document !== 'undefined' && document.visibilityState === 'hidden'))
-    ) {
+    // TypeError instead of AbortError. Only an actual unload may claim that:
+    // a hidden but live tab must still report offline/DNS/TLS failures as
+    // connectivity errors so recovery handling is not bypassed.
+    if (err instanceof TypeError && documentUnloading) {
       throw new DOMException('The document was unloaded', 'AbortError');
     }
     // Network errors (including offline, DNS, TLS, and CORS failures) surface

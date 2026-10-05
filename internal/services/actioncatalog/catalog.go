@@ -229,7 +229,7 @@ func Build() (*Catalog, error) {
 	if err := registerNode[models.AddCommentNodeConfig](c, nodeSpec{
 		Type:        models.ActionNodeAddComment,
 		Label:       "Add comment",
-		Description: "Post a comment on the current item. Content supports {{variable}} template interpolation; mark is_private for restricted visibility.",
+		Description: "Post a comment on the current item. Content supports {{variable}} template interpolation; mark is_private for restricted visibility. Comments triggered by a private comment are posted as internal notes.",
 		Category:    CategoryMutation,
 	}); err != nil {
 		return nil, err
@@ -326,7 +326,7 @@ func Build() (*Catalog, error) {
 	if err := registerNode[models.InsertCannedResponseNodeConfig](c, nodeSpec{
 		Type:        models.ActionNodeInsertCannedResponse,
 		Label:       "Insert canned response",
-		Description: "Render a workspace canned response with the execution variables and post it as a comment on the current item. Private snippets are posted as private comments.",
+		Description: "Render a workspace canned response with the execution variables and post it as a comment on the current item. Private snippets, and any insert triggered by a private comment, are posted as private comments.",
 		Category:    CategoryMutation,
 	}); err != nil {
 		return nil, err
@@ -334,7 +334,7 @@ func Build() (*Catalog, error) {
 	if err := registerNode[models.NotifyCustomerNodeConfig](c, nodeSpec{
 		Type:        models.ActionNodeNotifyCustomer,
 		Label:       "Notify customer",
-		Description: "Email the portal customer who created the item through the threaded reply transport. Skips safely when the item has no customer with an email address.",
+		Description: "Email the portal customer who created the item through the threaded reply transport. Skips safely when the item has no customer with an email address, or when the triggering comment is private.",
 		Category:    CategoryMutation,
 	}); err != nil {
 		return nil, err

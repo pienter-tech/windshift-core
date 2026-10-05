@@ -1,6 +1,7 @@
 import { get, writable } from 'svelte/store';
 import { api } from '../api.js';
 import { navigate } from '../router.js';
+import { toExternal } from '../runtime/contextPath.js';
 import { itemIdFromActionUrl } from '../utils/actionUrl.js';
 import {
   canRunBackgroundSync,
@@ -284,8 +285,62 @@ let _stopReconnectListener = null;
 function _scheduleNextPoll() {
   if (!_pollerStarted) return;
   clearTimeout(_pollTimer);
+  // While the user-scoped stream is healthy it owns freshness (WI-1625); the
+  // poller resumes automatically if the stream errors or is unsupported.
+  if (_streamConnected) return;
   const delay = activityStore.isIdle ? IDLE_POLL_MS : ACTIVE_POLL_MS;
   _pollTimer = setTimeout(_tick, delay);
+}
+
+// --- User-scoped invalidation stream (WI-1625) ---
+let _eventSource = null;
+let _streamConnected = false;
+let _streamReconcileTimer = null;
+
+function _scheduleStreamReconcile() {
+  if (_streamReconcileTimer) return;
+  _streamReconcileTimer = setTimeout(() => {
+    _streamReconcileTimer = null;
+    const generation = pollerGeneration;
+    loadNotifications()
+      .then(() => {
+        if (!_pollerStarted || generation !== pollerGeneration) return;
+        _dispatchNew(get(notifications));
+      })
+      .catch((err) => console.warn('notification stream: reconcile failed', err));
+  }, 250);
+}
+
+function _startNotificationStream() {
+  if (typeof EventSource === 'undefined' || _eventSource) return;
+  const source = new EventSource(toExternal('/api/notifications/events'));
+  _eventSource = source;
+  const markConnected = () => {
+    _streamConnected = true;
+    clearTimeout(_pollTimer);
+    _pollTimer = null;
+    _scheduleStreamReconcile();
+  };
+  source.addEventListener('connected', markConnected);
+  source.addEventListener('notifications', _scheduleStreamReconcile);
+  source.addEventListener('reload', _scheduleStreamReconcile);
+  // The browser auto-reconnects; until it does, drop to polling.
+  source.onerror = () => {
+    _streamConnected = false;
+    _scheduleNextPoll();
+  };
+}
+
+function _stopNotificationStream() {
+  if (_streamReconcileTimer) {
+    clearTimeout(_streamReconcileTimer);
+    _streamReconcileTimer = null;
+  }
+  _streamConnected = false;
+  if (_eventSource) {
+    _eventSource.close();
+    _eventSource = null;
+  }
 }
 
 async function _tick() {
@@ -348,6 +403,8 @@ export function startNotificationPoller() {
     _resumeNotificationPolling();
   });
 
+  _startNotificationStream();
+
   if (!canRunBackgroundSync()) {
     _scheduleNextPoll();
     return;
@@ -361,6 +418,7 @@ export function stopNotificationPoller() {
   pollerGeneration += 1;
   clearTimeout(_pollTimer);
   _pollTimer = null;
+  _stopNotificationStream();
   _stopReconnectListener?.();
   _stopReconnectListener = null;
   loadPromise = null;

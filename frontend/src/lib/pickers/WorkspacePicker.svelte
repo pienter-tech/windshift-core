@@ -133,7 +133,7 @@
         <WsIcon class="w-2 h-2" />
       {/if}
     </div>
-    <span class="font-medium">{workspace.key}</span>
+    <span class="font-medium">{workspace.key ?? workspace.label ?? workspace.name ?? ''}</span>
   {/snippet}
 
   {#snippet itemSnippet({ item: workspace, isSelected })}

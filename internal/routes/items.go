@@ -14,6 +14,10 @@ func RegisterItemRoutes(deps *Deps) {
 	// Item live-update stream (WI-484). Item-view gated (404 on no view); the
 	// path ends in /events so it is exempt from per-user concurrency slots.
 	api.HandleH("GET /items/{id}/events", auth(http.HandlerFunc(deps.Items.Item.Events)))
+	// Workspace and collection live-update streams (WI-1624). Same /events
+	// suffix and authorization contract as the item stream.
+	api.HandleH("GET /workspaces/{id}/events", auth(http.HandlerFunc(deps.Items.Item.WorkspaceEvents)))
+	api.HandleH("GET /collections/{key}/events", auth(http.HandlerFunc(deps.Items.Item.CollectionEvents)))
 
 	// Duplicate-candidates panel (WI-1548): the requester's other open
 	// tickets, permission-filtered per workspace. Item-view gated with 404 on

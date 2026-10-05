@@ -59,6 +59,10 @@ export default {
         name: 'الوصول السريع',
         description: 'روابط سريعة إلى مساحات العمل المتاحة لك',
       },
+      supportOverview: {
+        name: 'نظرة عامة على الدعم',
+        description: 'قائمة الانتظار وأول رد والحل والالتزام بـ SLA لتذاكر العملاء',
+      },
     },
     customization: {
       widgets: 'الأدوات',
@@ -69,6 +73,10 @@ export default {
       work: {
         name: 'العمل',
         description: 'العناصر والمعالم والمهام المسندة إليك',
+      },
+      support: {
+        name: 'الدعم',
+        description: 'مقاييس مكتب المساعدة لقوائم انتظار عملائك',
       },
       navigation: {
         name: 'التنقل',
@@ -100,6 +108,20 @@ export default {
       assignedEmpty: 'لا يوجد شيء مسند إليك حالياً',
       personalTasksLoadError: 'تعذر تحميل مهامك الشخصية',
       personalTasksEmpty: 'قائمة مهامك الشخصية فارغة',
+      supportMetricsLoadError: 'تعذر تحميل مقاييس الدعم',
+      supportMetricsEmpty: 'لا توجد تذاكر عملاء في هذا النطاق بعد',
+      supportOverviewSetupTitle: 'اختر مساحات العمل التي تريد تقريراً عنها',
+      supportOverviewSetupSubtitle: 'تعرض هذه الأداة مقاييس مكتب المساعدة فقط لمساحات العمل التي تختارها.',
+      supportSourcesUnavailable: '{count} من مساحات العمل المهيأة لم تعد متاحة',
+      supportBacklog: 'قائمة الانتظار',
+      supportUnassigned: 'غير معيّن',
+      supportCreated: 'تم الإنشاء',
+      supportResolved: 'تم الحل',
+      supportSlaCompliance: 'SLA محقق',
+      supportSlaNone: '—',
+      supportFirstResponseP50: 'أول رد p50',
+      supportExportCSV: 'تصدير CSV',
+      supportLiveDelayed: 'التحديثات المباشرة متوقفة',
       dailyBriefingUnavailable: 'موجزك اليومي غير متاح حالياً. يعتمد على تكامل للذكاء الاصطناعي. إذا أعددت تكاملاً للتو، فحاول مرة أخرى بعد قليل.',
       updatedAt: 'تم التحديث في {time}',
       priorityLabel: 'الأولوية: {priority}',

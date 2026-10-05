@@ -35,6 +35,8 @@ export default {
     loading: 'Loading...',
     retry: 'Retry',
     knowledgeBase: 'Knowledge Base',
+    scrollDownForMore: 'Scroll down to see more',
+    scrollUpForMore: 'Scroll up to see more',
   },
 
   commandPalette: {
@@ -345,6 +347,8 @@ export default {
       upcomingDeadlines: { name: 'Upcoming Deadlines', description: 'Items with approaching due dates' },
       iterationTimeline: { name: 'Iteration Timeline', description: 'Current and upcoming iteration schedule' },
       testCoverage: { name: 'Test Coverage', description: 'Requirements covered by test cases' },
+      supportMetrics: { name: 'Support Metrics', description: 'Backlog, first response, resolution, and SLA compliance for customer tickets' },
+      zammadSupportOverview: { name: 'Zammad support overview', description: 'Workspace-wide linked-ticket status and observed changes' },
     },
     customization: {
       widgets: 'Widgets', builtIn: 'Built-in widgets', builtInDescription: 'Core workspace metrics and charts',

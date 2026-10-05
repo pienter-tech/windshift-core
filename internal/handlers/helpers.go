@@ -58,13 +58,13 @@ type rowScanner interface {
 func respondJSON(w http.ResponseWriter, statusCode int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
-	_ = json.NewEncoder(w).Encode(data)
+	_ = json.NewEncoder(w).Encode(restapi.NormalizeEmptySlice(data))
 }
 
 // respondJSONOK sends a JSON response with 200 OK
 func respondJSONOK(w http.ResponseWriter, data any) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(data)
+	_ = json.NewEncoder(w).Encode(restapi.NormalizeEmptySlice(data))
 }
 
 // respondJSONCreated sends a JSON response with 201 Created
@@ -186,6 +186,7 @@ func respondJSONWithWarnings(w http.ResponseWriter, statusCode int, data any, wa
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 
+	data = restapi.NormalizeEmptySlice(data)
 	if len(warnings) > 0 {
 		response := map[string]any{
 			"data":     data,

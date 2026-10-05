@@ -37,6 +37,18 @@ func (r *PortalCustomerRepository) UserID(ctx context.Context, customerID int) (
 	return &value, nil
 }
 
+// GetIdentity returns a customer's display name and email by id.
+func (r *PortalCustomerRepository) GetIdentity(ctx context.Context, customerID int) (name, email string, err error) {
+	err = r.db.QueryRowContext(ctx, "SELECT name, email FROM portal_customers WHERE id = ?", customerID).Scan(&name, &email)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", ErrNotFound
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("get portal customer %d identity: %w", customerID, err)
+	}
+	return name, email, nil
+}
+
 func (r *PortalCustomerRepository) FindIDByEmail(email string) (int, error) {
 	var id int
 	err := r.db.QueryRow(

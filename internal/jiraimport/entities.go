@@ -298,6 +298,7 @@ func (s *Service) UpdateImportedItem(itemID int, params services.ItemCreationPar
 		return 0, fmt.Errorf("commit Jira item upsert: %w", err)
 	}
 	services.PublishItemChange(itemID, services.ItemChangeUpdated)
+	services.PublishWorkspaceChange(params.WorkspaceID, services.WorkspaceChangeItems)
 	return int64(itemID), nil
 }
 

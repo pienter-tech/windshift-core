@@ -1072,11 +1072,11 @@ func (h *PortalCustomersHandler) GetOrganisationTickets(w http.ResponseWriter, r
 // loadPortalCustomerRoles loads the contact roles for a given portal customer
 func (h *PortalCustomersHandler) loadPortalCustomerRoles(customerID int) ([]models.ContactRole, error) {
 	query := `
-		SELECT cr.id, cr.name, cr.description, cr.is_system, cr.created_at
+		SELECT cr.id, cr.name, cr.description, cr.is_system, cr.sort_order, cr.created_at
 		FROM contact_roles cr
 		JOIN portal_customer_roles pcr ON cr.id = pcr.contact_role_id
 		WHERE pcr.portal_customer_id = ?
-		ORDER BY cr.is_system DESC, cr.name ASC
+		ORDER BY cr.is_system DESC, cr.sort_order ASC, cr.name ASC
 	`
 
 	rows, err := h.db.Query(query, customerID)
@@ -1090,7 +1090,7 @@ func (h *PortalCustomersHandler) loadPortalCustomerRoles(customerID int) ([]mode
 		var role models.ContactRole
 		var createdAtStr string
 
-		err := rows.Scan(&role.ID, &role.Name, &role.Description, &role.IsSystem, &createdAtStr)
+		err := rows.Scan(&role.ID, &role.Name, &role.Description, &role.IsSystem, &role.SortOrder, &createdAtStr)
 		if err != nil {
 			return nil, err
 		}
@@ -1130,11 +1130,11 @@ func (h *PortalCustomersHandler) loadRolesForCustomers(customerIDs []int) (map[i
 	}
 
 	query := `
-		SELECT pcr.portal_customer_id, cr.id, cr.name, cr.description, cr.is_system, cr.created_at
+		SELECT pcr.portal_customer_id, cr.id, cr.name, cr.description, cr.is_system, cr.sort_order, cr.created_at
 		FROM contact_roles cr
 		JOIN portal_customer_roles pcr ON cr.id = pcr.contact_role_id
 		WHERE pcr.portal_customer_id IN (` + strings.Join(placeholders, ",") + `)
-		ORDER BY pcr.portal_customer_id, cr.is_system DESC, cr.name ASC
+		ORDER BY pcr.portal_customer_id, cr.is_system DESC, cr.sort_order ASC, cr.name ASC
 	`
 
 	rows, err := h.db.Query(query, args...)
@@ -1147,7 +1147,7 @@ func (h *PortalCustomersHandler) loadRolesForCustomers(customerIDs []int) (map[i
 		var customerID int
 		var role models.ContactRole
 		var createdAtStr string
-		if err := rows.Scan(&customerID, &role.ID, &role.Name, &role.Description, &role.IsSystem, &createdAtStr); err != nil {
+		if err := rows.Scan(&customerID, &role.ID, &role.Name, &role.Description, &role.IsSystem, &role.SortOrder, &createdAtStr); err != nil {
 			return nil, err
 		}
 		if t, err := parseTimestamp(createdAtStr); err == nil {

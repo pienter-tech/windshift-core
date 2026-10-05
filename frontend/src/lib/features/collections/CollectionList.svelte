@@ -220,6 +220,13 @@
   });
   let filteredItemsById = $derived(new Map(filteredItems.map((item) => [item.id, item])));
 
+  // Resolve only the assignees the visible rows reference instead of waiting
+  // for the whole directory before the list can render.
+  $effect(() => {
+    const ids = filteredItems.map((item) => item.assignee_id).filter(Boolean);
+    if (ids.length > 0) void workspaceDataStore.hydrateUsers(ids);
+  });
+
   function registerListRow(element, itemId) {
     const cleanup = draggable({
       element,

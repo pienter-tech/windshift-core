@@ -451,6 +451,9 @@ class ItemDetailStore {
         return;
       }
       console.warn('Failed to refresh item detail:', err);
+      // Let callers that own freshness (SSE handlers) observe the failure and
+      // resume the polling fallback instead of leaving the view stale.
+      throw err;
     } finally {
       if (token === this.#refreshToken) {
         if (this.#refreshController === controller) this.#refreshController = null;
@@ -463,7 +466,11 @@ class ItemDetailStore {
   #runPendingRefresh() {
     if (!this.#refreshPending || this.loading || this.saving || this.#refreshInFlight) return;
     this.#refreshPending = false;
-    queueMicrotask(() => this.refreshCurrentItem());
+    queueMicrotask(() => {
+      this.refreshCurrentItem().catch(() => {
+        // refreshCurrentItem already logged the failure.
+      });
+    });
   }
 
   markDeleted() {

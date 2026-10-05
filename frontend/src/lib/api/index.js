@@ -110,6 +110,7 @@ import { recurrence } from './recurrence.js';
 import { issueSync, itemSCMLinks, scmProviders, userSCM, workspaceSCM } from './scm.js';
 import { sla } from './sla.js';
 import { sso } from './sso.js';
+import { support } from './support.js';
 import { teams } from './teams.js';
 import { tests } from './tests/index.js';
 import { time, timer } from './time.js';
@@ -192,6 +193,7 @@ export const api = {
 
   // SLA configuration, reporting, and item state
   sla,
+  support,
 
   // On-call schedules (per-team)
   onCallSchedules,

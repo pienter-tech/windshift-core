@@ -59,6 +59,10 @@ export default {
       "quickAccess": {
         "name": "빠른 접근",
         "description": "접근 가능한 워크스페이스 바로가기"
+      },
+      "supportOverview": {
+        "name": "지원 개요",
+        "description": "고객 티켓의 백로그, 최초 응답, 해결 및 SLA 준수"
       }
     },
     "customization": {
@@ -70,6 +74,10 @@ export default {
       "work": {
         "name": "업무",
         "description": "나에게 배정된 작업과 마일스톤"
+      },
+      "support": {
+        "name": "지원",
+        "description": "고객 대기열을 위한 헬프데스크 지표"
       },
       "navigation": {
         "name": "탐색",
@@ -103,6 +111,20 @@ export default {
       "storyPointsEmpty": "아직 배정된 미완료 스토리 포인트가 없습니다",
       "personalTasksLoadError": "개인 작업을 불러오지 못했습니다",
       "personalTasksEmpty": "개인 할 일 목록이 비어 있습니다",
+      "supportMetricsLoadError": "지원 지표를 불러오지 못했습니다",
+      "supportMetricsEmpty": "이 범위에 아직 고객 티켓이 없습니다",
+      "supportOverviewSetupTitle": "보고할 워크스페이스 선택",
+      "supportOverviewSetupSubtitle": "이 위젯은 선택한 워크스페이스의 헬프데스크 지표만 표시합니다.",
+      "supportSourcesUnavailable": "구성한 워크스페이스 {count}개를 더 이상 사용할 수 없습니다",
+      "supportBacklog": "백로그",
+      "supportUnassigned": "미배정",
+      "supportCreated": "생성됨",
+      "supportResolved": "해결됨",
+      "supportSlaCompliance": "SLA 준수",
+      "supportSlaNone": "—",
+      "supportFirstResponseP50": "최초 응답 p50",
+      "supportExportCSV": "CSV 내보내기",
+      "supportLiveDelayed": "실시간 업데이트 일시중지",
       "dailyBriefingUnavailable": "현재 일일 브리핑을 사용할 수 없습니다. AI 연동이 필요한 기능입니다. 방금 설정했다면 잠시 후 다시 확인하세요.",
       "updatedAt": "수정: {time}",
       "priorityLabel": "우선순위: {priority}",

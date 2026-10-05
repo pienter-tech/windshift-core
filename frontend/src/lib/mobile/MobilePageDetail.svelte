@@ -293,7 +293,6 @@
     color: var(--ds-text-link, var(--ds-interactive));
     white-space: nowrap;
   }
-  .crumb-sep { flex-shrink: 0; color: var(--ds-text-subtlest, var(--ds-text-subtle)); }
   .crumb.current {
     flex-shrink: 0;
     cursor: default;

@@ -1313,10 +1313,11 @@ func (h *ChannelHandler) ProcessEmailsNow(w http.ResponseWriter, r *http.Request
 }
 
 // RequeueRateLimitedEmails rewinds the channel's IMAP watermark to the
-// earliest flood-declined message so the next poll retries it. Rate-limited
-// mail was left in the mailbox, so nothing is re-downloaded from the sender:
-// recovery only re-reads what is already there. After the tracking row's
-// claim goes stale the message is re-evaluated against the current cap.
+// earliest flood-declined message and invalidates its preclaim lease so the
+// next poll deterministically reprocesses it against the current cap instead
+// of waiting out the stale-claim window. Rate-limited mail was left in the
+// mailbox, so nothing is re-downloaded from the sender: recovery only re-reads
+// what is already there.
 // POST /channels/{id}/email/requeue-rate-limited
 func (h *ChannelHandler) RequeueRateLimitedEmails(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -1362,15 +1363,23 @@ func (h *ChannelHandler) RequeueRateLimitedEmails(w http.ResponseWriter, r *http
 		return
 	}
 
+	requeuedCount, err := h.channelRepo.RequeueRateLimitedClaims(ctx, id, uidValidity)
+	if err != nil {
+		respondInternalError(w, r, err)
+		return
+	}
+
 	slog.Info("requeued rate-limited email messages",
 		"channel_id", id,
 		"from_uid", earliestUID,
+		"count", requeuedCount,
 	)
 	respondJSONOK(w, map[string]any{
-		"requeued":   true,
-		"channel_id": id,
-		"from_uid":   earliestUID,
-		"message":    "Rate-limited messages requeued for reprocessing",
+		"requeued":       true,
+		"channel_id":     id,
+		"from_uid":       earliestUID,
+		"requeued_count": requeuedCount,
+		"message":        "Rate-limited messages requeued for reprocessing",
 	})
 }
 

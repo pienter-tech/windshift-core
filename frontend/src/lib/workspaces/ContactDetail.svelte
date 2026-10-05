@@ -11,6 +11,7 @@
   import Spinner from '../components/Spinner.svelte';
   import TextField from '../components/TextField.svelte';
   import Label from '../components/Label.svelte';
+  import Checkbox from '../components/Checkbox.svelte';
   import BasePicker from '../pickers/BasePicker.svelte';
   import CustomFieldRenderer from '../features/items/CustomFieldRenderer.svelte';
   import { t } from '../stores/i18n.svelte.js';
@@ -53,7 +54,8 @@
     email: '',
     phone: '',
     customer_organisation_id: null,
-    custom_field_values: {}
+    custom_field_values: {},
+    role_ids: []
   });
 
   // Tabs
@@ -76,9 +78,23 @@
       : null
   );
 
+  let contactRoles = $state([]);
+
   onMount(async () => {
     await loadCustomer();
+    try {
+      const roles = await api.contactRoles.getAll();
+      contactRoles = Array.isArray(roles) ? roles : (roles?.data ?? []);
+    } catch (err) {
+      console.error('Failed to load contact roles:', err);
+    }
   });
+
+  function toggleRole(roleID) {
+    editFormData.role_ids = editFormData.role_ids.includes(roleID)
+      ? editFormData.role_ids.filter((id) => id !== roleID)
+      : [...editFormData.role_ids, roleID];
+  }
 
   async function loadCustomer() {
     loading = true;
@@ -104,7 +120,8 @@
       email: customer.email,
       phone: customer.phone || '',
       customer_organisation_id: customer.customer_organisation_id ?? null,
-      custom_field_values: customer.custom_field_values || {}
+      custom_field_values: customer.custom_field_values || {},
+      role_ids: (customer.roles || []).map((role) => role.id)
     };
     isEditing = true;
   }
@@ -319,6 +336,23 @@
               />
             </div>
 
+            {#if contactRoles.length > 0}
+              <div class="pt-4 border-t" style="border-color: var(--ds-border);">
+                <Label class="mb-2">{t('workspaces.customers.contactLevels') || 'Contact levels'}</Label>
+                <div class="space-y-2">
+                  {#each contactRoles as role (role.id)}
+                    <Checkbox
+                      checked={editFormData.role_ids.includes(role.id)}
+                      onchange={() => toggleRole(role.id)}
+                      label={role.name}
+                      size="small"
+                      dataTestid={`contact-role-${role.id}`}
+                    />
+                  {/each}
+                </div>
+              </div>
+            {/if}
+
             <!-- Custom Fields -->
             {#if portalCustomerFields.length > 0}
               <div class="pt-4 border-t" style="border-color: var(--ds-border);">
@@ -327,7 +361,7 @@
                   {#each portalCustomerFields as field}
                     <CustomFieldRenderer
                       {field}
-                      bind:value={editFormData.custom_field_values[field.name]}
+                      value={editFormData.custom_field_values[field.name] ?? ''}
                       readonly={false}
                       onChange={(val) => {
                         editFormData.custom_field_values[field.name] = val;

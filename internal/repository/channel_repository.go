@@ -1195,6 +1195,30 @@ func (r *ChannelRepository) GetEarliestRateLimitedUID(ctx context.Context, chann
 	return int(minUID.Int64), true, nil
 }
 
+// RequeueRateLimitedClaims invalidates the preclaim window on a channel's
+// rate-limited tracking rows so the next poll reclaims and reprocesses them
+// instead of deferring behind the 5-minute stale-claim lease. The
+// rate_limited_at marker stays until the message is genuinely reprocessed, so
+// the operator log keeps reporting it as waiting. Returns how many rows were
+// reset. Only rows in the given UIDVALIDITY epoch are touched: an older
+// epoch cannot be re-fetched by an IMAP watermark rewind.
+func (r *ChannelRepository) RequeueRateLimitedClaims(ctx context.Context, channelID int, uidValidity uint32) (int, error) {
+	res, err := r.db.ExecWriteContext(ctx, `
+		UPDATE email_message_tracking
+		SET processed_at = ?
+		WHERE channel_id = ? AND rate_limited_at IS NOT NULL AND uid_validity = ? AND uid > 0
+		  AND item_id IS NULL AND comment_id IS NULL
+	`, time.Unix(0, 0).UTC(), channelID, int64(uidValidity))
+	if err != nil {
+		return 0, fmt.Errorf("reset rate-limited claims for channel %d: %w", channelID, err)
+	}
+	count, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count reset rate-limited claims for channel %d: %w", channelID, err)
+	}
+	return int(count), nil
+}
+
 // ResetEmailWatermarkToUID rewinds the channel's poll watermark so the next
 // IMAP poll re-fetches from lastUID onward, and clears the poison-message
 // tracker so a fresh retry starts unblocked. A channel that has never polled

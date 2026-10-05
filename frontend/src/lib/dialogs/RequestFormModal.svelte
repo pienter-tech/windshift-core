@@ -6,6 +6,7 @@
   import { portalCustomizationStore as portalStore } from '../stores/portal.svelte.js';
   import { iconMap } from '../stores/portalPresentation.js';
   import Button from '../components/Button.svelte';
+  import Checkbox from '../components/Checkbox.svelte';
   import AlertBox from '../components/AlertBox.svelte';
   import PortalModal from './PortalModal.svelte';
   import { ChevronLeft, ChevronRight, Package, Paperclip, X } from '@lucide/svelte';
@@ -39,6 +40,13 @@
   let submitting = $state(false);
   let error = $state(null);
   let success = $state(false);
+
+  // Organisation sharing (WI-1139): the org decides whether contacts may opt
+  // in, and the creator's choice is fixed at submission. automatic shares
+  // every request, disabled never shares.
+  let shareWithOrganisation = $state(false);
+  const orgSharingMode = $derived($portalAuthStore.userBootstrap?.request_sharing || 'disabled');
+  const canShareWithOrg = $derived(orgSharingMode === 'requester_choice');
 
   // Multi-step support
   let steps = $state([1]);
@@ -323,7 +331,8 @@
         request_type_id: requestType.id,
         title: formData.title,
         description: formData.description,
-        custom_fields: customFieldValues
+        custom_fields: customFieldValues,
+        share_with_organisation: canShareWithOrg && shareWithOrganisation
       };
 
       const result = await api.portal.submit(portalSlug, submissionData);
@@ -548,6 +557,24 @@
                 {:else if $portalAuthStore.isAuthenticated && $portalAuthStore.customer}
                   {t('requestForm.submittingAs', { name: $portalAuthStore.customer.name || t('portal.portalCustomer'), email: $portalAuthStore.customer.email })}
                 {/if}
+              </p>
+            </div>
+          {/if}
+
+          {#if isLastStep && canShareWithOrg}
+            <div class="pt-4 border-t" style="border-color: var(--ds-border);">
+              <Checkbox
+                bind:checked={shareWithOrganisation}
+                dataTestid="request-form-share-with-organisation"
+                label={t('requestForm.shareWithOrganisation')}
+                hint={t('requestForm.shareWithOrganisationHint')}
+                size="small"
+              />
+            </div>
+          {:else if isLastStep && orgSharingMode === 'automatic'}
+            <div class="pt-4 border-t" style="border-color: var(--ds-border);">
+              <p class="text-xs" style="color: var(--ds-text-subtle);">
+                {t('requestForm.sharedWithOrganisationNote')}
               </p>
             </div>
           {/if}

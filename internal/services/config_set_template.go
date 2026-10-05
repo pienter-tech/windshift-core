@@ -266,6 +266,7 @@ const (
 	UnresolvedKindItemType    UnresolvedRefKind = "item_type"
 	UnresolvedKindCustomField UnresolvedRefKind = "custom_field"
 	UnresolvedKindLinkType    UnresolvedRefKind = "link_type"
+	UnresolvedKindPriority    UnresolvedRefKind = "priority"
 )
 
 // UnresolvedRef is a single missing reference. Path is a coarse human-readable

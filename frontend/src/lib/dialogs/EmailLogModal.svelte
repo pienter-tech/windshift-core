@@ -25,7 +25,8 @@
   const pageSize = 50;
 
   // Outbound customer-reply queue state.
-  let activeTab = $state(initialTab);
+  // The modal opens on the requested tab; later prop changes must not move it.
+  let activeTab = $state(untrack(() => initialTab));
   let outboxStatus = $state('pending');
   let outboxData = $state(null);
   let outboxLoading = $state(false);

@@ -433,11 +433,14 @@ func commentError(err error) error {
 		return nil
 	}
 	var invalid *validation.ValidationError
+	var serviceErr *services.ServiceError
 	switch {
 	case errors.Is(err, repository.ErrNotFound):
 		return newError(http.StatusNotFound, "not_found", "Comment was not found")
 	case errors.As(err, &invalid):
 		return newError(http.StatusBadRequest, "invalid_request", invalid.Message)
+	case errors.As(err, &serviceErr):
+		return newError(serviceErr.StatusCode, "conflict", serviceErr.Message)
 	default:
 		return internalError(err)
 	}

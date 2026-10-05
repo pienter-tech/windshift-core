@@ -145,6 +145,9 @@ CREATE TABLE IF NOT EXISTS customer_organisations (
 	active BOOLEAN DEFAULT true,
 	avatar_url TEXT,
 	custom_field_values JSONB,
+	-- Flexible per-organisation attributes (portal request sharing, etc.).
+	-- Empty object means "all defaults".
+	settings JSONB NOT NULL DEFAULT '{}'::JSONB,
 	created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
 	updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
@@ -429,6 +432,7 @@ CREATE TABLE IF NOT EXISTS contact_roles (
 	name TEXT NOT NULL UNIQUE,
 	description TEXT,
 	is_system BOOLEAN DEFAULT false,
+	sort_order INTEGER NOT NULL DEFAULT 0,
 	created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 

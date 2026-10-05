@@ -1,6 +1,8 @@
 <script>
+  import { onDestroy, untrack } from 'svelte';
   import { navigate } from '../../router.js';
   import { logbookStore } from '../../stores/logbook.svelte.js';
+  import { canRunBackgroundSync, onBackgroundSyncAvailable } from '../../utils/backgroundSync.js';
   import { t } from '../../stores/i18n.svelte.js';
   import { api } from '../../api.js';
   import { successToast, errorToast } from '../../stores/toasts.svelte.js';
@@ -36,49 +38,102 @@
     activeBucketId ? logbookStore.buckets.find(b => b.id === activeBucketId) : null
   );
 
-  // Search handler
+  // Search handler. A monotonic version plus the bucket captured at request
+  // time keep a superseded query from replacing the newest results.
   let searchTimeout;
+  let searchVersion = 0;
   let searchMatchIds = $state(null); // null = no active search, Set = active filter
-  function handleSearch(e) {
-    clearTimeout(searchTimeout);
+
+  function runSearch() {
+    const version = ++searchVersion;
+    const query = searchQuery.trim();
+    const bucketId = activeBucketId;
+    if (!query) {
+      searchMatchIds = null;
+      return;
+    }
     searchTimeout = setTimeout(async () => {
-      if (searchQuery.trim()) {
-        try {
-          const params = {};
-          if (activeBucketId) params.bucket_id = activeBucketId;
-          const result = await api.logbook.keywordSearch(searchQuery, params);
-          const results = result?.data ?? result;
-          if (Array.isArray(results)) {
-            searchMatchIds = new Set(results.map(r => r.document_id));
-          }
-        } catch (error) {
-          console.error('Search failed:', error);
+      try {
+        const params = {};
+        if (bucketId) params.bucket_id = bucketId;
+        const result = await api.logbook.keywordSearch(query, params);
+        if (version !== searchVersion) return;
+        const results = result?.data ?? result;
+        if (Array.isArray(results)) {
+          searchMatchIds = new Set(results.map(r => r.document_id));
         }
-      } else {
-        searchMatchIds = null;
+      } catch (error) {
+        if (version !== searchVersion) return;
+        console.error('Search failed:', error);
       }
     }, 300);
   }
+
+  function handleSearch() {
+    clearTimeout(searchTimeout);
+    runSearch();
+  }
+
+  // A bucket change invalidates any in-flight search and restarts it for the
+  // new scope so results cannot carry over from the previous bucket.
+  $effect(() => {
+    activeBucketId;
+    untrack(() => {
+      clearTimeout(searchTimeout);
+      searchMatchIds = null;
+      if (searchQuery.trim()) runSearch();
+    });
+  });
+
+  onDestroy(() => {
+    clearTimeout(searchTimeout);
+    searchVersion += 1;
+  });
 
   let filteredDocuments = $derived(
     searchMatchIds ? logbookStore.documents.filter(d => searchMatchIds.has(d.id)) : logbookStore.documents
   );
 
-  // Poll while any visible documents are still processing
+  // Poll while any visible documents are still processing. The next refresh is
+  // scheduled only after the previous one settles so requests never overlap.
   let hasProcessingDocs = $derived(
     filteredDocuments.some(d => d.status === 'pending' || d.status === 'processing')
   );
 
   $effect(() => {
+    const bucketId = activeBucketId;
     if (!hasProcessingDocs) return;
-    const interval = setInterval(() => {
-      if (activeBucketId) {
-        logbookStore.loadDocuments(activeBucketId, {}, { silent: true });
-      } else {
-        logbookStore.loadAllDocuments({}, { silent: true });
+
+    let cancelled = false;
+    let timer = null;
+
+    const refresh = async () => {
+      if (cancelled) return;
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
       }
-    }, 3000);
-    return () => clearInterval(interval);
+      if (canRunBackgroundSync()) {
+        if (bucketId) {
+          await logbookStore.loadDocuments(bucketId, {}, { silent: true });
+        } else {
+          await logbookStore.loadAllDocuments({}, { silent: true });
+        }
+      }
+      if (cancelled) return;
+      timer = setTimeout(refresh, 3000);
+    };
+
+    timer = setTimeout(refresh, 3000);
+    const stopRecovery = onBackgroundSyncAvailable(() => {
+      if (!cancelled) void refresh();
+    });
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      stopRecovery();
+    };
   });
 
   function getSourceIcon(sourceType) {

@@ -76,29 +76,51 @@ import NativeSelect from '../../components/NativeSelect.svelte';
     enabled: () => !itemLiveUpdates.isLive(itemId),
   });
 
+  // A reconcile request that arrives while the detail is loading must not be
+  // dropped: queue it and run once the in-flight load settles.
+  let reconcilePending = $state(false);
+
+  function runFullReconcile() {
+    if (itemDetailStore.loading) {
+      reconcilePending = true;
+      return Promise.resolve();
+    }
+    reconcilePending = false;
+    itemDetailStore.transitioning = true;
+    return loadData()
+      .then(() => populateDropdownItems())
+      .finally(() => {
+        itemDetailStore.transitioning = false;
+      });
+  }
+
+  $effect(() => {
+    if (reconcilePending && !itemDetailStore.loading) {
+      void runFullReconcile().catch((err) => console.error('SSE reconcile failed:', err));
+    }
+  });
+
   // Live updates (WI-484): push changes instead of waiting for the 30s poll.
-  // Maps each event kind to a targeted reload. Recovery after a connection gap
-  // and explicit server reload events run a full loadData() reconciliation; the
-  // initial healthy connection does not duplicate the route's bootstrap load.
+  // Maps each event kind to a targeted reload. Every healthy connection
+  // reconciles the full detail; a failed handler falls back to polling.
   const liveStream = useItemEventStream(() => itemId, {
-    // Full reconcile (reconnect/server reload): reload the item AND comments.
-    // Comments is a separate component, so loadData() alone would leave it stale.
+    // Full reconcile (connect/reconnect/server reload): reload the item AND
+    // comments. Comments is a separate component, so loadData() alone would
+    // leave it stale.
     onReconcile: () => {
-      if (!itemDetailStore.loading) {
-        loadData().catch((err) => console.error('SSE reconcile failed:', err));
-      }
       window.dispatchEvent(new CustomEvent('item-comments-changed', { detail: { itemId } }));
       window.dispatchEvent(new CustomEvent('item-scm-links-changed', { detail: { itemId } }));
       window.dispatchEvent(new CustomEvent('item-zammad-links-changed', { detail: { itemId } }));
+      return runFullReconcile();
     },
-    onItem: () => itemDetailStore.refreshCurrentItem().catch((err) => console.error('SSE item refresh failed:', err)),
-    onChildren: () => itemDetailStore.loadChildItems().catch((err) => console.error('SSE children refresh failed:', err)),
+    onItem: () => itemDetailStore.refreshCurrentItem(),
+    onChildren: () => itemDetailStore.loadChildItems(),
     onComment: () => window.dispatchEvent(new CustomEvent('item-comments-changed', { detail: { itemId } })),
     // Generic and SCM links have independent targeted refresh paths. A link
     // event must not restart the full item-detail bootstrap.
     onLinks: () => {
-      itemDetailStore.loadLinks().catch((err) => console.error('SSE links refresh failed:', err));
       window.dispatchEvent(new CustomEvent('item-scm-links-changed', { detail: { itemId } }));
+      return itemDetailStore.loadLinks();
     },
     onZammad: () => window.dispatchEvent(new CustomEvent('item-zammad-links-changed', { detail: { itemId } })),
     // The viewed item was deleted (its own topic published `deleted`). This is

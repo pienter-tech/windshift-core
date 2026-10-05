@@ -137,7 +137,19 @@ async function loadAndViewRequest(requestId) {
   const slug = context.getSlug();
   if (!slug) return;
   try {
-    const request = await api.portal.getRequestDetail(slug, requestId);
+    let request = await api.portal.getRequestDetail(slug, requestId);
+    // A merged duplicate is a redirect to its canonical (WI-1528). Follow a
+    // bounded chain so a stale deep link lands on the live thread. When the
+    // canonical is not readable here (a cross-requester merge keeps the
+    // content on the source), fall back to the duplicate itself.
+    for (let hops = 0; request?.merged_into_item_id && hops < 5; hops += 1) {
+      try {
+        request = await api.portal.getRequestDetail(slug, request.merged_into_item_id);
+      } catch {
+        request = await api.portal.getRequestDetail(slug, requestId);
+        break;
+      }
+    }
     selectedRequest = request;
     await Promise.all([loadComments(request.id), loadAttachments(request.id)]);
   } catch (err) {

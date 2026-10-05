@@ -1,7 +1,9 @@
 <script>
   // Canned response picker (WI-1138): lets an agent search the workspace's
   // canned responses and insert one into the reply composer. Private
-  // snippets are marked so the composer can switch to an internal note.
+  // snippets are marked so the composer can switch to an internal note. The
+  // picker renders nothing until the workspace's responses load and hides
+  // itself entirely when there are none.
   import DropdownMenu from '../../layout/DropdownMenu.svelte';
   import { MessageSquareText } from '@lucide/svelte';
   import { onMount } from 'svelte';
@@ -66,15 +68,17 @@
   });
 </script>
 
-<DropdownMenu
-  triggerIcon={MessageSquareText}
-  triggerTestid="canned-response-picker"
-  triggerLabel={t('cannedResponses.insertResponse')}
-  triggerIconClass="w-4 h-4"
-  items={menuItems}
-  bind:isOpen
-  placement="top-start"
-  matchTriggerWidth={false}
-  maxWidth="max-w-md"
-  onOpen={load}
-/>
+{#if loadedOnce && responses.length > 0}
+  <DropdownMenu
+    triggerIcon={MessageSquareText}
+    triggerTestid="canned-response-picker"
+    triggerLabel={t('cannedResponses.insertResponse')}
+    triggerIconClass="w-4 h-4"
+    items={menuItems}
+    bind:isOpen
+    placement="top-start"
+    matchTriggerWidth={false}
+    maxWidth="max-w-md"
+    onOpen={load}
+  />
+{/if}

@@ -17,6 +17,10 @@ class WorkspaceDataStore {
 
   /** @type {Map<string, Promise<object>>} */
   #screenConfigPromises = new Map();
+  /** @type {Map<number, Promise<object|null>>} */
+  #userHydrationPromises = new Map();
+  /** @type {Set<number>} */
+  #userHydrationFailed = new Set();
   workspace = $state(null);
   homepageLayout = $state(null);
   statuses = $state([]);
@@ -219,7 +223,58 @@ class WorkspaceDataStore {
     this.labels = [];
     this.screenConfigs = {};
     this.#screenConfigPromises.clear();
+    this.#userHydrationPromises.clear();
+    this.#userHydrationFailed.clear();
     this.lastRefreshedAt = null;
+  }
+
+  /**
+   * Fetch display records for the referenced user IDs only, reusing users that
+   * are already loaded. A workspace switch discards results from the old scope.
+   * @param {Array<number|string>} ids
+   */
+  async hydrateUsers(ids = []) {
+    const wanted = [
+      ...new Set(ids.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)),
+    ];
+    if (wanted.length === 0) return;
+
+    const known = new Set(this.users.map((user) => user.id));
+    const missing = wanted.filter((id) => !known.has(id) && !this.#userHydrationFailed.has(id));
+    if (missing.length === 0) return;
+
+    const workspaceId = this.workspaceId;
+    const results = await Promise.all(
+      missing.map((id) => {
+        const pending = this.#userHydrationPromises.get(id);
+        if (pending) return pending;
+        const promise = api
+          .getUser(id)
+          .catch((error) => {
+            // A denied or missing user is permanent for this scope; do not
+            // retry it on every row update. Transient failures may retry.
+            if (error?.status === 403 || error?.status === 404) {
+              this.#userHydrationFailed.add(id);
+            }
+            return null;
+          })
+          .finally(() => {
+            if (this.#userHydrationPromises.get(id) === promise) {
+              this.#userHydrationPromises.delete(id);
+            }
+          });
+        this.#userHydrationPromises.set(id, promise);
+        return promise;
+      })
+    );
+
+    if (this.workspaceId !== workspaceId) return;
+    const fetched = results.filter(Boolean);
+    if (fetched.length === 0) return;
+
+    const byId = new Map(this.users.map((user) => [user.id, user]));
+    for (const user of fetched) byId.set(user.id, user);
+    this.users = [...byId.values()];
   }
 
   /**
@@ -334,14 +389,12 @@ class WorkspaceDataStore {
 
   /** @private */
   async _fetchAllGlobal() {
-    const [itemTypesData, statusesData, statusCategoriesData, usersData, prioritiesData] =
-      await Promise.all([
-        api.itemTypes.getAll(),
-        api.statuses.getAll(),
-        api.statusCategories.getAll(),
-        api.getUsers(),
-        api.priorities.getAll(),
-      ]);
+    const [itemTypesData, statusesData, statusCategoriesData, prioritiesData] = await Promise.all([
+      api.itemTypes.getAll(),
+      api.statuses.getAll(),
+      api.statusCategories.getAll(),
+      api.priorities.getAll(),
+    ]);
 
     if (this.workspaceId !== 'global') return;
 
@@ -349,7 +402,10 @@ class WorkspaceDataStore {
     this.itemTypes = itemTypesData || [];
     this.statuses = statusesData || [];
     this.statusCategories = statusCategoriesData || [];
-    this.users = usersData || [];
+    // The global roster is deliberately not enumerated here: with a large
+    // directory that is many sequential pages before anything can render.
+    // Views hydrate only the users their visible rows reference.
+    this.users = [];
     this.priorities = prioritiesData || [];
     this.milestones = [];
     this.iterations = [];
@@ -377,8 +433,12 @@ class WorkspaceDataStore {
       statuses: () => api.workspaces.getStatuses(workspaceId),
       statusCategories: () => api.statusCategories.getAll(),
       itemTypes: () => api.itemTypes.getAll(),
+      // Global users are hydrated per referenced ID by hydrateUsers(); a field
+      // refresh must not fall back to enumerating the whole directory.
       users: () =>
-        workspaceId === 'global' ? api.getUsers() : api.getAssignableUsers(workspaceId),
+        workspaceId === 'global'
+          ? Promise.resolve(this.users)
+          : api.getAssignableUsers(workspaceId),
       milestones: () =>
         workspaceId === 'global'
           ? api.milestones.getAll()

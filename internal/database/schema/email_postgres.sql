@@ -100,7 +100,7 @@ CREATE INDEX IF NOT EXISTS idx_email_message_tracking_channel_sender_time ON ema
 -- Durable at-least-once queue for comment replies. See email.sql.
 CREATE TABLE IF NOT EXISTS email_reply_outbox (
 	id SERIAL PRIMARY KEY,
-	comment_id INTEGER NOT NULL UNIQUE,
+	comment_id INTEGER NOT NULL,
 	channel_id INTEGER NOT NULL,
 	item_id INTEGER NOT NULL,
 	to_email TEXT NOT NULL,
@@ -131,6 +131,10 @@ CREATE TABLE IF NOT EXISTS email_reply_outbox (
 
 CREATE INDEX IF NOT EXISTS idx_email_reply_outbox_pending
 	ON email_reply_outbox(delivered_at, next_attempt_at);
+
+-- One outbound reply per comment recipient (WI-1136).
+CREATE UNIQUE INDEX IF NOT EXISTS uq_email_reply_outbox_comment_recipient
+	ON email_reply_outbox(comment_id, to_email);
 
 -- Email OAuth state for tracking OAuth flow state
 CREATE TABLE IF NOT EXISTS email_oauth_state (

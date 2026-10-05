@@ -434,6 +434,9 @@ func (s *CommentService) CreateInTx(ctx context.Context, tx database.Tx, itemID,
 	_, err = itemevents.NewRecorder(s.db).CommentCreated(ctx, tx, workspaceID, itemevents.CommentCreatedV1{
 		ItemID: itemID, CommentID: id, AuthorID: authorIDPtr, SuppressSideEffects: true,
 	}, metadata)
+	if err == nil && authorID > 0 {
+		err = repository.NewItemSupportEventRepository(s.db).RecordFirstResponse(tx, itemID, createdAt)
+	}
 	return id, err
 }
 
@@ -462,6 +465,13 @@ func (s *CommentService) CreateImported(params CreateCommentParams) (*CreateComm
 	return s.create(params)
 }
 
+// isPublicAgentComment reports whether a comment counts as the
+// customer-visible response for support metrics (WI-1133): not private and
+// written by a user rather than a portal customer or the system.
+func isPublicAgentComment(isPrivate bool, authorID int, portalCustomerID *int) bool {
+	return !isPrivate && authorID > 0 && portalCustomerID == nil
+}
+
 func (s *CommentService) create(params CreateCommentParams) (*CreateCommentResult, error) {
 	// 2. Get item details for notifications and the webhook payload
 	item, err := repository.NewItemRepository(s.db).FindByIDWithDetails(params.ItemID)
@@ -470,6 +480,11 @@ func (s *CommentService) create(params CreateCommentParams) (*CreateCommentResul
 			return nil, fmt.Errorf("item not found: %d", params.ItemID)
 		}
 		return nil, fmt.Errorf("failed to fetch item details: %w", err)
+	}
+	// A merged duplicate is a read-only redirect: comments belong on the
+	// canonical ticket (WI-1528).
+	if mergedInto, err := repository.NewItemRepository(s.db).MergedIntoItemID(context.Background(), params.ItemID); err == nil && mergedInto != nil {
+		return nil, NewServiceError(409, fmt.Sprintf("item %d was merged into item %d; comment on the canonical ticket instead", params.ItemID, *mergedInto))
 	}
 
 	// 3. Insert into DB
@@ -530,6 +545,11 @@ func (s *CommentService) create(params CreateCommentParams) (*CreateCommentResul
 		SuppressSideEffects: params.SuppressNotifications,
 	}, metadata); err != nil {
 		return nil, err
+	}
+	if isPublicAgentComment(params.IsPrivate, params.AuthorID, params.PortalCustomerID) {
+		if err := repository.NewItemSupportEventRepository(s.db).RecordFirstResponse(tx, params.ItemID, now); err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("failed to commit comment: %w", err)

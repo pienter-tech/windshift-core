@@ -49,6 +49,7 @@ var validDashboardWidgetTypes = map[string]bool{
 	"assigned-to-me":      true,
 	"personal-tasks":      true,
 	"saved-search":        true,
+	"support-overview":    true,
 }
 
 const (

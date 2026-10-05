@@ -186,13 +186,13 @@ func NewContactRoleConfig() EnumConfig {
 	return EnumConfig{
 		TableName:      "contact_roles",
 		EntityName:     "Contact role",
-		SelectColumns:  "id, name, description, is_system, created_at",
-		DefaultOrderBy: "is_system DESC, name ASC",
+		SelectColumns:  "id, name, description, is_system, sort_order, created_at",
+		DefaultOrderBy: "is_system DESC, sort_order ASC, name ASC",
 
 		ScanRow: func(rows *sql.Rows) (EnumEntity, error) {
 			var c models.ContactRole
 			var createdAtStr string
-			err := rows.Scan(&c.ID, &c.Name, &c.Description, &c.IsSystem, &createdAtStr)
+			err := rows.Scan(&c.ID, &c.Name, &c.Description, &c.IsSystem, &c.SortOrder, &createdAtStr)
 			if err == nil {
 				c.CreatedAt = ParseTimestamp(createdAtStr)
 			}
@@ -202,7 +202,7 @@ func NewContactRoleConfig() EnumConfig {
 		ScanSingleRow: func(row *sql.Row) (EnumEntity, error) {
 			var c models.ContactRole
 			var createdAtStr string
-			err := row.Scan(&c.ID, &c.Name, &c.Description, &c.IsSystem, &createdAtStr)
+			err := row.Scan(&c.ID, &c.Name, &c.Description, &c.IsSystem, &c.SortOrder, &createdAtStr)
 			if err == nil {
 				c.CreatedAt = ParseTimestamp(createdAtStr)
 			}
@@ -235,15 +235,15 @@ func NewContactRoleConfig() EnumConfig {
 		InsertArgs: func(entity any, now time.Time) (string, string, []any) {
 			c := entity.(*models.ContactRole) //nolint:errcheck // type assertion is safe here
 			// Force is_system to false for user-created roles
-			return "name, description, is_system, created_at",
-				"?, ?, false, ?",
-				[]any{c.Name, c.Description, now}
+			return "name, description, is_system, sort_order, created_at",
+				"?, ?, false, ?, ?",
+				[]any{c.Name, c.Description, c.SortOrder, now}
 		},
 
 		UpdateArgs: func(entity any, now time.Time) (string, []any) {
 			c := entity.(*models.ContactRole) //nolint:errcheck // type assertion is safe here
-			return "name = ?, description = ?",
-				[]any{c.Name, c.Description}
+			return "name = ?, description = ?, sort_order = ?",
+				[]any{c.Name, c.Description, c.SortOrder}
 		},
 
 		AuditActionCreate: "contact_role.create",

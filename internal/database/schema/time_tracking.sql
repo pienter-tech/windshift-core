@@ -8,6 +8,9 @@ CREATE TABLE IF NOT EXISTS customer_organisations (
 	active BOOLEAN DEFAULT TRUE,
 	avatar_url TEXT,
 	custom_field_values TEXT,
+	-- Flexible per-organisation attributes (portal request sharing, etc.).
+	-- Empty object means "all defaults".
+	settings TEXT NOT NULL DEFAULT '{}',
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );

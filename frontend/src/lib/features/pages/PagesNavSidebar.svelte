@@ -931,6 +931,7 @@
     height: 100%;
     background: var(--ds-surface);
     border-right: 1px solid var(--ds-border);
+    --scrollable-sidebar-fade-color: var(--ds-surface);
   }
 
   :global(.pages-sidebar--embedded) {

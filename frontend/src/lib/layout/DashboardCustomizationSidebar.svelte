@@ -3,6 +3,7 @@
     Sparkles,
     CheckSquare,
     Compass,
+    LifeBuoy,
     Bell,
     Clock,
     Eye,
@@ -25,6 +26,7 @@
     Sparkles,
     CheckSquare,
     Compass,
+    LifeBuoy,
     Bell,
     Clock,
     Eye,
@@ -47,6 +49,12 @@
       name: t('dashboard.customization.work.name'),
       description: t('dashboard.customization.work.description'),
       icon: CheckSquare,
+    },
+    {
+      id: dashboardWidgetCategories.SUPPORT,
+      name: t('dashboard.customization.support.name'),
+      description: t('dashboard.customization.support.description'),
+      icon: LifeBuoy,
     },
     {
       id: dashboardWidgetCategories.NAVIGATION,

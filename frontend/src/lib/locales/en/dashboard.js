@@ -59,6 +59,10 @@ export default {
         name: 'Quick Access',
         description: 'Quick links to workspaces you can reach',
       },
+      supportOverview: {
+        name: 'Support Overview',
+        description: 'Backlog, first response, resolution, and SLA compliance for customer tickets',
+      },
     },
     customization: {
       widgets: 'Widgets',
@@ -69,6 +73,10 @@ export default {
       work: {
         name: 'Work',
         description: 'Items, milestones, and things assigned to you',
+      },
+      support: {
+        name: 'Support',
+        description: 'Helpdesk metrics for your customer queues',
       },
       navigation: {
         name: 'Navigation',
@@ -102,6 +110,20 @@ export default {
       storyPointsEmpty: 'No open story points assigned yet',
       personalTasksLoadError: "Couldn't load your personal tasks",
       personalTasksEmpty: 'Your personal todo list is empty',
+      supportMetricsLoadError: "Couldn't load support metrics",
+      supportMetricsEmpty: 'No customer tickets in this scope yet',
+      supportOverviewSetupTitle: 'Choose the workspaces to report on',
+      supportOverviewSetupSubtitle: 'This widget shows helpdesk metrics only for the workspaces you pick.',
+      supportSourcesUnavailable: '{count} of your configured workspaces are no longer available',
+      supportBacklog: 'Backlog',
+      supportUnassigned: 'Unassigned',
+      supportCreated: 'Created',
+      supportResolved: 'Resolved',
+      supportSlaCompliance: 'SLA met',
+      supportSlaNone: '—',
+      supportFirstResponseP50: 'First response p50',
+      supportExportCSV: 'Export CSV',
+      supportLiveDelayed: 'Live updates paused',
       dailyBriefingUnavailable: "Your daily briefing isn't available right now. It relies on an AI integration. If you've just set one up, check back in a bit.",
       updatedAt: 'Updated {time}',
       priorityLabel: 'Priority: {priority}',

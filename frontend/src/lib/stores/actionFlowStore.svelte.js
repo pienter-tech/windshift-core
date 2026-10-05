@@ -36,5 +36,8 @@ export const actionFlowStore = createActionFlowStore({
       attach_release_on_tag: true,
       attach_commit_issues: true,
     },
+    notify_customer: { subject: '', message: '' },
+    insert_canned_response: { canned_response_id: 0 },
+    adjust_labels: { add_label_ids: [], remove_label_ids: [] },
   },
 });

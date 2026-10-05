@@ -21,6 +21,9 @@ let activeBucketId = $state(null);
 let documents = $state([]);
 let totalDocuments = $state(0);
 let documentsLoading = $state(false);
+// Both document loaders share one generation so a slower response from a
+// previous bucket, query or refresh can never overwrite the current list.
+let documentsLoadId = 0;
 
 let activeDocument = $state(null);
 let activeDocumentLoading = $state(false);
@@ -62,37 +65,52 @@ async function loadBuckets() {
 }
 
 async function loadDocuments(bucketId, params = {}, { silent = false } = {}) {
+  const loadId = ++documentsLoadId;
   activeBucketId = bucketId;
   if (!silent) documentsLoading = true;
   try {
     const result = await api.logbook.listDocuments(bucketId, params);
+    if (loadId !== documentsLoadId) return;
     const parsed = parseDocumentResult(result);
     documents = parsed.docs;
     totalDocuments = parsed.total;
   } catch (error) {
+    if (loadId !== documentsLoadId) return;
     console.error('Failed to load documents:', error);
     documents = [];
     totalDocuments = 0;
   } finally {
-    documentsLoading = false;
+    if (loadId === documentsLoadId) documentsLoading = false;
   }
 }
 
 async function loadAllDocuments(params = {}, { silent = false } = {}) {
+  const loadId = ++documentsLoadId;
   activeBucketId = null;
   if (!silent) documentsLoading = true;
   try {
     const result = await api.logbook.listAllDocuments(params);
+    if (loadId !== documentsLoadId) return;
     const parsed = parseDocumentResult(result);
     documents = parsed.docs;
     totalDocuments = parsed.total;
   } catch (error) {
+    if (loadId !== documentsLoadId) return;
     console.error('Failed to load all documents:', error);
     documents = [];
     totalDocuments = 0;
   } finally {
-    documentsLoading = false;
+    if (loadId === documentsLoadId) documentsLoading = false;
   }
+}
+
+/** Drop in-flight document loads and their state, e.g. on session change. */
+function resetDocuments() {
+  documentsLoadId += 1;
+  activeBucketId = null;
+  documents = [];
+  totalDocuments = 0;
+  documentsLoading = false;
 }
 
 async function loadDocument(documentId, { silent = false } = {}) {
@@ -162,4 +180,5 @@ export const logbookStore = {
   loadAllDocuments,
   loadDocument,
   clearActiveDocument,
+  resetDocuments,
 };

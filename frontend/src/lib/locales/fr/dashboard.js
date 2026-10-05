@@ -59,6 +59,10 @@ export default {
         name: 'Accès rapide',
         description: 'Liens rapides vers les espaces de travail auxquels vous avez accès',
       },
+      supportOverview: {
+        name: 'Vue d’ensemble de l’assistance',
+        description: 'Backlog, première réponse, résolution et respect des SLA pour les tickets clients',
+      },
     },
     customization: {
       widgets: 'Widgets',
@@ -69,6 +73,10 @@ export default {
       work: {
         name: 'Travail',
         description: 'Éléments, jalons et tâches qui vous sont attribués',
+      },
+      support: {
+        name: 'Assistance',
+        description: 'Métriques d’assistance pour vos files de clients',
       },
       navigation: {
         name: 'Navigation',
@@ -100,6 +108,20 @@ export default {
       assignedEmpty: 'Rien ne vous est attribué pour le moment',
       personalTasksLoadError: 'Impossible de charger vos tâches personnelles',
       personalTasksEmpty: 'Votre liste de tâches personnelles est vide',
+      supportMetricsLoadError: 'Impossible de charger les métriques d’assistance',
+      supportMetricsEmpty: 'Aucun ticket client dans cette portée pour le moment',
+      supportOverviewSetupTitle: 'Choisissez les espaces de travail du rapport',
+      supportOverviewSetupSubtitle: 'Ce widget affiche les métriques d’assistance uniquement pour les espaces de travail que vous sélectionnez.',
+      supportSourcesUnavailable: '{count} de vos espaces de travail configurés ne sont plus disponibles',
+      supportBacklog: 'Backlog',
+      supportUnassigned: 'Non attribué',
+      supportCreated: 'Créés',
+      supportResolved: 'Résolus',
+      supportSlaCompliance: 'SLA respecté',
+      supportSlaNone: '—',
+      supportFirstResponseP50: 'Première réponse p50',
+      supportExportCSV: 'Exporter en CSV',
+      supportLiveDelayed: 'Mises à jour en direct en pause',
       dailyBriefingUnavailable: 'Votre briefing quotidien n’est pas disponible pour le moment. Il repose sur une intégration IA. Si vous venez d’en configurer une, revenez dans quelques instants.',
       updatedAt: 'Mis à jour {time}',
       priorityLabel: 'Priorité : {priority}',

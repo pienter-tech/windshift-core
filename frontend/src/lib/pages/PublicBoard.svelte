@@ -1,5 +1,5 @@
 <script>
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount } from 'svelte';
   import { publicBoard } from '../api/publicBoard.js';
   import { themeStore } from '../stores/theme.svelte.js';
   import { IconSun, IconMoon, IconClipboardList, IconAlertTriangle } from '@tabler/icons-svelte-runes';
@@ -12,7 +12,7 @@
   let board = $state(null);
   let loading = $state(true);
   let error = $state(null);
-  let refreshInterval;
+  let loadId = 0;
 
   // Card fields set for quick lookup
   let cardFieldSet = $derived(
@@ -28,21 +28,6 @@
     return cardFieldSet.has(fieldId);
   }
 
-  async function loadBoard() {
-    try {
-      board = await publicBoard.get(slug);
-      error = null;
-    } catch (err) {
-      if (err.status === 404) {
-        error = 'not_found';
-      } else {
-        error = 'error';
-      }
-    } finally {
-      loading = false;
-    }
-  }
-
   function toggleTheme() {
     const current = themeStore.resolvedTheme;
     themeStore.setColorMode(current === 'dark' ? 'light' : 'dark');
@@ -50,13 +35,51 @@
 
   onMount(() => {
     themeStore.init();
-    loadBoard();
-    // Auto-refresh every 60 seconds
-    refreshInterval = setInterval(loadBoard, 60000);
   });
 
-  onDestroy(() => {
-    if (refreshInterval) clearInterval(refreshInterval);
+  // The router reuses this component across public-board URLs, so a slug change
+  // must reset scope-owned state and start the new board immediately. Each load
+  // is bound to its slug generation: a superseded response, error or finally
+  // must never commit over the board the user is now looking at.
+  $effect(() => {
+    const activeSlug = slug;
+    const id = ++loadId;
+    const controller = new AbortController();
+    let inFlight = false;
+    let disposed = false;
+
+    board = null;
+    error = null;
+    loading = true;
+    selectedItemKey = null;
+
+    async function load(silent) {
+      if (inFlight || disposed) return;
+      inFlight = true;
+      if (!silent) loading = true;
+      try {
+        const result = await publicBoard.get(activeSlug, { signal: controller.signal });
+        if (disposed || id !== loadId) return;
+        board = result;
+        error = null;
+      } catch (err) {
+        if (disposed || id !== loadId || err?.name === 'AbortError') return;
+        error = err?.status === 404 ? 'not_found' : 'error';
+      } finally {
+        inFlight = false;
+        if (!disposed && id === loadId) loading = false;
+      }
+    }
+
+    load(false);
+    // Auto-refresh every 60 seconds without overlapping a slow request.
+    const refreshInterval = setInterval(() => load(true), 60000);
+
+    return () => {
+      disposed = true;
+      controller.abort();
+      clearInterval(refreshInterval);
+    };
   });
 </script>
 

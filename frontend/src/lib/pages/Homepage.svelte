@@ -39,6 +39,7 @@
   import RecentWorkspacesWidget from '../widgets/dashboard/RecentWorkspacesWidget.svelte';
   import AssignedToMeWidget from '../widgets/dashboard/AssignedToMeWidget.svelte';
   import PersonalTasksWidget from '../widgets/dashboard/PersonalTasksWidget.svelte';
+  import SupportOverviewWidget from '../widgets/SupportOverviewWidget.svelte';
   import SavedSearchWidget from '../widgets/dashboard/SavedSearchWidget.svelte';
 
   let greeting = $derived(homepageStore.greeting);
@@ -525,6 +526,11 @@
                         <AssignedToMeWidget config={widget.config ?? {}} />
                       {:else if widget.type === 'personal-tasks'}
                         <PersonalTasksWidget config={widget.config ?? {}} />
+                      {:else if widget.type === 'support-overview'}
+                        <SupportOverviewWidget
+                          config={widget.config ?? {}}
+                          onconfigchange={(changes) => updateWidgetConfig(widget.id, changes)}
+                        />
                       {:else if widget.type === 'saved-search'}
                         <SavedSearchWidget
                           config={widget.config ?? {}}

@@ -47,6 +47,7 @@
       badges: [],
       metadata: [],
       searchFields: ['name', 'label'],
+      groupBy: null,
       getValue: (item) => item.id,
       getLabel: (item) => item.name || item.label || ''
     };
@@ -71,6 +72,7 @@
   {maxSelections}
   class={className}
   searchFields={finalConfig.searchFields}
+  groupBy={finalConfig.groupBy}
   getValue={finalConfig.getValue}
   getLabel={finalConfig.getLabel}
   serverSearch={!!onSearchChange}

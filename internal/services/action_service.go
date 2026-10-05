@@ -675,6 +675,7 @@ func (as *ActionService) executeActionForEvent(executionCtx context.Context, act
 	for k, v := range event.NewValues {
 		ctx.Variables["new_"+k] = v
 	}
+	ctx.TriggerCommentIsPrivate = event.TriggerCommentIsPrivate || eventValueIsTrue(event.NewValues["comment_is_private"])
 	if err := as.loadExecutionActor(ctx); err != nil {
 		log.Status = models.ActionStatusFailed
 		log.ErrorMessage = err.Error()
@@ -843,6 +844,29 @@ func currentActionWorkspaceID(ctx *models.ExecutionContext) int {
 	return 0
 }
 
+// triggerCommentIsPrivate reports whether the execution descends from a
+// private/internal comment. Customer-visible nodes must stay internal or
+// skip when it is true.
+func triggerCommentIsPrivate(ctx *models.ExecutionContext) bool {
+	return ctx != nil && ctx.TriggerCommentIsPrivate
+}
+
+// eventValueIsTrue coerces a persisted event value to a bool. Durable events
+// round-trip through JSON, so the flag is normally a bool, but older rows may
+// carry strings.
+func eventValueIsTrue(value any) bool {
+	switch v := value.(type) {
+	case bool:
+		return v
+	case string:
+		return v == "true" || v == "1"
+	case float64:
+		return v != 0
+	default:
+		return false
+	}
+}
+
 func (as *ActionService) updateItemFromAction(ctx *models.ExecutionContext, updateData map[string]any) (*UpdateItemResult, error) {
 	if as.itemUpdate == nil {
 		return nil, fmt.Errorf("item update application service not configured")
@@ -857,10 +881,11 @@ func (as *ActionService) updateItemFromAction(ctx *models.ExecutionContext, upda
 		currentActionItemID(ctx),
 		updateData,
 		ActionContext{
-			TriggeredByAction: true,
-			ExecutionChainID:  ctx.ChainID,
-			CascadeDepth:      depth,
-			SourceApplication: "workspace",
+			TriggeredByAction:       true,
+			ExecutionChainID:        ctx.ChainID,
+			CascadeDepth:            depth,
+			SourceApplication:       "workspace",
+			TriggerCommentIsPrivate: ctx.TriggerCommentIsPrivate,
 		},
 	)
 }
@@ -1488,15 +1513,16 @@ func (as *ActionService) executeSetStatusID(statusID int, ctx *models.ExecutionC
 	// Emit cascade event if status actually changed.
 	if !result.NoOp {
 		as.EmitActionEvent(&models.ActionEvent{
-			EventType:         models.ActionTriggerStatusTransition,
-			WorkspaceID:       workspaceID,
-			ItemID:            itemID,
-			ActorUserID:       ctx.EffectiveActorID,
-			OldValues:         map[string]any{"status_id": oldStatusID},
-			NewValues:         map[string]any{"status_id": newStatusID},
-			TriggeredByAction: true,
-			ExecutionChainID:  ctx.ChainID,
-			CascadeDepth:      ctx.Event.CascadeDepth + 1,
+			EventType:               models.ActionTriggerStatusTransition,
+			WorkspaceID:             workspaceID,
+			ItemID:                  itemID,
+			ActorUserID:             ctx.EffectiveActorID,
+			OldValues:               map[string]any{"status_id": oldStatusID},
+			NewValues:               map[string]any{"status_id": newStatusID},
+			TriggeredByAction:       true,
+			ExecutionChainID:        ctx.ChainID,
+			CascadeDepth:            ctx.Event.CascadeDepth + 1,
+			TriggerCommentIsPrivate: ctx.TriggerCommentIsPrivate,
 		})
 	}
 
@@ -1622,15 +1648,16 @@ func (as *ActionService) executeTransitionItem(node *models.ActionNode, ctx *mod
 	// participate in the same chain-store loop prevention.
 	if !result.NoOp {
 		as.EmitActionEvent(&models.ActionEvent{
-			EventType:         models.ActionTriggerStatusTransition,
-			WorkspaceID:       item.WorkspaceID,
-			ItemID:            item.ID,
-			ActorUserID:       ctx.EffectiveActorID,
-			OldValues:         map[string]any{"status_id": oldStatusID},
-			NewValues:         map[string]any{"status_id": targetStatusID},
-			TriggeredByAction: true,
-			ExecutionChainID:  ctx.ChainID,
-			CascadeDepth:      ctx.Event.CascadeDepth + 1,
+			EventType:               models.ActionTriggerStatusTransition,
+			WorkspaceID:             item.WorkspaceID,
+			ItemID:                  item.ID,
+			ActorUserID:             ctx.EffectiveActorID,
+			OldValues:               map[string]any{"status_id": oldStatusID},
+			NewValues:               map[string]any{"status_id": targetStatusID},
+			TriggeredByAction:       true,
+			ExecutionChainID:        ctx.ChainID,
+			CascadeDepth:            ctx.Event.CascadeDepth + 1,
+			TriggerCommentIsPrivate: ctx.TriggerCommentIsPrivate,
 		})
 	}
 
@@ -1755,11 +1782,20 @@ func (as *ActionService) executeAddComment(node *models.ActionNode, ctx *models.
 	// Substitute variables in content
 	content := as.substituteVariables(config.Content, ctx)
 
+	// A private/internal trigger comment must never produce a customer-visible
+	// comment; keep the configured content but post it as an internal note.
+	isPrivate := config.IsPrivate
+	privacyDowngraded := false
+	if triggerCommentIsPrivate(ctx) && !isPrivate {
+		isPrivate = true
+		privacyDowngraded = true
+	}
+
 	result, err := as.commentService.Create(CreateCommentParams{
 		ItemID:        itemID,
 		AuthorID:      ctx.EffectiveActorID,
 		Content:       content,
-		IsPrivate:     config.IsPrivate,
+		IsPrivate:     isPrivate,
 		ActorUserID:   ctx.EffectiveActorID,
 		EventMetadata: itemEventMetadata(ctx.EffectiveActorID, "automation", actionContextFromExecution(ctx)),
 	})
@@ -1771,8 +1807,11 @@ func (as *ActionService) executeAddComment(node *models.ActionNode, ctx *models.
 	// Populate step result output with change details
 	stepResult.Output = map[string]any{
 		"content":    content,
-		"is_private": config.IsPrivate,
+		"is_private": isPrivate,
 		"comment_id": commentID,
+	}
+	if privacyDowngraded {
+		stepResult.Output["privacy_downgraded"] = true
 	}
 
 	return nil

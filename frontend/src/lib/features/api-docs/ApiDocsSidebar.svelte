@@ -161,6 +161,7 @@
     border-right: 1px solid var(--ds-border);
     background: var(--ds-surface);
     height: 100%;
+    --scrollable-sidebar-fade-color: var(--ds-surface);
   }
   .sidebar-head {
     padding: 18px 18px 8px;

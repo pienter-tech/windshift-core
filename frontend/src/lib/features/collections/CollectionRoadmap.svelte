@@ -651,6 +651,12 @@
   // O(1) lookup map for scheduled items
   let roadmapItemMap = $derived(new Map(roadmapItems.map(i => [i.id, i])));
 
+  // Hydrate only the assignees the scheduled bars reference.
+  $effect(() => {
+    const ids = roadmapItems.map((item) => item.assignee_id).filter(Boolean);
+    if (ids.length > 0) void workspaceDataStore.hydrateUsers(ids);
+  });
+
   // Dependency arrows data
   let dependencyArrows = $derived.by(() => {
     if (!roadmapConfig.dependency_link_type_id) return [];

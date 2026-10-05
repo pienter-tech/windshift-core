@@ -126,12 +126,6 @@
     color: var(--ds-text);
   }
 
-  .kb-browse__title-icon {
-    width: 1.5rem;
-    height: 1.5rem;
-    color: var(--ds-text-link);
-  }
-
   .kb-browse__count {
     margin-top: 0.25rem;
     font-size: 0.875rem;
@@ -170,13 +164,6 @@
     border-color: var(--ds-border);
   }
 
-  .kb-tree__row-icon {
-    flex-shrink: 0;
-    width: 1rem;
-    height: 1rem;
-    color: var(--ds-text-subtle);
-  }
-
   .kb-tree__row-title {
     flex: 1;
     min-width: 0;
@@ -187,16 +174,4 @@
     font-size: 0.9375rem;
   }
 
-  .kb-tree__row-chevron {
-    flex-shrink: 0;
-    width: 1rem;
-    height: 1rem;
-    color: var(--ds-text-subtle);
-    opacity: 0;
-    transition: opacity 150ms ease;
-  }
-
-  .kb-tree__row:hover .kb-tree__row-chevron {
-    opacity: 1;
-  }
 </style>

@@ -33,17 +33,17 @@ export async function fetchWorkspacePageSections(workspaces) {
  *
  * @param {Array<{id: number, name: string}>} workspaces
  * @param {string} query
- * @param {{limitPerWorkspace?: number, cap?: number}} options
+ * @param {{limitPerWorkspace?: number, cap?: number, signal?: AbortSignal}} options
  * @returns {Promise<any[]>}
  */
 export async function searchPagesAcrossWorkspaces(
   workspaces,
   query,
-  { limitPerWorkspace = 5, cap = 12 } = {}
+  { limitPerWorkspace = 5, cap = 12, signal } = {}
 ) {
   const settled = await Promise.allSettled(
     (workspaces ?? []).map((ws) =>
-      api.pages.searchPages(ws.id, query, { limit: limitPerWorkspace })
+      api.pages.searchPages(ws.id, query, { limit: limitPerWorkspace, signal })
     )
   );
   const out = [];

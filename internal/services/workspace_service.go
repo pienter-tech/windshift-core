@@ -334,11 +334,98 @@ func (s *WorkspaceService) provisionTemplatePack(ctx context.Context, params Cre
 	} else if report != nil {
 		detail = report.Status
 	}
+
+	// The schema stage may have imported a configuration set that the failure
+	// now orphans. Remove it (and the workflow it created fresh) before the
+	// workspace disappears; shared global registries are adopted by design and
+	// intentionally survive. A schema stage reported ok is a fresh import; a
+	// skipped stage means an existing set was adopted and must be left alone.
+	if freshConfigSetID := freshlyImportedConfigSetID(report); freshConfigSetID > 0 {
+		s.compensateFreshPackConfigurationSet(ctx, freshConfigSetID, result.Workspace.ID)
+	}
 	if delErr := s.Delete(result.Workspace.ID); delErr != nil {
 		slog.Error("failed to roll back workspace after pack provisioning failure",
 			"workspace_id", result.Workspace.ID, "pack", params.TemplatePack, "error", delErr)
 	}
 	return fmt.Errorf("%w: pack %q: %s", ErrWorkspacePackProvisioning, params.TemplatePack, detail)
+}
+
+// freshlyImportedConfigSetID returns the configuration set a pack apply
+// imported from the template, or 0 when the schema stage adopted an existing
+// set (or never reached a set). The schema stage is only reported ok on a
+// fresh import; reuse is reported skipped.
+func freshlyImportedConfigSetID(report *PackApplyReport) int {
+	if report == nil || report.ConfigSetID <= 0 {
+		return 0
+	}
+	for i := range report.Stages {
+		if report.Stages[i].Name == PackStageSchema && report.Stages[i].Status == PackStageStatusOK {
+			return report.ConfigSetID
+		}
+	}
+	return 0
+}
+
+// compensateFreshPackConfigurationSet removes a configuration set imported by
+// a failed create-from-template-pack together with the workflow it created.
+// It refuses when another workspace already adopted the set or another
+// configuration set references the workflow, so a concurrent or shared apply
+// is never damaged. Deleting the workflow cascades its condition and approval
+// sets. Shared global registries (statuses, item types, custom fields,
+// priorities, link types, screens) are matched by name and adopted rather than
+// owned, so they stay for the next apply.
+func (s *WorkspaceService) compensateFreshPackConfigurationSet(ctx context.Context, configSetID, workspaceID int) {
+	repo := repository.NewConfigurationSetRepository(s.db)
+	set, err := repo.FindByIDBasic(configSetID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return
+	}
+	if err != nil {
+		slog.Warn("failed to load configuration set for pack rollback",
+			"configuration_set_id", configSetID, "error", err)
+		return
+	}
+
+	var otherWorkspaces int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM workspace_configuration_sets
+		WHERE configuration_set_id = ? AND workspace_id != ?
+	`, configSetID, workspaceID).Scan(&otherWorkspaces); err != nil {
+		slog.Warn("failed to check configuration-set sharing for pack rollback",
+			"configuration_set_id", configSetID, "error", err)
+		return
+	}
+	if otherWorkspaces > 0 {
+		slog.Warn("leaving configuration set behind: another workspace adopted it",
+			"configuration_set_id", configSetID)
+		return
+	}
+
+	workflowID := set.WorkflowID
+	if err := repo.Delete(configSetID); err != nil {
+		slog.Warn("failed to remove configuration set after pack provisioning failure",
+			"configuration_set_id", configSetID, "error", err)
+		return
+	}
+	if workflowID == nil {
+		return
+	}
+
+	var workflowRefs int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM configuration_sets WHERE workflow_id = ?`, *workflowID,
+	).Scan(&workflowRefs); err != nil {
+		slog.Warn("failed to check workflow references for pack rollback",
+			"workflow_id", *workflowID, "error", err)
+		return
+	}
+	if workflowRefs > 0 {
+		return
+	}
+	if _, err := s.db.ExecWriteContext(ctx, `DELETE FROM workflows WHERE id = ?`, *workflowID); err != nil {
+		slog.Warn("failed to remove workflow after pack provisioning failure",
+			"workflow_id", *workflowID, "error", err)
+	}
 }
 
 // NullableUpdate distinguishes an omitted field from an explicit null.

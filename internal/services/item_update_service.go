@@ -105,6 +105,11 @@ func (s *ItemUpdateService) UpdateItem(req UpdateItemRequest) (*UpdateItemResult
 }
 
 func (s *ItemUpdateService) updateItem(ctx context.Context, req UpdateItemRequest, opts itemUpdateOptions) (*UpdateItemResult, error) {
+	// A merged duplicate is a read-only redirect to its canonical ticket
+	// (WI-1528); edits must go to the canonical.
+	if mergedInto, err := repository.NewItemRepository(s.db).MergedIntoItemID(ctx, req.ItemID); err == nil && mergedInto != nil {
+		return nil, NewServiceError(409, fmt.Sprintf("item %d was merged into item %d and is read-only", req.ItemID, *mergedInto))
+	}
 	if err := validateItemUpdateRequest(ctx, req, opts); err != nil {
 		return nil, err
 	}
@@ -172,6 +177,7 @@ func (s *ItemUpdateService) AddMilestone(req UpdateItemRequest, milestoneID int)
 		return nil, false, fmt.Errorf("failed to load updated item: %w", err)
 	}
 	PublishItemChange(updatedItem.ID, ItemChangeUpdated)
+	PublishWorkspaceChange(updatedItem.WorkspaceID, WorkspaceChangeItems)
 	return &UpdateItemResult{
 		OriginalItem: originalItem,
 		Item:         updatedItem,
@@ -265,12 +271,13 @@ func (s *ItemUpdateService) recordMilestoneAddition(
 		NewValue:  joinIntsCSV(newIDs),
 		ChangedAt: now,
 	}}
-	if err := s.recordItemHistory(tx, history); err != nil {
-		return nil, fmt.Errorf("failed to record history: %w", err)
-	}
 	metadata := mergeItemEventMetadata(req.EventMetadata, itemEventMetadata(req.UserID, "application", nil))
 	if metadata.OccurredAt.IsZero() {
 		metadata.OccurredAt = now
+	}
+	stampHistorySource(history, metadata)
+	if err := s.recordItemHistory(tx, history); err != nil {
+		return nil, fmt.Errorf("failed to record history: %w", err)
 	}
 	if _, err := itemevents.NewRecorder(s.db).Updated(
 		context.Background(), tx, originalItem, itemHistoryEventChanges(history), metadata,

@@ -68,6 +68,8 @@ func RegisterChannelRoutes(deps *Deps) {
 
 	// Notification endpoints
 	api.HandleH("GET /notifications", auth(http.HandlerFunc(deps.Channels.Notification.GetNotifications)))
+	// Per-user notification invalidation stream (WI-1625).
+	api.HandleH("GET /notifications/events", auth(http.HandlerFunc(deps.Channels.Notification.NotificationEvents)))
 	api.HandleH("POST /notifications", auth(http.HandlerFunc(deps.Channels.Notification.CreateNotification)))
 	api.HandleH("DELETE /notifications", auth(http.HandlerFunc(deps.Channels.Notification.ClearNotifications)))
 	api.HandleH("PATCH /notifications/read-all", auth(http.HandlerFunc(deps.Channels.Notification.MarkAllNotificationsAsRead)))

@@ -336,6 +336,19 @@ func (s *ItemLifecycleService) Merge(ctx context.Context, input ItemMergeInput) 
 				return err
 			}
 
+			// The duplicate is a redirect now: abandon its running SLA cycles so
+			// armed warning/breach jobs stop firing for a ticket whose content
+			// moved to the canonical (WI-1528).
+			if _, err := tx.Exec(`
+				UPDATE item_sla_cycles
+				SET status = 'abandoned', abandon_reason = 'merged', stopped_at = ?,
+				    paused = false, pause_started_at = NULL, next_deadline_at = NULL,
+				    remaining_at_pause_ms = NULL, updated_at = CURRENT_TIMESTAMP
+				WHERE item_id = ? AND status = 'ongoing'
+			`, now, plan.item.ID); err != nil {
+				return fmt.Errorf("abandon SLA cycles for merged item %d: %w", plan.item.ID, err)
+			}
+
 			out.MovedComments = int(movedComments)
 			out.MovedAttachments = int(movedAttachments)
 			out.MovedLinks = int(movedLinks)
@@ -359,6 +372,16 @@ func (s *ItemLifecycleService) Merge(ctx context.Context, input ItemMergeInput) 
 	if s.emitter != nil {
 		if updated, err := s.items.FindByID(input.TargetItemID); err == nil && updated != nil {
 			s.emitter.EmitItemUpdated(target, updated, false, false, input.ActorUserID, nil, input.ActorUsername)
+		}
+		// Emit for each duplicate too: its merged_into_item_id changed, and
+		// automations/webhooks must learn the ticket was folded away instead
+		// of only seeing the canonical (WI-1528).
+		for _, id := range ordered {
+			source, err := s.items.FindByID(id)
+			if err != nil || source == nil {
+				continue
+			}
+			s.emitter.EmitItemUpdated(source, source, false, false, input.ActorUserID, nil, input.ActorUsername)
 		}
 	}
 	return result, nil
@@ -502,6 +525,7 @@ func (s *ItemLifecycleService) Split(ctx context.Context, input ItemSplitInput) 
 
 	PublishItemChange(childID, ItemChangeCreated)
 	PublishItemChange(source.ID, ItemChangeUpdated)
+	PublishWorkspaceChange(source.WorkspaceID, WorkspaceChangeItems)
 	repository.InvalidateItemListCountCache(s.db, source.WorkspaceID)
 	if s.emitter != nil {
 		s.emitter.EmitItemCreated(child, input.ActorUserID, input.ActorUsername)
@@ -607,6 +631,7 @@ func (s *ItemLifecycleService) sourceItemLinks(tx database.Tx, itemID int) ([]so
 
 func (s *ItemLifecycleService) invalidateAfterMutation(workspaceID int, itemIDs []int) {
 	repository.InvalidateItemListCountCache(s.db, workspaceID)
+	PublishWorkspaceChange(workspaceID, WorkspaceChangeItems)
 	for _, id := range itemIDs {
 		PublishItemChange(id, ItemChangeUpdated)
 	}

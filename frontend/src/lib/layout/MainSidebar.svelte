@@ -296,6 +296,7 @@
   :global(.main-sidebar) {
     height: 100vh;
     height: 100dvh;
+    --scrollable-sidebar-fade-color: var(--nav-bg-color);
   }
 
   .sidebar-quick-actions {

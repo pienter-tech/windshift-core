@@ -297,6 +297,12 @@ type labelApplication interface {
 	RemoveFromItem(services.AuditActor, int, int) error
 }
 
+type participantApplication interface {
+	List(itemID int) ([]models.ItemParticipant, error)
+	Add(ctx context.Context, actorID, itemID int, input services.ParticipantInput) ([]models.ItemParticipant, bool, error)
+	Remove(ctx context.Context, actorID, itemID, customerID int) ([]models.ItemParticipant, error)
+}
+
 type itemReader interface {
 	FindByID(int) (*models.Item, error)
 	FindByIDsInWorkspace(ctx context.Context, workspaceID int, ids []int) ([]*models.Item, error)
@@ -583,6 +589,7 @@ type Deps struct {
 	Workspaces                   workspaceApplication
 	ItemTemplates                itemTemplateApplication
 	Labels                       labelApplication
+	Participants                 participantApplication
 	Items                        itemReader
 	Access                       resourceAccess
 	Preferences                  preferencesApplication
@@ -685,6 +692,9 @@ func RegisterRoutes(deps Deps) error {
 	}
 	if deps.Labels == nil {
 		return errors.New("v2: Labels is required")
+	}
+	if deps.Participants == nil {
+		return errors.New("v2: Participants is required")
 	}
 	if deps.Items == nil {
 		return errors.New("v2: Items is required")
@@ -868,6 +878,7 @@ func buildRoutes(deps Deps) []route {
 	registerHierarchyLevelRoutes(&builder, deps)
 	registerScopedCatalogRoutes(&builder, deps.Catalog, deps.Workspaces, deps.ItemTemplates)
 	registerLabelRoutes(&builder, deps)
+	registerItemParticipantRoutes(&builder, deps)
 	registerPreferenceRoutes(&builder, deps.Preferences)
 	registerRecurrenceRoutes(&builder, deps)
 	registerItemDiagramRoutes(&builder, deps)
@@ -895,6 +906,7 @@ func buildRoutes(deps Deps) []route {
 	registerAssetRoutes(&builder, deps.Assets)
 	registerItemRoutes(&builder, deps.ItemApplication, deps.ItemDetail, deps.ItemLifecycle, deps.Access, deps.StoryPointRollup, deps.DBRequestTimeout)
 	registerQueueRoutes(&builder, deps.ItemApplication)
+	registerSupportMetricsRoutes(&builder, deps)
 	registerSLARoutes(&builder, deps)
 	registerSLACalendarRoutes(&builder, deps)
 	registerSLAWarningThresholdRoutes(&builder, deps)

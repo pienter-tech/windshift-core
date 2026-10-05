@@ -130,11 +130,6 @@
     color: var(--ds-text);
   }
 
-  .kb-article__back-icon {
-    width: 1rem;
-    height: 1rem;
-  }
-
   .kb-article__card {
     background-color: var(--ds-surface-card);
     border: 1px solid var(--ds-border);
@@ -148,12 +143,6 @@
     gap: 0.625rem;
   }
 
-  .kb-article__icon {
-    width: 1.5rem;
-    height: 1.5rem;
-    color: var(--ds-text-link);
-    flex-shrink: 0;
-  }
 
   .kb-article__title {
     font-size: 1.5rem;

@@ -8,6 +8,7 @@
   import Lozenge from '../../components/Lozenge.svelte';
   import EmptyState from '../../components/EmptyState.svelte';
   import { formatAuthenticatedDateTime as formatDateTimeLocale } from '../../utils/authenticatedDateFormatter.js';
+  import { formatCostUSD, hasMeteredUsage } from '../../utils/llmUsage.js';
   import { t } from '../../stores/i18n.svelte.js';
   import { workspacePermissions } from '../../stores';
   import { confirm } from '../../composables/useConfirm.js';
@@ -87,12 +88,6 @@
     } finally {
       canceling = false;
     }
-  }
-
-  function formatCost(usd) {
-    if (usd == null) return null;
-    if (usd > 0 && usd < 0.01) return '<$0.01';
-    return `$${usd.toFixed(usd < 1 ? 4 : 2)}`;
   }
 
   function statusAppearance(status) {
@@ -203,6 +198,18 @@
     if (liveToken === token) usage = u;
   }
 
+  // A missing run (deleted/vanished) or revoked permission is permanent, so
+  // tailing stops. Everything else is transient and retried.
+  function isTerminalTailError(error) {
+    const status = error?.status;
+    return status === 401 || status === 403 || status === 404 || status === 410;
+  }
+
+  function tailBackoffDelay(attempt) {
+    const delay = Math.min(EVENTS_POLL_MS * 2 ** Math.min(attempt - 1, 3), 12_000);
+    return new Promise((resolve) => setTimeout(resolve, delay));
+  }
+
   async function selectRun(runId) {
     selectedRunId = runId;
     lines = [];
@@ -211,9 +218,10 @@
     const token = Symbol('agent-log');
     liveToken = token;
     let afterId = 0;
+    let transientFailures = 0;
     loadUsage(runId, token); // best-effort initial totals
     while (liveToken === token) {
-      let run;
+      let run = null;
       try {
         const events = await agentRuns.listEventsAfter(runId, afterId, 200);
         if (liveToken !== token) return;
@@ -226,8 +234,14 @@
         run = await agentRuns.get(runId);
         if (liveToken !== token) return;
         runs = runs.map((r) => (r.id === run.id ? { ...r, ...run } : r));
-      } catch {
-        return; // run vanished or request failed; stop tailing quietly
+        transientFailures = 0;
+      } catch (error) {
+        if (liveToken !== token) return;
+        if (isTerminalTailError(error)) return;
+        // Keep afterId so a retry neither duplicates nor skips events.
+        transientFailures += 1;
+        await tailBackoffDelay(transientFailures);
+        continue;
       }
       if (TERMINAL.includes(run.status)) {
         const tail = await agentRuns.listEventsAfter(runId, afterId, 200).catch(() => []);
@@ -261,8 +275,10 @@
   }
 
   onMount(() => {
-    loadRuns();
-    runsTimer = setInterval(loadRuns, RUNS_POLL_MS);
+    loadRuns().catch(() => {});
+    runsTimer = setInterval(() => {
+      loadRuns().catch(() => {});
+    }, RUNS_POLL_MS);
   });
   onDestroy(() => {
     liveToken = null;
@@ -376,12 +392,12 @@
           {selectedRun.error}
         </div>
       {/if}
-      {#if usage && usage.calls > 0}
+      {#if hasMeteredUsage(usage)}
         <div data-testid="agent-run-usage" class="flex items-center flex-wrap gap-x-3 gap-y-1 text-xs" style="color: var(--ds-text-subtle);">
           <span>{usage.total_tokens.toLocaleString()} tokens</span>
           <span>({usage.prompt_tokens.toLocaleString()} in · {usage.completion_tokens.toLocaleString()} out)</span>
-          {#if formatCost(usage.cost_usd)}
-            <span style="color: var(--ds-text);">{formatCost(usage.cost_usd)}</span>
+          {#if formatCostUSD(usage.cost_usd)}
+            <span style="color: var(--ds-text);">{formatCostUSD(usage.cost_usd)}</span>
           {:else}
             <span>cost unknown</span>
           {/if}

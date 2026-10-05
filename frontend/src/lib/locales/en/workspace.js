@@ -59,6 +59,21 @@ export default {
       dragCustomersHere: 'Drag customers here to assign them to this organisation',
       noOrgFiles: 'Documents associated with this organisation will appear here.',
       noOrgTickets: "Tickets created by this organisation's contacts will appear here.",
+      sharing: 'Sharing',
+      sharingMode: 'Request sharing',
+      sharingModeHelp:
+        'Controls whether requests raised by this organisation’s contacts are shared with the organisation.',
+      sharingDisabled: 'Disabled',
+      sharingRequesterChoice: 'Contacts choose per request',
+      sharingAutomatic: 'Always shared with the organisation',
+      sharingAudience: 'Who can see shared requests',
+      sharingAudienceOrganisation: 'Everyone in the organisation',
+      sharingAudienceRoles: 'Only selected contact levels',
+      sharingRoles: 'Allowed contact levels',
+      sharingNoRoles: 'No contact levels defined yet.',
+      sharingSaved: 'Request sharing updated',
+      sharingSaveFailed: 'Failed to update request sharing',
+      contactLevels: 'Contact levels',
       contact: 'Contact',
       linked: 'Linked: ',
       loadMore: 'Load more ({count} remaining)',
@@ -98,6 +113,13 @@ export default {
     requesterOpenTickets: 'Possible duplicates',
     requesterOpenTicketsHelp:
       "Other open tickets from the same requester — this conversation may belong on one of them. Merge to keep one thread.",
+    customerContext: 'Customer context',
+    customerContextRequester: 'Requester',
+    customerContextOrganisation: 'Organisation',
+    customerContextOrgTickets: 'Other requests from this organisation',
+    customerContextOrgTicketsEmpty: 'No other requests from this organisation.',
+    customerContextAssets: 'Linked assets',
+    customerContextAssetsEmpty: 'No linked assets.',
     title: 'Items',
     subtitle: 'View and manage work items',
     item: 'Item',
@@ -109,6 +131,15 @@ export default {
     viewItem: 'View Item',
     selectTeam: 'Select team',
     noTeam: 'No team',
+    participants: 'Participants',
+    participantsEmpty: 'No external participants yet.',
+    participantEmailPlaceholder: 'Email address',
+    participantNamePlaceholder: 'Name (optional)',
+    participantAdd: 'Add participant',
+    participantPickExisting: 'Pick an existing customer',
+    participantRemove: 'Remove participant',
+    participantsAddFailed: 'Failed to add participant',
+    participantsRemoveFailed: 'Failed to remove participant',
     incident: 'Incident',
     incidentDeclare: 'Declare incident',
     incidentDeclared: 'Incident declared',
@@ -498,6 +529,18 @@ export default {
     selectIteration: 'Select iteration',
     noIteration: 'No iteration',
     selectOrCreateLabels: 'Select or create labels',
+  },
+
+  history: {
+    // Tooltip on the bot marker shown when an agent changed the item on this
+    // user's behalf through the AI Chat, as opposed to the connected-agent
+    // markers under comments.agentAuthored / comments.agentOwnedBy.
+    viaAIChat: 'Changed via AI chat',
+    // The agent turn behind that change, revealed by hovering the marker.
+    model: 'Model',
+    tokens: 'Tokens',
+    cost: 'Cost',
+    costUnknown: 'cost unknown',
   },
 
   comments: {
