@@ -26,6 +26,7 @@
 	import TextField from '../../components/TextField.svelte';
   import MilkdownEditor from '../../editors/LazyMilkdownEditor.svelte';
   import MilestoneComments from './MilestoneComments.svelte';
+  import MilestonePages from './MilestonePages.svelte';
 
   let { milestoneId, workspaceId = null } = $props();
 
@@ -344,6 +345,16 @@
         emptyTitle={t('milestones.noItemsAssigned')}
         emptyDescription={t('milestones.assignItemsHint')}
         ontoggle={toggleCategory}
+      />
+    {/if}
+
+    <!-- Pages (workspace milestones only; global milestones have no
+         workspace). Outside the loading branch like Comments below. -->
+    {#if progress && !error && !progress.is_global && progress.workspace_id}
+      <MilestonePages
+        {milestoneId}
+        workspaceId={progress.workspace_id}
+        canEdit={canManage}
       />
     {/if}
 
