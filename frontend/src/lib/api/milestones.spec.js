@@ -1,0 +1,68 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { milestones } from './milestones.js';
+
+function jsonResponse(body, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+describe('milestones comments client', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('lists every page of a milestone thread', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({ data: [{ id: 1, content: 'first' }], pagination: { total_pages: 2 } })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ data: [{ id: 2, content: 'second' }], pagination: { total_pages: 2 } })
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(milestones.getComments(7)).resolves.toEqual([
+      { id: 1, content: 'first' },
+      { id: 2, content: 'second' },
+    ]);
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v2/milestones/7/comments?page_size=100&page=1');
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/v2/milestones/7/comments?page_size=100&page=2');
+  });
+
+  it('creates a comment with only its Markdown content', async () => {
+    const created = { id: 3, milestone_id: 7, content: '**hi**' };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ data: created }, 201));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(milestones.createComment(7, '**hi**')).resolves.toEqual(created);
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/v2/milestones/7/comments');
+    expect(options.method).toBe('POST');
+    expect(JSON.parse(options.body)).toEqual({ content: '**hi**' });
+  });
+
+  it('updates a comment with a merge patch and deletes it by milestone and id', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ data: { id: 3, content: 'edited' } }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await milestones.updateComment(7, 3, 'edited');
+    const [patchURL, patchOptions] = fetchMock.mock.calls[0];
+    expect(patchURL).toBe('/api/v2/milestones/7/comments/3');
+    expect(patchOptions.method).toBe('PATCH');
+    expect(new Headers(patchOptions.headers).get('Content-Type')).toBe(
+      'application/merge-patch+json'
+    );
+    expect(JSON.parse(patchOptions.body)).toEqual({ content: 'edited' });
+
+    await milestones.deleteComment(7, 3);
+    const [deleteURL, deleteOptions] = fetchMock.mock.calls[1];
+    expect(deleteURL).toBe('/api/v2/milestones/7/comments/3');
+    expect(deleteOptions.method).toBe('DELETE');
+  });
+});

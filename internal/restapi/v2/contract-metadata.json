@@ -7999,6 +7999,176 @@
         ]
       }
     },
+    "/milestones/{milestone_id}/comments": {
+      "get": {
+        "description": "List milestone comments. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "milestone_id",
+            "In": "path",
+            "Description": "The milestone identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "page",
+            "In": "query",
+            "Description": "One-based page number.",
+            "Required": false,
+            "Schema": {
+              "default": 1,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "page_size",
+            "In": "query",
+            "Description": "Maximum number of resources to return.",
+            "Required": false,
+            "Schema": {
+              "default": 50,
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "sort",
+            "In": "query",
+            "Description": "Sort field; prefix with '-' for descending order. ID is the stable final tie-breaker.",
+            "Required": false,
+            "Schema": {
+              "enum": [
+                "created_at",
+                "-created_at"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "List milestone comments",
+        "tags": [
+          "Planning"
+        ]
+      },
+      "post": {
+        "description": "Create milestone comment. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "milestone_id",
+            "In": "path",
+            "Description": "The milestone identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Create milestone comment",
+        "tags": [
+          "Planning"
+        ]
+      }
+    },
+    "/milestones/{milestone_id}/comments/{comment_id}": {
+      "delete": {
+        "description": "Delete milestone comment. The server verifies resource ownership and deletion preconditions before removing the resource.",
+        "parameters": [
+          {
+            "Name": "milestone_id",
+            "In": "path",
+            "Description": "The milestone identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "comment_id",
+            "In": "path",
+            "Description": "The milestone comment identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Delete milestone comment",
+        "tags": [
+          "Planning"
+        ]
+      },
+      "patch": {
+        "description": "Update milestone comment. The operation uses JSON Merge Patch: omitted fields remain unchanged and documented nullable fields accept null. Unknown fields are rejected.",
+        "parameters": [
+          {
+            "Name": "milestone_id",
+            "In": "path",
+            "Description": "The milestone identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "comment_id",
+            "In": "path",
+            "Description": "The milestone comment identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Update milestone comment",
+        "tags": [
+          "Planning"
+        ]
+      }
+    },
     "/milestones/{milestone_id}/progress": {
       "get": {
         "description": "Get milestone progress. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",

@@ -25939,6 +25939,78 @@
         ],
         "type": "object"
       },
+      "GetMilestonesMilestoneIdCommentsResult": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "author_avatar": {
+                  "description": "The author avatar value.",
+                  "type": "string"
+                },
+                "author_id": {
+                  "description": "The author id value.",
+                  "type": "integer"
+                },
+                "author_name": {
+                  "description": "The author name value.",
+                  "type": "string"
+                },
+                "content": {
+                  "description": "The content value.",
+                  "type": "string"
+                },
+                "content_html": {
+                  "description": "The content html value.",
+                  "type": "string"
+                },
+                "created_at": {
+                  "description": "The created at value.",
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "id": {
+                  "description": "The id value.",
+                  "type": "integer"
+                },
+                "is_agent": {
+                  "description": "The is agent value.",
+                  "type": "boolean"
+                },
+                "milestone_id": {
+                  "description": "The milestone id value.",
+                  "type": "integer"
+                },
+                "updated_at": {
+                  "description": "The updated at value.",
+                  "format": "date-time",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "author_id",
+                "content",
+                "created_at",
+                "id",
+                "milestone_id",
+                "updated_at"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "pagination": {
+            "$ref": "#/components/schemas/Pagination"
+          }
+        },
+        "required": [
+          "data",
+          "pagination"
+        ],
+        "type": "object"
+      },
       "GetMilestonesMilestoneIdProgressResult": {
         "additionalProperties": false,
         "properties": {
@@ -55682,6 +55754,82 @@
         ],
         "type": "object"
       },
+      "PatchMilestonesMilestoneIdCommentsCommentIdPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "description": "The content value.",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "PatchMilestonesMilestoneIdCommentsCommentIdResult": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "additionalProperties": false,
+            "properties": {
+              "author_avatar": {
+                "description": "The author avatar value.",
+                "type": "string"
+              },
+              "author_id": {
+                "description": "The author id value.",
+                "type": "integer"
+              },
+              "author_name": {
+                "description": "The author name value.",
+                "type": "string"
+              },
+              "content": {
+                "description": "The content value.",
+                "type": "string"
+              },
+              "content_html": {
+                "description": "The content html value.",
+                "type": "string"
+              },
+              "created_at": {
+                "description": "The created at value.",
+                "format": "date-time",
+                "type": "string"
+              },
+              "id": {
+                "description": "The id value.",
+                "type": "integer"
+              },
+              "is_agent": {
+                "description": "The is agent value.",
+                "type": "boolean"
+              },
+              "milestone_id": {
+                "description": "The milestone id value.",
+                "type": "integer"
+              },
+              "updated_at": {
+                "description": "The updated at value.",
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "author_id",
+              "content",
+              "created_at",
+              "id",
+              "milestone_id",
+              "updated_at"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "PatchMilestonesMilestoneIdPayload": {
         "additionalProperties": false,
         "properties": {
@@ -81833,6 +81981,84 @@
               "source_type",
               "target_id",
               "target_type"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "PostMilestonesMilestoneIdCommentsPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "description": "The content value.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "type": "object"
+      },
+      "PostMilestonesMilestoneIdCommentsResult": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "additionalProperties": false,
+            "properties": {
+              "author_avatar": {
+                "description": "The author avatar value.",
+                "type": "string"
+              },
+              "author_id": {
+                "description": "The author id value.",
+                "type": "integer"
+              },
+              "author_name": {
+                "description": "The author name value.",
+                "type": "string"
+              },
+              "content": {
+                "description": "The content value.",
+                "type": "string"
+              },
+              "content_html": {
+                "description": "The content html value.",
+                "type": "string"
+              },
+              "created_at": {
+                "description": "The created at value.",
+                "format": "date-time",
+                "type": "string"
+              },
+              "id": {
+                "description": "The id value.",
+                "type": "integer"
+              },
+              "is_agent": {
+                "description": "The is agent value.",
+                "type": "boolean"
+              },
+              "milestone_id": {
+                "description": "The milestone id value.",
+                "type": "integer"
+              },
+              "updated_at": {
+                "description": "The updated at value.",
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "author_id",
+              "content",
+              "created_at",
+              "id",
+              "milestone_id",
+              "updated_at"
             ],
             "type": "object"
           }
@@ -109934,6 +110160,326 @@
           }
         ],
         "summary": "Update milestone",
+        "tags": [
+          "Planning"
+        ],
+        "x-required-scopes": [
+          "milestones:write"
+        ]
+      }
+    },
+    "/milestones/{milestone_id}/comments": {
+      "get": {
+        "description": "List milestone comments. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "operationId": "getMilestonesMilestoneIdComments",
+        "parameters": [
+          {
+            "description": "The milestone identifier.",
+            "in": "path",
+            "name": "milestone_id",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "One-based page number.",
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Maximum number of resources to return.",
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Sort field; prefix with '-' for descending order. ID is the stable final tie-breaker.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "enum": [
+                "created_at",
+                "-created_at"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetMilestonesMilestoneIdCommentsResult"
+                }
+              }
+            },
+            "description": "List milestone comments response."
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationError"
+          },
+          "403": {
+            "$ref": "#/components/responses/PermissionError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimitError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "List milestone comments",
+        "tags": [
+          "Planning"
+        ],
+        "x-required-scopes": [
+          "milestones:read"
+        ]
+      },
+      "post": {
+        "description": "Create milestone comment. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "operationId": "postMilestonesMilestoneIdComments",
+        "parameters": [
+          {
+            "description": "The milestone identifier.",
+            "in": "path",
+            "name": "milestone_id",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PostMilestonesMilestoneIdCommentsPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PostMilestonesMilestoneIdCommentsResult"
+                }
+              }
+            },
+            "description": "Create milestone comment response."
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequestError"
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationError"
+          },
+          "403": {
+            "$ref": "#/components/responses/PermissionError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLargeError"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaTypeError"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimitError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Create milestone comment",
+        "tags": [
+          "Planning"
+        ],
+        "x-required-scopes": [
+          "milestones:write"
+        ]
+      }
+    },
+    "/milestones/{milestone_id}/comments/{comment_id}": {
+      "delete": {
+        "description": "Delete milestone comment. The server verifies resource ownership and deletion preconditions before removing the resource.",
+        "operationId": "deleteMilestonesMilestoneIdCommentsCommentId",
+        "parameters": [
+          {
+            "description": "The milestone identifier.",
+            "in": "path",
+            "name": "milestone_id",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The milestone comment identifier.",
+            "in": "path",
+            "name": "comment_id",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Request completed successfully with no response body."
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequestError"
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationError"
+          },
+          "403": {
+            "$ref": "#/components/responses/PermissionError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLargeError"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaTypeError"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimitError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Delete milestone comment",
+        "tags": [
+          "Planning"
+        ],
+        "x-required-scopes": [
+          "milestones:delete"
+        ]
+      },
+      "patch": {
+        "description": "Update milestone comment. The operation uses JSON Merge Patch: omitted fields remain unchanged and documented nullable fields accept null. Unknown fields are rejected.",
+        "operationId": "patchMilestonesMilestoneIdCommentsCommentId",
+        "parameters": [
+          {
+            "description": "The milestone identifier.",
+            "in": "path",
+            "name": "milestone_id",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The milestone comment identifier.",
+            "in": "path",
+            "name": "comment_id",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/merge-patch+json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchMilestonesMilestoneIdCommentsCommentIdPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatchMilestonesMilestoneIdCommentsCommentIdResult"
+                }
+              }
+            },
+            "description": "Update milestone comment response."
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequestError"
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationError"
+          },
+          "403": {
+            "$ref": "#/components/responses/PermissionError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLargeError"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaTypeError"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimitError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Update milestone comment",
         "tags": [
           "Planning"
         ],
