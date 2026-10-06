@@ -30,6 +30,8 @@
   import MilestoneActivity from './MilestoneActivity.svelte';
   import TabStrip from '../../components/TabStrip.svelte';
   import { canManageMilestone, milestoneWorkspaceId } from './milestoneScope.js';
+  import { milestoneEditForm } from './milestoneEditForm.js';
+  import { categoriesStore } from '../../stores/categories.js';
 
   let { milestoneId, workspaceId = null } = $props();
 
@@ -79,6 +81,8 @@
 
 
   onMount(async () => {
+    // Options for the edit dialog's category picker (WCORE-34).
+    categoriesStore.init();
     await loadProgress();
   });
 
@@ -123,15 +127,7 @@
 
   function startEdit() {
     if (progress) {
-      formData = {
-        name: progress.milestone_name,
-        description: progress.description || '',
-        target_date: progress.target_date ? progress.target_date.split('T')[0] : '',
-        status: progress.status,
-        category_id: null, // We don't have this in progress response, but it's optional
-        is_global: milestone?.is_global ?? !workspaceId,
-        workspace_id: milestoneWsId ?? (workspaceId ? parseInt(workspaceId, 10) : null)
-      };
+      formData = milestoneEditForm({ progress, milestone, workspaceId });
       showEditModal = true;
     }
   }
@@ -443,6 +439,19 @@
             id="milestone-target-date"
             type="date"
             bind:value={formData.target_date}
+          />
+        </div>
+
+        <div>
+          <Label for="milestone-category" class="mb-2">{t('common.category')}</Label>
+          <BasePicker
+            bind:value={formData.category_id}
+            items={$categoriesStore}
+            placeholder={t('milestones.noCategory')}
+            showUnassigned={true}
+            unassignedLabel={t('milestones.noCategory')}
+            getValue={(item) => item.id}
+            getLabel={(item) => item.name}
           />
         </div>
 
