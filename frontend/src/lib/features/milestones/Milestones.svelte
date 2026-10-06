@@ -36,6 +36,7 @@
   import PageHeader from '../../layout/PageHeader.svelte';
   import { useEventListener } from 'runed';
   import { loadMilestoneTestStatistics } from './milestoneStatisticsData.js';
+  import { canReorderMilestoneRow } from './milestoneScope.js';
   import {
     GLOBAL_WORKSPACE_KEY,
     MILESTONE_STATUSES,
@@ -726,7 +727,7 @@
 
 
       {#snippet reorderCell(item)}
-        {#if item && (item.is_global || !isGlobalView)}
+        {#if canReorderMilestoneRow(item, { canReorderGlobal, canReorderLocal })}
           <span
             data-milestone-drag-handle
             class="inline-flex items-center justify-center cursor-grab active:cursor-grabbing"
