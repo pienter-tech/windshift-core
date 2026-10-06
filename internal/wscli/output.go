@@ -88,6 +88,10 @@ func (o *Output) printTable(data any) {
 		o.printMilestoneCommentsTable(w, v)
 	case *MilestoneComment:
 		o.printMilestoneCommentDetailTable(w, v)
+	case []MilestonePageLink:
+		o.printMilestonePageLinksTable(w, v)
+	case *MilestonePageLink:
+		o.printMilestonePageLinkDetailTable(w, v)
 	case []Attachment:
 		o.printAttachmentsTable(w, v)
 	case []Label:
@@ -202,6 +206,10 @@ func (o *Output) printCSV(data any) {
 		o.printMilestoneCommentsCSV(w, v)
 	case *MilestoneComment:
 		o.printMilestoneCommentCSV(w, v)
+	case []MilestonePageLink:
+		o.printMilestonePageLinksCSV(w, v)
+	case *MilestonePageLink:
+		o.printMilestonePageLinksCSV(w, []MilestonePageLink{*v})
 	case []Attachment:
 		o.printAttachmentsCSV(w, v)
 	case []Milestone:
@@ -452,6 +460,13 @@ func (o *Output) printMilestoneCommentsCSV(w *csv.Writer, comments []MilestoneCo
 func (o *Output) printMilestoneCommentCSV(w *csv.Writer, c *MilestoneComment) {
 	_ = w.Write([]string{"ID", "MILESTONE_ID", "AUTHOR", "CREATED", "UPDATED", "CONTENT"})
 	_ = w.Write([]string{fmt.Sprintf("%d", c.ID), fmt.Sprintf("%d", c.MilestoneID), c.AuthorName, c.CreatedAt.Format(time.RFC3339), c.UpdatedAt.Format(time.RFC3339), c.Content})
+}
+
+func (o *Output) printMilestonePageLinksCSV(w *csv.Writer, links []MilestonePageLink) {
+	_ = w.Write([]string{"LINK_ID", "PAGE_ID", "TITLE", "LINKED_BY", "CREATED"})
+	for _, l := range links {
+		_ = w.Write([]string{fmt.Sprintf("%d", l.ID), fmt.Sprintf("%d", l.PageID), l.PageTitle, l.CreatedByName, l.CreatedAt.Format(time.RFC3339)})
+	}
 }
 
 func (o *Output) printUserTable(w *tabwriter.Writer, u *User) {
@@ -820,6 +835,26 @@ func (o *Output) printMilestoneCommentDetailTable(w *tabwriter.Writer, c *Milest
 	_, _ = fmt.Fprintf(w, "Created:\t%s\n", c.CreatedAt.Format("2006-01-02 15:04:05"))
 	_, _ = fmt.Fprintf(w, "Updated:\t%s\n", c.UpdatedAt.Format("2006-01-02 15:04:05"))
 	_, _ = fmt.Fprintf(w, "Content:\n%s\n", c.Content)
+}
+
+func (o *Output) printMilestonePageLinksTable(w *tabwriter.Writer, links []MilestonePageLink) {
+	_, _ = fmt.Fprintln(w, "LINK ID\tPAGE ID\tTITLE\tLINKED BY\tCREATED")
+	_, _ = fmt.Fprintln(w, "-------\t-------\t-----\t---------\t-------")
+	for _, l := range links {
+		created := l.CreatedAt.Format("2006-01-02 15:04")
+		_, _ = fmt.Fprintf(w, "%d\t%d\t%s\t%s\t%s\n", l.ID, l.PageID, truncateString(l.PageTitle, 50), l.CreatedByName, created)
+	}
+}
+
+func (o *Output) printMilestonePageLinkDetailTable(w *tabwriter.Writer, l *MilestonePageLink) {
+	_, _ = fmt.Fprintf(w, "Link ID:\t%d\n", l.ID)
+	_, _ = fmt.Fprintf(w, "Milestone ID:\t%d\n", l.MilestoneID)
+	_, _ = fmt.Fprintf(w, "Page ID:\t%d\n", l.PageID)
+	_, _ = fmt.Fprintf(w, "Title:\t%s\n", l.PageTitle)
+	if l.CreatedByName != "" {
+		_, _ = fmt.Fprintf(w, "Linked by:\t%s\n", l.CreatedByName)
+	}
+	_, _ = fmt.Fprintf(w, "Created:\t%s\n", l.CreatedAt.Format("2006-01-02 15:04:05"))
 }
 
 // ============================================

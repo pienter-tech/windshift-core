@@ -669,6 +669,30 @@ func (c *Client) DeleteMilestoneComment(milestoneID, commentID int) error {
 	return c.DELETE(fmt.Sprintf("/rest/api/v2/milestones/%d/comments/%d", milestoneID, commentID))
 }
 
+// Milestone page link methods. Only workspace milestones have page links; the
+// list is a plain document, not paginated.
+
+func (c *Client) ListMilestonePageLinks(milestoneID int) ([]MilestonePageLink, error) {
+	links := make([]MilestonePageLink, 0)
+	if err := c.GET(fmt.Sprintf("/rest/api/v2/milestones/%d/page-links", milestoneID), &links); err != nil {
+		return nil, err
+	}
+	return links, nil
+}
+
+func (c *Client) CreateMilestonePageLink(milestoneID, pageID int) (*MilestonePageLink, error) {
+	req := map[string]int{"page_id": pageID}
+	var link MilestonePageLink
+	if err := c.POST(fmt.Sprintf("/rest/api/v2/milestones/%d/page-links", milestoneID), req, &link); err != nil {
+		return nil, err
+	}
+	return &link, nil
+}
+
+func (c *Client) DeleteMilestonePageLink(milestoneID, linkID int) error {
+	return c.DELETE(fmt.Sprintf("/rest/api/v2/milestones/%d/page-links/%d", milestoneID, linkID))
+}
+
 // Diagram routes accept opaque Excalidraw or Mermaid seed data.
 
 func (c *Client) ListDiagrams(itemID int) ([]Diagram, error) {
