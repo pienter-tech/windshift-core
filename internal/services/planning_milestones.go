@@ -95,8 +95,9 @@ type milestoneScanner interface {
 }
 
 // scanMilestoneRow scans a single milestone row (with LEFT JOIN release columns)
-// into a MilestoneResult. The column order must match the standard milestone query.
-func scanMilestoneRow(sc milestoneScanner) (MilestoneResult, error) {
+// into a MilestoneResult. The column order must match the standard milestone
+// query; extra receives any columns a caller appends after it.
+func scanMilestoneRow(sc milestoneScanner, extra ...any) (MilestoneResult, error) {
 	var m MilestoneResult
 	var description, targetDate, categoryName, categoryColor, workspaceName, externalKey sql.NullString
 	var categoryID, workspaceID sql.NullInt64
@@ -108,7 +109,9 @@ func scanMilestoneRow(sc milestoneScanner) (MilestoneResult, error) {
 	var mrIsDraft, mrIsPrerelease sql.NullBool
 	var mrCreatedAt sql.NullString
 
-	err := sc.Scan(&m.ID, &m.Name, &description, &targetDate, &m.Status, &categoryID,
+	const milestoneColumnCount = 34
+	dest := make([]any, 0, milestoneColumnCount+len(extra))
+	dest = append(dest, &m.ID, &m.Name, &description, &targetDate, &m.Status, &categoryID,
 		&categoryName, &categoryColor, &m.IsGlobal, &workspaceID, &workspaceName,
 		&externalKey, &m.Position,
 		&mrID, &mrTagName, &mrName, &mrBody, &mrIsDraft, &mrIsPrerelease,
@@ -116,6 +119,7 @@ func scanMilestoneRow(sc milestoneScanner) (MilestoneResult, error) {
 		&mrReleasedAt, &mrAssetsJSON, &mrLastSyncedAt, &mrSCMConnectionID, &mrSCMRepository,
 		&mrSCMReleaseID, &mrSCMReleaseURL, &mrCreatedBy, &mrCreatedAt,
 		&m.CreatedAt, &m.UpdatedAt)
+	err := sc.Scan(append(dest, extra...)...)
 	if err != nil {
 		return m, err
 	}
@@ -219,6 +223,9 @@ type MilestoneResult struct {
 	Releases      []MilestoneReleaseResult
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
+	// LastUpdatedAt is the latest change to the milestone or anything in it
+	// (WCORE-31). Only ListMilestones with IncludeLastUpdated sets it.
+	LastUpdatedAt *time.Time
 }
 
 // milestoneOrderByClause returns the ORDER BY clause for ListMilestones.
@@ -265,11 +272,24 @@ type MilestoneListParams struct {
 	SortBy string
 	// SortOrder is "asc" or "desc"; defaults to "asc" when SortBy is set.
 	SortOrder string
+	// IncludeLastUpdated adds each milestone's LastUpdatedAt. Item changes
+	// count only for items in ViewerWorkspaceIDs (WCORE-31).
+	IncludeLastUpdated bool
+	ViewerWorkspaceIDs []int
 }
 
 // ListMilestones retrieves milestones with pagination and filtering.
 func (s *PlanningService) ListMilestones(params MilestoneListParams) ([]MilestoneResult, int, error) {
-	list := newPlanningListQuery(milestoneSelectQuery+"\nWHERE 1=1", "SELECT COUNT(*) FROM milestones m WHERE 1=1")
+	selectQuery := milestoneSelectQuery
+	var columnArgs []any
+	if params.IncludeLastUpdated {
+		// The last-updated columns' placeholders precede the filter arguments.
+		var columns string
+		columns, columnArgs = milestoneLastUpdatedColumns(params.ViewerWorkspaceIDs)
+		selectQuery = "\n\tSELECT" + milestoneSelectColumns + columns + milestoneSelectFrom
+	}
+	list := newPlanningListQuery(selectQuery+"\nWHERE 1=1", "SELECT COUNT(*) FROM milestones m WHERE 1=1")
+	list.args = columnArgs
 	list.addWorkspaceScope("m.workspace_id", "m.is_global", params.WorkspaceID, params.WorkspaceIDs, params.IncludeGlobal)
 	list.addNullableIDFilter("m.category_id", params.CategoryID)
 	list.addStringFilter("m.status", params.Status)
@@ -281,7 +301,15 @@ func (s *PlanningService) ListMilestones(params MilestoneListParams) ([]Mileston
 	}
 	defer rows.Close()
 
-	milestones, _ := scanMilestones(rows)
+	var milestones []MilestoneResult
+	if params.IncludeLastUpdated {
+		milestones, err = scanMilestonesWithLastUpdated(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+	} else {
+		milestones, _ = scanMilestones(rows)
+	}
 
 	var total int
 	if err := s.db.QueryRow(list.countQuery, list.countArgs...).Scan(&total); err != nil {
@@ -289,6 +317,30 @@ func (s *PlanningService) ListMilestones(params MilestoneListParams) ([]Mileston
 	}
 
 	return milestones, total, nil
+}
+
+// scanMilestonesWithLastUpdated scans milestone rows followed by the
+// milestoneLastUpdatedColumns and sets each LastUpdatedAt.
+func scanMilestonesWithLastUpdated(rows *sql.Rows) ([]MilestoneResult, error) {
+	milestones := []MilestoneResult{}
+	for rows.Next() {
+		sources := make([]any, milestoneLastUpdatedSourceCount)
+		dest := make([]any, len(sources))
+		for i := range sources {
+			dest[i] = &sources[i]
+		}
+		m, err := scanMilestoneRow(rows, dest...)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan milestone: %w", err)
+		}
+		lastUpdated := latestMilestoneUpdate(m.UpdatedAt, sources)
+		m.LastUpdatedAt = &lastUpdated
+		milestones = append(milestones, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to list milestones: %w", err)
+	}
+	return milestones, nil
 }
 
 // GetMilestone retrieves a milestone by ID.

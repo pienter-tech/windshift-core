@@ -4,6 +4,7 @@
   import EmptyState from './EmptyState.svelte';
   import { t } from '../stores/i18n.svelte.js';
   import { sanitizeHtml } from '../utils/sanitize.ts';
+  import { nextColumnSort } from './dataTableSort.js';
 
   let {
     columns = [],
@@ -23,13 +24,16 @@
     totalItems = null,
     onPageChange = null,
     rowAttrs = null,
+    // Active column sort: { key, direction: 'asc' | 'desc' } or null. Pass a
+    // value to start sorted; bind it to read the sort the user picks.
+    sort = $bindable(null),
     class: containerClass = 'rounded-lg border',
     ...slotProps
   } = $props();
 
   // Sort state
-  let sortKey = $state(null);
-  let sortDirection = $state(null); // 'asc' | 'desc' | null
+  let sortKey = $derived(sort?.key ?? null);
+  let sortDirection = $derived(sort?.key ? sort.direction : null); // 'asc' | 'desc' | null
 
   function getRawSortValue(item, column) {
     if (column.sortValue) return column.sortValue(item);
@@ -41,14 +45,7 @@
 
   function toggleSort(column) {
     if (!column.sortable) return;
-    if (sortKey === column.key) {
-      if (sortDirection === 'asc') sortDirection = 'desc';
-      else if (sortDirection === 'desc') { sortDirection = null; sortKey = null; }
-      else { sortDirection = 'asc'; }
-    } else {
-      sortKey = column.key;
-      sortDirection = 'asc';
-    }
+    sort = nextColumnSort(sort, column);
   }
 
   let sortedData = $derived.by(() => {

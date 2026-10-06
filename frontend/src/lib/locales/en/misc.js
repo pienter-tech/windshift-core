@@ -432,6 +432,8 @@ export default {
     columnTargetDate: 'Target Date',
     columnTimeline: 'Timeline',
     columnTests: 'Tests',
+    columnCreated: 'Created',
+    columnUpdated: 'Updated',
     visibleCount: '{count} milestones',
     visibleCount_one: '{count} milestone',
     visibleCount_other: '{count} milestones',
