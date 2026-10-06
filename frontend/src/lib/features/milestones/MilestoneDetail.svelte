@@ -41,7 +41,8 @@
   let milestone = $state(null); // full milestone record (includes latest_release)
   let expandedCategories = $state({});
   let showEditModal = $state(false);
-  // Tabs (WCORE-21): Overview keeps the progress, pages, and comments;
+  // Tabs (WCORE-21): Overview keeps the progress and comments (pages sit in
+  // the header card above the tabs, WCORE-46);
   // Activity shows the shared milestone feed.
   let activeTab = $state('overview');
   // Bumped after each reload so an open Activity tab shows the new entries.
@@ -328,6 +329,17 @@
             </a>
           </div>
         {/if}
+
+        <!-- Pages list (WCORE-46): workspace milestones only; global
+             milestones have no workspace. Part of the header card, so it shows
+             on both tabs. -->
+        {#if milestoneWsId != null}
+          <MilestonePages
+            {milestoneId}
+            workspaceId={milestoneWsId}
+            canEdit={canManage}
+          />
+        {/if}
       </div>
     {/if}
 
@@ -361,16 +373,6 @@
             emptyTitle={t('milestones.noItemsAssigned')}
             emptyDescription={t('milestones.assignItemsHint')}
             ontoggle={toggleCategory}
-          />
-        {/if}
-
-        <!-- Pages (workspace milestones only; global milestones have no
-             workspace). Outside the loading branch like Comments below. -->
-        {#if milestoneWsId != null}
-          <MilestonePages
-            {milestoneId}
-            workspaceId={milestoneWsId}
-            canEdit={canManage}
           />
         {/if}
 
