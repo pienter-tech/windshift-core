@@ -119,3 +119,64 @@ func TestListMilestonesLastUpdated(t *testing.T) {
 		t.Errorf("plain list: %d rows, first LastUpdatedAt %v; want %d rows and nil", len(rows), rows[0].LastUpdatedAt, len(want))
 	}
 }
+
+// TestReorderMilestonesKeepsUpdatedAt covers WCORE-36: reordering changes only
+// positions, so the renumbered milestones keep their updated_at and
+// last_updated_at, while a real edit still moves both.
+func TestReorderMilestonesKeepsUpdatedAt(t *testing.T) {
+	planning, db := newMilestoneReleaseTestService(t)
+	t.Cleanup(func() { _ = db.Close() })
+	base := time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC)
+
+	ids := make([]int, 3)
+	for i, name := range []string{"First", "Second", "Third"} {
+		ids[i] = insertGlobalMilestone(t, db, name)
+		stamp := base.Add(time.Duration(i) * time.Hour)
+		if _, err := db.ExecWrite(`UPDATE milestones SET position = ?, created_at = ?, updated_at = ? WHERE id = ?`,
+			(i+1)*milestonePositionStep, stamp, stamp, ids[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	list := func() map[int]MilestoneResult {
+		t.Helper()
+		rows, _, err := planning.ListMilestones(MilestoneListParams{Limit: 100, IncludeGlobal: true, IncludeLastUpdated: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[int]MilestoneResult{}
+		for _, row := range rows {
+			out[row.ID] = row
+		}
+		return out
+	}
+	before := list()
+
+	reordered := []int{ids[2], ids[0], ids[1]}
+	if err := planning.ReorderMilestones(MilestoneScope{IsGlobal: true}, reordered); err != nil {
+		t.Fatal(err)
+	}
+	after := list()
+	for i, id := range reordered {
+		if want := (i + 1) * milestonePositionStep; after[id].Position != want {
+			t.Errorf("milestone %d: position = %d, want %d", id, after[id].Position, want)
+		}
+		if !after[id].UpdatedAt.Equal(before[id].UpdatedAt) {
+			t.Errorf("milestone %d: updated_at moved on reorder: %v -> %v", id, before[id].UpdatedAt, after[id].UpdatedAt)
+		}
+		if after[id].LastUpdatedAt == nil || !after[id].LastUpdatedAt.Equal(*before[id].LastUpdatedAt) {
+			t.Errorf("milestone %d: last_updated_at moved on reorder: %v -> %v", id, before[id].LastUpdatedAt, after[id].LastUpdatedAt)
+		}
+	}
+
+	// A real edit still bumps updated_at (and so last_updated_at).
+	edited := before[ids[0]]
+	if _, err := planning.UpdateMilestone(UpdateMilestoneParams{
+		ID: edited.ID, Name: "First, renamed", Description: edited.Description, Status: edited.Status,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := list()[ids[0]]; !got.UpdatedAt.After(edited.UpdatedAt) || !got.LastUpdatedAt.After(*edited.LastUpdatedAt) {
+		t.Errorf("edit did not bump updated_at/last_updated_at: %v / %v, before %v", got.UpdatedAt, got.LastUpdatedAt, edited.UpdatedAt)
+	}
+}
