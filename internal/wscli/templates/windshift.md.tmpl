@@ -64,7 +64,8 @@ ws attachment download <attachment-id> [--to <path>]    # Fetch one back
 ## Milestones
 
 Milestone comments take Markdown. Only a comment's author can edit or delete
-it.
+it. Workspace milestones link pages from their own workspace; global
+milestones have no page links.
 
 ```bash
 ws milestone ls                                         # Workspace milestones
@@ -74,6 +75,9 @@ ws milestone comment add <milestone-id> -m "Markdown body"
 ws milestone comment add <milestone-id> --file notes.md # Long Markdown (- for stdin)
 ws milestone comment edit <milestone-id> <comment-id> -m "Markdown body"
 ws milestone comment delete <milestone-id> <comment-id>
+ws milestone page list <milestone-id>                   # Linked pages
+ws milestone page add <milestone-id> <page-id>
+ws milestone page remove <milestone-id> <page-id>
 ```
 
 ## Workspace workflow

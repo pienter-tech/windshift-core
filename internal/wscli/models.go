@@ -491,6 +491,19 @@ type MilestoneComment struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+// MilestonePageLink links a workspace milestone to a page in its workspace,
+// as returned by /rest/api/v2/milestones/{milestone_id}/page-links (WCORE-19).
+type MilestonePageLink struct {
+	ID            int       `json:"id"`
+	MilestoneID   int       `json:"milestone_id"`
+	PageID        int       `json:"page_id"`
+	PageTitle     string    `json:"page_title"`
+	WorkspaceID   int       `json:"workspace_id"`
+	CreatedBy     *int      `json:"created_by,omitempty"`
+	CreatedByName string    `json:"created_by_name,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
 // ============================================
 // Diagrams
 // ============================================
