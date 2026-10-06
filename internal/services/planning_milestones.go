@@ -1375,12 +1375,13 @@ func (s *PlanningService) ReorderMilestones(scope MilestoneScope, orderedIDs []i
 	}
 
 	if err := database.WithTx(s.db, func(tx database.Tx) error {
-		now := time.Now()
+		// Only position changes: a reorder is not an edit, so updated_at stays
+		// put and the Updated sort doesn't jump the renumbered milestones (WCORE-36).
 		for i, id := range orderedIDs {
 			position := (i + 1) * milestonePositionStep
-			updateArgs := append([]any{position, now, id}, scopeArgs...)
+			updateArgs := append([]any{position, id}, scopeArgs...)
 			if _, err := tx.Exec(
-				"UPDATE milestones SET position = ?, updated_at = ? WHERE id = ? AND "+scopeClause,
+				"UPDATE milestones SET position = ? WHERE id = ? AND "+scopeClause,
 				updateArgs...,
 			); err != nil {
 				return fmt.Errorf("failed to reorder milestone %d: %w", id, err)
