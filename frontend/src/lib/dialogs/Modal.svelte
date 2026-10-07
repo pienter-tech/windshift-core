@@ -104,6 +104,43 @@
 
   let submitHint = $derived(hasTextarea ? getDisplayString(submitShortcut) : '↵');
 
+  // Keep focus inside the open dialog. Escape is handled on the backdrop, so
+  // it only reaches this dialog while focus is inside it. When a field in
+  // the dialog is blurred without focus moving anywhere else (seen in the
+  // browser when Escape blurs a picker's search field), focus would fall to
+  // <body> and the next Escape would not close the dialog (WCORE-65). Move
+  // it to the dialog itself instead. Focus lost by a mouse press, such as a
+  // click in a picker's dropdown portalled outside the dialog, is left to
+  // that interaction: the picker returns focus to its field afterwards.
+  let mousePressed = false;
+
+  function handleFocusOut(e) {
+    if (e.relatedTarget || mousePressed) return;
+    queueMicrotask(() => {
+      if (!isOpen || !backdropElement?.isConnected) return;
+      const active = document.activeElement;
+      if (active && active !== document.body) return;
+      backdropElement.focus({ preventScroll: true });
+    });
+  }
+
+  $effect(() => {
+    if (!isOpen || inline) return;
+    const press = () => {
+      mousePressed = true;
+    };
+    const release = () => {
+      mousePressed = false;
+    };
+    document.addEventListener('mousedown', press, true);
+    document.addEventListener('mouseup', release, true);
+    return () => {
+      document.removeEventListener('mousedown', press, true);
+      document.removeEventListener('mouseup', release, true);
+      mousePressed = false;
+    };
+  });
+
   $effect(() => {
     if (isOpen && modalContentElement && backdropElement) {
       const timer = setTimeout(() => {
@@ -151,6 +188,7 @@
     onclick={handleBackdropClick}
     onkeydown={handleKeydown}
     onfocusin={detectTextarea}
+    onfocusout={handleFocusOut}
     role="dialog"
     aria-modal="true"
     data-testid={dataTestid}
