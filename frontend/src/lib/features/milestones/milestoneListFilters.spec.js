@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_STATUS_FILTER,
+  defaultMilestoneListFilters,
   filterMilestones,
+  milestoneListFiltersAreDefault,
   milestoneWorkspaceOptions,
   parseStatusFilter,
 } from './milestoneListFilters.js';
@@ -74,6 +76,54 @@ describe('milestoneWorkspaceOptions', () => {
 
   it('falls back to the id when no name is known', () => {
     expect(milestoneWorkspaceOptions([milestones[3]])).toEqual([{ key: '7', name: '#7' }]);
+  });
+});
+
+describe('defaultMilestoneListFilters', () => {
+  it('restores open statuses, all workspaces and an empty search', () => {
+    expect(defaultMilestoneListFilters()).toEqual({
+      statuses: ['planning', 'in-progress'],
+      workspaceKeys: [],
+      search: '',
+    });
+  });
+
+  it('returns a fresh status list each time', () => {
+    defaultMilestoneListFilters().statuses.push('completed');
+    expect(defaultMilestoneListFilters().statuses).toEqual(DEFAULT_STATUS_FILTER);
+  });
+
+  it('shows milestones that the narrowed filters hid', () => {
+    const narrowed = { statuses: ['cancelled'], workspaceKeys: ['15'], search: 'release' };
+    expect(filterMilestones(milestones, narrowed)).toEqual([]);
+    expect(ids(filterMilestones(milestones, defaultMilestoneListFilters()))).toEqual([1, 2, 5]);
+  });
+});
+
+describe('milestoneListFiltersAreDefault', () => {
+  it('accepts the defaults in any status order', () => {
+    expect(milestoneListFiltersAreDefault(defaultMilestoneListFilters())).toBe(true);
+    expect(
+      milestoneListFiltersAreDefault({
+        statuses: ['in-progress', 'planning'],
+        workspaceKeys: [],
+        search: '  ',
+      })
+    ).toBe(true);
+  });
+
+  it('rejects any changed filter', () => {
+    const defaults = defaultMilestoneListFilters();
+    expect(milestoneListFiltersAreDefault({ ...defaults, statuses: ['planning'] })).toBe(false);
+    expect(milestoneListFiltersAreDefault({ ...defaults, statuses: [] })).toBe(false);
+    expect(
+      milestoneListFiltersAreDefault({
+        ...defaults,
+        statuses: ['planning', 'in-progress', 'completed'],
+      })
+    ).toBe(false);
+    expect(milestoneListFiltersAreDefault({ ...defaults, workspaceKeys: ['global'] })).toBe(false);
+    expect(milestoneListFiltersAreDefault({ ...defaults, search: 'beta' })).toBe(false);
   });
 });
 
