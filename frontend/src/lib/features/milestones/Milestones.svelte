@@ -47,7 +47,9 @@
   import {
     GLOBAL_WORKSPACE_KEY,
     MILESTONE_STATUSES,
+    defaultMilestoneListFilters,
     filterMilestones,
+    milestoneListFiltersAreDefault,
     milestoneWorkspaceOptions,
     parseStatusFilter
   } from './milestoneListFilters.js';
@@ -113,10 +115,8 @@
     }
   }
 
-  function toggleStatusFilter(status, checked) {
-    selectedStatuses = checked
-      ? [...selectedStatuses, status]
-      : selectedStatuses.filter((s) => s !== status);
+  function setStatusFilter(statuses) {
+    selectedStatuses = statuses;
     try {
       localStorage.setItem(STATUS_FILTER_KEY, JSON.stringify(selectedStatuses));
     } catch {
@@ -124,10 +124,25 @@
     }
   }
 
+  function toggleStatusFilter(status, checked) {
+    setStatusFilter(
+      checked ? [...selectedStatuses, status] : selectedStatuses.filter((s) => s !== status)
+    );
+  }
+
   function toggleWorkspaceFilter(key, checked) {
     selectedWorkspaceKeys = checked
       ? [...selectedWorkspaceKeys, key]
       : selectedWorkspaceKeys.filter((k) => k !== key);
+  }
+
+  // "Clear filters" restores the defaults (WCORE-47), including the saved
+  // status selection.
+  function clearListFilters() {
+    const defaults = defaultMilestoneListFilters();
+    setStatusFilter(defaults.statuses);
+    selectedWorkspaceKeys = defaults.workspaceKeys;
+    searchQuery = defaults.search;
   }
 
   // Column sort of the global view's table (WCORE-33), bound to its DataTable.
@@ -399,10 +414,21 @@
         : filteredMilestones
   );
 
-  let listIsFiltered = $derived(
-    isGlobalView
-      ? selectedStatuses.length > 0 || selectedWorkspaceKeys.length > 0 || searchQuery.trim() !== ''
-      : hideCompleted
+  // Workspace view: "hide completed" may be why the list is empty.
+  let listIsFiltered = $derived(!isGlobalView && hideCompleted);
+
+  // Global view: milestones exist (in the active category) but the filters
+  // hide every one of them, so the empty state says so and offers to clear
+  // the filters instead of inviting a first milestone (WCORE-47).
+  let allFilteredOut = $derived(
+    isGlobalView && filteredMilestones.length > 0 && visibleMilestones.length === 0
+  );
+  let listFiltersAreDefault = $derived(
+    milestoneListFiltersAreDefault({
+      statuses: selectedStatuses,
+      workspaceKeys: selectedWorkspaceKeys,
+      search: searchQuery
+    })
   );
 
   // Workspace filter options: Global plus each workspace that has milestones
@@ -875,7 +901,21 @@
       {/snippet}
 
       <!-- Empty State or DataTable -->
-      {#if visibleMilestones.length === 0}
+      {#if allFilteredOut}
+        <EmptyState
+          icon={Milestone}
+          title={t('milestones.noMatchingMilestones')}
+          description={t('milestones.noMatchingMilestonesDescription')}
+        >
+          {#snippet action()}
+            {#if !listFiltersAreDefault}
+              <Button variant="primary" onclick={clearListFilters} dataTestid="milestone-clear-filters">
+                {t('milestones.clearFilters')}
+              </Button>
+            {/if}
+          {/snippet}
+        </EmptyState>
+      {:else if visibleMilestones.length === 0}
         <EmptyState
           icon={Milestone}
           title={isGlobalView && activeCategoryId ? t('milestones.noMilestonesInCategory') : (listIsFiltered ? t('milestones.noVisibleMilestones') : t('milestones.noMilestones'))}

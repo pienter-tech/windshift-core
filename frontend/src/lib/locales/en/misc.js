@@ -406,6 +406,9 @@ export default {
     workspaceFilterCount: 'Workspaces: {count}',
     allStatuses: 'All statuses',
     statusFilterCount: 'Statuses: {count}',
+    noMatchingMilestones: 'No milestones match the filters',
+    noMatchingMilestonesDescription: 'Change the filters to see more milestones.',
+    clearFilters: 'Clear filters',
     activity: {
       tabOverview: 'Overview',
       tabActivity: 'Activity',

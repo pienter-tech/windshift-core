@@ -55,6 +55,31 @@ export function filterMilestones(
   });
 }
 
+/**
+ * The page's default filters, which "Clear filters" restores: open statuses,
+ * every workspace, no search (WCORE-47).
+ * @returns {{ statuses: string[], workspaceKeys: string[], search: string }}
+ */
+export function defaultMilestoneListFilters() {
+  return { statuses: [...DEFAULT_STATUS_FILTER], workspaceKeys: [], search: '' };
+}
+
+/**
+ * Whether `filters` already equal the defaults, so clearing them would change
+ * nothing. Status order and surrounding search whitespace are ignored.
+ */
+export function milestoneListFiltersAreDefault({
+  statuses = [],
+  workspaceKeys = [],
+  search = '',
+} = {}) {
+  const defaults = defaultMilestoneListFilters();
+  const sameStatuses =
+    new Set(statuses).size === defaults.statuses.length &&
+    defaults.statuses.every((status) => statuses.includes(status));
+  return sameStatuses && workspaceKeys.length === 0 && search.trim() === '';
+}
+
 /** Parses a stored status selection; anything invalid falls back to the default. */
 export function parseStatusFilter(raw) {
   if (raw == null) return [...DEFAULT_STATUS_FILTER];
