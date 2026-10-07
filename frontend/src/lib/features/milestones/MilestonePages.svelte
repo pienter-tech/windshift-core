@@ -136,9 +136,12 @@
 		{/if}
 
 		{#if canEdit && showPicker}
-			<!-- Escape closes the picker and returns focus to "+ Add". -->
+			<!-- Escape closes the picker (and its dropdown) and returns focus to
+			     "+ Add" (WCORE-55). Listen in the capture phase so the panel sees
+			     Escape before the combobox input inside PagePicker handles it,
+			     whether or not the event bubbles back out of the picker. -->
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
-			<div id="milestone-page-picker-panel" class="mb-3 max-w-md" onkeydown={handlePickerKeydown}>
+			<div id="milestone-page-picker-panel" class="mb-3 max-w-md" onkeydowncapture={handlePickerKeydown}>
 				<PagePicker
 					id="milestone-page-picker"
 					{workspaceId}
