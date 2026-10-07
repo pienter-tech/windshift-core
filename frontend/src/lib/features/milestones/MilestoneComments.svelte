@@ -11,11 +11,14 @@
 	import { getShortcut, matchesShortcut, getDisplayString } from '../../utils/keyboardShortcuts.js';
 	import { t } from '../../stores/i18n.svelte.js';
 	import { confirm } from '../../composables/useConfirm.js';
+	import { newestCommentsFirst } from './milestoneCommentOrder.js';
 
 	// Milestone comments (WCORE-20). Anyone who can view the milestone can
 	// comment; authors edit and delete their own. Unlike item comments these
 	// send no notifications, so @mentions notify nobody, and milestones have
 	// no attachments, so image upload is off in every editor here.
+	// The thread shows newest first under the composer (WCORE-54); the API
+	// and the CLI keep listing oldest first.
 	let { milestoneId, workspaceId = null } = $props();
 
 	const submitShortcut = getShortcut('description', 'save');
@@ -33,6 +36,9 @@
 	let editEditorRef = $state(null);
 
 	const currentUserId = $derived(authStore.currentUser?.id ?? null);
+	// getComments pages through the whole thread, so sorting here orders
+	// every comment, not just one page of them.
+	const orderedComments = $derived(newestCommentsFirst(comments));
 
 	onMount(() => {
 		loadComments();
@@ -157,12 +163,59 @@
 	{#if loading}
 		<StateDisplay type="loading" />
 	{:else}
+		{#if authStore.currentUser}
+			<div class="mb-6 flex items-start space-x-3">
+				<div class="flex-shrink-0">
+					<Avatar
+						src={authStore.currentUser?.avatar_url}
+						firstName={authStore.currentUser?.first_name}
+						lastName={authStore.currentUser?.last_name}
+						size="sm"
+						variant="blue"
+					/>
+				</div>
+				<!-- svelte-ignore a11y_no_static_element_interactions -->
+				<div class="flex-1 min-w-0" onkeydown={handleCommentKeydown}>
+					<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+					<div data-testid="milestone-comment-editor" onclick={() => editorRef?.focus()}>
+						<MilkdownEditor
+							bind:this={editorRef}
+							bind:content={newCommentContent}
+							placeholder={t('comments.writePlaceholder')}
+							showToolbar={true}
+							hideToolbarUntilFocus={true}
+							compact={true}
+							allowImageUpload={false}
+							testId="milestone-comment-composer"
+							{workspaceId}
+						/>
+					</div>
+					<div class="flex items-center justify-between mt-3">
+						<div class="text-xs" style="color: var(--ds-text-subtle);">
+							{t('comments.markdownSupported')}
+						</div>
+						<!-- shortcut-guard-exempt: Cmd/Ctrl+Enter is handled by the form-scoped handleCommentKeydown handler. -->
+						<Button
+							variant="primary"
+							size="small"
+							dataTestid="milestone-comment-submit"
+							onclick={submitComment}
+							disabled={isSubmitting || !newCommentContent.trim()}
+							keyboardHint={getDisplayString(submitShortcut)}
+						>
+							{isSubmitting ? t('comments.posting') : t('comments.comment')}
+						</Button>
+					</div>
+				</div>
+			</div>
+		{/if}
+
 		{#if comments.length === 0}
 			<p class="text-sm mb-4" style="color: var(--ds-text-subtle);">{t('comments.noComments')}</p>
 		{/if}
 
 		<div class="space-y-4">
-			{#each comments as comment (comment.id)}
+			{#each orderedComments as comment (comment.id)}
 				<div class="flex items-start space-x-3 group" data-testid="milestone-comment" data-comment-id={comment.id}>
 					<div class="flex-shrink-0">
 						<Avatar src={comment.author_avatar} name={comment.author_name} size="sm" variant="neutral" />
@@ -250,52 +303,5 @@
 				</div>
 			{/each}
 		</div>
-
-		{#if authStore.currentUser}
-			<div class="mt-6 flex items-start space-x-3">
-				<div class="flex-shrink-0">
-					<Avatar
-						src={authStore.currentUser?.avatar_url}
-						firstName={authStore.currentUser?.first_name}
-						lastName={authStore.currentUser?.last_name}
-						size="sm"
-						variant="blue"
-					/>
-				</div>
-				<!-- svelte-ignore a11y_no_static_element_interactions -->
-				<div class="flex-1 min-w-0" onkeydown={handleCommentKeydown}>
-					<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-					<div data-testid="milestone-comment-editor" onclick={() => editorRef?.focus()}>
-						<MilkdownEditor
-							bind:this={editorRef}
-							bind:content={newCommentContent}
-							placeholder={t('comments.writePlaceholder')}
-							showToolbar={true}
-							hideToolbarUntilFocus={true}
-							compact={true}
-							allowImageUpload={false}
-							testId="milestone-comment-composer"
-							{workspaceId}
-						/>
-					</div>
-					<div class="flex items-center justify-between mt-3">
-						<div class="text-xs" style="color: var(--ds-text-subtle);">
-							{t('comments.markdownSupported')}
-						</div>
-						<!-- shortcut-guard-exempt: Cmd/Ctrl+Enter is handled by the form-scoped handleCommentKeydown handler. -->
-						<Button
-							variant="primary"
-							size="small"
-							dataTestid="milestone-comment-submit"
-							onclick={submitComment}
-							disabled={isSubmitting || !newCommentContent.trim()}
-							keyboardHint={getDisplayString(submitShortcut)}
-						>
-							{isSubmitting ? t('comments.posting') : t('comments.comment')}
-						</Button>
-					</div>
-				</div>
-			</div>
-		{/if}
 	{/if}
 </section>
