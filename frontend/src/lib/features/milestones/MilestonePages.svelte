@@ -1,9 +1,12 @@
 <script>
-	import { onMount, tick } from 'svelte';
+	import { onMount } from 'svelte';
 	import { FileText, Plus, Trash2 } from '@lucide/svelte';
 	import { api } from '../../api.js';
 	import AlertBox from '../../components/AlertBox.svelte';
 	import LinkComponent from '../../components/Link.svelte';
+	import DialogFooter from '../../dialogs/DialogFooter.svelte';
+	import Modal from '../../dialogs/Modal.svelte';
+	import ModalHeader from '../../dialogs/ModalHeader.svelte';
 	import PagePicker from '../../pickers/PagePicker.svelte';
 	import { errorToast } from '../../stores/toasts.svelte.js';
 	import { t } from '../../stores/i18n.svelte.js';
@@ -12,18 +15,25 @@
 	// milestone header card (WCORE-46). Global milestones have no workspace and
 	// therefore no Pages section. Anyone who can view the milestone sees the
 	// linked pages they may view; users with edit rights on the milestone
-	// (canEdit) link pages from its workspace through "+ Add" and unlink them.
+	// (canEdit) link pages from its workspace through "+ Add", which opens a
+	// link dialog like the item detail's Pages "+ Add" (WCORE-58), and unlink
+	// them per row.
 	let { milestoneId, workspaceId, canEdit = false } = $props();
 
 	let links = $state([]);
 	let loading = $state(true);
 	let error = $state('');
-	let selectedPageId = $state(null);
-	let linking = $state(false);
-	let showPicker = $state(false);
 	let addButton = $state(null);
 
+	// Link dialog state.
+	let dialogOpen = $state(false);
+	let selectedPageId = $state(null);
+	let selectedPage = $state(null);
+	let linking = $state(false);
+
 	const linkedPageIds = $derived(new Set(links.map((link) => link.page_id)));
+	const selectedAlreadyLinked = $derived(!!selectedPage && linkedPageIds.has(selectedPage.id));
+	const canSubmit = $derived(!!selectedPage && !selectedAlreadyLinked && !linking);
 	// Editors always see the heading and "+ Add"; viewers only once pages (or a
 	// load error) are there to show.
 	const visible = $derived(canEdit || (!loading && (links.length > 0 || !!error)));
@@ -46,44 +56,50 @@
 		}
 	}
 
-	async function linkPage(page) {
-		if (!page || linking) return;
-		if (linkedPageIds.has(page.id)) {
-			selectedPageId = null;
-			closePicker();
-			return;
-		}
+	function openDialog() {
+		selectedPageId = null;
+		selectedPage = null;
+		dialogOpen = true;
+	}
+
+	// Cancel, Escape, a backdrop click and a successful link all end here.
+	// Modal does not restore focus itself, so return it to "+ Add".
+	function closeDialog() {
+		if (linking) return;
+		dialogOpen = false;
+		selectedPageId = null;
+		selectedPage = null;
+		addButton?.focus();
+	}
+
+	function handleSelectPage(page) {
+		selectedPage = page || null;
+	}
+
+	// PagePicker marks Escape as handled (preventDefault), which stops Modal
+	// from closing on it. Listen in the capture phase so Escape from the
+	// search box still closes the dialog, except while the picker's dropdown
+	// is open: then the first Escape only closes the dropdown.
+	function handleDialogKeydown(event) {
+		if (event.key !== 'Escape') return;
+		if (event.target?.getAttribute?.('aria-expanded') === 'true') return;
+		closeDialog();
+	}
+
+	async function linkSelectedPage() {
+		if (!canSubmit) return;
 		linking = true;
 		try {
-			const created = await api.milestones.linkPage(milestoneId, page.id);
+			const created = await api.milestones.linkPage(milestoneId, selectedPage.id);
 			links = [...links.filter((link) => link.id !== created.id), created];
-			closePicker();
+			linking = false;
+			closeDialog();
 		} catch (err) {
 			console.error('Failed to link page to milestone:', err);
 			errorToast(err?.message || String(err), t('errors.failedToUpdate'));
 		} finally {
-			selectedPageId = null;
 			linking = false;
 		}
-	}
-
-	async function togglePicker() {
-		if (showPicker) {
-			showPicker = false;
-			return;
-		}
-		showPicker = true;
-		await tick();
-		document.getElementById('milestone-page-picker')?.focus();
-	}
-
-	function closePicker() {
-		showPicker = false;
-		addButton?.focus();
-	}
-
-	function handlePickerKeydown(event) {
-		if (event.key === 'Escape') closePicker();
 	}
 
 	async function unlinkPage(linkId) {
@@ -121,9 +137,8 @@
 					bind:this={addButton}
 					data-testid="milestone-page-add"
 					class="add-page-btn inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded transition-colors cursor-pointer"
-					aria-expanded={showPicker}
-					aria-controls="milestone-page-picker-panel"
-					onclick={togglePicker}
+					aria-haspopup="dialog"
+					onclick={openDialog}
 				>
 					<Plus class="w-3 h-3" />
 					{t('common.add')}
@@ -133,25 +148,6 @@
 
 		{#if error}
 			<AlertBox variant="error" message={error} class="mb-3" />
-		{/if}
-
-		{#if canEdit && showPicker}
-			<!-- Escape closes the picker (and its dropdown) and returns focus to
-			     "+ Add" (WCORE-55). Listen in the capture phase so the panel sees
-			     Escape before the combobox input inside PagePicker handles it,
-			     whether or not the event bubbles back out of the picker. -->
-			<!-- svelte-ignore a11y_no_static_element_interactions -->
-			<div id="milestone-page-picker-panel" class="mb-3 max-w-md" onkeydowncapture={handlePickerKeydown}>
-				<PagePicker
-					id="milestone-page-picker"
-					{workspaceId}
-					bind:value={selectedPageId}
-					placeholder={t('items.pagePickerPlaceholder')}
-					disabled={linking}
-					inputTestid="milestone-page-picker"
-					onSelect={linkPage}
-				/>
-			</div>
 		{/if}
 
 		{#if links.length > 0}
@@ -200,13 +196,72 @@
 	</section>
 {/if}
 
+{#if canEdit}
+	<!-- Link dialog, built from the same Modal pieces as the item detail's
+	     LinkItemModal in Page mode (WCORE-58): title, page picker limited to the
+	     milestone's workspace, Cancel and "Add Link". -->
+	<Modal
+		bind:isOpen={dialogOpen}
+		maxWidth="max-w-md"
+		zIndexClass="z-[60]"
+		preventClose={linking}
+		onclose={closeDialog}
+		onSubmit={linkSelectedPage}
+		submitDisabled={!canSubmit}
+		dataTestid="milestone-page-link-modal"
+	>
+		{#snippet children(submitHint)}
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
+			<div onkeydowncapture={handleDialogKeydown}>
+				<ModalHeader title={t('items.addPage')} onClose={closeDialog} />
+
+				<div class="p-6 space-y-1">
+					<label
+						for="milestone-page-picker"
+						class="block text-sm font-medium mb-1"
+						style="color: var(--ds-text-subtle);"
+					>
+						{t('items.targetPage')}
+					</label>
+					<PagePicker
+						id="milestone-page-picker"
+						{workspaceId}
+						bind:value={selectedPageId}
+						placeholder={t('items.pagePickerPlaceholder')}
+						disabled={linking}
+						inputTestid="milestone-page-picker"
+						onSelect={handleSelectPage}
+					/>
+					{#if selectedAlreadyLinked}
+						<p class="text-xs" style="color: var(--ds-text-subtle);" data-testid="milestone-page-already-linked">
+							{t('pickers.alreadyLinked')}
+						</p>
+					{/if}
+				</div>
+
+				<DialogFooter
+					onCancel={closeDialog}
+					onConfirm={linkSelectedPage}
+					confirmLabel={t('items.addPage')}
+					cancelLabel={t('common.cancel')}
+					disabled={!canSubmit}
+					loading={linking}
+					confirmKeyboardHint={submitHint}
+					showKeyboardHint={true}
+					confirmTestid="milestone-page-link-confirm"
+					cancelTestid="milestone-page-link-cancel"
+				/>
+			</div>
+		{/snippet}
+	</Modal>
+{/if}
+
 <style>
 	.add-page-btn {
 		color: var(--ds-text-subtle);
 	}
 
-	.add-page-btn:hover,
-	.add-page-btn[aria-expanded='true'] {
+	.add-page-btn:hover {
 		background-color: var(--ds-background-neutral-hovered);
 		color: var(--ds-text);
 	}
