@@ -53,6 +53,8 @@ cx
 !frontend/src/lib/features/milestones/milestoneListSort.spec.js
 !frontend/src/lib/features/milestones/milestoneEditForm.spec.js
 !frontend/src/lib/features/milestones/MilestonePages.spec.js
+!frontend/src/lib/features/milestones/milestoneCommentOrder.spec.js
+!frontend/src/lib/features/milestones/MilestoneComments.spec.js
 !frontend/src/lib/components/dataTableSort.spec.js
 !frontend/src/lib/utils/markdownExcerpt.spec.js
 !frontend/src/lib/features/items/zammadPanelContext.spec.js
