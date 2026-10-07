@@ -72,12 +72,12 @@ describe('MilestonePages link dialog', () => {
     expect(add).toHaveAttribute('aria-haspopup', 'dialog');
     expect(dialog).toHaveAttribute('role', 'dialog');
     expect(dialog).toHaveAttribute('aria-modal', 'true');
-    expect(within(dialog).getByRole('heading', { name: 'items.addLink' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('heading', { name: 'items.addPage' })).toBeInTheDocument();
     expect(within(dialog).getByTestId('milestone-page-link-cancel')).toHaveTextContent(
       'common.cancel'
     );
     const confirm = within(dialog).getByTestId('milestone-page-link-confirm');
-    expect(confirm).toHaveTextContent('items.addLink');
+    expect(confirm).toHaveTextContent('items.addPage');
     expect(confirm).toBeDisabled();
     // The picker lives in the dialog, not inline in the header card.
     expect(

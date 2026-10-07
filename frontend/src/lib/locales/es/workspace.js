@@ -285,6 +285,7 @@ export default {
     clickToAddDescription: 'Haga clic para agregar una descripción',
     noDescriptionProvided: 'Sin descripción proporcionada - haga clic para agregar una',
     addLink: 'Agregar enlace',
+    addPage: 'Agregar página',
     createChild: 'Crear secundario',
     child: 'Secundario',
     attachFile: 'Adjuntar archivo',

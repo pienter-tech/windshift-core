@@ -213,7 +213,7 @@
 		{#snippet children(submitHint)}
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
 			<div onkeydowncapture={handleDialogKeydown}>
-				<ModalHeader title={t('items.addLink')} onClose={closeDialog} />
+				<ModalHeader title={t('items.addPage')} onClose={closeDialog} />
 
 				<div class="p-6 space-y-1">
 					<label
@@ -242,7 +242,7 @@
 				<DialogFooter
 					onCancel={closeDialog}
 					onConfirm={linkSelectedPage}
-					confirmLabel={t('items.addLink')}
+					confirmLabel={t('items.addPage')}
 					cancelLabel={t('common.cancel')}
 					disabled={!canSubmit}
 					loading={linking}
