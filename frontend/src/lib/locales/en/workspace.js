@@ -1274,7 +1274,22 @@ export default {
     labelModeMirror: 'Mirror',
     labelModeMirrorDescription: 'Auto-create Windshift labels to match the issue labels.',
     labelModeMapped: 'Mapped',
-    labelModeMappedDescription: 'Manually map repository labels to existing Windshift labels.',
+    labelModeMappedDescription:
+      'Map repository labels to existing Windshift labels. Only mapped labels are synced; other labels are left alone.',
+    labelMapping: 'Label Mapping',
+    labelMappingDescription:
+      'Map each repository label to a Windshift label. A sync adds and removes only mapped labels and leaves other labels on the item alone; until at least one label is mapped, nothing changes.',
+    windshiftLabel: 'Windshift label',
+    selectRepositoryForMapping: 'Select a repository to map its labels.',
+    loadingRepositoryLabels: 'Loading repository labels...',
+    repositoryLabelsFailed: 'Could not load the repository labels.',
+    noRepositoryLabels: 'The repository has no labels.',
+    loadingRepositoryMilestones: 'Loading repository milestones...',
+    repositoryMilestonesFailed: 'Could not load the repository milestones.',
+    noRepositoryMilestones: 'The repository has no milestones.',
+    milestoneClosed: 'Closed',
+    notInRepository: 'No longer in the repository',
+    clearMapping: 'Clear mapping',
     filterLabels: 'Filter Labels',
     filterLabelsDescription:
       'Only sync issues that have one of these labels. Leave empty to sync all.',

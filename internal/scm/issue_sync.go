@@ -43,7 +43,12 @@ var issueSyncConfigLocks sync.Map
 // ends, and returns the release function.
 func lockIssueSyncConfig(ctx context.Context, configID int) (func(), error) {
 	slot, _ := issueSyncConfigLocks.LoadOrStore(configID, make(chan struct{}, 1))
-	lock := slot.(chan struct{})
+	lock, ok := slot.(chan struct{})
+	if !ok {
+		// Programmer error — issueSyncConfigLocks is populated only by this
+		// function and only ever stores chan struct{}.
+		panic(fmt.Sprintf("issueSyncConfigLocks: unexpected value type %T", slot))
+	}
 	select {
 	case lock <- struct{}{}:
 		return func() { <-lock }, nil
@@ -51,6 +56,12 @@ func lockIssueSyncConfig(ctx context.Context, configID int) (func(), error) {
 		return nil, fmt.Errorf("wait for running issue sync: %w", ctx.Err())
 	}
 }
+
+// pushStatusLockWait bounds how long a status push waits for a running
+// inbound sync of its config before pushing without the lock. It is shorter
+// than the push's own 30s budget, so the remote write still has time left.
+// A variable so tests can shorten it.
+var pushStatusLockWait = 20 * time.Second
 
 // issueSyncJob is one enabled config with the repository it syncs.
 type issueSyncJob struct {
@@ -246,17 +257,19 @@ func (s *IssueSyncService) syncConfig(ctx context.Context, provider IssueProvide
 	}
 	owner, repo := parts[0], parts[1]
 
-	var filterLabels []string
-	if config.FilterLabels != "" && config.FilterLabels != "[]" {
-		_ = json.Unmarshal([]byte(config.FilterLabels), &filterLabels)
-	}
+	filterLabels := parseFilterLabels(config.FilterLabels)
 
 	opts := ListIssueOptions{
 		State:   "all",
 		Since:   config.LastFullSyncAt,
 		PerPage: 100,
 	}
-	if len(filterLabels) > 0 {
+	// The filter keeps issues with any of its labels, and Windshift applies
+	// it below. The forges read a labels list differently (GitHub: all of
+	// them; Gitea/Forgejo: any of them, ignoring labels the repository lacks),
+	// so the list is only narrowed by the forge for a single label, where
+	// both readings agree.
+	if len(filterLabels) == 1 {
 		opts.Labels = filterLabels
 	}
 
@@ -291,6 +304,9 @@ func (s *IssueSyncService) syncConfig(ctx context.Context, provider IssueProvide
 			if err := ctx.Err(); err != nil {
 				return fmt.Errorf("sync interrupted: %w", err)
 			}
+			if len(filterLabels) > 0 && !issueHasAnyLabel(&issues[i], filterLabels) {
+				continue
+			}
 			if err := s.syncIssue(ctx, provider, config, owner, repo, &issues[i]); err != nil {
 				slog.Error("sync issue", "config_id", config.ID, "issue_number", issues[i].Number, "error", err)
 				issueErrs = append(issueErrs, fmt.Errorf("issue #%d: %w", issues[i].Number, err))
@@ -307,6 +323,38 @@ func (s *IssueSyncService) syncConfig(ctx context.Context, provider IssueProvide
 		return fmt.Errorf("sync config %d: %d issue(s) failed: %w", config.ID, len(issueErrs), errors.Join(issueErrs...))
 	}
 	return nil
+}
+
+// parseFilterLabels reads a config's filter_labels JSON array, dropping
+// blank entries. An empty or unreadable value means no filter.
+func parseFilterLabels(raw string) []string {
+	var labels []string
+	if raw == "" || raw == "[]" {
+		return nil
+	}
+	if err := json.Unmarshal([]byte(raw), &labels); err != nil {
+		return nil
+	}
+	kept := labels[:0]
+	for _, label := range labels {
+		if label = strings.TrimSpace(label); label != "" {
+			kept = append(kept, label)
+		}
+	}
+	return kept
+}
+
+// issueHasAnyLabel reports whether the issue has at least one of labels.
+// Names compare case-insensitively, as GitHub treats label names.
+func issueHasAnyLabel(issue *Issue, labels []string) bool {
+	for _, have := range issue.Labels {
+		for _, want := range labels {
+			if strings.EqualFold(have.Name, want) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // syncIssue syncs a single issue to a Windshift item.
@@ -539,6 +587,26 @@ func (s *IssueSyncService) PushStatusToIssue(ctx context.Context, itemID, newSta
 	parts := strings.SplitN(repoName, "/", 2)
 	if len(parts) != 2 {
 		return
+	}
+
+	// Hold the config's sync lock across claiming sync_lock and the remote
+	// write: an inbound sync running in between would consume sync_lock
+	// against the issue as it was before the write, and the sync after the
+	// write would then map the new issue state back over the item's status.
+	// If no lock comes within pushStatusLockWait (a long inbound sync), push
+	// without it: the race is rare and visible, a dropped push is neither.
+	lockCtx, cancelLock := context.WithTimeout(ctx, pushStatusLockWait)
+	release, err := lockIssueSyncConfig(lockCtx, configID)
+	cancelLock()
+	switch {
+	case err == nil:
+		defer release()
+	case ctx.Err() != nil:
+		slog.Error("push status to issue", "config_id", configID, "issue", issueNumber, "state", issueState, "error", err)
+		return
+	default:
+		slog.Warn("push status to issue without the sync lock: an inbound sync is still running",
+			"config_id", configID, "issue", issueNumber, "state", issueState, "waited", pushStatusLockWait)
 	}
 
 	// Preflight passed — claim the lock immediately before the remote write.
@@ -1073,24 +1141,58 @@ func (s *IssueSyncService) syncLabels(ctx context.Context, tx database.Tx, confi
 	case models.IssueSyncLabelMapped:
 		// Use explicit mappings
 		var mappings []models.LabelMapping
-		if err := json.Unmarshal([]byte(config.LabelMappings), &mappings); err != nil {
-			return fmt.Errorf("parse label mappings: %w", err)
-		}
-
-		// Build lookup: issue label name → windshift label ID
-		ghToWS := make(map[string]int)
-		for _, m := range mappings {
-			ghToWS[m.GitHubLabel] = m.WindshiftLabelID
-		}
-
-		labelIDs := make([]int, 0, len(issue.Labels))
-		for _, l := range issue.Labels {
-			if wsLabelID, ok := ghToWS[l.Name]; ok {
-				labelIDs = append(labelIDs, wsLabelID)
+		if raw := strings.TrimSpace(config.LabelMappings); raw != "" {
+			if err := json.Unmarshal([]byte(raw), &mappings); err != nil {
+				return fmt.Errorf("parse label mappings: %w", err)
 			}
 		}
-		if err := repository.NewLabelRepository(s.db).ReplaceItemLabelsTx(ctx, tx, itemID, labelIDs); err != nil {
-			return fmt.Errorf("replace mapped labels: %w", err)
+		// Without mappings there is nothing to map to: leave the item's
+		// labels alone rather than replacing them with an empty set.
+		if len(mappings) == 0 {
+			return nil
+		}
+
+		// Mapped mode only owns the Windshift labels that are a mapping
+		// target. Labels added in Windshift, or not mapped from any issue
+		// label, stay on the item.
+		ghToWS := make(map[string]int)
+		managed := make(map[int]bool, len(mappings))
+		for _, m := range mappings {
+			ghToWS[m.GitHubLabel] = m.WindshiftLabelID
+			managed[m.WindshiftLabelID] = true
+		}
+
+		// Several issue labels may map to the same Windshift label.
+		desired := make(map[int]bool, len(issue.Labels))
+		desiredOrder := make([]int, 0, len(issue.Labels))
+		for _, l := range issue.Labels {
+			if wsLabelID, ok := ghToWS[l.Name]; ok && !desired[wsLabelID] {
+				desired[wsLabelID] = true
+				desiredOrder = append(desiredOrder, wsLabelID)
+			}
+		}
+
+		labelRepo := repository.NewLabelRepository(s.db)
+		current, err := labelRepo.ListForItemTx(tx, itemID)
+		if err != nil {
+			return fmt.Errorf("list item labels: %w", err)
+		}
+		attached := make(map[int]bool, len(current))
+		for _, l := range current {
+			attached[l.ID] = true
+			if managed[l.ID] && !desired[l.ID] {
+				if _, err := labelRepo.RemoveItemLabelTx(tx, itemID, l.ID); err != nil {
+					return fmt.Errorf("remove mapped label: %w", err)
+				}
+			}
+		}
+		for _, wsLabelID := range desiredOrder {
+			if attached[wsLabelID] {
+				continue
+			}
+			if _, err := labelRepo.AddItemLabelTx(tx, itemID, wsLabelID); err != nil {
+				return fmt.Errorf("add mapped label: %w", err)
+			}
 		}
 	case models.IssueSyncLabelMirror:
 		labelRepo := repository.NewLabelRepository(s.db)
