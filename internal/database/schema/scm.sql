@@ -189,6 +189,7 @@ CREATE TABLE IF NOT EXISTS item_scm_links (
 	ci_url TEXT,                                  -- Web page of the CI run that explains ci_state
 	ci_head_sha TEXT,                             -- PR head commit the CI status was read for
 	ci_updated_at DATETIME,                       -- When ci_state/ci_url last changed
+	is_mention BOOLEAN NOT NULL DEFAULT FALSE,            -- Detected PR link whose key appears only in the PR body while the title or head branch names other keys: shown, but fires no PR events
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 	FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE,
@@ -201,6 +202,25 @@ CREATE INDEX IF NOT EXISTS idx_item_scm_links_repo ON item_scm_links(workspace_r
 CREATE INDEX IF NOT EXISTS idx_item_scm_links_type ON item_scm_links(link_type);
 CREATE INDEX IF NOT EXISTS idx_item_scm_links_external ON item_scm_links(external_id);
 CREATE INDEX IF NOT EXISTS idx_item_scm_links_state ON item_scm_links(state);
+
+-- Detected SCM links a user deleted from an item. The sync does not re-create
+-- a dismissed link; a pull request dismissal lapses once the PR stops naming
+-- the item's key.
+CREATE TABLE IF NOT EXISTS item_scm_link_dismissals (
+	item_id INTEGER NOT NULL,
+	workspace_repository_id INTEGER NOT NULL,
+	link_type TEXT NOT NULL,
+	external_id TEXT NOT NULL,
+	created_by INTEGER,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	PRIMARY KEY (item_id, workspace_repository_id, link_type, external_id),
+	FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE,
+	FOREIGN KEY (workspace_repository_id) REFERENCES workspace_repositories(id) ON DELETE CASCADE,
+	FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_item_scm_link_dismissals_external
+	ON item_scm_link_dismissals(workspace_repository_id, link_type, external_id);
 
 -- PR comment cursors: per-PR high-water mark of the last SCM comment id the
 -- "@agent" continuation poller has processed, so each sync tick only looks at

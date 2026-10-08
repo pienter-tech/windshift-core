@@ -139,10 +139,12 @@
     }
   }
 
-  async function deleteLink(linkId) {
+  async function deleteLink(link) {
     const confirmed = await confirm({
       title: t('common.remove'),
-      message: t('scm.confirmRemoveLink'),
+      // Deleting any link stops the sync from re-creating it; say so for the
+      // links Windshift found itself, which would otherwise come back.
+      message: t(isManualLink(link) ? 'scm.confirmRemoveLink' : 'scm.confirmRemoveDetectedLink'),
       confirmText: t('common.remove'),
       cancelText: t('common.cancel'),
       variant: 'danger'
@@ -150,8 +152,8 @@
     if (!confirmed) return;
 
     try {
-      await api.itemSCMLinks.delete(linkId);
-      links = links.filter(l => l.id !== linkId);
+      await api.itemSCMLinks.delete(link.id);
+      links = links.filter(l => l.id !== link.id);
     } catch (err) {
       console.error('Failed to delete link:', err);
     }
@@ -210,7 +212,7 @@
     return parts[parts.length - 1] || link.repository_name;
   }
 
-  function canDeleteLink(link) {
+  function isManualLink(link) {
     return !link.detection_source || link.detection_source === 'manual';
   }
 
@@ -395,6 +397,18 @@
 
         <!-- Combined CI status (Gitea/Forgejo pull requests only) -->
         {@render ciStatus(link)}
+
+        <!-- The PR only mentions this item in its body: its automations skip it -->
+        {#if link.is_mention}
+          <span
+            class="text-xs px-1.5 py-0.5 rounded"
+            style="background-color: var(--ds-background-neutral); color: var(--ds-text-subtle);"
+            title={t('scm.mentionedHint')}
+            data-testid="scm-link-mentioned"
+          >
+            {t('scm.mentioned')}
+          </span>
+        {/if}
       </div>
 
       <!-- Title (if different from external_id) -->
@@ -445,16 +459,14 @@
       >
         <ExternalLink class="w-3 h-3" />
       </a>
-      {#if canDeleteLink(link)}
-        <button
-          class="p-1 rounded hover:bg-opacity-50"
-          style="color: var(--ds-text-danger);"
-          onclick={() => deleteLink(link.id)}
-          title={t('items.removeLink')}
-        >
-          <Trash2 class="w-3 h-3" />
-        </button>
-      {/if}
+      <button
+        class="p-1 rounded hover:bg-opacity-50"
+        style="color: var(--ds-text-danger);"
+        onclick={() => deleteLink(link)}
+        title={t('items.removeLink')}
+      >
+        <Trash2 class="w-3 h-3" />
+      </button>
     </div>
   </div>
 {/snippet}

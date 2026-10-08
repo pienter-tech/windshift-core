@@ -65,6 +65,7 @@ type ItemSCMLinkResponse struct {
 	DetectionSource       string    `json:"detection_source,omitempty"`
 	CIState               string    `json:"ci_state,omitempty"` // PR head CI: pending, success, failure; Gitea/Forgejo only
 	CIURL                 string    `json:"ci_url,omitempty"`   // CI run that explains CIState
+	IsMention             bool      `json:"is_mention"`         // PR link whose body only mentions the item; PR automations skip it
 	CreatedAt             time.Time `json:"created_at"`
 	UpdatedAt             time.Time `json:"updated_at"`
 	// Joined fields
@@ -168,7 +169,7 @@ func (h *SCMItemLinksHandler) GetItemSCMLinks(w http.ResponseWriter, r *http.Req
 			isl.id, isl.item_id, isl.workspace_repository_id, isl.link_type,
 			isl.external_id, isl.external_url, isl.title, isl.state,
 			isl.author_external_id, isl.author_name, isl.detection_source,
-			isl.ci_state, isl.ci_url,
+			isl.ci_state, isl.ci_url, isl.is_mention,
 			isl.created_at, isl.updated_at,
 			wr.repository_name, wr.repository_url,
 			sp.provider_type, sp.auth_method
@@ -196,7 +197,7 @@ func (h *SCMItemLinksHandler) GetItemSCMLinks(w http.ResponseWriter, r *http.Req
 			&link.ID, &link.ItemID, &link.WorkspaceRepositoryID, &link.LinkType,
 			&link.ExternalID, &externalURL, &title, &state,
 			&authorExternalID, &authorName, &detectionSource,
-			&ciState, &ciURL,
+			&ciState, &ciURL, &link.IsMention,
 			&link.CreatedAt, &link.UpdatedAt,
 			&link.RepositoryName, &link.RepositoryURL,
 			&link.ProviderType, &link.AuthMethod,
@@ -397,8 +398,11 @@ func (h *SCMItemLinksHandler) DeleteItemSCMLink(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	_, err = h.db.ExecWrite("DELETE FROM item_scm_links WHERE id = ?", linkID)
-	if err != nil {
+	var deletedBy *int
+	if user := utils.GetCurrentUser(r); user != nil {
+		deletedBy = &user.ID
+	}
+	if err := h.deleteAndDismissLink(r.Context(), linkID, deletedBy); err != nil {
 		slog.Error("failed to delete link", slog.String("component", "scm_item_links"), slog.Any("error", err))
 		respondInternalError(w, r, err)
 		return
@@ -408,6 +412,46 @@ func (h *SCMItemLinksHandler) DeleteItemSCMLink(w http.ResponseWriter, r *http.R
 	services.PublishItemChange(itemID, services.ItemChangeLink)
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteAndDismissLink deletes a link and remembers the deletion, so the
+// repository sync does not link the same PR, branch or commit to the item
+// again. The dismissal is recorded for every link, not only detected ones:
+// the sync would otherwise re-create a deleted manual link as a detected one
+// whenever the PR, branch or commit names the item.
+func (h *SCMItemLinksHandler) deleteAndDismissLink(ctx context.Context, linkID int, deletedBy *int) error {
+	tx, err := h.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin link delete: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var itemID, repoID int
+	var linkType, externalID string
+	err = tx.QueryRowContext(ctx, `
+		SELECT item_id, workspace_repository_id, link_type, external_id
+		FROM item_scm_links WHERE id = ?
+	`, linkID).Scan(&itemID, &repoID, &linkType, &externalID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil // already deleted
+	}
+	if err != nil {
+		return fmt.Errorf("read link %d: %w", linkID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM item_scm_links WHERE id = ?`, linkID); err != nil {
+		return fmt.Errorf("delete link %d: %w", linkID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO item_scm_link_dismissals (item_id, workspace_repository_id, link_type, external_id, created_by)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT (item_id, workspace_repository_id, link_type, external_id) DO NOTHING
+	`, itemID, repoID, linkType, externalID, deletedBy); err != nil {
+		return fmt.Errorf("dismiss link %d: %w", linkID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit link delete: %w", err)
+	}
+	return nil
 }
 
 // RefreshItemSCMLink refreshes the details of an SCM link from the provider
@@ -952,7 +996,7 @@ func (h *SCMItemLinksHandler) getLinkByID(id int) (*ItemSCMLinkResponse, error) 
 			isl.id, isl.item_id, isl.workspace_repository_id, isl.link_type,
 			isl.external_id, isl.external_url, isl.title, isl.state,
 			isl.author_external_id, isl.author_name, isl.detection_source,
-			isl.ci_state, isl.ci_url,
+			isl.ci_state, isl.ci_url, isl.is_mention,
 			isl.created_at, isl.updated_at,
 			wr.repository_name, wr.repository_url,
 			sp.provider_type
@@ -965,7 +1009,7 @@ func (h *SCMItemLinksHandler) getLinkByID(id int) (*ItemSCMLinkResponse, error) 
 		&link.ID, &link.ItemID, &link.WorkspaceRepositoryID, &link.LinkType,
 		&link.ExternalID, &externalURL, &title, &state,
 		&authorExternalID, &authorName, &detectionSource,
-		&ciState, &ciURL,
+		&ciState, &ciURL, &link.IsMention,
 		&link.CreatedAt, &link.UpdatedAt,
 		&link.RepositoryName, &link.RepositoryURL,
 		&link.ProviderType,
