@@ -27,11 +27,14 @@ cx
 !/internal/scm/ci_status_test.go
 !/internal/scm/issue_sync_gitea_test.go
 !/internal/scm/issue_sync_filter_test.go
+!/internal/scm/smart_commits_merge_test.go
+!/internal/scm/sync_link_refresh_publish_test.go
 !/internal/handlers/scm_gitea_webhooks_test.go
 !/internal/middleware/csrf_scm_webhooks_test.go
 !/internal/services/planning_milestones_release_test.go
 !/internal/database/milestone_comments_schema_test.go
 !/internal/repository/milestone_comment_repository_test.go
+!/internal/repository/scm_workspace_repository_test.go
 !/internal/services/milestone_comment_service_test.go
 !/internal/services/milestone_page_link_service_test.go
 !/internal/database/milestone_activity_schema_test.go
