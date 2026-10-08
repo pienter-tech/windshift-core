@@ -185,6 +185,10 @@ CREATE TABLE IF NOT EXISTS item_scm_links (
 	author_name TEXT,                             -- Author display name
 	detection_source TEXT,                        -- 'webhook', 'manual', 'branch_name', 'pr_title', 'pr_body', 'commit_message'
 	smart_commits_applied_at TIMESTAMPTZ,           -- When smart-commit actions for a merged PR body were last applied (prevents re-runs)
+	ci_state TEXT,                                -- Combined CI status of a PR head: 'pending', 'success', 'failure'; NULL when none reported
+	ci_url TEXT,                                  -- Web page of the CI run that explains ci_state
+	ci_head_sha TEXT,                             -- PR head commit the CI status was read for
+	ci_updated_at TIMESTAMPTZ,                    -- When ci_state/ci_url last changed
 	created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
 	updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
 	FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE,

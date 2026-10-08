@@ -22,8 +22,11 @@ var (
 	_ CommitProvider               = (*GiteaProvider)(nil)
 	_ RefProvider                  = (*GiteaProvider)(nil)
 	_ IssueCommentProvider         = (*GiteaProvider)(nil) // WI-426: drives the "@agent" PR-comment trigger
+	_ IssueProvider                = (*GiteaProvider)(nil) // issue sync
+	_ PaginatedIssueProvider       = (*GiteaProvider)(nil)
 	_ PullRequestReviewProvider    = (*GiteaProvider)(nil)
 	_ RepositoryPermissionProvider = (*GiteaProvider)(nil)
+	_ CIStatusProvider             = (*GiteaProvider)(nil) // Forgejo Actions status on PR links
 )
 
 // GiteaProvider implements the Provider interface for Gitea/Forgejo
@@ -298,6 +301,85 @@ func (g *GiteaProvider) GetCommit(ctx context.Context, owner, repo, sha string) 
 	return &commit, nil
 }
 
+// giteaCombinedStatus is the combined commit status response. Forgejo Actions
+// posts one status per workflow job on the commit it ran for.
+type giteaCombinedStatus struct {
+	State    string              `json:"state"`
+	Statuses []giteaCommitStatus `json:"statuses"`
+}
+
+// giteaCommitStatus is one status of a commit. Gitea and Forgejo name its
+// state field "status" here, unlike the combined "state".
+type giteaCommitStatus struct {
+	State     string    `json:"status"`
+	TargetURL string    `json:"target_url"`
+	Context   string    `json:"context"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// giteaCIState maps a Gitea/Forgejo commit status state onto the displayed
+// CI state. Warning ranks below pending in Gitea's own ordering, so it shows
+// as a failure; skipped only wins the combined state when every status was
+// skipped, which blocks nothing.
+func giteaCIState(state string) string {
+	switch strings.ToLower(state) {
+	case "pending":
+		return CIStatePending
+	case "success", "skipped":
+		return CIStateSuccess
+	case "error", "failure", "warning":
+		return CIStateFailure
+	default:
+		return ""
+	}
+}
+
+// GetCombinedCIStatus returns the combined commit status of sha. The link is
+// the target of the most recently updated status that agrees with the
+// combined state: the failing run when CI failed, the running one while it is
+// pending, and the latest finished run when everything passed.
+func (g *GiteaProvider) GetCombinedCIStatus(ctx context.Context, owner, repo, sha string) (*CIStatus, error) {
+	reqURL := g.apiURL(fmt.Sprintf("/repos/%s/%s/commits/%s/status", url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(sha)))
+
+	var combined giteaCombinedStatus
+	if err := g.doJSON(ctx, http.MethodGet, reqURL, http.NoBody, http.StatusOK, &combined); err != nil {
+		return nil, err
+	}
+	state := giteaCIState(combined.State)
+	if state == "" || len(combined.Statuses) == 0 {
+		return nil, nil
+	}
+
+	var link, fallback *giteaCommitStatus
+	for i := range combined.Statuses {
+		status := &combined.Statuses[i]
+		if !isWebURL(status.TargetURL) {
+			continue
+		}
+		if fallback == nil || status.UpdatedAt.After(fallback.UpdatedAt) {
+			fallback = status
+		}
+		if giteaCIState(status.State) == state && (link == nil || status.UpdatedAt.After(link.UpdatedAt)) {
+			link = status
+		}
+	}
+	if link == nil {
+		link = fallback
+	}
+	result := &CIStatus{State: state}
+	if link != nil {
+		result.URL = link.TargetURL
+	}
+	return result, nil
+}
+
+// isWebURL reports whether raw is an absolute http(s) URL, the only kind of
+// CI link the item view should render.
+func isWebURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	return err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != ""
+}
+
 // ListCommits lists commits from a repository branch/tag, newest first.
 func (g *GiteaProvider) ListCommits(ctx context.Context, owner, repo string, opts ListCommitsOptions) ([]Commit, error) {
 	page := opts.Page
@@ -510,6 +592,235 @@ func (g *GiteaProvider) UpdateIssueComment(ctx context.Context, owner, repo stri
 		return fmt.Errorf("failed to marshal request body: %w", err)
 	}
 	return g.doJSON(ctx, "PATCH", reqURL, strings.NewReader(string(bodyJSON)), http.StatusOK, nil)
+}
+
+// giteaMaxPageSize is the default MAX_RESPONSE_ITEMS of Gitea and Forgejo;
+// a larger limit is silently capped by the server.
+const giteaMaxPageSize = 50
+
+// giteaIssue is the Gitea/Forgejo issue payload.
+type giteaIssue struct {
+	ID          int64           `json:"id"`
+	Number      int             `json:"number"`
+	Title       string          `json:"title"`
+	Body        string          `json:"body"`
+	State       string          `json:"state"`
+	HTMLURL     string          `json:"html_url"`
+	User        giteaUser       `json:"user"`
+	Labels      []giteaLabel    `json:"labels"`
+	Assignees   []giteaUser     `json:"assignees"`
+	Milestone   *giteaMilestone `json:"milestone"`
+	PullRequest *struct{}       `json:"pull_request"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
+	ClosedAt    *time.Time      `json:"closed_at"`
+}
+
+type giteaLabel struct {
+	ID    int64  `json:"id"`
+	Name  string `json:"name"`
+	Color string `json:"color"`
+}
+
+func (l giteaLabel) toIssueLabel() IssueLabel {
+	return IssueLabel{ID: l.ID, Name: l.Name, Color: strings.TrimPrefix(l.Color, "#")}
+}
+
+type giteaMilestone struct {
+	ID    int64  `json:"id"`
+	Title string `json:"title"`
+	State string `json:"state"`
+}
+
+// toIssueMilestone maps a Gitea milestone. Gitea milestones have no
+// per-repository number; the ID is what the issue API takes, so it doubles
+// as the number the milestone mapping is keyed on.
+func (m giteaMilestone) toIssueMilestone() IssueMilestone {
+	return IssueMilestone{ID: m.ID, Number: int(m.ID), Title: m.Title, State: m.State}
+}
+
+func (gi giteaIssue) toIssue() Issue {
+	issue := Issue{
+		ID:        gi.ID,
+		Number:    gi.Number,
+		Title:     gi.Title,
+		Body:      gi.Body,
+		State:     gi.State,
+		URL:       gi.HTMLURL,
+		Author:    gi.User.toUser(),
+		CreatedAt: gi.CreatedAt,
+		UpdatedAt: gi.UpdatedAt,
+		ClosedAt:  gi.ClosedAt,
+	}
+	for _, l := range gi.Labels {
+		issue.Labels = append(issue.Labels, l.toIssueLabel())
+	}
+	for _, a := range gi.Assignees {
+		issue.Assignees = append(issue.Assignees, a.toUser())
+	}
+	if gi.Milestone != nil {
+		milestone := gi.Milestone.toIssueMilestone()
+		issue.Milestone = &milestone
+	}
+	return issue
+}
+
+// giteaHasNextPage reports whether a Gitea list response has another page: the
+// Link header names it, and without a Link header a full page may be
+// followed by more.
+func giteaHasNextPage(header http.Header, count, limit int) bool {
+	if links := header.Values("Link"); len(links) > 0 {
+		return strings.Contains(strings.Join(links, ","), `rel="next"`)
+	}
+	return count >= limit
+}
+
+// ListIssues lists issues for a repository, excluding pull requests.
+func (g *GiteaProvider) ListIssues(ctx context.Context, owner, repo string, opts ListIssueOptions) ([]Issue, error) {
+	issues, _, err := g.ListIssuesPage(ctx, owner, repo, opts)
+	return issues, err
+}
+
+// ListIssuesPage lists one page of issues (type=issues leaves out pull
+// requests) and reports whether another page follows.
+func (g *GiteaProvider) ListIssuesPage(ctx context.Context, owner, repo string, opts ListIssueOptions) ([]Issue, bool, error) {
+	page := opts.Page
+	if page == 0 {
+		page = 1
+	}
+	limit := opts.PerPage
+	if limit <= 0 || limit > giteaMaxPageSize {
+		limit = giteaMaxPageSize
+	}
+	state := opts.State
+	if state == "" {
+		state = "all"
+	}
+
+	query := url.Values{}
+	query.Set("state", state)
+	query.Set("type", "issues")
+	query.Set("sort", "oldest")
+	query.Set("page", fmt.Sprintf("%d", page))
+	query.Set("limit", fmt.Sprintf("%d", limit))
+	if opts.Since != nil {
+		query.Set("since", opts.Since.Format(time.RFC3339))
+	}
+	if len(opts.Labels) > 0 {
+		query.Set("labels", strings.Join(opts.Labels, ","))
+	}
+	reqURL := g.apiURL(fmt.Sprintf("/repos/%s/%s/issues?%s", url.PathEscape(owner), url.PathEscape(repo), query.Encode()))
+
+	var giteaIssues []giteaIssue
+	header, err := g.doJSONWithHeader(ctx, http.MethodGet, reqURL, http.NoBody, http.StatusOK, &giteaIssues)
+	if err != nil {
+		return nil, false, err
+	}
+	issues := make([]Issue, 0, len(giteaIssues))
+	for _, gi := range giteaIssues {
+		if gi.PullRequest != nil {
+			continue
+		}
+		issues = append(issues, gi.toIssue())
+	}
+	return issues, giteaHasNextPage(header, len(giteaIssues), limit), nil
+}
+
+// GetIssue gets one issue by its number.
+func (g *GiteaProvider) GetIssue(ctx context.Context, owner, repo string, number int) (*Issue, error) {
+	reqURL := g.apiURL(fmt.Sprintf("/repos/%s/%s/issues/%d", url.PathEscape(owner), url.PathEscape(repo), number))
+	var gi giteaIssue
+	if err := g.doJSON(ctx, http.MethodGet, reqURL, http.NoBody, http.StatusOK, &gi); err != nil {
+		return nil, err
+	}
+	issue := gi.toIssue()
+	return &issue, nil
+}
+
+// UpdateIssue updates an issue. Gitea edits the state, title, body,
+// assignees, and milestone (by ID, 0 clears it) in one PATCH, which answers
+// 201, and replaces labels through the separate labels endpoint.
+func (g *GiteaProvider) UpdateIssue(ctx context.Context, owner, repo string, number int, opts UpdateIssueOptions) (*Issue, error) {
+	issuePath := fmt.Sprintf("/repos/%s/%s/issues/%d", url.PathEscape(owner), url.PathEscape(repo), number)
+
+	if opts.Labels != nil {
+		bodyJSON, err := json.Marshal(map[string]any{"labels": opts.Labels})
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal request body: %w", err)
+		}
+		if err := g.doJSON(ctx, http.MethodPut, g.apiURL(issuePath+"/labels"), bytes.NewReader(bodyJSON), http.StatusOK, nil); err != nil {
+			return nil, err
+		}
+	}
+
+	body := make(map[string]any)
+	if opts.State != nil {
+		body["state"] = *opts.State
+	}
+	if opts.Title != nil {
+		body["title"] = *opts.Title
+	}
+	if opts.Body != nil {
+		body["body"] = *opts.Body
+	}
+	if opts.Assignees != nil {
+		body["assignees"] = opts.Assignees
+	}
+	if opts.Milestone != nil {
+		body["milestone"] = *opts.Milestone
+	}
+	if len(body) == 0 {
+		return g.GetIssue(ctx, owner, repo, number)
+	}
+
+	bodyJSON, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request body: %w", err)
+	}
+	var gi giteaIssue
+	if err := g.doJSON(ctx, http.MethodPatch, g.apiURL(issuePath), bytes.NewReader(bodyJSON), http.StatusCreated, &gi); err != nil {
+		return nil, err
+	}
+	issue := gi.toIssue()
+	return &issue, nil
+}
+
+// ListRepoLabels lists every label of a repository.
+func (g *GiteaProvider) ListRepoLabels(ctx context.Context, owner, repo string) ([]IssueLabel, error) {
+	labels := make([]IssueLabel, 0)
+	for page := 1; ; page++ {
+		reqURL := g.apiURL(fmt.Sprintf("/repos/%s/%s/labels?page=%d&limit=%d", url.PathEscape(owner), url.PathEscape(repo), page, giteaMaxPageSize))
+		var giteaLabels []giteaLabel
+		header, err := g.doJSONWithHeader(ctx, http.MethodGet, reqURL, http.NoBody, http.StatusOK, &giteaLabels)
+		if err != nil {
+			return nil, err
+		}
+		for _, l := range giteaLabels {
+			labels = append(labels, l.toIssueLabel())
+		}
+		if len(giteaLabels) == 0 || !giteaHasNextPage(header, len(giteaLabels), giteaMaxPageSize) {
+			return labels, nil
+		}
+	}
+}
+
+// ListRepoMilestones lists every open and closed milestone of a repository.
+func (g *GiteaProvider) ListRepoMilestones(ctx context.Context, owner, repo string) ([]IssueMilestone, error) {
+	milestones := make([]IssueMilestone, 0)
+	for page := 1; ; page++ {
+		reqURL := g.apiURL(fmt.Sprintf("/repos/%s/%s/milestones?state=all&page=%d&limit=%d", url.PathEscape(owner), url.PathEscape(repo), page, giteaMaxPageSize))
+		var giteaMilestones []giteaMilestone
+		header, err := g.doJSONWithHeader(ctx, http.MethodGet, reqURL, http.NoBody, http.StatusOK, &giteaMilestones)
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range giteaMilestones {
+			milestones = append(milestones, m.toIssueMilestone())
+		}
+		if len(giteaMilestones) == 0 || !giteaHasNextPage(header, len(giteaMilestones), giteaMaxPageSize) {
+			return milestones, nil
+		}
+	}
 }
 
 // CreateRelease creates a new release in a repository

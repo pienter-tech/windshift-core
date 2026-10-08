@@ -405,7 +405,7 @@ export default {
     rotateWebhookSecret: 'Сменить секрет',
     webhookSecretOnce: 'Скопируйте секрет сейчас — повторно он показан не будет.',
     giteaWebhook: 'Webhook Forgejo / Gitea',
-    giteaWebhookHelp: 'Добавьте webhook Forgejo или Gitea с этим URL и секретом, типом содержимого POST application/json и событиями pull request. События pull request синхронизируют репозиторий за секунды.',
+    giteaWebhookHelp: 'Добавьте webhook Forgejo или Gitea с этим URL и секретом, типом содержимого POST application/json и событиями pull request. События pull request синхронизируют репозиторий за секунды. Чтобы статус CI запросов на слияние обновлялся за секунды, выберите также события запусков Actions (Forgejo) или события статуса коммита (Gitea). Чтобы синхронизация задач срабатывала за секунды, выберите также события задач, включая назначение, метки и этапы, и события комментариев к задачам.',
     webhookSecretRotated: 'Секрет webhook создан',
     webhookLoadFailed: 'Не удалось загрузить настройки webhook',
     webhookRotateFailed: 'Не удалось создать секрет webhook',

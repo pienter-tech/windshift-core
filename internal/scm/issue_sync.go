@@ -20,7 +20,8 @@ import (
 	"windshift/internal/sso"
 )
 
-// IssueSyncService handles synchronization of GitHub Issues into Windshift items.
+// IssueSyncService handles synchronization of GitHub and Gitea/Forgejo
+// issues into Windshift items.
 type IssueSyncService struct {
 	db          database.Database
 	encryption  *sso.SecretEncryption
@@ -28,6 +29,54 @@ type IssueSyncService struct {
 	userService interface {
 		GetByID(int) (*models.User, error)
 	}
+	// resolveProviderOverride lets tests substitute the provider of a
+	// connection; nil in production.
+	resolveProviderOverride func(ctx context.Context, connectionID int) (Provider, error)
+}
+
+// issueSyncConfigLocks serializes syncs of one config across the scheduler,
+// manual triggers, and webhook deliveries: each config ID maps to a
+// one-slot channel held for the duration of a sync.
+var issueSyncConfigLocks sync.Map
+
+// lockIssueSyncConfig waits until no other sync of configID runs, or ctx
+// ends, and returns the release function.
+func lockIssueSyncConfig(ctx context.Context, configID int) (func(), error) {
+	slot, _ := issueSyncConfigLocks.LoadOrStore(configID, make(chan struct{}, 1))
+	lock := slot.(chan struct{})
+	select {
+	case lock <- struct{}{}:
+		return func() { <-lock }, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("wait for running issue sync: %w", ctx.Err())
+	}
+}
+
+// issueSyncJob is one enabled config with the repository it syncs.
+type issueSyncJob struct {
+	config       models.IssueSyncConfig
+	repoName     string
+	connectionID int
+}
+
+// issueForgeName names the forge of a provider in synced comment headers.
+func issueForgeName(providerType models.SCMProviderType) string {
+	switch providerType {
+	case models.SCMProviderTypeGitea:
+		return "Gitea/Forgejo"
+	case models.SCMProviderTypeGitLab:
+		return "GitLab"
+	default:
+		return "GitHub"
+	}
+}
+
+func (s *IssueSyncService) providerForConnection(ctx context.Context, connectionID int) (Provider, error) {
+	if s.resolveProviderOverride != nil {
+		return s.resolveProviderOverride(ctx, connectionID)
+	}
+	credResolver := &CredentialResolver{db: s.db, encryption: s.encryption}
+	return credResolver.GetProviderForConnection(ctx, connectionID)
 }
 
 // SetUserService sets the user service for looking up comment authors.
@@ -67,6 +116,40 @@ func (s *IssueSyncService) SyncAll(ctx context.Context) error {
 	}
 	defer s.syncMu.Unlock()
 
+	jobs, err := s.loadSyncJobs(ctx, "isc.sync_enabled = ? AND wr.is_active = ? AND wsc.enabled = ?", true, true, true)
+	if err != nil {
+		return err
+	}
+	for i := range jobs {
+		if err := s.runSyncJob(ctx, &jobs[i]); err != nil {
+			slog.Error("issue sync failed", "config_id", jobs[i].config.ID, "repo", jobs[i].repoName, "error", err)
+		}
+	}
+	return nil
+}
+
+// SyncRepository syncs the enabled issue sync config of a workspace
+// repository, if it has one. Webhook deliveries for the repository's issues
+// call it; the scheduled SyncAll remains the fallback.
+func (s *IssueSyncService) SyncRepository(ctx context.Context, workspaceRepositoryID int) error {
+	jobs, err := s.loadSyncJobs(ctx,
+		"isc.workspace_repository_id = ? AND isc.sync_enabled = ? AND wr.is_active = ? AND wsc.enabled = ?",
+		workspaceRepositoryID, true, true, true)
+	if err != nil {
+		return err
+	}
+	for i := range jobs {
+		if err := s.runSyncJob(ctx, &jobs[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// loadSyncJobs loads the issue sync configs matching filter, a condition on
+// issue_sync_configs isc, workspace_repositories wr, and
+// workspace_scm_connections wsc.
+func (s *IssueSyncService) loadSyncJobs(ctx context.Context, filter string, args ...any) ([]issueSyncJob, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT isc.id, isc.workspace_repository_id, isc.status_mapping, isc.reverse_status_mapping,
 			   isc.label_sync_mode, isc.label_mappings, isc.filter_labels,
@@ -74,30 +157,19 @@ func (s *IssueSyncService) SyncAll(ctx context.Context) error {
 			   isc.default_item_type_id, isc.default_priority_id, isc.sync_comments,
 			   isc.last_full_sync_at,
 			   wr.repository_name, wr.workspace_scm_connection_id,
-			   wsc.scm_provider_id, wsc.workspace_id
+			   wsc.workspace_id
 		FROM issue_sync_configs isc
 		JOIN workspace_repositories wr ON wr.id = isc.workspace_repository_id
 		JOIN workspace_scm_connections wsc ON wsc.id = wr.workspace_scm_connection_id
-		WHERE isc.sync_enabled = ?
-		  AND wr.is_active = ?
-		  AND wsc.enabled = ?
-	`, true, true, true)
+		WHERE `+filter, args...)
 	if err != nil {
-		return fmt.Errorf("query issue sync configs: %w", err)
+		return nil, fmt.Errorf("query issue sync configs: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	type syncJob struct {
-		config       models.IssueSyncConfig
-		repoName     string
-		connectionID int
-		providerID   int
-		workspaceID  int
-	}
-
-	var jobs []syncJob
+	var jobs []issueSyncJob
 	for rows.Next() {
-		var j syncJob
+		var j issueSyncJob
 		var lastSync sql.NullTime
 		var defaultItemType, defaultPriority sql.NullInt64
 		if err := rows.Scan(
@@ -107,7 +179,7 @@ func (s *IssueSyncService) SyncAll(ctx context.Context) error {
 			&j.config.AssigneeMappings, &j.config.MilestoneMappings,
 			&defaultItemType, &defaultPriority, &j.config.SyncComments,
 			&lastSync,
-			&j.repoName, &j.connectionID, &j.providerID, &j.workspaceID,
+			&j.repoName, &j.connectionID, &j.config.WorkspaceID,
 		); err != nil {
 			slog.Error("scan issue sync config", "error", err)
 			continue
@@ -123,43 +195,47 @@ func (s *IssueSyncService) SyncAll(ctx context.Context) error {
 			v := int(defaultPriority.Int64)
 			j.config.DefaultPriorityID = &v
 		}
-		j.config.WorkspaceID = j.workspaceID
 		jobs = append(jobs, j)
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate issue sync configs: %w", err)
+		return nil, fmt.Errorf("iterate issue sync configs: %w", err)
 	}
+	return jobs, nil
+}
 
-	credResolver := &CredentialResolver{db: s.db, encryption: s.encryption}
-
-	for _, j := range jobs {
-		provider, err := credResolver.GetProviderForConnection(ctx, j.connectionID)
-		if err != nil {
-			slog.Error("resolve provider for issue sync", "config_id", j.config.ID, "error", err)
-			s.recordSyncError(j.config.ID, err.Error())
-			continue
-		}
-
-		issueProvider, ok := provider.(IssueProvider)
-		if !ok {
-			slog.Warn("provider does not support issues", "config_id", j.config.ID)
-			s.recordSyncError(j.config.ID, "provider does not support issue sync")
-			continue
-		}
-
-		if err := s.syncConfig(ctx, issueProvider, &j.config, j.repoName); err != nil {
-			slog.Error("issue sync failed", "config_id", j.config.ID, "repo", j.repoName, "error", err)
-			s.recordSyncError(j.config.ID, err.Error())
-		} else {
-			// Clear error on success and update last sync time
-			now := time.Now()
-			_, _ = s.db.ExecWriteContext(ctx,
-				"UPDATE issue_sync_configs SET last_full_sync_at = ?, last_sync_error = NULL, updated_at = ? WHERE id = ?",
-				now, now, j.config.ID)
-		}
+// runSyncJob runs one config's sync once no other sync of it is running, and
+// records the outcome on the config. last_full_sync_at becomes the time the
+// sync started, so an issue changed while the sync ran is listed again by
+// the next one.
+func (s *IssueSyncService) runSyncJob(ctx context.Context, j *issueSyncJob) error {
+	release, err := lockIssueSyncConfig(ctx, j.config.ID)
+	if err != nil {
+		return err
 	}
+	defer release()
 
+	started := time.Now()
+	if err := s.syncJob(ctx, j); err != nil {
+		s.recordSyncError(j.config.ID, err.Error())
+		return err
+	}
+	now := time.Now()
+	_, _ = s.db.ExecWriteContext(ctx,
+		"UPDATE issue_sync_configs SET last_full_sync_at = ?, last_sync_error = NULL, updated_at = ? WHERE id = ?",
+		started, now, j.config.ID)
 	return nil
+}
+
+func (s *IssueSyncService) syncJob(ctx context.Context, j *issueSyncJob) error {
+	provider, err := s.providerForConnection(ctx, j.connectionID)
+	if err != nil {
+		return fmt.Errorf("resolve provider: %w", err)
+	}
+	issueProvider, ok := provider.(IssueProvider)
+	if !ok {
+		return fmt.Errorf("provider does not support issue sync")
+	}
+	return s.syncConfig(ctx, issueProvider, &j.config, j.repoName)
 }
 
 // syncConfig syncs a single issue sync configuration.
@@ -233,7 +309,7 @@ func (s *IssueSyncService) syncConfig(ctx context.Context, provider IssueProvide
 	return nil
 }
 
-// syncIssue syncs a single GitHub issue to a Windshift item.
+// syncIssue syncs a single issue to a Windshift item.
 func (s *IssueSyncService) syncIssue(ctx context.Context, provider IssueProvider, config *models.IssueSyncConfig, owner, repo string, issue *Issue) error {
 	var syncItemID int
 	var itemID int
@@ -292,7 +368,7 @@ func (s *IssueSyncService) syncIssue(ctx context.Context, provider IssueProvider
 	return nil
 }
 
-// createItemFromIssue creates a new Windshift item from a GitHub issue.
+// createItemFromIssue creates a new Windshift item from an issue.
 func (s *IssueSyncService) createItemFromIssue(ctx context.Context, config *models.IssueSyncConfig, issue *Issue) error {
 	statusID := s.resolveStatusID(config, issue.State)
 
@@ -343,13 +419,13 @@ func (s *IssueSyncService) createItemFromIssue(ctx context.Context, config *mode
 		return fmt.Errorf("create item from issue: %w", err)
 	}
 
-	slog.Info("created item from GitHub issue",
+	slog.Info("created item from issue",
 		"config_id", config.ID, "issue_number", issue.Number, "item_id", item.ID)
 
 	return nil
 }
 
-// updateItemFromIssue updates an existing Windshift item from a changed GitHub issue.
+// updateItemFromIssue updates an existing Windshift item from a changed issue.
 func (s *IssueSyncService) updateItemFromIssue(ctx context.Context, config *models.IssueSyncConfig, issue *Issue, itemID, syncItemID int) error {
 	statusID := s.resolveStatusID(config, issue.State)
 	assigneeID := s.resolveAssigneeID(config, issue)
@@ -402,14 +478,14 @@ func (s *IssueSyncService) updateItemFromIssue(ctx context.Context, config *mode
 		return fmt.Errorf("update item from issue: %w", err)
 	}
 
-	slog.Info("updated item from GitHub issue",
+	slog.Info("updated item from issue",
 		"config_id", config.ID, "issue_number", issue.Number, "item_id", itemID)
 
 	return nil
 }
 
-// PushStatusToGitHub pushes a Windshift status change back to GitHub.
-func (s *IssueSyncService) PushStatusToGitHub(ctx context.Context, itemID, newStatusID int) {
+// PushStatusToIssue pushes a Windshift status change back to the linked issue.
+func (s *IssueSyncService) PushStatusToIssue(ctx context.Context, itemID, newStatusID int) {
 	var syncItemID int
 	var configID int
 	var issueNumber int
@@ -439,17 +515,16 @@ func (s *IssueSyncService) PushStatusToGitHub(ctx context.Context, itemID, newSt
 		return
 	}
 
-	ghState, ok := statusMap[strconv.Itoa(newStatusID)]
+	issueState, ok := statusMap[strconv.Itoa(newStatusID)]
 	if !ok {
 		return // No mapping for this status
 	}
 
 	// Resolve provider. Note: we deliberately do NOT set sync_lock yet — the lock
 	// is the signal to the next inbound sync to skip one cycle (loopback
-	// prevention), so we only set it if we actually issue the GitHub PATCH.
+	// prevention), so we only set it if we actually issue the issue update.
 	// Setting it earlier and bailing on preflight would wedge the item.
-	credResolver := &CredentialResolver{db: s.db, encryption: s.encryption}
-	provider, err := credResolver.GetProviderForConnection(ctx, connectionID)
+	provider, err := s.providerForConnection(ctx, connectionID)
 	if err != nil {
 		slog.Error("resolve provider for status pushback", "config_id", configID, "error", err)
 		return
@@ -472,10 +547,10 @@ func (s *IssueSyncService) PushStatusToGitHub(ctx context.Context, itemID, newSt
 		true, time.Now(), syncItemID)
 
 	_, err = issueProvider.UpdateIssue(ctx, parts[0], parts[1], issueNumber, UpdateIssueOptions{
-		State: &ghState,
+		State: &issueState,
 	})
 	if err != nil {
-		slog.Error("push status to GitHub", "config_id", configID, "issue", issueNumber, "state", ghState, "error", err)
+		slog.Error("push status to issue", "config_id", configID, "issue", issueNumber, "state", issueState, "error", err)
 		// Clear lock on failure so next sync can pick it up
 		_, _ = s.db.ExecWriteContext(ctx,
 			"UPDATE issue_sync_items SET sync_lock = ?, updated_at = ? WHERE id = ?",
@@ -483,8 +558,8 @@ func (s *IssueSyncService) PushStatusToGitHub(ctx context.Context, itemID, newSt
 	}
 }
 
-// PushCommentToGitHub pushes a Windshift comment to a linked GitHub issue.
-func (s *IssueSyncService) PushCommentToGitHub(ctx context.Context, itemID, commentID, authorID int, commentBody string) {
+// PushCommentToIssue pushes a Windshift comment to the linked issue.
+func (s *IssueSyncService) PushCommentToIssue(ctx context.Context, itemID, commentID, authorID int, commentBody string) {
 	if s.userService != nil {
 		if user, err := s.userService.GetByID(authorID); err == nil {
 			authorName := strings.TrimSpace(user.FullName)
@@ -515,8 +590,7 @@ func (s *IssueSyncService) PushCommentToGitHub(ctx context.Context, itemID, comm
 		return
 	}
 
-	credResolver := &CredentialResolver{db: s.db, encryption: s.encryption}
-	provider, err := credResolver.GetProviderForConnection(ctx, connectionID)
+	provider, err := s.providerForConnection(ctx, connectionID)
 	if err != nil {
 		slog.Error("resolve provider for comment pushback", "error", err)
 		return
@@ -534,7 +608,7 @@ func (s *IssueSyncService) PushCommentToGitHub(ctx context.Context, itemID, comm
 
 	ghCommentID, err := issueProvider.CreateIssueComment(ctx, parts[0], parts[1], issueNumber, commentBody)
 	if err != nil {
-		slog.Error("push comment to GitHub", "issue", issueNumber, "error", err)
+		slog.Error("push comment to issue", "issue", issueNumber, "error", err)
 		return
 	}
 
@@ -545,8 +619,8 @@ func (s *IssueSyncService) PushCommentToGitHub(ctx context.Context, itemID, comm
 	`, syncItemID, commentID, ghCommentID, now, now, now)
 }
 
-// PushCommentUpdateToGitHub pushes a Windshift comment edit to the linked GitHub comment.
-func (s *IssueSyncService) PushCommentUpdateToGitHub(ctx context.Context, commentID, authorID int, newBody string) {
+// PushCommentUpdateToIssue pushes a Windshift comment edit to the linked issue comment.
+func (s *IssueSyncService) PushCommentUpdateToIssue(ctx context.Context, commentID, authorID int, newBody string) {
 	var ghCommentID int64
 	var issueNumber int
 	var repoName string
@@ -579,8 +653,7 @@ func (s *IssueSyncService) PushCommentUpdateToGitHub(ctx context.Context, commen
 		}
 	}
 
-	credResolver := &CredentialResolver{db: s.db, encryption: s.encryption}
-	provider, err := credResolver.GetProviderForConnection(ctx, connectionID)
+	provider, err := s.providerForConnection(ctx, connectionID)
 	if err != nil {
 		slog.Error("resolve provider for comment update pushback", "error", err)
 		return
@@ -597,11 +670,11 @@ func (s *IssueSyncService) PushCommentUpdateToGitHub(ctx context.Context, commen
 	}
 
 	if err := issueProvider.UpdateIssueComment(ctx, parts[0], parts[1], issueNumber, ghCommentID, newBody); err != nil {
-		slog.Error("push comment update to GitHub", "github_comment_id", ghCommentID, "error", err)
+		slog.Error("push comment update to issue", "github_comment_id", ghCommentID, "error", err)
 	}
 }
 
-// syncComments pulls GitHub issue comments into Windshift.
+// syncComments pulls issue comments into Windshift.
 func (s *IssueSyncService) syncComments(ctx context.Context, provider IssueProvider, owner, repo string, issueNumber, syncItemID, itemID int) {
 	// Fetch remotely before opening the transaction.
 	comments, err := provider.ListIssueComments(ctx, owner, repo, issueNumber)
@@ -622,6 +695,8 @@ func (s *IssueSyncService) syncComments(ctx context.Context, provider IssueProvi
 	// sync-tracking row atomic. We publish once after commit below.
 	commentSvc := services.NewCommentService(s.db)
 	commentsChanged := false
+	forgeName := issueForgeName(provider.GetType())
+	actor := itemevents.Integration(string(provider.GetType()), "scm")
 	for _, ghComment := range comments {
 		if strings.Contains(ghComment.Body, "commented in Windshift:") && strings.HasPrefix(ghComment.Body, "**") {
 			continue
@@ -637,10 +712,10 @@ func (s *IssueSyncService) syncComments(ctx context.Context, provider IssueProvi
 		).Scan(&trackingID, &existingCommentID, &lastGHUpdated)
 
 		if errors.Is(err, sql.ErrNoRows) {
-			body := fmt.Sprintf("**@%s** commented on GitHub:\n\n%s", ghComment.User.Username, ghComment.Body)
+			body := fmt.Sprintf("**@%s** commented on %s:\n\n%s", ghComment.User.Username, forgeName, ghComment.Body)
 			now := time.Now()
 
-			wsCommentID, insertErr := commentSvc.CreateInTx(ctx, tx, itemID, 0, body, now, itemevents.Integration("github", "scm"))
+			wsCommentID, insertErr := commentSvc.CreateInTx(ctx, tx, itemID, 0, body, now, actor)
 			if insertErr != nil {
 				slog.Error("insert synced comment", "github_comment_id", ghComment.ID, "error", insertErr)
 				continue
@@ -666,7 +741,7 @@ func (s *IssueSyncService) syncComments(ctx context.Context, provider IssueProvi
 			continue // No changes
 		}
 
-		body := fmt.Sprintf("**@%s** commented on GitHub:\n\n%s", ghComment.User.Username, ghComment.Body)
+		body := fmt.Sprintf("**@%s** commented on %s:\n\n%s", ghComment.User.Username, forgeName, ghComment.Body)
 		now := time.Now()
 		_ = commentSvc.UpdateContentInTx(ctx, tx, int(existingCommentID.Int64), body, now)
 		_, _ = tx.ExecContext(ctx,
@@ -686,7 +761,7 @@ func (s *IssueSyncService) syncComments(ctx context.Context, provider IssueProvi
 		return
 	}
 
-	// Live-update publish (WI-483): GitHub-sourced comments committed; refresh
+	// Live-update publish (WI-483): issue-sourced comments committed; refresh
 	// the item's comment list for anyone viewing it.
 	if commentsChanged {
 		services.PublishItemChange(itemID, services.ItemChangeComment)
@@ -936,79 +1011,24 @@ func (s *IssueSyncService) GetSyncedItems(ctx context.Context, configID int) ([]
 
 // TriggerSync runs a single sync for a specific config.
 func (s *IssueSyncService) TriggerSync(ctx context.Context, configID int) error {
-	var repoName string
-	var connectionID int
-	var config models.IssueSyncConfig
-	var lastSync sql.NullTime
-	var defaultItemType, defaultPriority sql.NullInt64
-
-	err := s.db.QueryRowContext(ctx, `
-		SELECT isc.id, isc.workspace_repository_id, isc.status_mapping, isc.reverse_status_mapping,
-			   isc.label_sync_mode, isc.label_mappings, isc.filter_labels,
-			   isc.assignee_mappings, isc.milestone_mappings,
-			   isc.default_item_type_id, isc.default_priority_id, isc.sync_comments,
-			   isc.last_full_sync_at,
-			   wr.repository_name, wr.workspace_scm_connection_id,
-			   wsc.workspace_id
-		FROM issue_sync_configs isc
-		JOIN workspace_repositories wr ON wr.id = isc.workspace_repository_id
-		JOIN workspace_scm_connections wsc ON wsc.id = wr.workspace_scm_connection_id
-		WHERE isc.id = ?
-	`, configID).Scan(
-		&config.ID, &config.WorkspaceRepositoryID,
-		&config.StatusMapping, &config.ReverseStatusMapping,
-		&config.LabelSyncMode, &config.LabelMappings, &config.FilterLabels,
-		&config.AssigneeMappings, &config.MilestoneMappings,
-		&defaultItemType, &defaultPriority, &config.SyncComments,
-		&lastSync,
-		&repoName, &connectionID, &config.WorkspaceID,
-	)
+	jobs, err := s.loadSyncJobs(ctx, "isc.id = ?", configID)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	if lastSync.Valid {
-		config.LastFullSyncAt = &lastSync.Time
+	if len(jobs) == 0 {
+		return fmt.Errorf("load config: %w", sql.ErrNoRows)
 	}
-	if defaultItemType.Valid {
-		v := int(defaultItemType.Int64)
-		config.DefaultItemTypeID = &v
-	}
-	if defaultPriority.Valid {
-		v := int(defaultPriority.Int64)
-		config.DefaultPriorityID = &v
-	}
-
-	credResolver := &CredentialResolver{db: s.db, encryption: s.encryption}
-	provider, err := credResolver.GetProviderForConnection(ctx, connectionID)
-	if err != nil {
-		return fmt.Errorf("resolve provider: %w", err)
-	}
-
-	issueProvider, ok := provider.(IssueProvider)
-	if !ok {
-		return fmt.Errorf("provider does not support issue sync")
-	}
-
-	if err := s.syncConfig(ctx, issueProvider, &config, repoName); err != nil {
-		s.recordSyncError(config.ID, err.Error())
-		return err
-	}
-
-	now := time.Now()
-	_, _ = s.db.ExecWriteContext(ctx,
-		"UPDATE issue_sync_configs SET last_full_sync_at = ?, last_sync_error = NULL, updated_at = ? WHERE id = ?",
-		now, now, config.ID)
-	return nil
+	return s.runSyncJob(ctx, &jobs[0])
 }
 
 // Helper methods
 
-func (s *IssueSyncService) resolveStatusID(config *models.IssueSyncConfig, ghState string) *int {
+func (s *IssueSyncService) resolveStatusID(config *models.IssueSyncConfig, issueState string) *int {
 	var mapping map[string]int
 	if err := json.Unmarshal([]byte(config.StatusMapping), &mapping); err != nil {
 		return nil
 	}
-	if id, ok := mapping[ghState]; ok {
+	if id, ok := mapping[issueState]; ok {
 		return &id
 	}
 	return nil
@@ -1057,7 +1077,7 @@ func (s *IssueSyncService) syncLabels(ctx context.Context, tx database.Tx, confi
 			return fmt.Errorf("parse label mappings: %w", err)
 		}
 
-		// Build lookup: github label name → windshift label ID
+		// Build lookup: issue label name → windshift label ID
 		ghToWS := make(map[string]int)
 		for _, m := range mappings {
 			ghToWS[m.GitHubLabel] = m.WindshiftLabelID
@@ -1101,10 +1121,10 @@ func (s *IssueSyncService) recordSyncError(configID int, errMsg string) {
 		errMsg, time.Now(), configID)
 }
 
-// GetGitHubLabels fetches labels from a GitHub repository for mapping UI.
+// GetRepoLabels fetches the labels of a linked repository for the mapping UI.
 // workspaceID gates the lookup: the repo must belong to that workspace, otherwise
 // ErrRepositoryNotInWorkspace is returned (handlers map this to 404).
-func (s *IssueSyncService) GetGitHubLabels(ctx context.Context, workspaceID, workspaceRepoID int) ([]IssueLabel, error) {
+func (s *IssueSyncService) GetRepoLabels(ctx context.Context, workspaceID, workspaceRepoID int) ([]IssueLabel, error) {
 	belongs, err := s.VerifyRepositoryInWorkspace(ctx, workspaceRepoID, workspaceID)
 	if err != nil {
 		return nil, err
@@ -1131,9 +1151,9 @@ func (s *IssueSyncService) GetGitHubLabels(ctx context.Context, workspaceID, wor
 	return issueProvider.ListRepoLabels(ctx, parts[0], parts[1])
 }
 
-// GetGitHubMilestones fetches milestones from a GitHub repository for mapping UI.
-// See GetGitHubLabels for the workspaceID gating contract.
-func (s *IssueSyncService) GetGitHubMilestones(ctx context.Context, workspaceID, workspaceRepoID int) ([]IssueMilestone, error) {
+// GetRepoMilestones fetches the milestones of a linked repository for the
+// mapping UI. See GetRepoLabels for the workspaceID gating contract.
+func (s *IssueSyncService) GetRepoMilestones(ctx context.Context, workspaceID, workspaceRepoID int) ([]IssueMilestone, error) {
 	belongs, err := s.VerifyRepositoryInWorkspace(ctx, workspaceRepoID, workspaceID)
 	if err != nil {
 		return nil, err
@@ -1173,8 +1193,7 @@ func (s *IssueSyncService) resolveProviderForRepo(ctx context.Context, workspace
 		return nil, "", fmt.Errorf("lookup repo: %w", err)
 	}
 
-	credResolver := &CredentialResolver{db: s.db, encryption: s.encryption}
-	provider, err := credResolver.GetProviderForConnection(ctx, connectionID)
+	provider, err := s.providerForConnection(ctx, connectionID)
 	if err != nil {
 		return nil, "", err
 	}

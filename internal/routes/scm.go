@@ -93,8 +93,8 @@ func RegisterSCMRoutes(deps *Deps) {
 		api.HandleH("POST /workspaces/{id}/issue-sync/trigger", auth(wsAdmin(http.HandlerFunc(deps.SCM.IssueSync.TriggerSync))))
 		api.HandleH("GET /workspaces/{id}/issue-sync/status", auth(wsView(http.HandlerFunc(deps.SCM.IssueSync.GetSyncStatus))))
 		api.HandleH("GET /workspaces/{id}/issue-sync/items", auth(wsView(http.HandlerFunc(deps.SCM.IssueSync.GetSyncedItems))))
-		api.HandleH("GET /workspaces/{id}/issue-sync/github-labels", auth(wsView(http.HandlerFunc(deps.SCM.IssueSync.GetGitHubLabels))))
-		api.HandleH("GET /workspaces/{id}/issue-sync/github-milestones", auth(wsView(http.HandlerFunc(deps.SCM.IssueSync.GetGitHubMilestones))))
+		api.HandleH("GET /workspaces/{id}/issue-sync/labels", auth(wsView(http.HandlerFunc(deps.SCM.IssueSync.GetRepoLabels))))
+		api.HandleH("GET /workspaces/{id}/issue-sync/milestones", auth(wsView(http.HandlerFunc(deps.SCM.IssueSync.GetRepoMilestones))))
 	}
 
 	// User SCM connections (personal OAuth tokens)

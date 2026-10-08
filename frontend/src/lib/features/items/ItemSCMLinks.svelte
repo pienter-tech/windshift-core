@@ -4,12 +4,13 @@
   import { setOAuthReturnURL } from '../../utils/oauthReturn.js';
   import { useEventListener } from 'runed';
   import { api } from '../../api.js';
-  import { GitMerge, GitBranch, GitCommit, ExternalLink, Plus, RefreshCw, Trash2, ChevronDown, ChevronRight, GitBranchPlus, Link2 } from '@lucide/svelte';
+  import { GitMerge, GitBranch, GitCommit, ExternalLink, Plus, RefreshCw, Trash2, ChevronDown, ChevronRight, GitBranchPlus, Link2, CircleCheck, CircleX, CircleDashed } from '@lucide/svelte';
   import Button from '../../components/Button.svelte';
   import Text from '../../components/Text.svelte';
   import { t } from '../../stores/i18n.svelte.js';
   import { confirm } from '../../composables/useConfirm.js';
   import { safeHref } from '../../utils/sanitize';
+  import { ciStatusDisplay } from './scmCIStatus.js';
 
   let { itemId, onaddlink, oncreatebranch, oncreatepr } = $props();
 
@@ -190,6 +191,8 @@
       default: return { bg: 'var(--ds-background-neutral)', text: 'var(--ds-text-subtle)' };
     }
   }
+
+  const ciStatusIcons = { pending: CircleDashed, success: CircleCheck, failure: CircleX };
 
   function getDisplayText(link) {
     if (link.link_type === 'pull_request') {
@@ -389,6 +392,9 @@
             {link.state}
           </span>
         {/if}
+
+        <!-- Combined CI status (Gitea/Forgejo pull requests only) -->
+        {@render ciStatus(link)}
       </div>
 
       <!-- Title (if different from external_id) -->
@@ -451,4 +457,34 @@
       {/if}
     </div>
   </div>
+{/snippet}
+
+{#snippet ciStatus(link)}
+  {@const ci = ciStatusDisplay(link)}
+  {#if ci}
+    {@const CIIcon = ciStatusIcons[ci.state]}
+    {#if link.ci_url && safeHref(link.ci_url) !== '#'}
+      <a
+        href={safeHref(link.ci_url)}
+        target="_blank"
+        rel="noopener noreferrer"
+        class="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded hover:underline"
+        style="background-color: {ci.bg}; color: {ci.text};"
+        title={t('scm.openCIRun')}
+        data-testid="scm-ci-status"
+      >
+        <CIIcon class="w-3 h-3" />
+        {t(ci.labelKey)}
+      </a>
+    {:else}
+      <span
+        class="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded"
+        style="background-color: {ci.bg}; color: {ci.text};"
+        data-testid="scm-ci-status"
+      >
+        <CIIcon class="w-3 h-3" />
+        {t(ci.labelKey)}
+      </span>
+    {/if}
+  {/if}
 {/snippet}

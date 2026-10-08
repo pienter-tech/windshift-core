@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -183,7 +184,7 @@ func TestGiteaWebhookSettingsShowCallbackURLAndRotateSecret(t *testing.T) {
 	if !config.Configured || config.CallbackURL != wantURL || config.Secret != "" {
 		t.Fatalf("unexpected config: %#v", config)
 	}
-	if len(config.Events) != 1 || config.Events[0] != "pull_request" {
+	if strings.Join(config.Events, ",") != "pull_request,status,action_run_success,action_run_failure,issues,issue_assign,issue_label,issue_milestone,issue_comment" {
 		t.Fatalf("unexpected events: %#v", config.Events)
 	}
 
@@ -216,6 +217,72 @@ func TestGiteaWebhookPullRequestSchedulesRepositorySync(t *testing.T) {
 			eventType, status, errorMessage := f.waitForDelivery(t, "delivery-1")
 			if eventType != "pull_request" || status != "failed" || !strings.Contains(errorMessage, "failed to create provider") {
 				t.Fatalf("sync was not scheduled for the repository: event=%q status=%q error=%q", eventType, status, errorMessage)
+			}
+		})
+	}
+}
+
+// giteaCIBodies are the CI deliveries the receiver acts on: a Gitea commit
+// status, which names its repository at the top level, and a Forgejo Actions
+// run, which names it inside the run.
+func giteaCIBodies(repositoryID int64) map[string][]byte {
+	status, _ := json.Marshal(map[string]any{
+		"sha": "abc123", "state": "success", "context": "ci / test",
+		"target_url": "https://git.example/pienter/app/actions/runs/3",
+		"repository": map[string]any{"id": repositoryID, "full_name": "pienter/app"},
+	})
+	actionRun, _ := json.Marshal(map[string]any{
+		"action":       "failure",
+		"prior_status": "running",
+		"run": map[string]any{
+			"commit_sha": "abc123", "status": "failure",
+			"html_url":   "https://git.example/pienter/app/actions/runs/3",
+			"repository": map[string]any{"id": repositoryID, "full_name": "pienter/app"},
+		},
+	})
+	return map[string][]byte{"status": status, "action_run_failure": actionRun}
+}
+
+func TestGiteaWebhookCIDeliverySchedulesCIRefresh(t *testing.T) {
+	for event, body := range giteaCIBodies(42) {
+		t.Run(event, func(t *testing.T) {
+			f := newGiteaWebhookFixture(t)
+			recorder := f.deliver(body, map[string]string{
+				"X-Forgejo-Event":     event,
+				"X-Forgejo-Signature": giteaSignature(f.secret, body),
+				"X-Forgejo-Delivery":  "ci-1",
+			})
+			if recorder.Code != http.StatusAccepted || !strings.Contains(recorder.Body.String(), `"accepted":true`) {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			// The fixture's connection has no credentials, so the scheduled
+			// CI refresh loads this repository and then fails to build its
+			// provider.
+			eventType, status, errorMessage := f.waitForDelivery(t, "ci-1")
+			if eventType != event || status != "failed" || !strings.Contains(errorMessage, "failed to create provider") {
+				t.Fatalf("CI refresh was not scheduled: event=%q status=%q error=%q", eventType, status, errorMessage)
+			}
+			var summary string
+			if err := f.db.QueryRow(`SELECT payload_summary FROM scm_webhook_deliveries WHERE delivery_id = 'ci-1'`).Scan(&summary); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(summary, `"sha":"abc123"`) {
+				t.Fatalf("summary does not name the commit: %s", summary)
+			}
+		})
+	}
+}
+
+func TestGiteaWebhookCIDeliveryForOtherRepositoryIsRejected(t *testing.T) {
+	for event, body := range giteaCIBodies(43) {
+		t.Run(event, func(t *testing.T) {
+			f := newGiteaWebhookFixture(t)
+			recorder := f.deliver(body, map[string]string{"X-Forgejo-Event": event, "X-Forgejo-Signature": giteaSignature(f.secret, body)})
+			if recorder.Code != http.StatusForbidden {
+				t.Fatalf("status=%d want 403 body=%s", recorder.Code, recorder.Body.String())
+			}
+			if count := f.deliveryCount(t); count != 0 {
+				t.Fatalf("recorded %d deliveries, want none", count)
 			}
 		})
 	}
@@ -260,6 +327,113 @@ func TestGiteaWebhookRejectsOrIgnoresWithoutScheduling(t *testing.T) {
 			}
 			if count := f.deliveryCount(t); count != 0 {
 				t.Fatalf("recorded %d deliveries, want none", count)
+			}
+		})
+	}
+}
+
+// recordedIssueSync records the repositories whose issue sync a delivery ran.
+type recordedIssueSync struct {
+	mu    sync.Mutex
+	repos []int
+}
+
+func (r *recordedIssueSync) SyncRepository(_ context.Context, workspaceRepositoryID int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.repos = append(r.repos, workspaceRepositoryID)
+	return nil
+}
+
+func (r *recordedIssueSync) synced() []int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]int(nil), r.repos...)
+}
+
+// giteaIssueBody is an issues or issue_comment delivery for issue #3, or for
+// pull request #3 when isPull is set.
+func giteaIssueBody(event string, isPull bool) []byte {
+	issue := map[string]any{"number": 3, "title": "Crash on save", "state": "open"}
+	if isPull {
+		issue["pull_request"] = map[string]any{"merged": false}
+	}
+	payload := map[string]any{
+		"action":     "edited",
+		"issue":      issue,
+		"repository": map[string]any{"id": 42, "full_name": "pienter/app"},
+	}
+	if event == "issues" {
+		payload["number"] = 3
+		payload["action"] = "label_updated"
+	} else {
+		payload["comment"] = map[string]any{"id": 77, "body": "Same here"}
+		payload["is_pull"] = isPull
+	}
+	body, _ := json.Marshal(payload)
+	return body
+}
+
+func TestGiteaWebhookIssueDeliverySchedulesIssueSync(t *testing.T) {
+	for _, event := range []string{"issues", "issue_comment"} {
+		t.Run(event, func(t *testing.T) {
+			f := newGiteaWebhookFixture(t)
+			issueSync := &recordedIssueSync{}
+			f.handler.SetIssueSync(issueSync)
+			body := giteaIssueBody(event, false)
+			recorder := f.deliver(body, map[string]string{
+				"X-Forgejo-Event":     event,
+				"X-Forgejo-Signature": giteaSignature(f.secret, body),
+				"X-Forgejo-Delivery":  "issue-1",
+			})
+			if recorder.Code != http.StatusAccepted || !strings.Contains(recorder.Body.String(), `"accepted":true`) {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			eventType, status, errorMessage := f.waitForDelivery(t, "issue-1")
+			if eventType != event || status != "processed" || errorMessage != "" {
+				t.Fatalf("event=%q status=%q error=%q", eventType, status, errorMessage)
+			}
+			if got := issueSync.synced(); len(got) != 1 || got[0] != f.repoID {
+				t.Fatalf("issue sync ran for %v, want repository %d", got, f.repoID)
+			}
+			var summary string
+			if err := f.db.QueryRow(`SELECT payload_summary FROM scm_webhook_deliveries WHERE delivery_id = 'issue-1'`).Scan(&summary); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(summary, `"number":3`) {
+				t.Fatalf("summary does not name the issue: %s", summary)
+			}
+		})
+	}
+}
+
+func TestGiteaWebhookIgnoresPullRequestCommentsAndUnwiredIssueSync(t *testing.T) {
+	cases := []struct {
+		name   string
+		event  string
+		isPull bool
+		wired  bool
+	}{
+		{"pull request comment", "issue_comment", true, true},
+		{"issue sync not wired", "issues", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newGiteaWebhookFixture(t)
+			issueSync := &recordedIssueSync{}
+			if tc.wired {
+				f.handler.SetIssueSync(issueSync)
+			}
+			body := giteaIssueBody(tc.event, tc.isPull)
+			recorder := f.deliver(body, map[string]string{"X-Forgejo-Event": tc.event, "X-Forgejo-Signature": giteaSignature(f.secret, body)})
+			if recorder.Code != http.StatusAccepted || !strings.Contains(recorder.Body.String(), `"ignored":true`) {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			if count := f.deliveryCount(t); count != 0 {
+				t.Fatalf("recorded %d deliveries, want none", count)
+			}
+			if got := issueSync.synced(); len(got) != 0 {
+				t.Fatalf("issue sync ran for %v", got)
 			}
 		})
 	}
