@@ -1244,6 +1244,7 @@ func (s *Server) initialize() error {
 	//     attachment via the scm.MilestoneAttacher adapter).
 	scmSyncService.SetActionEvents(s.actionService)
 	scmSyncService.SetDurableActionEvents(s.actionService)
+	scmItemLinksHandler.SetActionEvents(s.actionService, s.actionService)
 	milestoneItemUpdater := services.NewItemUpdateApplicationService(s.db, permService)
 	milestoneItemUpdater.SetEmitter(eventCoordinator)
 	milestoneAttacher := scm.NewMilestoneAttacher(

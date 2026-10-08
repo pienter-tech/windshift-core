@@ -112,6 +112,14 @@ func NewSCMItemLinksHandler(db database.Database, encryption *sso.SecretEncrypti
 	}
 }
 
+// SetActionEvents wires the action engine into the handler's sync service, so
+// manual link refreshes and repository syncs emit the same SCM events
+// (scm_pr_merged and the others) as the scheduled sync and refresh.
+func (h *SCMItemLinksHandler) SetActionEvents(emitter scm.ActionEventEmitter, recorder scm.DurableActionEventRecorder) {
+	h.syncService.SetActionEvents(emitter)
+	h.syncService.SetDurableActionEvents(recorder)
+}
+
 // GetItemSCMLinks returns all SCM links for an item
 func (h *SCMItemLinksHandler) GetItemSCMLinks(w http.ResponseWriter, r *http.Request) {
 	itemID, ok := requireIDParam(w, r, "id")
