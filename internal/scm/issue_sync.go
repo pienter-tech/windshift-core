@@ -1152,20 +1152,47 @@ func (s *IssueSyncService) syncLabels(ctx context.Context, tx database.Tx, confi
 			return nil
 		}
 
-		// Build lookup: issue label name → windshift label ID
+		// Mapped mode only owns the Windshift labels that are a mapping
+		// target. Labels added in Windshift, or not mapped from any issue
+		// label, stay on the item.
 		ghToWS := make(map[string]int)
+		managed := make(map[int]bool, len(mappings))
 		for _, m := range mappings {
 			ghToWS[m.GitHubLabel] = m.WindshiftLabelID
+			managed[m.WindshiftLabelID] = true
 		}
 
-		labelIDs := make([]int, 0, len(issue.Labels))
+		// Several issue labels may map to the same Windshift label.
+		desired := make(map[int]bool, len(issue.Labels))
+		desiredOrder := make([]int, 0, len(issue.Labels))
 		for _, l := range issue.Labels {
-			if wsLabelID, ok := ghToWS[l.Name]; ok {
-				labelIDs = append(labelIDs, wsLabelID)
+			if wsLabelID, ok := ghToWS[l.Name]; ok && !desired[wsLabelID] {
+				desired[wsLabelID] = true
+				desiredOrder = append(desiredOrder, wsLabelID)
 			}
 		}
-		if err := repository.NewLabelRepository(s.db).ReplaceItemLabelsTx(ctx, tx, itemID, labelIDs); err != nil {
-			return fmt.Errorf("replace mapped labels: %w", err)
+
+		labelRepo := repository.NewLabelRepository(s.db)
+		current, err := labelRepo.ListForItemTx(tx, itemID)
+		if err != nil {
+			return fmt.Errorf("list item labels: %w", err)
+		}
+		attached := make(map[int]bool, len(current))
+		for _, l := range current {
+			attached[l.ID] = true
+			if managed[l.ID] && !desired[l.ID] {
+				if _, err := labelRepo.RemoveItemLabelTx(tx, itemID, l.ID); err != nil {
+					return fmt.Errorf("remove mapped label: %w", err)
+				}
+			}
+		}
+		for _, wsLabelID := range desiredOrder {
+			if attached[wsLabelID] {
+				continue
+			}
+			if _, err := labelRepo.AddItemLabelTx(tx, itemID, wsLabelID); err != nil {
+				return fmt.Errorf("add mapped label: %w", err)
+			}
 		}
 	case models.IssueSyncLabelMirror:
 		labelRepo := repository.NewLabelRepository(s.db)

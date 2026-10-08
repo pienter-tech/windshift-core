@@ -383,65 +383,122 @@ func TestIssueSyncMappedLabelsWithoutMappingsKeepItemLabels(t *testing.T) {
 	if err := f.sync.SyncRepository(ctx, f.repoID); err != nil {
 		t.Fatal(err)
 	}
-	var itemID int
-	if err := f.db.QueryRow(`SELECT item_id FROM issue_sync_items WHERE github_issue_number = 3`).Scan(&itemID); err != nil {
-		t.Fatal(err)
-	}
-	result, err := f.db.Exec(`INSERT INTO labels (name, color) VALUES ('triage', '#00aa00')`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	triageID, err := result.LastInsertId()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.db.Exec(`INSERT INTO item_labels (item_id, label_id) VALUES (?, ?)`, itemID, triageID); err != nil {
-		t.Fatal(err)
-	}
-	itemLabels := func() string {
-		t.Helper()
-		rows, err := f.db.Query(`SELECT l.name FROM item_labels il JOIN labels l ON l.id = il.label_id WHERE il.item_id = ? ORDER BY l.name`, itemID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer rows.Close()
-		var names []string
-		for rows.Next() {
-			var name string
-			if err := rows.Scan(&name); err != nil {
-				t.Fatal(err)
-			}
-			names = append(names, name)
-		}
-		if err := rows.Err(); err != nil {
-			t.Fatal(err)
-		}
-		return strings.Join(names, ",")
-	}
-	// resyncWith switches to mapped mode with the given mappings and syncs a
-	// newer version of the issue, so the item is updated from it.
-	resyncWith := func(labelMappings string, updatedAt time.Time) {
-		t.Helper()
-		if _, err := f.db.Exec(`UPDATE issue_sync_configs SET label_sync_mode = ?, label_mappings = ?`, models.IssueSyncLabelMapped, labelMappings); err != nil {
-			t.Fatal(err)
-		}
-		f.forge.mu.Lock()
-		f.forge.issue["updated_at"] = updatedAt.UTC().Format(time.RFC3339)
-		f.forge.mu.Unlock()
-		if err := f.sync.SyncRepository(ctx, f.repoID); err != nil {
-			t.Fatal(err)
-		}
-	}
+	itemID := f.issueItemID(t)
+	triageID := f.attachNewLabel(t, itemID, "triage")
 
 	for i, empty := range []string{`[]`, ``} {
-		resyncWith(empty, time.Now().Add(time.Duration(i+1)*time.Minute))
-		if got := itemLabels(); got != "bug,triage" {
+		f.resyncMapped(t, empty, nil, time.Now().Add(time.Duration(i+1)*time.Minute))
+		if got := f.itemLabels(t, itemID); got != "bug,triage" {
 			t.Fatalf("mapped mode with mappings %q left labels %q; want bug,triage untouched", empty, got)
 		}
 	}
 
-	resyncWith(fmt.Sprintf(`[{"github_label": "bug", "windshift_label_id": %d}]`, triageID), time.Now().Add(3*time.Minute))
-	if got := itemLabels(); got != "triage" {
-		t.Fatalf("mapped mode with a bug mapping left labels %q; want the mapped triage label only", got)
+	// bug is not a mapping target, so mapped mode leaves it alone.
+	f.resyncMapped(t, fmt.Sprintf(`[{"github_label": "bug", "windshift_label_id": %d}]`, triageID), nil, time.Now().Add(3*time.Minute))
+	if got := f.itemLabels(t, itemID); got != "bug,triage" {
+		t.Fatalf("mapped mode with a bug mapping left labels %q; want bug,triage", got)
+	}
+}
+
+func TestIssueSyncMappedLabelsTouchOnlyMappedLabels(t *testing.T) {
+	f := newGiteaIssueSyncFixture(t)
+	ctx := context.Background()
+	if err := f.sync.SyncRepository(ctx, f.repoID); err != nil {
+		t.Fatal(err)
+	}
+	itemID := f.issueItemID(t)
+	f.attachNewLabel(t, itemID, "triage") // Windshift-only label
+	defectID := f.createLabel(t, "defect")
+	mappings := fmt.Sprintf(`[{"github_label": "bug", "windshift_label_id": %d}, {"github_label": "crash", "windshift_label_id": %d}]`, defectID, defectID)
+
+	f.resyncMapped(t, mappings, []string{"bug", "crash", "question"}, time.Now().Add(time.Minute))
+	if got := f.itemLabels(t, itemID); got != "bug,defect,triage" {
+		t.Fatalf("labels after mapping bug and crash to defect = %q; want defect added and bug,triage kept", got)
+	}
+
+	// Another issue label still maps to defect, so it stays.
+	f.resyncMapped(t, mappings, []string{"crash", "question"}, time.Now().Add(2*time.Minute))
+	if got := f.itemLabels(t, itemID); got != "bug,defect,triage" {
+		t.Fatalf("labels after the issue dropped bug = %q; want defect kept through crash", got)
+	}
+
+	f.resyncMapped(t, mappings, []string{"question"}, time.Now().Add(3*time.Minute))
+	if got := f.itemLabels(t, itemID); got != "bug,triage" {
+		t.Fatalf("labels after the issue dropped every mapped label = %q; want defect removed and bug,triage kept", got)
+	}
+}
+
+func (f *giteaIssueSyncFixture) issueItemID(t *testing.T) int {
+	t.Helper()
+	var itemID int
+	if err := f.db.QueryRow(`SELECT item_id FROM issue_sync_items WHERE github_issue_number = 3`).Scan(&itemID); err != nil {
+		t.Fatal(err)
+	}
+	return itemID
+}
+
+func (f *giteaIssueSyncFixture) createLabel(t *testing.T, name string) int {
+	t.Helper()
+	result, err := f.db.Exec(`INSERT INTO labels (name, color) VALUES (?, '#00aa00')`, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return int(id)
+}
+
+func (f *giteaIssueSyncFixture) attachNewLabel(t *testing.T, itemID int, name string) int {
+	t.Helper()
+	labelID := f.createLabel(t, name)
+	if _, err := f.db.Exec(`INSERT INTO item_labels (item_id, label_id) VALUES (?, ?)`, itemID, labelID); err != nil {
+		t.Fatal(err)
+	}
+	return labelID
+}
+
+func (f *giteaIssueSyncFixture) itemLabels(t *testing.T, itemID int) string {
+	t.Helper()
+	rows, err := f.db.Query(`SELECT l.name FROM item_labels il JOIN labels l ON l.id = il.label_id WHERE il.item_id = ? ORDER BY l.name`, itemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return strings.Join(names, ",")
+}
+
+// resyncMapped switches to mapped mode with the given mappings and syncs a
+// newer version of the issue, so the item is updated from it. A non-nil
+// issueLabels replaces the issue's labels first.
+func (f *giteaIssueSyncFixture) resyncMapped(t *testing.T, labelMappings string, issueLabels []string, updatedAt time.Time) {
+	t.Helper()
+	if _, err := f.db.Exec(`UPDATE issue_sync_configs SET label_sync_mode = ?, label_mappings = ?`, models.IssueSyncLabelMapped, labelMappings); err != nil {
+		t.Fatal(err)
+	}
+	f.forge.mu.Lock()
+	if issueLabels != nil {
+		labels := make([]any, 0, len(issueLabels))
+		for i, name := range issueLabels {
+			labels = append(labels, map[string]any{"id": i + 1, "name": name, "color": "ee0701"})
+		}
+		f.forge.issue["labels"] = labels
+	}
+	f.forge.issue["updated_at"] = updatedAt.UTC().Format(time.RFC3339)
+	f.forge.mu.Unlock()
+	if err := f.sync.SyncRepository(context.Background(), f.repoID); err != nil {
+		t.Fatal(err)
 	}
 }
