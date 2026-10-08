@@ -18,9 +18,12 @@ import (
 // webhook; giteaWebhookAction must handle each of them. Forgejo has no commit
 // status event and reports Forgejo Actions results as action_run_* events;
 // Gitea sends commit statuses as the status event. The issue_assign,
-// issue_label, and issue_milestone events are delivered as issues.
+// issue_label, and issue_milestone events are delivered as issues, and
+// pull_request_comment as issue_comment with the issue marked as a pull
+// request.
 var giteaWebhookEvents = []string{
-	"pull_request", "status", "action_run_success", "action_run_failure",
+	"push", "create", "release", "pull_request", "pull_request_comment",
+	"status", "action_run_success", "action_run_failure",
 	"issues", "issue_assign", "issue_label", "issue_milestone", "issue_comment",
 }
 
@@ -30,8 +33,17 @@ type giteaWebhookRepository struct {
 }
 
 type giteaWebhookPayload struct {
-	Action      string `json:"action"`
-	Number      int    `json:"number"`
+	Action string `json:"action"`
+	Number int    `json:"number"`
+	// Ref is set on push and create deliveries; Before and After on push,
+	// RefType ("branch" or "tag") on create.
+	Ref     string `json:"ref"`
+	Before  string `json:"before"`
+	After   string `json:"after"`
+	RefType string `json:"ref_type"`
+	Release struct {
+		TagName string `json:"tag_name"`
+	} `json:"release"`
 	PullRequest struct {
 		Merged bool `json:"merged"`
 	} `json:"pull_request"`
@@ -43,7 +55,8 @@ type giteaWebhookPayload struct {
 	} `json:"issue"`
 	IsPull     bool                   `json:"is_pull"`
 	Repository giteaWebhookRepository `json:"repository"`
-	// SHA and State are set on a Gitea commit status delivery.
+	// SHA and State are set on a Gitea commit status delivery; SHA also on
+	// a create delivery, as the commit the new ref points at.
 	SHA   string `json:"sha"`
 	State string `json:"state"`
 	// Run is set on Forgejo action_run_* and workflow_run_*/workflow_job_*
@@ -132,21 +145,35 @@ func (p giteaWebhookPayload) issueNumber() int {
 	return p.Number
 }
 
+// isGiteaRepositorySyncEvent reports whether eventType changes what the
+// repository sync reads: pushed commits, created branches and tags,
+// releases, and pull requests.
+func isGiteaRepositorySyncEvent(eventType string) bool {
+	switch eventType {
+	case "push", "create", "release", "pull_request":
+		return true
+	default:
+		return false
+	}
+}
+
 // giteaWebhookHandled reports whether Windshift acts on eventType.
 func giteaWebhookHandled(eventType string) bool {
-	return eventType == "pull_request" || isGiteaCIEvent(eventType) || isGiteaIssueEvent(eventType)
+	return isGiteaRepositorySyncEvent(eventType) || isGiteaCIEvent(eventType) || isGiteaIssueEvent(eventType)
 }
 
 // giteaWebhookAction returns the work a delivery of eventType schedules for
 // the repository, or nil when Windshift ignores the event.
 func (h *SCMItemLinksHandler) giteaWebhookAction(eventType string, repoID int, payload giteaWebhookPayload) func(context.Context) error {
+	syncRepository := func(ctx context.Context) error {
+		return h.syncService.SyncRepository(ctx, repoID)
+	}
 	switch {
-	case eventType == "pull_request":
-		// The sync emits scm_pr_linked and scm_pr_merged, so the delivery
+	case isGiteaRepositorySyncEvent(eventType):
+		// The sync links branches, commits, and pull requests and emits
+		// their events, including the tag and release ones, so the delivery
 		// itself emits nothing and a missed delivery is caught by polling.
-		return func(ctx context.Context) error {
-			return h.syncService.SyncRepository(ctx, repoID)
-		}
+		return syncRepository
 	case isGiteaCIEvent(eventType):
 		// CI status is display-only: the refresh re-reads the combined
 		// status of the pull requests whose head is the reported commit and
@@ -156,9 +183,12 @@ func (h *SCMItemLinksHandler) giteaWebhookAction(eventType string, repoID int, p
 			return h.syncService.RefreshPullRequestCIForCommit(ctx, repoID, sha)
 		}
 	case isGiteaIssueEvent(eventType):
-		// Pull request comments are not issue sync's; the pull request
-		// sync does not read comments either.
-		if payload.isPullRequest() || h.issueSync == nil {
+		// Pull request comments are not issue sync's: the repository sync
+		// reads the comments of open linked pull requests.
+		if payload.isPullRequest() {
+			return syncRepository
+		}
+		if h.issueSync == nil {
 			return nil
 		}
 		// The issue sync of the repository's config picks the change up
@@ -218,6 +248,16 @@ func (h *SCMItemLinksHandler) ReceiveGiteaWebhook(w http.ResponseWriter, r *http
 	}
 	summary := map[string]any{"event": eventType, "repository_id": repository.ID, "path": repository.FullName, "action": payload.Action}
 	switch {
+	case eventType == "push":
+		summary["ref"] = payload.Ref
+		summary["before"] = payload.Before
+		summary["after"] = payload.After
+	case eventType == "create":
+		summary["ref"] = payload.Ref
+		summary["ref_type"] = payload.RefType
+		summary["sha"] = payload.SHA
+	case eventType == "release":
+		summary["tag"] = payload.Release.TagName
 	case isGiteaCIEvent(eventType):
 		summary["sha"] = payload.commitSHA()
 		summary["state"] = payload.State
@@ -226,6 +266,7 @@ func (h *SCMItemLinksHandler) ReceiveGiteaWebhook(w http.ResponseWriter, r *http
 		}
 	case isGiteaIssueEvent(eventType):
 		summary["number"] = payload.issueNumber()
+		summary["pull_request"] = payload.isPullRequest()
 	default:
 		summary["number"] = payload.Number
 		summary["merged"] = payload.PullRequest.Merged
