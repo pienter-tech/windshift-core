@@ -1213,9 +1213,38 @@ func (s *SyncService) upsertPullRequestSCMLink(
 	return created, becameMerged, nil
 }
 
+// refreshedLinkFields are the provider-sourced columns the link refresh
+// rewrites and an item page shows. NULL reads as empty, as the page renders it.
+type refreshedLinkFields struct {
+	externalID, externalURL, title, state, authorExternalID, authorName string
+}
+
+// readRefreshedLinkFields reads the stored refreshedLinkFields of a link row,
+// so the refresh can tell whether its write changes anything visible.
+func readRefreshedLinkFields(ctx context.Context, q interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}, linkID int) (refreshedLinkFields, error) {
+	var externalURL, title, state, authorExternalID, authorName sql.NullString
+	var fields refreshedLinkFields
+	err := q.QueryRowContext(ctx, `
+		SELECT external_id, external_url, title, state, author_external_id, author_name
+		FROM item_scm_links WHERE id = ?
+	`, linkID).Scan(&fields.externalID, &externalURL, &title, &state, &authorExternalID, &authorName)
+	if err != nil {
+		return refreshedLinkFields{}, fmt.Errorf("read stored link %d: %w", linkID, err)
+	}
+	fields.externalURL = externalURL.String
+	fields.title = title.String
+	fields.state = state.String
+	fields.authorExternalID = authorExternalID.String
+	fields.authorName = authorName.String
+	return fields, nil
+}
+
 // refreshPullRequestSCMLink writes a refreshed PR observation onto an existing
 // link row. becameMerged reports whether this write moved the row to merged;
-// the durable scm_pr_merged event is admitted in the same transaction.
+// the durable scm_pr_merged event is admitted in the same transaction. changed
+// reports whether the write altered any field an item page shows.
 func (s *SyncService) refreshPullRequestSCMLink(
 	ctx context.Context,
 	linkID int,
@@ -1223,16 +1252,30 @@ func (s *SyncService) refreshPullRequestSCMLink(
 	pr *PullRequest,
 	state models.SCMLinkState,
 	mergedEvent *models.ActionEvent,
-) (becameMerged bool, err error) {
+) (becameMerged, changed bool, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return false, fmt.Errorf("begin PR link refresh: %w", err)
+		return false, false, fmt.Errorf("begin PR link refresh: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// Read before the merge claim, which rewrites state.
+	stored, err := readRefreshedLinkFields(ctx, tx, linkID)
+	if err != nil {
+		return false, false, err
+	}
+	changed = stored != refreshedLinkFields{
+		externalID:       externalID,
+		externalURL:      pr.URL,
+		title:            pr.Title,
+		state:            string(state),
+		authorExternalID: pr.Author.ID,
+		authorName:       pr.Author.Name,
+	}
+
 	if state == models.SCMLinkStateMerged {
 		if becameMerged, err = claimPullRequestMerge(ctx, tx, linkID); err != nil {
-			return false, err
+			return false, false, err
 		}
 	}
 	_, err = tx.ExecContext(ctx, `
@@ -1243,17 +1286,17 @@ func (s *SyncService) refreshPullRequestSCMLink(
 		WHERE id = ?
 	`, externalID, pr.URL, pr.Title, state, pr.Author.ID, pr.Author.Name, linkID)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	if becameMerged && s.durableActionEvents != nil {
 		if err := s.durableActionEvents.EmitActionEventInTx(ctx, tx, mergedEvent); err != nil {
-			return false, err
+			return false, false, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return false, fmt.Errorf("commit PR link refresh: %w", err)
+		return false, false, fmt.Errorf("commit PR link refresh: %w", err)
 	}
-	return becameMerged, nil
+	return becameMerged, changed || becameMerged, nil
 }
 
 // claimPullRequestMerge moves a PR link row to merged and reports whether this
@@ -1452,6 +1495,7 @@ func prNumberFromURL(rawURL string) int {
 // updateLinkFromProvider fetches updated metadata from the SCM provider and
 // updates the link row. A pull request link that this refresh moves to merged
 // emits scm_pr_merged, as the repository sync does when it sees the merge first.
+// A refresh that changes what the item page shows publishes a link change.
 func (s *SyncService) updateLinkFromProvider(ctx context.Context, provider Provider, owner, repo string, linkID, itemID, workspaceID, repoID int, linkType models.SCMLinkType, externalID, externalURL string) error {
 	switch linkType {
 	case models.SCMLinkTypePullRequest:
@@ -1478,10 +1522,13 @@ func (s *SyncService) updateLinkFromProvider(ctx context.Context, provider Provi
 			state = models.SCMLinkStateClosed
 		}
 
-		becameMerged, err := s.refreshPullRequestSCMLink(ctx, linkID, externalID, pr, state,
+		becameMerged, changed, err := s.refreshPullRequestSCMLink(ctx, linkID, externalID, pr, state,
 			s.prMergedEvent(workspaceID, itemID, repoID, owner, repo, *pr))
 		if err != nil {
 			return err
+		}
+		if changed {
+			services.PublishItemChange(itemID, services.ItemChangeLink)
 		}
 		if becameMerged && s.durableActionEvents == nil {
 			s.emitPRMergedEvent(workspaceID, itemID, repoID, owner, repo, *pr)
@@ -1497,6 +1544,16 @@ func (s *SyncService) updateLinkFromProvider(ctx context.Context, provider Provi
 
 		title := strings.SplitN(commit.Message, "\n", 2)[0]
 
+		stored, err := readRefreshedLinkFields(ctx, s.db, linkID)
+		if err != nil {
+			return err
+		}
+		refreshed := stored
+		refreshed.externalURL = commit.URL
+		refreshed.title = title
+		refreshed.authorExternalID = commit.Author.ID
+		refreshed.authorName = commit.Author.Name
+
 		_, err = s.db.ExecWriteContext(ctx, `
 			UPDATE item_scm_links SET
 				external_url = ?, title = ?,
@@ -1504,9 +1561,16 @@ func (s *SyncService) updateLinkFromProvider(ctx context.Context, provider Provi
 				updated_at = CURRENT_TIMESTAMP
 			WHERE id = ?
 		`, commit.URL, title, commit.Author.ID, commit.Author.Name, linkID)
-		return err
+		if err != nil {
+			return err
+		}
+		if refreshed != stored {
+			services.PublishItemChange(itemID, services.ItemChangeLink)
+		}
+		return nil
 
 	case models.SCMLinkTypeBranch:
+		// The refresh rewrites no shown branch data, so it publishes nothing.
 		_, err := s.db.ExecWriteContext(ctx, `
 			UPDATE item_scm_links SET updated_at = CURRENT_TIMESTAMP WHERE id = ?
 		`, linkID)
