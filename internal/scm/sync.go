@@ -648,10 +648,10 @@ func (s *SyncService) syncPullRequests(ctx context.Context, provider Provider, o
 	})
 }
 
-// shouldRunSmartCommits decides whether a newly observed merged PR is
-// recent enough to fire smart-commit actions. The cap exists to prevent
-// the very first sync of a long-lived repo from replaying transitions
-// for hundreds of historical merges. On steady-state syncs (lastSyncedAt
+// shouldRunSmartCommits decides whether a merged PR is recent enough to
+// fire smart-commit actions. The cap exists to prevent the very first sync
+// of a long-lived repo from replaying transitions for hundreds of
+// historical merges. On steady-state syncs (lastSyncedAt
 // non-zero) any merge after lastSyncedAt qualifies; on first sync, only
 // merges within smartCommitFirstSyncWindow.
 func shouldRunSmartCommits(pr PullRequest, lastSyncedAt, now time.Time) bool {
@@ -742,14 +742,6 @@ func (s *SyncService) processPullRequest(ctx context.Context, provider Provider,
 		return nil
 	}
 
-	// Determine whether this PR is newly observed as merged (used to
-	// gate smart-commit processing for the PR body). Check BEFORE the
-	// upserts overwrite stored state.
-	newlyMerged := false
-	if pr.IsMerged {
-		newlyMerged = s.isPRNewlyMerged(ctx, repoID, pr.Number)
-	}
-
 	now := time.Now()
 	var itemIDs []int
 	linkedItems := make(map[int]bool) // item ids for which a *new* link was created
@@ -806,7 +798,12 @@ func (s *SyncService) processPullRequest(ctx context.Context, provider Provider,
 		s.pollPRCommentTriggers(ctx, provider, owner, repo, pr, repoID, workspaceID, itemIDs)
 	}
 
-	if newlyMerged && shouldRunSmartCommits(pr, lastSyncedAt, now) {
+	// Smart commits run for any recent merge whose actions have not been
+	// applied yet, not only when this sync is the first to record the merge:
+	// the link refresh, or a webhook or manual sync on another SyncService,
+	// may have recorded it first. processSmartCommitsForPR applies each PR
+	// body and commit at most once.
+	if pr.IsMerged && shouldRunSmartCommits(pr, lastSyncedAt, now) {
 		s.processSmartCommitsForPR(ctx, provider, owner, repo, pr, repoID, workspaceID, workspaceKey)
 	}
 	return nil
@@ -915,22 +912,6 @@ func (s *SyncService) setPRCommentCursor(ctx context.Context, repoID, prNumber i
 	`, repoID, prNumber, id); err != nil {
 		slog.Warn("PR comment poll: write cursor failed", slog.String("component", "scm"), slog.Int("pr", prNumber), slog.Any("error", err))
 	}
-}
-
-// isPRNewlyMerged returns true if the PR appears merged on the provider but
-// no stored link row for that PR is yet recorded as merged. Handles both
-// "first time seeing this PR" and "stored state was open/closed before".
-func (s *SyncService) isPRNewlyMerged(ctx context.Context, repoID, prNumber int) bool {
-	var mergedCount int
-	err := s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM item_scm_links
-		WHERE workspace_repository_id = ? AND link_type = 'pull_request'
-		  AND external_id = ? AND state = ?
-	`, repoID, strconv.Itoa(prNumber), models.SCMLinkStateMerged).Scan(&mergedCount)
-	if err != nil {
-		return false
-	}
-	return mergedCount == 0
 }
 
 // syncCommits syncs recent commits from the repository's default branch and
