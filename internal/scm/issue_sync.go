@@ -52,6 +52,10 @@ func lockIssueSyncConfig(ctx context.Context, configID int) (func(), error) {
 	}
 }
 
+// pushStatusLockWait bounds how long a status push waits for a running
+// inbound sync of its config when the caller's context has no deadline.
+const pushStatusLockWait = 30 * time.Second
+
 // issueSyncJob is one enabled config with the repository it syncs.
 type issueSyncJob struct {
 	config       models.IssueSyncConfig
@@ -246,17 +250,19 @@ func (s *IssueSyncService) syncConfig(ctx context.Context, provider IssueProvide
 	}
 	owner, repo := parts[0], parts[1]
 
-	var filterLabels []string
-	if config.FilterLabels != "" && config.FilterLabels != "[]" {
-		_ = json.Unmarshal([]byte(config.FilterLabels), &filterLabels)
-	}
+	filterLabels := parseFilterLabels(config.FilterLabels)
 
 	opts := ListIssueOptions{
 		State:   "all",
 		Since:   config.LastFullSyncAt,
 		PerPage: 100,
 	}
-	if len(filterLabels) > 0 {
+	// The filter keeps issues with any of its labels, and Windshift applies
+	// it below. The forges read a labels list differently (GitHub: all of
+	// them; Gitea/Forgejo: any of them, ignoring labels the repository lacks),
+	// so the list is only narrowed by the forge for a single label, where
+	// both readings agree.
+	if len(filterLabels) == 1 {
 		opts.Labels = filterLabels
 	}
 
@@ -291,6 +297,9 @@ func (s *IssueSyncService) syncConfig(ctx context.Context, provider IssueProvide
 			if err := ctx.Err(); err != nil {
 				return fmt.Errorf("sync interrupted: %w", err)
 			}
+			if len(filterLabels) > 0 && !issueHasAnyLabel(&issues[i], filterLabels) {
+				continue
+			}
 			if err := s.syncIssue(ctx, provider, config, owner, repo, &issues[i]); err != nil {
 				slog.Error("sync issue", "config_id", config.ID, "issue_number", issues[i].Number, "error", err)
 				issueErrs = append(issueErrs, fmt.Errorf("issue #%d: %w", issues[i].Number, err))
@@ -307,6 +316,38 @@ func (s *IssueSyncService) syncConfig(ctx context.Context, provider IssueProvide
 		return fmt.Errorf("sync config %d: %d issue(s) failed: %w", config.ID, len(issueErrs), errors.Join(issueErrs...))
 	}
 	return nil
+}
+
+// parseFilterLabels reads a config's filter_labels JSON array, dropping
+// blank entries. An empty or unreadable value means no filter.
+func parseFilterLabels(raw string) []string {
+	var labels []string
+	if raw == "" || raw == "[]" {
+		return nil
+	}
+	if err := json.Unmarshal([]byte(raw), &labels); err != nil {
+		return nil
+	}
+	kept := labels[:0]
+	for _, label := range labels {
+		if label = strings.TrimSpace(label); label != "" {
+			kept = append(kept, label)
+		}
+	}
+	return kept
+}
+
+// issueHasAnyLabel reports whether the issue has at least one of labels.
+// Names compare case-insensitively, as GitHub treats label names.
+func issueHasAnyLabel(issue *Issue, labels []string) bool {
+	for _, have := range issue.Labels {
+		for _, want := range labels {
+			if strings.EqualFold(have.Name, want) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // syncIssue syncs a single issue to a Windshift item.
@@ -540,6 +581,25 @@ func (s *IssueSyncService) PushStatusToIssue(ctx context.Context, itemID, newSta
 	if len(parts) != 2 {
 		return
 	}
+
+	// Hold the config's sync lock across claiming sync_lock and the remote
+	// write: an inbound sync running in between would consume sync_lock
+	// against the issue as it was before the write, and the sync after the
+	// write would then map the new issue state back over the item's status.
+	// The wait is bounded by ctx, or by pushStatusLockWait if ctx has no
+	// deadline.
+	lockCtx := ctx
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		lockCtx, cancel = context.WithTimeout(ctx, pushStatusLockWait)
+		defer cancel()
+	}
+	release, err := lockIssueSyncConfig(lockCtx, configID)
+	if err != nil {
+		slog.Error("push status to issue", "config_id", configID, "issue", issueNumber, "state", issueState, "error", err)
+		return
+	}
+	defer release()
 
 	// Preflight passed — claim the lock immediately before the remote write.
 	_, _ = s.db.ExecWriteContext(ctx,
