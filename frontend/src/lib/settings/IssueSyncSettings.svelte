@@ -11,17 +11,25 @@
   import Radio from '../components/Radio.svelte';
   import AlertBox from '../components/AlertBox.svelte';
   import Chip from '../components/Chip.svelte';
-  import { RefreshCw, Trash2, ExternalLink, Plus, X, Layers } from '@lucide/svelte';
+  import { RefreshCw, Trash2, ExternalLink, Plus, X, Layers, Tag } from '@lucide/svelte';
   import { successToast, errorToast } from '../stores/toasts.svelte.js';
   import { t } from '../stores/i18n.svelte.js';
   import { confirm } from '../composables/useConfirm.js';
   import ChipPicker from '../pickers/ChipPicker.svelte';
   import UserPicker from '../pickers/UserPicker.svelte';
+  import MilestoneCombobox from '../pickers/MilestoneCombobox.svelte';
+  import LabelItemRow from '../pickers/LabelItemRow.svelte';
   import ItemTypeIcon from '../components/ItemTypeIcon.svelte';
   import { safeHref } from '../utils/sanitize';
   import { workspaceDataStore } from '../stores/workspaceDataStore.svelte.js';
   import { loadIssueSyncPageData } from './issueSyncData.js';
   import { formatAuthenticatedDateTime } from '../utils/authenticatedDateFormatter.js';
+  import {
+    labelMappingRows,
+    milestoneMappingRows,
+    setLabelMapping,
+    setMilestoneMapping,
+  } from './issueSyncMappings.js';
 
   let { workspaceId } = $props();
 
@@ -271,6 +279,75 @@
     priorities.map(p => ({ value: String(p.id), label: p.name }))
   );
 
+  // Label and milestone mapping editors: one row per label or milestone of
+  // the linked repository, each mapped to a Windshift label or milestone.
+  let windshiftLabels = $state([]);
+  let repoLabels = $state([]);
+  let repoLabelsStatus = $state('idle'); // idle | loading | ready | error
+  let repoMilestones = $state([]);
+  let repoMilestonesStatus = $state('idle');
+
+  // Primitive deriveds so a form reload with the same repository does not refetch.
+  const labelMappingRepoId = $derived(
+    formData.label_sync_mode === 'mapped' ? formData.workspace_repository_id : 0
+  );
+  const milestoneMappingRepoId = $derived(formData.workspace_repository_id);
+
+  $effect(() => {
+    const repoId = labelMappingRepoId;
+    if (!repoId) return;
+    let cancelled = false;
+    repoLabelsStatus = 'loading';
+    Promise.all([
+      api.issueSync.getRepoLabels(workspaceId, repoId),
+      api.labels.getAll(workspaceId),
+    ]).then(([forgeLabels, labels]) => {
+      if (cancelled) return;
+      repoLabels = forgeLabels || [];
+      windshiftLabels = labels || [];
+      repoLabelsStatus = 'ready';
+    }).catch((error) => {
+      if (cancelled) return;
+      console.error('Failed to load repository labels:', error);
+      repoLabels = [];
+      repoLabelsStatus = 'error';
+    });
+    return () => { cancelled = true; };
+  });
+
+  $effect(() => {
+    const repoId = milestoneMappingRepoId;
+    if (!repoId) return;
+    let cancelled = false;
+    repoMilestonesStatus = 'loading';
+    api.issueSync.getRepoMilestones(workspaceId, repoId).then((forgeMilestones) => {
+      if (cancelled) return;
+      repoMilestones = forgeMilestones || [];
+      repoMilestonesStatus = 'ready';
+    }).catch((error) => {
+      if (cancelled) return;
+      console.error('Failed to load repository milestones:', error);
+      repoMilestones = [];
+      repoMilestonesStatus = 'error';
+    });
+    return () => { cancelled = true; };
+  });
+
+  const labelRows = $derived(labelMappingRows(repoLabels, formData.label_mappings));
+  const milestoneRows = $derived(milestoneMappingRows(repoMilestones, formData.milestone_mappings));
+
+  function mapLabel(forgeLabel, windshiftLabelId) {
+    formData.label_mappings = setLabelMapping(formData.label_mappings, forgeLabel, windshiftLabelId);
+  }
+
+  function mapMilestone(forgeMilestoneKey, windshiftMilestoneId) {
+    formData.milestone_mappings = setMilestoneMapping(
+      formData.milestone_mappings,
+      forgeMilestoneKey,
+      windshiftMilestoneId
+    );
+  }
+
 </script>
 
 {#if loading}
@@ -421,6 +498,67 @@
           </label>
         {/each}
       </div>
+
+      {#if formData.label_sync_mode === 'mapped'}
+        <div class="mt-4 border-t pt-4" style="border-color: var(--ds-border);" data-testid="issue-sync-label-mapping">
+          <Label>{t('issueSync.labelMapping')}</Label>
+          <p class="text-xs mb-3" style="color: var(--ds-text-subtle);">{t('issueSync.labelMappingDescription')}</p>
+          {#if !formData.workspace_repository_id}
+            <p class="text-sm py-2" style="color: var(--ds-text-subtle);">{t('issueSync.selectRepositoryForMapping')}</p>
+          {:else if repoLabelsStatus === 'loading'}
+            <StateDisplay type="loading" inline message={t('issueSync.loadingRepositoryLabels')} class="py-2" />
+          {:else if repoLabelsStatus === 'error'}
+            <p class="text-sm py-2" style="color: var(--ds-text-danger);">{t('issueSync.repositoryLabelsFailed')}</p>
+          {:else if labelRows.length === 0}
+            <p class="text-sm py-2" style="color: var(--ds-text-subtle);">{t('issueSync.noRepositoryLabels')}</p>
+          {:else}
+            <div class="space-y-2">
+              {#each labelRows as row (row.name)}
+                {@const selectedLabel = windshiftLabels.find(l => l.id === row.windshiftLabelId)}
+                <div class="flex items-center gap-3" data-testid="issue-sync-label-mapping-row">
+                  <span class="flex items-center gap-2 w-40 min-w-0">
+                    {#if row.color}
+                      <span class="inline-block w-3 h-3 rounded-full flex-shrink-0" style="background-color: {row.color};" aria-hidden="true"></span>
+                    {/if}
+                    <span class="text-sm truncate" style="color: var(--ds-text);" title={row.name}>{row.name}</span>
+                  </span>
+                  <span class="text-xs" style="color: var(--ds-text-subtle);">{t('issueSync.mapsTo')}</span>
+                  <ChipPicker
+                    value={row.windshiftLabelId}
+                    items={windshiftLabels}
+                    getValue={(label) => label.id}
+                    getLabel={(label) => label.name}
+                    icon={selectedLabel ? null : Tag}
+                    colorDot={selectedLabel?.color || null}
+                    searchable
+                    placeholder={t('issueSync.windshiftLabel')}
+                    onSelect={(label) => mapLabel(row.name, label.id)}
+                  >
+                    {#snippet itemSnippet({ item })}
+                      <LabelItemRow label={item} />
+                    {/snippet}
+                  </ChipPicker>
+                  {#if row.missing}
+                    <span class="text-xs" style="color: var(--ds-text-subtle);">{t('issueSync.notInRepository')}</span>
+                  {/if}
+                  {#if row.windshiftLabelId}
+                    <button
+                      type="button"
+                      onclick={() => mapLabel(row.name, null)}
+                      class="ml-auto hover:opacity-70"
+                      style="color: var(--ds-text-subtle);"
+                      aria-label={t('issueSync.clearMapping')}
+                      title={t('issueSync.clearMapping')}
+                    >
+                      <X class="w-4 h-4" />
+                    </button>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
     </Card>
 
     <!-- Filter Labels -->
@@ -484,6 +622,46 @@
         </Button>
       </div>
     </Card>
+
+    <!-- Milestone Mapping -->
+    {#if formData.workspace_repository_id}
+      <Card rounded="lg" padding="spacious">
+        <div data-testid="issue-sync-milestone-mapping">
+          <Label>{t('issueSync.milestoneMapping')}</Label>
+          <p class="text-xs mb-3" style="color: var(--ds-text-subtle);">{t('issueSync.milestoneMappingDescription')}</p>
+          {#if repoMilestonesStatus === 'loading'}
+            <StateDisplay type="loading" inline message={t('issueSync.loadingRepositoryMilestones')} class="py-2" />
+          {:else if repoMilestonesStatus === 'error'}
+            <p class="text-sm py-2" style="color: var(--ds-text-danger);">{t('issueSync.repositoryMilestonesFailed')}</p>
+          {:else if milestoneRows.length === 0}
+            <p class="text-sm py-2" style="color: var(--ds-text-subtle);">{t('issueSync.noRepositoryMilestones')}</p>
+          {:else}
+            <div class="space-y-2">
+              {#each milestoneRows as row (row.key)}
+                <div class="flex items-center gap-3" data-testid="issue-sync-milestone-mapping-row">
+                  <span class="text-sm w-40 truncate" style="color: var(--ds-text);" title={row.title}>{row.title}</span>
+                  <span class="text-xs" style="color: var(--ds-text-subtle);">{t('issueSync.mapsTo')}</span>
+                  <div class="flex-1 min-w-0">
+                    <MilestoneCombobox
+                      {workspaceId}
+                      value={row.windshiftMilestoneId}
+                      milestones={milestones}
+                      placeholder={t('issueSync.windshiftMilestone')}
+                      onSelect={({ value }) => mapMilestone(row.key, value)}
+                    />
+                  </div>
+                  {#if row.missing}
+                    <span class="text-xs" style="color: var(--ds-text-subtle);">{t('issueSync.notInRepository')}</span>
+                  {:else if row.closed}
+                    <span class="text-xs" style="color: var(--ds-text-subtle);">{t('issueSync.milestoneClosed')}</span>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      </Card>
+    {/if}
 
     <!-- Default Priority -->
     <Card rounded="lg" padding="spacious">
