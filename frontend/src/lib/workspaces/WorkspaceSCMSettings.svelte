@@ -28,7 +28,7 @@
   let linkedRepos = $state({}); // connId -> repos array
   const loadingRepos = new SvelteSet();
   let authStatuses = $state({}); // connId -> auth status object
-  let webhookConfigs = $state({}); // repoId -> manual GitLab webhook config
+  let webhookConfigs = $state({}); // repoId -> manual webhook config
   const loadingWebhooks = new SvelteSet();
 
   // Modal state
@@ -267,7 +267,7 @@
       const config = await api.workspaceSCM.getWebhookConfig(repoId);
       webhookConfigs = { ...webhookConfigs, [repoId]: config };
     } catch (error) {
-      console.error('Failed to load GitLab webhook config:', error);
+      console.error('Failed to load webhook config:', error);
       errorToast(t('scmSettings.webhookLoadFailed'));
     } finally {
       loadingWebhooks.delete(repoId);
@@ -281,7 +281,7 @@
       webhookConfigs = { ...webhookConfigs, [repoId]: config };
       successToast(t('scmSettings.webhookSecretRotated'));
     } catch (error) {
-      console.error('Failed to rotate GitLab webhook secret:', error);
+      console.error('Failed to rotate webhook secret:', error);
       errorToast(t('scmSettings.webhookRotateFailed'));
     } finally {
       loadingWebhooks.delete(repoId);
@@ -295,6 +295,12 @@
       errorToast(message);
     }
   }
+
+  // Providers whose repository webhook is pasted in by hand.
+  const webhookLabels = {
+    gitlab: { title: () => t('scmSettings.gitlabWebhook'), help: () => t('scmSettings.webhookHelp') },
+    gitea: { title: () => t('scmSettings.giteaWebhook'), help: () => t('scmSettings.giteaWebhookHelp') }
+  };
 
   function getProviderLabel(providerType) {
     const labels = {
@@ -448,11 +454,11 @@
                       <div class="rounded-md" style="background-color: var(--ds-surface);">
                         <div class="flex items-center justify-between px-3 py-2">
                           <div class="flex items-center gap-2">
-                            {#if conn.provider_type === 'gitlab'}
+                            {#if webhookLabels[conn.provider_type]}
                               <button
                                 class="p-1 rounded hover:bg-opacity-50"
                                 style="color: var(--ds-text-subtle);"
-                                title={t('scmSettings.gitlabWebhook')}
+                                title={webhookLabels[conn.provider_type].title()}
                                 onclick={() => loadWebhookConfig(repo.id)}
                               >
                                 {#if loadingWebhooks.has(repo.id)}
@@ -533,12 +539,12 @@
                             </div>
                           </div>
                         {/if}
-                        {#if conn.provider_type === 'gitlab' && webhookConfigs[repo.id]}
+                        {#if webhookLabels[conn.provider_type] && webhookConfigs[repo.id]}
                           {@const webhookConfig = webhookConfigs[repo.id]}
                           <div class="px-3 py-3 border-t space-y-3" style="border-color: var(--ds-border);">
                             <div>
-                              <p class="text-sm font-medium" style="color: var(--ds-text);">{t('scmSettings.gitlabWebhook')}</p>
-                              <p class="text-xs" style="color: var(--ds-text-subtle);">{t('scmSettings.webhookHelp')}</p>
+                              <p class="text-sm font-medium" style="color: var(--ds-text);">{webhookLabels[conn.provider_type].title()}</p>
+                              <p class="text-xs" style="color: var(--ds-text-subtle);">{webhookLabels[conn.provider_type].help()}</p>
                             </div>
                             {#if webhookConfig.configured}
                               <div class="space-y-2">
