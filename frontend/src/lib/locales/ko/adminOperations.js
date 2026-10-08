@@ -405,9 +405,11 @@ export default {
     "configureWebhook": "웹훅 정보 생성",
     "rotateWebhookSecret": "비밀 값 교체",
     "webhookSecretOnce": "지금 비밀 값을 복사하세요. 다시 표시되지 않습니다.",
-    "webhookSecretRotated": "GitLab 웹훅 비밀 값을 생성했습니다",
-    "webhookLoadFailed": "GitLab 웹훅 설정을 불러오지 못했습니다",
-    "webhookRotateFailed": "GitLab 웹훅 비밀 값을 생성하지 못했습니다"
+    "giteaWebhook": "Forgejo / Gitea 웹훅",
+    "giteaWebhookHelp": "이 대상 URL과 비밀 값, POST 콘텐츠 유형 application/json, 풀 리퀘스트 이벤트로 Forgejo 또는 Gitea 웹훅을 추가하세요. 풀 리퀘스트 이벤트는 몇 초 안에 저장소를 동기화합니다.",
+    "webhookSecretRotated": "웹훅 비밀 값을 생성했습니다",
+    "webhookLoadFailed": "웹훅 설정을 불러오지 못했습니다",
+    "webhookRotateFailed": "웹훅 비밀 값을 생성하지 못했습니다"
   },
   "workspaceTemplates": {
     "title": "작업 템플릿",
