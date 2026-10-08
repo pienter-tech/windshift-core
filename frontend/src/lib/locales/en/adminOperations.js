@@ -395,7 +395,7 @@ export default {
     rotateWebhookSecret: 'Rotate secret',
     webhookSecretOnce: 'Copy this secret now. It will not be shown again.',
     giteaWebhook: 'Forgejo / Gitea webhook',
-    giteaWebhookHelp: 'Add a Forgejo or Gitea webhook with this target URL and secret, POST content type application/json, and the pull request events. Pull request events sync the repository within seconds. To update the CI status of pull requests within seconds, also select the Actions run events (Forgejo) or the commit status events (Gitea). For issue sync within seconds, also select the issue events, including assigned, labeled, and milestoned, and the issue comment events.',
+    giteaWebhookHelp: 'Add a Forgejo or Gitea webhook with this target URL and secret, POST content type application/json, and the push, create (branch or tag created), release, pull request, and pull request comment events. These events sync the repository within seconds instead of at the next poll. To update the CI status of pull requests within seconds, also select the Actions run events (Forgejo) or the commit status events (Gitea). For issue sync within seconds, also select the issue events, including assigned, labeled, and milestoned, and the issue comment events.',
     webhookSecretRotated: 'Webhook secret generated',
     webhookLoadFailed: 'Failed to load webhook settings',
     webhookRotateFailed: 'Failed to generate webhook secret',
