@@ -134,6 +134,21 @@ func (h *SCMItemLinksHandler) SetActionEvents(emitter scm.ActionEventEmitter, re
 	h.syncService.SetDurableActionEvents(recorder)
 }
 
+// SetSmartCommitServices wires smart commits into the handler's sync service,
+// so a webhook-triggered or manual repository sync that sees a merge first
+// applies its smart commits as the scheduled sync does.
+func (h *SCMItemLinksHandler) SetSmartCommitServices(
+	workflowService *services.WorkflowService,
+	commentService *services.CommentService,
+	permissionService *services.PermissionService,
+	conditionService *services.ConditionService,
+	approvalService *services.ApprovalService,
+	itemRepo *repository.ItemRepository,
+) {
+	h.syncService.SetSmartCommitServices(workflowService, commentService, permissionService, conditionService, itemRepo)
+	h.syncService.SetApprovalService(approvalService)
+}
+
 // GetItemSCMLinks returns all SCM links for an item
 func (h *SCMItemLinksHandler) GetItemSCMLinks(w http.ResponseWriter, r *http.Request) {
 	itemID, ok := requireIDParam(w, r, "id")
