@@ -736,22 +736,32 @@ func iteratePullRequests(ctx context.Context, provider Provider, owner, repo str
 // processPullRequest handles key detection, link upsert, smart-commit
 // dispatch, and action-engine events for a single PR. Extracted so the
 // paged loop above stays tight.
+//
+// Every key the PR names gets a link, but only the PR's own items (see
+// isPullRequestMention) get scm_pr_linked and scm_pr_merged. Detected links
+// to items the PR no longer names are removed, and links a user deleted from
+// an item are not re-created.
 func (s *SyncService) processPullRequest(ctx context.Context, provider Provider, owner, repo string, pr PullRequest, repoID, workspaceID int, workspaceKey, itemKeyPattern string, lastSyncedAt time.Time) error {
 	keys := s.detectPullRequestKeys(&pr, workspaceKey, itemKeyPattern)
-	if len(keys) == 0 {
-		return nil
-	}
+	externalID := strconv.Itoa(pr.Number)
 
 	now := time.Now()
-	var itemIDs []int
-	linkedItems := make(map[int]bool) // item ids for which a *new* link was created
+	named := make(map[int]bool) // items whose key the PR names
+	lookupsComplete := true
+	var itemIDs []int                 // items linked to this PR
+	var ownItemIDs []int              // the subset the PR is for, not merely mentions
+	linkedItems := make(map[int]bool) // item ids that became own links of this PR
 	var observationErrs []error
 	for _, key := range keys {
 		itemID, err := s.findItemByKey(ctx, workspaceID, key.Prefix, key.Number)
-		if err != nil || itemID == 0 {
+		if err != nil {
+			lookupsComplete = false
+			continue
+		}
+		if itemID == 0 {
 			continue // Item doesn't exist in this workspace
 		}
-		itemIDs = append(itemIDs, itemID)
+		named[itemID] = true
 
 		state := models.SCMLinkStateOpen
 		if pr.IsMerged {
@@ -762,23 +772,41 @@ func (s *SyncService) processPullRequest(ctx context.Context, provider Provider,
 
 		emitLinked := shouldEmitPRLinkEvent(pr, lastSyncedAt, now)
 		emitMerged := shouldEmitPRMergeEvent(pr, lastSyncedAt, now)
-		created, becameMerged, err := s.upsertPullRequestSCMLink(ctx, itemID, repoID,
-			strconv.Itoa(pr.Number), pr.URL, pr.Title, state, pr.Author.ID, pr.Author.Name, string(key.Source),
+		observed, err := s.upsertPullRequestSCMLink(ctx, itemID, repoID,
+			externalID, pr.URL, pr.Title, state, pr.Author.ID, pr.Author.Name, string(key.Source),
+			isPullRequestMention(key, keys),
 			s.prLinkedEvent(workspaceID, itemID, repoID, owner, repo, pr),
 			s.prMergedEvent(workspaceID, itemID, repoID, owner, repo, pr), emitLinked, emitMerged)
 		if err != nil {
 			observationErrs = append(observationErrs, fmt.Errorf("persist PR %d observation for item %d: %w", pr.Number, itemID, err))
 			continue
 		}
-		if created && emitLinked && s.durableActionEvents == nil {
+		if observed.dismissed {
+			continue
+		}
+		itemIDs = append(itemIDs, itemID)
+		if !observed.mention {
+			ownItemIDs = append(ownItemIDs, itemID)
+		}
+		if observed.linked && emitLinked && s.durableActionEvents == nil {
 			linkedItems[itemID] = true
 		}
-		if becameMerged && emitMerged && s.durableActionEvents == nil {
+		if observed.merged && emitMerged && s.durableActionEvents == nil {
 			s.emitPRMergedEvent(workspaceID, itemID, repoID, owner, repo, pr)
+		}
+	}
+	// A failed item lookup leaves the named set incomplete; removing links
+	// against it could drop a link the PR still names.
+	if lookupsComplete {
+		if err := s.removeUnnamedPullRequestLinks(ctx, repoID, externalID, named); err != nil {
+			observationErrs = append(observationErrs, fmt.Errorf("remove stale PR %d links: %w", pr.Number, err))
 		}
 	}
 	if err := errors.Join(observationErrs...); err != nil {
 		return err
+	}
+	if len(keys) == 0 {
+		return nil
 	}
 
 	if len(linkedItems) > 0 {
@@ -793,9 +821,11 @@ func (s *SyncService) processPullRequest(ctx context.Context, provider Provider,
 
 	// Outbound "@agent" PR-comment trigger (WI-426): on an open linked PR, poll
 	// its comments and continue the PR when a human asks the agent to. Outbound
-	// only — Windshift is typically behind NAT, so no inbound webhook.
-	if !pr.IsMerged && pr.State != "closed" && len(itemIDs) > 0 {
-		s.pollPRCommentTriggers(ctx, provider, owner, repo, pr, repoID, workspaceID, itemIDs)
+	// only — Windshift is typically behind NAT, so no inbound webhook. Only the
+	// PR's own items count: a PR that merely mentions an item does not belong
+	// to it.
+	if !pr.IsMerged && pr.State != "closed" && len(ownItemIDs) > 0 {
+		s.pollPRCommentTriggers(ctx, provider, owner, repo, pr, repoID, workspaceID, ownItemIDs)
 	}
 
 	// Smart commits run for any recent merge whose actions have not been
@@ -805,6 +835,81 @@ func (s *SyncService) processPullRequest(ctx context.Context, provider Provider,
 	// body and commit at most once.
 	if pr.IsMerged && shouldRunSmartCommits(pr, lastSyncedAt, now) {
 		s.processSmartCommitsForPR(ctx, provider, owner, repo, pr, repoID, workspaceID, workspaceKey)
+	}
+	return nil
+}
+
+// removeUnnamedPullRequestLinks deletes the detected links of a pull request
+// whose item the PR no longer names, and forgets dismissals of such items so
+// the sync links the item again if the PR names it again. Manually created,
+// plugin and coding-agent links are never removed.
+func (s *SyncService) removeUnnamedPullRequestLinks(ctx context.Context, repoID int, externalID string, named map[int]bool) error {
+	type staleLink struct{ id, itemID int }
+	var stale []staleLink
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, item_id FROM item_scm_links
+		WHERE workspace_repository_id = ? AND link_type = ? AND external_id = ?
+			AND detection_source IN `+syncDetectionSourcesSQL,
+		repoID, models.SCMLinkTypePullRequest, externalID)
+	if err != nil {
+		return fmt.Errorf("list detected links: %w", err)
+	}
+	for rows.Next() {
+		var link staleLink
+		if err := rows.Scan(&link.id, &link.itemID); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan detected link: %w", err)
+		}
+		if !named[link.itemID] {
+			stale = append(stale, link)
+		}
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("list detected links: %w", err)
+	}
+
+	var dismissedItems []int
+	rows, err = s.db.QueryContext(ctx, `
+		SELECT item_id FROM item_scm_link_dismissals
+		WHERE workspace_repository_id = ? AND link_type = ? AND external_id = ?
+	`, repoID, models.SCMLinkTypePullRequest, externalID)
+	if err != nil {
+		return fmt.Errorf("list link dismissals: %w", err)
+	}
+	for rows.Next() {
+		var itemID int
+		if err := rows.Scan(&itemID); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan link dismissal: %w", err)
+		}
+		if !named[itemID] {
+			dismissedItems = append(dismissedItems, itemID)
+		}
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("list link dismissals: %w", err)
+	}
+
+	for _, link := range stale {
+		result, err := s.db.ExecWriteContext(ctx, `
+			DELETE FROM item_scm_links WHERE id = ? AND detection_source IN `+syncDetectionSourcesSQL,
+			link.id)
+		if err != nil {
+			return fmt.Errorf("delete stale link %d: %w", link.id, err)
+		}
+		if removed, _ := result.RowsAffected(); removed > 0 {
+			services.PublishItemChange(link.itemID, services.ItemChangeLink)
+		}
+	}
+	for _, itemID := range dismissedItems {
+		if _, err := s.db.ExecWriteContext(ctx, `
+			DELETE FROM item_scm_link_dismissals
+			WHERE item_id = ? AND workspace_repository_id = ? AND link_type = ? AND external_id = ?
+		`, itemID, repoID, models.SCMLinkTypePullRequest, externalID); err != nil {
+			return fmt.Errorf("forget link dismissal for item %d: %w", itemID, err)
+		}
 	}
 	return nil
 }
@@ -1002,6 +1107,9 @@ func scmUserDisplayName(u User) string {
 	return u.Email
 }
 
+// detectPullRequestKeys returns the distinct item keys a pull request names.
+// A key's Source is the first of title, head branch and body that names it,
+// so a key in the body and the branch counts as named by the branch.
 func (s *SyncService) detectPullRequestKeys(pr *PullRequest, workspaceKey, itemKeyPattern string) []DetectedItemKey {
 	var allKeys []DetectedItemKey
 	seen := make(map[string]bool)
@@ -1010,8 +1118,8 @@ func (s *SyncService) detectPullRequestKeys(pr *PullRequest, workspaceKey, itemK
 		source DetectionSource
 	}{
 		{pr.Title, DetectionSourcePRTitle},
-		{pr.Body, DetectionSourcePRBody},
 		{pr.HeadBranch, DetectionSourceBranchName},
+		{pr.Body, DetectionSourcePRBody},
 	}
 	for _, source := range sources {
 		for _, key := range s.detectKeysInText(source.text, workspaceKey, itemKeyPattern, source.source) {
@@ -1024,6 +1132,24 @@ func (s *SyncService) detectPullRequestKeys(pr *PullRequest, workspaceKey, itemK
 		}
 	}
 	return allKeys
+}
+
+// isPullRequestMention reports whether a key detected by detectPullRequestKeys
+// only mentions its item. A pull request's own items are those its title or
+// head branch names; when neither names a key, the body's keys are its own.
+// A key named only by the body of a PR whose title or branch names a key (a
+// stacked PR listing the items that follow it, say) is a mention: the link is
+// shown on the item, but PR automations do not act on it.
+func isPullRequestMention(key DetectedItemKey, keys []DetectedItemKey) bool {
+	if key.Source != DetectionSourcePRBody {
+		return false
+	}
+	for _, other := range keys {
+		if other.Source != DetectionSourcePRBody {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *SyncService) detectKeysInText(text, workspaceKey, itemKeyPattern string, source DetectionSource) []DetectedItemKey {
@@ -1104,6 +1230,10 @@ func (s *SyncService) upsertItemSCMLink(ctx context.Context, itemID, repoID int,
 	`, itemID, repoID, linkType, externalID).Scan(&existingID)
 
 	if errors.Is(err, sql.ErrNoRows) {
+		dismissed, err := linkDismissed(ctx, s.db, itemID, repoID, linkType, externalID)
+		if err != nil || dismissed {
+			return err // a user deleted this link from the item
+		}
 		// Insert new link
 		_, err = s.db.ExecWriteContext(ctx, `
 			INSERT INTO item_scm_links (
@@ -1140,77 +1270,136 @@ func (s *SyncService) upsertItemSCMLink(ctx context.Context, itemID, repoID int,
 	return err
 }
 
+// prLinkObservation is what upsertPullRequestSCMLink did with one observed
+// (item, PR) pair.
+type prLinkObservation struct {
+	// dismissed: a user deleted this link from the item, so it was not
+	// re-created.
+	dismissed bool
+	// mention: the stored link only mentions the item. Links the sync did not
+	// detect (manual, plugin, coding agent) are never mentions.
+	mention bool
+	// linked: the link became an own link of the PR, by being created or by
+	// turning from a mention into an own link; scm_pr_linked applies.
+	linked bool
+	// merged: this write moved an own link to merged; scm_pr_merged applies.
+	merged bool
+}
+
+// upsertPullRequestSCMLink records one observation of a pull request that
+// names an item. The durable scm_pr_linked and scm_pr_merged events are
+// admitted in the same transaction, for own links only. mention is the
+// classification the sync detected; it replaces the stored one on detected
+// links, and detectionSource replaces their stored source.
 func (s *SyncService) upsertPullRequestSCMLink(
 	ctx context.Context,
 	itemID, repoID int,
 	externalID, externalURL, title string,
 	state models.SCMLinkState,
 	authorExternalID, authorName, detectionSource string,
+	mention bool,
 	linkedEvent, mergedEvent *models.ActionEvent,
 	emitLinked, emitMerged bool,
-) (created, becameMerged bool, err error) {
+) (observed prLinkObservation, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return false, false, fmt.Errorf("begin PR link observation: %w", err)
+		return observed, fmt.Errorf("begin PR link observation: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	var existingID int
+	var storedSource sql.NullString
+	var storedMention bool
 	err = tx.QueryRowContext(ctx, `
-		SELECT id FROM item_scm_links
+		SELECT id, detection_source, is_mention FROM item_scm_links
 		WHERE item_id = ? AND workspace_repository_id = ? AND link_type = ? AND external_id = ?
-	`, itemID, repoID, models.SCMLinkTypePullRequest, externalID).Scan(&existingID)
+	`, itemID, repoID, models.SCMLinkTypePullRequest, externalID).Scan(&existingID, &storedSource, &storedMention)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		created = true
-		becameMerged = state == models.SCMLinkStateMerged
+		dismissed, err := linkDismissed(ctx, tx, itemID, repoID, models.SCMLinkTypePullRequest, externalID)
+		if err != nil {
+			return observed, err
+		}
+		if dismissed {
+			observed.dismissed = true
+			return observed, nil
+		}
+		observed.mention = mention
+		observed.linked = !mention
+		observed.merged = !mention && state == models.SCMLinkStateMerged
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO item_scm_links (
 				item_id, workspace_repository_id, link_type, external_id,
-				external_url, title, state, author_external_id, author_name, detection_source
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, itemID, repoID, models.SCMLinkTypePullRequest, externalID, externalURL, title, state, authorExternalID, authorName, detectionSource)
+				external_url, title, state, author_external_id, author_name, detection_source, is_mention
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, itemID, repoID, models.SCMLinkTypePullRequest, externalID, externalURL, title, state, authorExternalID, authorName, detectionSource, mention)
 		if err != nil {
-			return false, false, err
-		}
-		if emitLinked && s.durableActionEvents != nil {
-			if err := s.durableActionEvents.EmitActionEventInTx(ctx, tx, linkedEvent); err != nil {
-				return false, false, err
-			}
-		}
-		if becameMerged && emitMerged && s.durableActionEvents != nil {
-			if err := s.durableActionEvents.EmitActionEventInTx(ctx, tx, mergedEvent); err != nil {
-				return false, false, err
-			}
+			return observed, err
 		}
 	case err != nil:
-		return false, false, err
+		return observed, err
 	default:
+		detected := isSyncDetectionSource(storedSource.String)
+		observed.mention = storedMention
+		source := storedSource
+		if detected {
+			observed.mention = mention
+			source = sql.NullString{String: detectionSource, Valid: true}
+		}
+		observed.linked = storedMention && !observed.mention
 		if state == models.SCMLinkStateMerged {
-			if becameMerged, err = claimPullRequestMerge(ctx, tx, existingID); err != nil {
-				return false, false, err
+			// The claim also runs for mentions, so a mention that later turns
+			// into an own link does not report a merge it already had.
+			becameMerged, err := claimPullRequestMerge(ctx, tx, existingID)
+			if err != nil {
+				return observed, err
 			}
+			observed.merged = becameMerged && !observed.mention
 		}
 		_, err = tx.ExecContext(ctx, `
 			UPDATE item_scm_links SET
 				external_url = ?, title = ?, state = ?,
-				author_external_id = ?, author_name = ?, updated_at = CURRENT_TIMESTAMP
+				author_external_id = ?, author_name = ?,
+				detection_source = ?, is_mention = ?, updated_at = CURRENT_TIMESTAMP
 			WHERE id = ?
-		`, externalURL, title, state, authorExternalID, authorName, existingID)
+		`, externalURL, title, state, authorExternalID, authorName, source, observed.mention, existingID)
 		if err != nil {
-			return false, false, err
+			return observed, err
 		}
-		if becameMerged && emitMerged && s.durableActionEvents != nil {
-			if err := s.durableActionEvents.EmitActionEventInTx(ctx, tx, mergedEvent); err != nil {
-				return false, false, err
-			}
+	}
+	if observed.linked && emitLinked && s.durableActionEvents != nil {
+		if err := s.durableActionEvents.EmitActionEventInTx(ctx, tx, linkedEvent); err != nil {
+			return observed, err
+		}
+	}
+	if observed.merged && emitMerged && s.durableActionEvents != nil {
+		if err := s.durableActionEvents.EmitActionEventInTx(ctx, tx, mergedEvent); err != nil {
+			return observed, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return false, false, fmt.Errorf("commit PR link observation: %w", err)
+		return observed, fmt.Errorf("commit PR link observation: %w", err)
 	}
 	services.PublishItemChange(itemID, services.ItemChangeLink)
-	return created, becameMerged, nil
+	return observed, nil
+}
+
+// linkDismissed reports whether a user deleted the (item, SCM resource) link,
+// which the sync then must not re-create.
+func linkDismissed(ctx context.Context, q interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}, itemID, repoID int, linkType models.SCMLinkType, externalID string) (bool, error) {
+	var dismissed bool
+	err := q.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM item_scm_link_dismissals
+			WHERE item_id = ? AND workspace_repository_id = ? AND link_type = ? AND external_id = ?
+		)
+	`, itemID, repoID, linkType, externalID).Scan(&dismissed)
+	if err != nil {
+		return false, fmt.Errorf("read link dismissal: %w", err)
+	}
+	return dismissed, nil
 }
 
 // refreshedLinkFields are the provider-sourced columns the link refresh
@@ -1242,9 +1431,11 @@ func readRefreshedLinkFields(ctx context.Context, q interface {
 }
 
 // refreshPullRequestSCMLink writes a refreshed PR observation onto an existing
-// link row. becameMerged reports whether this write moved the row to merged;
-// the durable scm_pr_merged event is admitted in the same transaction. changed
-// reports whether the write altered any field an item page shows.
+// link row. mergedEvent reports whether this write moved an own link to merged;
+// the durable scm_pr_merged event is admitted in the same transaction. A link
+// that only mentions its item keeps the classification the last repository
+// sync stored and moves to merged without the event. changed reports whether
+// the write altered any field an item page shows.
 func (s *SyncService) refreshPullRequestSCMLink(
 	ctx context.Context,
 	linkID int,
@@ -1252,7 +1443,7 @@ func (s *SyncService) refreshPullRequestSCMLink(
 	pr *PullRequest,
 	state models.SCMLinkState,
 	mergedEvent *models.ActionEvent,
-) (becameMerged, changed bool, err error) {
+) (emitMerged, changed bool, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, false, fmt.Errorf("begin PR link refresh: %w", err)
@@ -1273,11 +1464,18 @@ func (s *SyncService) refreshPullRequestSCMLink(
 		authorName:       pr.Author.Name,
 	}
 
+	var mention bool
+	if err := tx.QueryRowContext(ctx, `SELECT is_mention FROM item_scm_links WHERE id = ?`, linkID).Scan(&mention); err != nil {
+		return false, false, fmt.Errorf("read link %d classification: %w", linkID, err)
+	}
+
+	var becameMerged bool
 	if state == models.SCMLinkStateMerged {
 		if becameMerged, err = claimPullRequestMerge(ctx, tx, linkID); err != nil {
 			return false, false, err
 		}
 	}
+	emitMerged = becameMerged && !mention
 	_, err = tx.ExecContext(ctx, `
 		UPDATE item_scm_links SET
 			external_id = ?, external_url = ?, title = ?, state = ?,
@@ -1288,7 +1486,7 @@ func (s *SyncService) refreshPullRequestSCMLink(
 	if err != nil {
 		return false, false, err
 	}
-	if becameMerged && s.durableActionEvents != nil {
+	if emitMerged && s.durableActionEvents != nil {
 		if err := s.durableActionEvents.EmitActionEventInTx(ctx, tx, mergedEvent); err != nil {
 			return false, false, err
 		}
@@ -1296,7 +1494,7 @@ func (s *SyncService) refreshPullRequestSCMLink(
 	if err := tx.Commit(); err != nil {
 		return false, false, fmt.Errorf("commit PR link refresh: %w", err)
 	}
-	return becameMerged, changed || becameMerged, nil
+	return emitMerged, changed || becameMerged, nil
 }
 
 // claimPullRequestMerge moves a PR link row to merged and reports whether this
@@ -1494,7 +1692,8 @@ func prNumberFromURL(rawURL string) int {
 
 // updateLinkFromProvider fetches updated metadata from the SCM provider and
 // updates the link row. A pull request link that this refresh moves to merged
-// emits scm_pr_merged, as the repository sync does when it sees the merge first.
+// emits scm_pr_merged, as the repository sync does when it sees the merge
+// first, unless the link only mentions its item.
 // A refresh that changes what the item page shows publishes a link change.
 func (s *SyncService) updateLinkFromProvider(ctx context.Context, provider Provider, owner, repo string, linkID, itemID, workspaceID, repoID int, linkType models.SCMLinkType, externalID, externalURL string) error {
 	switch linkType {
@@ -1522,7 +1721,7 @@ func (s *SyncService) updateLinkFromProvider(ctx context.Context, provider Provi
 			state = models.SCMLinkStateClosed
 		}
 
-		becameMerged, changed, err := s.refreshPullRequestSCMLink(ctx, linkID, externalID, pr, state,
+		emitMerged, changed, err := s.refreshPullRequestSCMLink(ctx, linkID, externalID, pr, state,
 			s.prMergedEvent(workspaceID, itemID, repoID, owner, repo, *pr))
 		if err != nil {
 			return err
@@ -1530,7 +1729,7 @@ func (s *SyncService) updateLinkFromProvider(ctx context.Context, provider Provi
 		if changed {
 			services.PublishItemChange(itemID, services.ItemChangeLink)
 		}
-		if becameMerged && s.durableActionEvents == nil {
+		if emitMerged && s.durableActionEvents == nil {
 			s.emitPRMergedEvent(workspaceID, itemID, repoID, owner, repo, *pr)
 		}
 		s.refreshPullRequestCI(ctx, provider, owner, repo, repoID, *pr)

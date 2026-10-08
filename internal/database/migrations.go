@@ -2586,6 +2586,77 @@ var Catalog = []Migration{
 			ALTER TABLE item_scm_links ADD COLUMN IF NOT EXISTS ci_updated_at TIMESTAMPTZ;
 		`,
 	},
+	{
+		// Existing body-detected PR links count as mentions when a sibling
+		// link of the same PR was detected in its title or head branch; the
+		// next sync of the PR recomputes every classification exactly.
+		Version:       "20261013_item_scm_links_is_mention",
+		Name:          "Mark PR links whose key appears only in the PR body as mentions (WCORE-80)",
+		CheckSQLite:   sqliteColumnCheck("item_scm_links", "is_mention"),
+		CheckPostgres: pgColumnCheck("item_scm_links", "is_mention"),
+		SQLite: `
+			ALTER TABLE item_scm_links ADD COLUMN is_mention BOOLEAN NOT NULL DEFAULT FALSE;
+			UPDATE item_scm_links SET is_mention = TRUE
+			WHERE link_type = 'pull_request' AND detection_source = 'pr_body'
+				AND EXISTS (
+					SELECT 1 FROM item_scm_links own
+					WHERE own.workspace_repository_id = item_scm_links.workspace_repository_id
+						AND own.link_type = 'pull_request'
+						AND own.external_id = item_scm_links.external_id
+						AND own.detection_source IN ('pr_title', 'branch_name')
+				);
+		`,
+		Postgres: `
+			ALTER TABLE item_scm_links ADD COLUMN IF NOT EXISTS is_mention BOOLEAN NOT NULL DEFAULT FALSE;
+			UPDATE item_scm_links SET is_mention = TRUE
+			WHERE link_type = 'pull_request' AND detection_source = 'pr_body'
+				AND EXISTS (
+					SELECT 1 FROM item_scm_links own
+					WHERE own.workspace_repository_id = item_scm_links.workspace_repository_id
+						AND own.link_type = 'pull_request'
+						AND own.external_id = item_scm_links.external_id
+						AND own.detection_source IN ('pr_title', 'branch_name')
+				);
+		`,
+	},
+	{
+		Version:       "20261013_item_scm_link_dismissals",
+		Name:          "Remember detected SCM links a user deleted so the sync does not re-create them (WCORE-80)",
+		CheckSQLite:   sqliteTableCheck("item_scm_link_dismissals"),
+		CheckPostgres: pgTableCheck("item_scm_link_dismissals"),
+		SQLite: `
+			CREATE TABLE item_scm_link_dismissals (
+				item_id INTEGER NOT NULL,
+				workspace_repository_id INTEGER NOT NULL,
+				link_type TEXT NOT NULL,
+				external_id TEXT NOT NULL,
+				created_by INTEGER,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+				PRIMARY KEY (item_id, workspace_repository_id, link_type, external_id),
+				FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE,
+				FOREIGN KEY (workspace_repository_id) REFERENCES workspace_repositories(id) ON DELETE CASCADE,
+				FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+			);
+			CREATE INDEX idx_item_scm_link_dismissals_external
+				ON item_scm_link_dismissals(workspace_repository_id, link_type, external_id);
+		`,
+		Postgres: `
+			CREATE TABLE item_scm_link_dismissals (
+				item_id INTEGER NOT NULL,
+				workspace_repository_id INTEGER NOT NULL,
+				link_type TEXT NOT NULL,
+				external_id TEXT NOT NULL,
+				created_by INTEGER,
+				created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+				PRIMARY KEY (item_id, workspace_repository_id, link_type, external_id),
+				FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE,
+				FOREIGN KEY (workspace_repository_id) REFERENCES workspace_repositories(id) ON DELETE CASCADE,
+				FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+			);
+			CREATE INDEX IF NOT EXISTS idx_item_scm_link_dismissals_external
+				ON item_scm_link_dismissals(workspace_repository_id, link_type, external_id);
+		`,
+	},
 }
 
 // viewSettingsToolsBackfillIDs lists the workspace tools ids as they existed
