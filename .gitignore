@@ -26,6 +26,7 @@ cx
 !/internal/scm/sync_pr_merged_test.go
 !/internal/scm/ci_status_test.go
 !/internal/scm/issue_sync_gitea_test.go
+!/internal/scm/issue_sync_filter_test.go
 !/internal/scm/smart_commits_merge_test.go
 !/internal/scm/sync_link_refresh_publish_test.go
 !/internal/handlers/scm_gitea_webhooks_test.go

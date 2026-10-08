@@ -57,6 +57,12 @@ func lockIssueSyncConfig(ctx context.Context, configID int) (func(), error) {
 	}
 }
 
+// pushStatusLockWait bounds how long a status push waits for a running
+// inbound sync of its config before pushing without the lock. It is shorter
+// than the push's own 30s budget, so the remote write still has time left.
+// A variable so tests can shorten it.
+var pushStatusLockWait = 20 * time.Second
+
 // issueSyncJob is one enabled config with the repository it syncs.
 type issueSyncJob struct {
 	config       models.IssueSyncConfig
@@ -251,17 +257,19 @@ func (s *IssueSyncService) syncConfig(ctx context.Context, provider IssueProvide
 	}
 	owner, repo := parts[0], parts[1]
 
-	var filterLabels []string
-	if config.FilterLabels != "" && config.FilterLabels != "[]" {
-		_ = json.Unmarshal([]byte(config.FilterLabels), &filterLabels)
-	}
+	filterLabels := parseFilterLabels(config.FilterLabels)
 
 	opts := ListIssueOptions{
 		State:   "all",
 		Since:   config.LastFullSyncAt,
 		PerPage: 100,
 	}
-	if len(filterLabels) > 0 {
+	// The filter keeps issues with any of its labels, and Windshift applies
+	// it below. The forges read a labels list differently (GitHub: all of
+	// them; Gitea/Forgejo: any of them, ignoring labels the repository lacks),
+	// so the list is only narrowed by the forge for a single label, where
+	// both readings agree.
+	if len(filterLabels) == 1 {
 		opts.Labels = filterLabels
 	}
 
@@ -296,6 +304,9 @@ func (s *IssueSyncService) syncConfig(ctx context.Context, provider IssueProvide
 			if err := ctx.Err(); err != nil {
 				return fmt.Errorf("sync interrupted: %w", err)
 			}
+			if len(filterLabels) > 0 && !issueHasAnyLabel(&issues[i], filterLabels) {
+				continue
+			}
 			if err := s.syncIssue(ctx, provider, config, owner, repo, &issues[i]); err != nil {
 				slog.Error("sync issue", "config_id", config.ID, "issue_number", issues[i].Number, "error", err)
 				issueErrs = append(issueErrs, fmt.Errorf("issue #%d: %w", issues[i].Number, err))
@@ -312,6 +323,38 @@ func (s *IssueSyncService) syncConfig(ctx context.Context, provider IssueProvide
 		return fmt.Errorf("sync config %d: %d issue(s) failed: %w", config.ID, len(issueErrs), errors.Join(issueErrs...))
 	}
 	return nil
+}
+
+// parseFilterLabels reads a config's filter_labels JSON array, dropping
+// blank entries. An empty or unreadable value means no filter.
+func parseFilterLabels(raw string) []string {
+	var labels []string
+	if raw == "" || raw == "[]" {
+		return nil
+	}
+	if err := json.Unmarshal([]byte(raw), &labels); err != nil {
+		return nil
+	}
+	kept := labels[:0]
+	for _, label := range labels {
+		if label = strings.TrimSpace(label); label != "" {
+			kept = append(kept, label)
+		}
+	}
+	return kept
+}
+
+// issueHasAnyLabel reports whether the issue has at least one of labels.
+// Names compare case-insensitively, as GitHub treats label names.
+func issueHasAnyLabel(issue *Issue, labels []string) bool {
+	for _, have := range issue.Labels {
+		for _, want := range labels {
+			if strings.EqualFold(have.Name, want) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // syncIssue syncs a single issue to a Windshift item.
@@ -544,6 +587,26 @@ func (s *IssueSyncService) PushStatusToIssue(ctx context.Context, itemID, newSta
 	parts := strings.SplitN(repoName, "/", 2)
 	if len(parts) != 2 {
 		return
+	}
+
+	// Hold the config's sync lock across claiming sync_lock and the remote
+	// write: an inbound sync running in between would consume sync_lock
+	// against the issue as it was before the write, and the sync after the
+	// write would then map the new issue state back over the item's status.
+	// If no lock comes within pushStatusLockWait (a long inbound sync), push
+	// without it: the race is rare and visible, a dropped push is neither.
+	lockCtx, cancelLock := context.WithTimeout(ctx, pushStatusLockWait)
+	release, err := lockIssueSyncConfig(lockCtx, configID)
+	cancelLock()
+	switch {
+	case err == nil:
+		defer release()
+	case ctx.Err() != nil:
+		slog.Error("push status to issue", "config_id", configID, "issue", issueNumber, "state", issueState, "error", err)
+		return
+	default:
+		slog.Warn("push status to issue without the sync lock: an inbound sync is still running",
+			"config_id", configID, "issue", issueNumber, "state", issueState, "waited", pushStatusLockWait)
 	}
 
 	// Preflight passed — claim the lock immediately before the remote write.
