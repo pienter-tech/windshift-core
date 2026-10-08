@@ -163,30 +163,29 @@ func giteaWebhookHandled(eventType string) bool {
 }
 
 // giteaWebhookAction returns the work a delivery of eventType schedules for
-// the repository, or nil when Windshift ignores the event.
-func (h *SCMItemLinksHandler) giteaWebhookAction(eventType string, repoID int, payload giteaWebhookPayload) func(context.Context) error {
-	syncRepository := func(ctx context.Context) error {
-		return h.syncService.SyncRepository(ctx, repoID)
-	}
+// the repository, or nil when Windshift ignores the event. Only repository
+// syncs are shared between deliveries: a CI refresh reads the status of one
+// commit, and runs of the issue sync of a config wait for each other.
+func (h *SCMItemLinksHandler) giteaWebhookAction(eventType string, repoID int, payload giteaWebhookPayload) *webhookWork {
 	switch {
 	case isGiteaRepositorySyncEvent(eventType):
 		// The sync links branches, commits, and pull requests and emits
 		// their events, including the tag and release ones, so the delivery
 		// itself emits nothing and a missed delivery is caught by polling.
-		return syncRepository
+		return repositorySyncWork
 	case isGiteaCIEvent(eventType):
 		// CI status is display-only: the refresh re-reads the combined
 		// status of the pull requests whose head is the reported commit and
 		// emits no events. Polling still catches a missed delivery.
 		sha := payload.commitSHA()
-		return func(ctx context.Context) error {
+		return &webhookWork{process: func(ctx context.Context) error {
 			return h.syncService.RefreshPullRequestCIForCommit(ctx, repoID, sha)
-		}
+		}}
 	case isGiteaIssueEvent(eventType):
 		// Pull request comments are not issue sync's: the repository sync
 		// reads the comments of open linked pull requests.
 		if payload.isPullRequest() {
-			return syncRepository
+			return repositorySyncWork
 		}
 		if h.issueSync == nil {
 			return nil
@@ -194,9 +193,9 @@ func (h *SCMItemLinksHandler) giteaWebhookAction(eventType string, repoID int, p
 		// The issue sync of the repository's config picks the change up
 		// with every other one since its last run. Polling still catches a
 		// missed delivery.
-		return func(ctx context.Context) error {
+		return &webhookWork{process: func(ctx context.Context) error {
 			return h.issueSync.SyncRepository(ctx, repoID)
-		}
+		}}
 	default:
 		return nil
 	}

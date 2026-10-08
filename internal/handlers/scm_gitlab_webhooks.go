@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -85,7 +84,5 @@ func (h *SCMItemLinksHandler) ReceiveGitLabWebhook(w http.ResponseWriter, r *htt
 		deliveryID = hex.EncodeToString(digest[:])
 	}
 	summary := map[string]any{"object_kind": eventType, "project_id": projectID, "path": payload.Project.PathWithNamespace, "iid": payload.ObjectAttributes.IID, "action": payload.ObjectAttributes.Action, "ref": payload.Ref, "tag": payload.ObjectAttributes.Tag}
-	h.acceptWebhookDelivery(w, r, target, deliveryID, eventType, summary, func(ctx context.Context) error {
-		return h.syncService.SyncRepository(ctx, target.WorkspaceRepositoryID)
-	})
+	h.acceptWebhookDelivery(w, r, target, deliveryID, eventType, summary, repositorySyncWork)
 }

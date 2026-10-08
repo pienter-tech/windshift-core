@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -538,5 +539,150 @@ func TestGiteaWebhookIgnoresIssueDeliveryWithoutIssueSync(t *testing.T) {
 				t.Fatalf("recorded %d deliveries, want none", count)
 			}
 		})
+	}
+}
+
+// holdRepositorySyncs replaces the fixture's repository syncs with ones the
+// test releases run by run.
+func (f *giteaWebhookFixture) holdRepositorySyncs(errs ...error) *heldSyncs {
+	held := newHeldSyncs(errs...)
+	f.handler.repositorySyncs = newRepositorySyncs(held.sync, time.Minute)
+	return held
+}
+
+func (f *giteaWebhookFixture) deliverPush(t *testing.T, deliveryID string) {
+	t.Helper()
+	body := giteaRefBodies(42)["push"].body
+	recorder := f.deliver(body, map[string]string{
+		"X-Forgejo-Event":     "push",
+		"X-Forgejo-Signature": giteaSignature(f.secret, body),
+		"X-Forgejo-Delivery":  deliveryID,
+	})
+	if recorder.Code != http.StatusAccepted || !strings.Contains(recorder.Body.String(), `"accepted":true`) {
+		t.Fatalf("%s: status=%d body=%s", deliveryID, recorder.Code, recorder.Body.String())
+	}
+}
+
+// assertDeliveryOutcome waits for a delivery's work and checks its outcome.
+func (f *giteaWebhookFixture) assertDeliveryOutcome(t *testing.T, deliveryID, wantStatus, wantError string) {
+	t.Helper()
+	_, status, errorMessage := f.waitForDelivery(t, deliveryID)
+	if status != wantStatus || errorMessage != wantError {
+		t.Fatalf("%s: status=%q error=%q, want status=%q error=%q", deliveryID, status, errorMessage, wantStatus, wantError)
+	}
+}
+
+// A burst of deliveries while the repository syncs runs one follow-up sync
+// after it; each delivery records whether it ran a sync or was folded into
+// the queued one.
+func TestGiteaWebhookBurstCoalescesRepositorySyncs(t *testing.T) {
+	f := newGiteaWebhookFixture(t)
+	held := f.holdRepositorySyncs(nil, errors.New("provider unavailable"))
+
+	f.deliverPush(t, "push-1")
+	held.awaitStart(t)
+	for _, deliveryID := range []string{"push-2", "push-3", "push-4"} {
+		f.deliverPush(t, deliveryID)
+	}
+	held.assertNoStart(t)
+	var status string
+	if err := f.db.QueryRow(`SELECT status FROM scm_webhook_deliveries WHERE delivery_id = 'push-3'`).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "pending" {
+		t.Fatalf("queued delivery recorded %q before its sync ran", status)
+	}
+
+	held.release <- struct{}{}
+	f.assertDeliveryOutcome(t, "push-1", "processed", "")
+	held.awaitStart(t)
+	held.release <- struct{}{}
+	f.assertDeliveryOutcome(t, "push-2", "failed", "provider unavailable")
+	f.assertDeliveryOutcome(t, "push-3", "coalesced", "provider unavailable")
+	f.assertDeliveryOutcome(t, "push-4", "coalesced", "provider unavailable")
+
+	repo := strconv.Itoa(f.repoID)
+	if got, want := strings.Join(held.runs(), ","), "start "+repo+",end "+repo+",start "+repo+",end "+repo; got != want {
+		t.Fatalf("runs = %s, want %s", got, want)
+	}
+}
+
+// A manual sync from the settings shares the repository's syncs with its
+// webhook deliveries.
+func TestManualRepositorySyncJoinsWebhookSyncs(t *testing.T) {
+	f := newGiteaWebhookFixture(t)
+	held := f.holdRepositorySyncs()
+
+	f.deliverPush(t, "push-1")
+	held.awaitStart(t)
+
+	manual := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		req := f.adminRequest(http.MethodPost)
+		f.handler.SyncWorkspaceRepository(recorder, req)
+		manual <- recorder
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for !f.handler.repositorySyncs.queuedFor(f.repoID) {
+		if time.Now().After(deadline) {
+			t.Fatal("manual sync did not queue a follow-up sync")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	f.deliverPush(t, "push-2")
+
+	held.release <- struct{}{}
+	f.assertDeliveryOutcome(t, "push-1", "processed", "")
+	held.awaitStart(t)
+	held.release <- struct{}{}
+	f.assertDeliveryOutcome(t, "push-2", "coalesced", "")
+	select {
+	case recorder := <-manual:
+		if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"success":true`) {
+			t.Fatalf("manual sync: status=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("manual sync did not answer after its sync ran")
+	}
+	if got := held.runs(); len(got) != 4 {
+		t.Fatalf("runs = %v, want two syncs", got)
+	}
+}
+
+// The GitLab receiver shares the same per-repository syncs.
+func TestGitLabWebhookBurstCoalescesRepositorySyncs(t *testing.T) {
+	f := newGiteaWebhookFixture(t)
+	if _, err := f.db.ExecWrite(`UPDATE scm_providers SET provider_type = 'gitlab'`); err != nil {
+		t.Fatal(err)
+	}
+	held := f.holdRepositorySyncs()
+	deliver := func(deliveryID string) {
+		t.Helper()
+		body := []byte(`{"object_kind":"push","ref":"refs/heads/main","project":{"id":42,"path_with_namespace":"pienter/app"}}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/scm/webhooks/gitlab/"+f.key, bytes.NewReader(body))
+		req.SetPathValue("webhookKey", f.key)
+		req.Header.Set("X-Gitlab-Token", f.secret)
+		req.Header.Set("X-Gitlab-Event-UUID", deliveryID)
+		recorder := httptest.NewRecorder()
+		f.handler.ReceiveGitLabWebhook(recorder, req)
+		if recorder.Code != http.StatusAccepted || !strings.Contains(recorder.Body.String(), `"accepted":true`) {
+			t.Fatalf("%s: status=%d body=%s", deliveryID, recorder.Code, recorder.Body.String())
+		}
+	}
+
+	deliver("gl-1")
+	held.awaitStart(t)
+	deliver("gl-2")
+	deliver("gl-3")
+	held.assertNoStart(t)
+	held.release <- struct{}{}
+	held.awaitStart(t)
+	held.release <- struct{}{}
+	f.assertDeliveryOutcome(t, "gl-1", "processed", "")
+	f.assertDeliveryOutcome(t, "gl-2", "processed", "")
+	f.assertDeliveryOutcome(t, "gl-3", "coalesced", "")
+	if got := held.runs(); len(got) != 4 {
+		t.Fatalf("runs = %v, want two syncs", got)
 	}
 }
