@@ -1231,6 +1231,10 @@ func (s *Server) initialize() error {
 		repository.NewItemRepository(s.db),
 	)
 	scmSyncService.SetApprovalService(approvalService)
+	scmItemLinksHandler.SetSmartCommitServices(
+		workflowService, commentService, permService, conditionService, approvalService,
+		repository.NewItemRepository(s.db),
+	)
 	// Outbound "@agent" PR-comment continuation trigger (WI-426): the sync poller
 	// hands detected comments to the binding service to continue the PR. Nil-safe
 	// when the coding-agent harness is disabled (bindingSvc may be nil).
