@@ -53,8 +53,10 @@ func lockIssueSyncConfig(ctx context.Context, configID int) (func(), error) {
 }
 
 // pushStatusLockWait bounds how long a status push waits for a running
-// inbound sync of its config when the caller's context has no deadline.
-const pushStatusLockWait = 30 * time.Second
+// inbound sync of its config before pushing without the lock. It is shorter
+// than the push's own 30s budget, so the remote write still has time left.
+// A variable so tests can shorten it.
+var pushStatusLockWait = 20 * time.Second
 
 // issueSyncJob is one enabled config with the repository it syncs.
 type issueSyncJob struct {
@@ -586,20 +588,21 @@ func (s *IssueSyncService) PushStatusToIssue(ctx context.Context, itemID, newSta
 	// write: an inbound sync running in between would consume sync_lock
 	// against the issue as it was before the write, and the sync after the
 	// write would then map the new issue state back over the item's status.
-	// The wait is bounded by ctx, or by pushStatusLockWait if ctx has no
-	// deadline.
-	lockCtx := ctx
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		lockCtx, cancel = context.WithTimeout(ctx, pushStatusLockWait)
-		defer cancel()
-	}
+	// If no lock comes within pushStatusLockWait (a long inbound sync), push
+	// without it: the race is rare and visible, a dropped push is neither.
+	lockCtx, cancelLock := context.WithTimeout(ctx, pushStatusLockWait)
 	release, err := lockIssueSyncConfig(lockCtx, configID)
-	if err != nil {
+	cancelLock()
+	switch {
+	case err == nil:
+		defer release()
+	case ctx.Err() != nil:
 		slog.Error("push status to issue", "config_id", configID, "issue", issueNumber, "state", issueState, "error", err)
 		return
+	default:
+		slog.Warn("push status to issue without the sync lock: an inbound sync is still running",
+			"config_id", configID, "issue", issueNumber, "state", issueState, "waited", pushStatusLockWait)
 	}
-	defer release()
 
 	// Preflight passed — claim the lock immediately before the remote write.
 	_, _ = s.db.ExecWriteContext(ctx,

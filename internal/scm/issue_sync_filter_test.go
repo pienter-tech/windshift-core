@@ -259,3 +259,44 @@ func TestPushStatusToIssueWaitsForInboundSync(t *testing.T) {
 		t.Fatalf("item status = %d, want the user's status %d (closed maps to %d)", statusID, wontDo, f.closedStatus)
 	}
 }
+
+func TestPushStatusToIssuePushesWithoutTheLockAfterWaiting(t *testing.T) {
+	f := newGiteaIssueSyncFixture(t)
+	ctx := context.Background()
+	if err := f.sync.SyncRepository(ctx, f.repoID); err != nil {
+		t.Fatal(err)
+	}
+	var itemID, configID int
+	if err := f.db.QueryRow(`SELECT item_id, issue_sync_config_id FROM issue_sync_items WHERE github_issue_number = 3`).Scan(&itemID, &configID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`UPDATE issue_sync_configs SET reverse_status_mapping = ?`, fmt.Sprintf(`{"%d": "closed"}`, f.closedStatus)); err != nil {
+		t.Fatal(err)
+	}
+
+	// A long inbound sync holds the config's lock past the push's wait.
+	saved := pushStatusLockWait
+	pushStatusLockWait = 50 * time.Millisecond
+	t.Cleanup(func() { pushStatusLockWait = saved })
+	release, err := lockIssueSyncConfig(ctx, configID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	patched := false
+	f.sync.resolveProviderOverride = func(context.Context, int) (Provider, error) {
+		return newTestGiteaProvider(t, func(request *http.Request) (*http.Response, error) {
+			if request.Method == http.MethodPatch {
+				patched = true
+			}
+			return f.forge.roundTrip(request)
+		}), nil
+	}
+
+	f.sync.PushStatusToIssue(ctx, itemID, f.closedStatus)
+
+	if !patched {
+		t.Fatal("no PATCH sent: the push must not be dropped while an inbound sync holds the lock")
+	}
+}
