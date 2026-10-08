@@ -2568,6 +2568,24 @@ var Catalog = []Migration{
 		SQLite:        "ALTER TABLE llm_usage ADD COLUMN calls INTEGER NOT NULL DEFAULT 1",
 		Postgres:      "ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS calls INTEGER NOT NULL DEFAULT 1",
 	},
+	{
+		Version:       "20261012_item_scm_links_ci_status",
+		Name:          "Store the combined CI status of pull request links (WCORE-68)",
+		CheckSQLite:   sqliteColumnCheck("item_scm_links", "ci_state"),
+		CheckPostgres: pgColumnCheck("item_scm_links", "ci_state"),
+		SQLite: `
+			ALTER TABLE item_scm_links ADD COLUMN ci_state TEXT;
+			ALTER TABLE item_scm_links ADD COLUMN ci_url TEXT;
+			ALTER TABLE item_scm_links ADD COLUMN ci_head_sha TEXT;
+			ALTER TABLE item_scm_links ADD COLUMN ci_updated_at DATETIME;
+		`,
+		Postgres: `
+			ALTER TABLE item_scm_links ADD COLUMN IF NOT EXISTS ci_state TEXT;
+			ALTER TABLE item_scm_links ADD COLUMN IF NOT EXISTS ci_url TEXT;
+			ALTER TABLE item_scm_links ADD COLUMN IF NOT EXISTS ci_head_sha TEXT;
+			ALTER TABLE item_scm_links ADD COLUMN IF NOT EXISTS ci_updated_at TIMESTAMPTZ;
+		`,
+	},
 }
 
 // viewSettingsToolsBackfillIDs lists the workspace tools ids as they existed

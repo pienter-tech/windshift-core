@@ -338,6 +338,33 @@ type RefProvider interface {
 	CompareCommits(ctx context.Context, owner, repo, base, head string) ([]Commit, error)
 }
 
+// CI states shown on a pull request link. A provider maps its own commit
+// status vocabulary onto these three.
+const (
+	CIStatePending = "pending"
+	CIStateSuccess = "success"
+	CIStateFailure = "failure"
+)
+
+// CIStatus is the combined CI result for one commit: one of the CIState
+// values and the web page of the run that explains it.
+type CIStatus struct {
+	State string `json:"state"`
+	URL   string `json:"url,omitempty"`
+}
+
+// CIStatusProvider is an optional interface for providers that report the
+// combined CI status of a commit. The sync feature-detects it with a type
+// assertion; pull requests of other providers carry no CI status. The status
+// is display-only and never triggers automations.
+type CIStatusProvider interface {
+	Provider
+
+	// GetCombinedCIStatus returns the combined status of sha, or nil when no
+	// CI has reported on it.
+	GetCombinedCIStatus(ctx context.Context, owner, repo, sha string) (*CIStatus, error)
+}
+
 // GitHubAppProvider extends Provider for GitHub App specific functionality
 type GitHubAppProvider interface {
 	Provider

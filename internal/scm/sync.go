@@ -795,6 +795,10 @@ func (s *SyncService) processPullRequest(ctx context.Context, provider Provider,
 		}
 	}
 
+	if len(itemIDs) > 0 {
+		s.refreshPullRequestCI(ctx, provider, owner, repo, repoID, pr)
+	}
+
 	// Outbound "@agent" PR-comment trigger (WI-426): on an open linked PR, poll
 	// its comments and continue the PR when a human asks the agent to. Outbound
 	// only — Windshift is typically behind NAT, so no inbound webhook.
@@ -1501,6 +1505,7 @@ func (s *SyncService) updateLinkFromProvider(ctx context.Context, provider Provi
 		if becameMerged && s.durableActionEvents == nil {
 			s.emitPRMergedEvent(workspaceID, itemID, repoID, owner, repo, *pr)
 		}
+		s.refreshPullRequestCI(ctx, provider, owner, repo, repoID, *pr)
 		return nil
 
 	case models.SCMLinkTypeCommit:
