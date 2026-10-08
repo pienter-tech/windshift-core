@@ -12,8 +12,10 @@ import (
 
 // processSmartCommitsForPR applies #comment / #<transition-slug> actions found
 // in the PR body and per-commit messages, once per (PR, commit SHA). Idempotent
-// across re-syncs: the PR body is gated by smart_commits_applied_at on the link
-// row, and each commit SHA is recorded in scm_processed_commits.
+// across re-syncs and across concurrent syncs (the scheduled sync and a
+// webhook or manual sync run on separate SyncService instances): the PR body is
+// claimed through smart_commits_applied_at on the PR's link rows, and each
+// commit SHA through scm_processed_commits, before their actions are applied.
 func (s *SyncService) processSmartCommitsForPR(
 	ctx context.Context,
 	provider Provider,
@@ -29,12 +31,17 @@ func (s *SyncService) processSmartCommitsForPR(
 		return
 	}
 
-	// PR body: once per PR, guarded by smart_commits_applied_at on any link.
-	if !s.prBodyAlreadyApplied(ctx, repoID, pr.Number) {
+	// An earlier sync already ran this PR's smart commits. Stop before
+	// listing its commits again, so re-syncs cost no provider call.
+	if s.prBodyAlreadyApplied(ctx, repoID, pr.Number) {
+		return
+	}
+
+	// PR body: once per PR, claimed through smart_commits_applied_at.
+	if s.claimPRBody(ctx, repoID, pr.Number) {
 		for _, action := range s.detector.ParseSmartCommitActions(pr.Body, workspaceKey) {
 			s.applySmartCommitAction(ctx, workspaceID, action, pr.Author.Email)
 		}
-		s.markPRBodyApplied(ctx, repoID, pr.Number)
 	}
 
 	// Commit messages: once per (SHA, repo), guarded by scm_processed_commits.
@@ -48,7 +55,7 @@ func (s *SyncService) processSmartCommitsForPR(
 	}
 
 	for _, commit := range commits {
-		if s.commitAlreadyProcessed(ctx, repoID, commit.SHA) {
+		if !s.claimCommit(ctx, repoID, commit.SHA) {
 			continue
 		}
 		applied := 0
@@ -57,7 +64,7 @@ func (s *SyncService) processSmartCommitsForPR(
 				applied++
 			}
 		}
-		s.markCommitProcessed(ctx, repoID, commit.SHA, applied)
+		s.recordCommitActionsApplied(ctx, repoID, commit.SHA, applied)
 	}
 }
 
@@ -91,35 +98,70 @@ func (s *SyncService) prBodyAlreadyApplied(ctx context.Context, repoID, prNumber
 	return err == nil && count > 0
 }
 
-func (s *SyncService) markPRBodyApplied(ctx context.Context, repoID, prNumber int) {
-	_, err := s.db.ExecWriteContext(ctx, `
+// claimPRBody reports whether this run applies the PR body's actions. It
+// stamps smart_commits_applied_at on the PR's link rows only where it is still
+// unset, so of two syncs racing on the same merge only one claims the body. A
+// PR without link rows (none of its keys resolved to an item) has nothing to
+// claim; its body is applied, as it always was.
+func (s *SyncService) claimPRBody(ctx context.Context, repoID, prNumber int) bool {
+	result, err := s.db.ExecWriteContext(ctx, `
 		UPDATE item_scm_links SET smart_commits_applied_at = CURRENT_TIMESTAMP
 		WHERE workspace_repository_id = ? AND link_type = 'pull_request'
-		  AND external_id = ?
+		  AND external_id = ? AND smart_commits_applied_at IS NULL
 	`, repoID, strconv.Itoa(prNumber))
-	if err != nil {
-		slog.Warn("smart commits: failed to mark PR body applied",
-			slog.String("component", "scm"), slog.Int("repo_id", repoID),
-			slog.Int("pr", prNumber), slog.Any("error", err))
+	if err == nil {
+		var claimed int64
+		if claimed, err = result.RowsAffected(); err == nil {
+			return claimed > 0 || !s.prHasLinks(ctx, repoID, prNumber)
+		}
 	}
+	slog.Warn("smart commits: failed to claim PR body",
+		slog.String("component", "scm"), slog.Int("repo_id", repoID),
+		slog.Int("pr", prNumber), slog.Any("error", err))
+	return false
 }
 
-func (s *SyncService) commitAlreadyProcessed(ctx context.Context, repoID int, sha string) bool {
+func (s *SyncService) prHasLinks(ctx context.Context, repoID, prNumber int) bool {
 	var count int
 	err := s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM scm_processed_commits
-		WHERE commit_sha = ? AND workspace_repository_id = ?
-	`, sha, repoID).Scan(&count)
-	return err == nil && count > 0
+		SELECT COUNT(*) FROM item_scm_links
+		WHERE workspace_repository_id = ? AND link_type = 'pull_request'
+		  AND external_id = ?
+	`, repoID, strconv.Itoa(prNumber)).Scan(&count)
+	return err != nil || count > 0
 }
 
-func (s *SyncService) markCommitProcessed(ctx context.Context, repoID int, sha string, applied int) {
-	_, err := s.db.ExecWriteContext(ctx, `
+// claimCommit records the commit in scm_processed_commits and reports whether
+// this run inserted it, so each commit's actions are applied at most once even
+// when two syncs process the same PR concurrently.
+func (s *SyncService) claimCommit(ctx context.Context, repoID int, sha string) bool {
+	result, err := s.db.ExecWriteContext(ctx, `
 		INSERT INTO scm_processed_commits (commit_sha, workspace_repository_id, actions_applied)
-		VALUES (?, ?, ?)
-	`, sha, repoID, applied)
+		VALUES (?, ?, 0)
+		ON CONFLICT (commit_sha, workspace_repository_id) DO NOTHING
+	`, sha, repoID)
+	if err == nil {
+		var claimed int64
+		if claimed, err = result.RowsAffected(); err == nil {
+			return claimed > 0
+		}
+	}
+	slog.Warn("smart commits: failed to claim commit",
+		slog.String("component", "scm"), slog.String("sha", sha),
+		slog.Int("repo_id", repoID), slog.Any("error", err))
+	return false
+}
+
+func (s *SyncService) recordCommitActionsApplied(ctx context.Context, repoID int, sha string, applied int) {
+	if applied == 0 {
+		return
+	}
+	_, err := s.db.ExecWriteContext(ctx, `
+		UPDATE scm_processed_commits SET actions_applied = ?
+		WHERE commit_sha = ? AND workspace_repository_id = ?
+	`, applied, sha, repoID)
 	if err != nil {
-		slog.Warn("smart commits: failed to record processed commit",
+		slog.Warn("smart commits: failed to record applied commit actions",
 			slog.String("component", "scm"), slog.String("sha", sha),
 			slog.Int("repo_id", repoID), slog.Any("error", err))
 	}

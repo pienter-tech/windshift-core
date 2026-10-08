@@ -207,21 +207,54 @@ func (h *SCMItemLinksHandler) webhookTarget(w http.ResponseWriter, r *http.Reque
 	return target, secret, true
 }
 
-// acceptWebhookDelivery records a verified delivery, acknowledges it, and runs
-// process in the background unless the delivery ID was already seen.
+// Delivery outcomes recorded as a delivery's status once its work ended.
+const (
+	// webhookDeliveryProcessed: the delivery ran its work, or the repository
+	// sync it started or queued succeeded.
+	webhookDeliveryProcessed = "processed"
+	// webhookDeliveryFailed: that work or sync failed; the error message
+	// says why.
+	webhookDeliveryFailed = "failed"
+	// webhookDeliveryCoalesced: the delivery was folded into a repository
+	// sync an earlier delivery or manual sync had already queued. Its error
+	// message is that sync's error, if it failed.
+	webhookDeliveryCoalesced = "coalesced"
+)
+
+// webhookWork is the background work a verified delivery schedules: a sync
+// of the target's repository, which deliveries and manual syncs share per
+// repository, or other work the delivery runs on its own.
+type webhookWork struct {
+	syncRepository bool
+	process        func(context.Context) error
+}
+
+// repositorySyncWork syncs the delivery's repository.
+var repositorySyncWork = &webhookWork{syncRepository: true}
+
+// acceptWebhookDelivery records a verified delivery, acknowledges it, and
+// schedules its work unless the delivery ID was already seen. A repository
+// sync is scheduled before the acknowledgement, so deliveries join the
+// repository's syncs in the order they arrive.
 func (h *SCMItemLinksHandler) acceptWebhookDelivery(
 	w http.ResponseWriter,
 	r *http.Request,
 	target repository.SCMWebhookTarget,
 	deliveryID, eventType string,
 	summary map[string]any,
-	process func(context.Context) error,
+	work *webhookWork,
 ) {
 	summaryJSON, _ := json.Marshal(summary)
 	inserted, err := h.webhookRepo.RecordPendingDelivery(r.Context(), target.ID, deliveryID, eventType, string(summaryJSON))
 	if err != nil {
 		respondInternalError(w, r, err)
 		return
+	}
+	started := time.Now()
+	var run *repositorySyncRun
+	shared := false
+	if inserted && work.syncRepository {
+		run, shared = h.repositorySyncs.schedule(target.WorkspaceRepositoryID)
 	}
 	respondJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
 	if !inserted {
@@ -231,15 +264,27 @@ func (h *SCMItemLinksHandler) acceptWebhookDelivery(
 	providerName := manualWebhookProviders[target.ProviderType].name
 	baseCtx := context.WithoutCancel(r.Context())
 	go func() {
-		started := time.Now()
-		ctx, cancel := context.WithTimeout(baseCtx, 45*time.Second)
-		defer cancel()
-		processErr := process(ctx)
-		status, errorMessage := "processed", ""
-		if processErr != nil {
-			status, errorMessage = "failed", processErr.Error()
-			slog.Warn(providerName+" webhook sync failed", slog.Int("repository_id", target.WorkspaceRepositoryID), slog.Any("error", processErr))
+		var processErr error
+		if run != nil {
+			// The run has its own timeout.
+			processErr = run.wait(baseCtx)
+		} else {
+			ctx, cancel := context.WithTimeout(baseCtx, 45*time.Second)
+			processErr = work.process(ctx)
+			cancel()
 		}
+		status, errorMessage := webhookDeliveryProcessed, ""
+		if processErr != nil {
+			status, errorMessage = webhookDeliveryFailed, processErr.Error()
+			if !shared {
+				slog.Warn(providerName+" webhook sync failed", slog.Int("repository_id", target.WorkspaceRepositoryID), slog.Any("error", processErr))
+			}
+		}
+		if shared {
+			status = webhookDeliveryCoalesced
+		}
+		ctx, cancel := context.WithTimeout(baseCtx, 10*time.Second)
+		defer cancel()
 		updateErr := h.webhookRepo.CompleteDelivery(ctx, target.ID, deliveryID, status, errorMessage, time.Since(started))
 		if updateErr != nil {
 			slog.Warn(providerName+" webhook delivery update failed", slog.Any("error", updateErr), slog.String("delivery_id", deliveryID))

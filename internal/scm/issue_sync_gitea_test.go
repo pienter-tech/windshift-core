@@ -244,7 +244,7 @@ func newGiteaIssueSyncFixture(t *testing.T) *giteaIssueSyncFixture {
 	f := &giteaIssueSyncFixture{db: db}
 	f.userID = insert(`INSERT INTO users (email, username, first_name, last_name) VALUES ('alice@example.test', 'alice', 'Alice', 'Example')`)
 	workspaceID := insert(`INSERT INTO workspaces (name, key) VALUES ('Forgejo issues', 'FGI')`)
-	f.milestoneID = insert(`INSERT INTO milestones (name, is_global, workspace_id) VALUES ('Version 1', 0, ?)`, workspaceID)
+	f.milestoneID = insert(`INSERT INTO milestones (name, is_global, workspace_id) VALUES ('Version 1', false, ?)`, workspaceID)
 	providerID := insert(`INSERT INTO scm_providers (slug, name, provider_type, auth_method, enabled) VALUES ('forgejo', 'Forgejo', 'gitea', 'pat', true)`)
 	connectionID := insert(`INSERT INTO workspace_scm_connections (workspace_id, scm_provider_id) VALUES (?, ?)`, workspaceID, providerID)
 	f.repoID = insert(`INSERT INTO workspace_repositories (workspace_scm_connection_id, repository_external_id, repository_name, repository_url) VALUES (?, '42', 'pienter/app', 'https://git.example/pienter/app')`, connectionID)

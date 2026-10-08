@@ -26,6 +26,7 @@ type SCMItemLinksHandler struct {
 	db                database.Database
 	encryption        *sso.SecretEncryption
 	syncService       *scm.SyncService
+	repositorySyncs   *repositorySyncs
 	issueSync         webhookIssueSync
 	webhookRepo       *repository.SCMWebhookRepository
 	permissionService *services.PermissionService
@@ -105,10 +106,12 @@ type CreateBranchForItemResponse struct {
 
 // NewSCMItemLinksHandler creates a new item SCM links handler
 func NewSCMItemLinksHandler(db database.Database, encryption *sso.SecretEncryption, permissionService *services.PermissionService, baseURL string) *SCMItemLinksHandler {
+	syncService := scm.NewSyncService(db, encryption)
 	return &SCMItemLinksHandler{
 		db:                db,
 		encryption:        encryption,
-		syncService:       scm.NewSyncService(db, encryption),
+		syncService:       syncService,
+		repositorySyncs:   newRepositorySyncs(syncService.SyncRepository, repositorySyncTimeout),
 		webhookRepo:       repository.NewSCMWebhookRepository(db),
 		permissionService: permissionService,
 		baseURL:           strings.TrimRight(baseURL, "/"),
@@ -132,6 +135,21 @@ func (h *SCMItemLinksHandler) SetIssueSync(issueSync webhookIssueSync) {
 func (h *SCMItemLinksHandler) SetActionEvents(emitter scm.ActionEventEmitter, recorder scm.DurableActionEventRecorder) {
 	h.syncService.SetActionEvents(emitter)
 	h.syncService.SetDurableActionEvents(recorder)
+}
+
+// SetSmartCommitServices wires smart commits into the handler's sync service,
+// so a webhook-triggered or manual repository sync that sees a merge first
+// applies its smart commits as the scheduled sync does.
+func (h *SCMItemLinksHandler) SetSmartCommitServices(
+	workflowService *services.WorkflowService,
+	commentService *services.CommentService,
+	permissionService *services.PermissionService,
+	conditionService *services.ConditionService,
+	approvalService *services.ApprovalService,
+	itemRepo *repository.ItemRepository,
+) {
+	h.syncService.SetSmartCommitServices(workflowService, commentService, permissionService, conditionService, itemRepo)
+	h.syncService.SetApprovalService(approvalService)
 }
 
 // GetItemSCMLinks returns all SCM links for an item
@@ -506,10 +524,14 @@ func (h *SCMItemLinksHandler) SyncWorkspaceRepository(w http.ResponseWriter, r *
 		return
 	}
 
+	// The sync is shared with the webhook deliveries of the repository: the
+	// request starts it when none runs, and otherwise waits for the follow-up
+	// sync that starts after the running one.
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
-	err = h.syncService.SyncRepository(ctx, repoID)
+	run, _ := h.repositorySyncs.schedule(repoID)
+	err = run.wait(ctx)
 	if err != nil {
 		slog.Error("failed to sync repository", slog.String("component", "scm_item_links"), slog.Any("error", err))
 		respondInternalError(w, r, fmt.Errorf("failed to sync repository: %w", err))
