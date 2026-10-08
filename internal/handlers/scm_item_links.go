@@ -26,6 +26,7 @@ type SCMItemLinksHandler struct {
 	db                database.Database
 	encryption        *sso.SecretEncryption
 	syncService       *scm.SyncService
+	issueSync         webhookIssueSync
 	webhookRepo       *repository.SCMWebhookRepository
 	permissionService *services.PermissionService
 	baseURL           string
@@ -112,6 +113,17 @@ func NewSCMItemLinksHandler(db database.Database, encryption *sso.SecretEncrypti
 		permissionService: permissionService,
 		baseURL:           strings.TrimRight(baseURL, "/"),
 	}
+}
+
+// webhookIssueSync runs the issue sync of a repository for a webhook delivery.
+type webhookIssueSync interface {
+	SyncRepository(ctx context.Context, workspaceRepositoryID int) error
+}
+
+// SetIssueSync wires the issue sync that issue webhook deliveries schedule.
+// Without it, those deliveries are ignored and polling syncs the issues.
+func (h *SCMItemLinksHandler) SetIssueSync(issueSync webhookIssueSync) {
+	h.issueSync = issueSync
 }
 
 // SetActionEvents wires the action engine into the handler's sync service, so
