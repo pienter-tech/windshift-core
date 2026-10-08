@@ -184,7 +184,7 @@ func TestGiteaWebhookSettingsShowCallbackURLAndRotateSecret(t *testing.T) {
 	if !config.Configured || config.CallbackURL != wantURL || config.Secret != "" {
 		t.Fatalf("unexpected config: %#v", config)
 	}
-	if strings.Join(config.Events, ",") != "pull_request,status,action_run_success,action_run_failure,issues,issue_assign,issue_label,issue_milestone,issue_comment" {
+	if strings.Join(config.Events, ",") != "push,create,release,pull_request,pull_request_comment,status,action_run_success,action_run_failure,issues,issue_assign,issue_label,issue_milestone,issue_comment" {
 		t.Fatalf("unexpected events: %#v", config.Events)
 	}
 
@@ -217,6 +217,84 @@ func TestGiteaWebhookPullRequestSchedulesRepositorySync(t *testing.T) {
 			eventType, status, errorMessage := f.waitForDelivery(t, "delivery-1")
 			if eventType != "pull_request" || status != "failed" || !strings.Contains(errorMessage, "failed to create provider") {
 				t.Fatalf("sync was not scheduled for the repository: event=%q status=%q error=%q", eventType, status, errorMessage)
+			}
+		})
+	}
+}
+
+// giteaRefBodies are the push, create, and release deliveries the receiver
+// syncs the repository for, keyed by case name, with their event and a
+// fragment their delivery summary must contain.
+func giteaRefBodies(repositoryID int64) map[string]struct {
+	event   string
+	body    []byte
+	summary string
+} {
+	repository := map[string]any{"id": repositoryID, "full_name": "pienter/app"}
+	push, _ := json.Marshal(map[string]any{
+		"ref": "refs/heads/feature/FGJ-1-save", "before": "abc123", "after": "def456",
+		"commits":       []map[string]any{{"id": "def456", "message": "FGJ-1 Fix save"}},
+		"total_commits": 1,
+		"repository":    repository,
+	})
+	branch, _ := json.Marshal(map[string]any{"sha": "def456", "ref": "feature/FGJ-1-save", "ref_type": "branch", "repository": repository})
+	tag, _ := json.Marshal(map[string]any{"sha": "def456", "ref": "v1.2.0", "ref_type": "tag", "repository": repository})
+	release, _ := json.Marshal(map[string]any{
+		"action":     "published",
+		"release":    map[string]any{"id": 5, "tag_name": "v1.2.0", "name": "v1.2.0"},
+		"repository": repository,
+	})
+	return map[string]struct {
+		event   string
+		body    []byte
+		summary string
+	}{
+		"push":           {"push", push, `"after":"def456"`},
+		"branch created": {"create", branch, `"ref_type":"branch"`},
+		"tag created":    {"create", tag, `"ref_type":"tag"`},
+		"release":        {"release", release, `"tag":"v1.2.0"`},
+	}
+}
+
+func TestGiteaWebhookRefDeliverySchedulesRepositorySync(t *testing.T) {
+	for name, tc := range giteaRefBodies(42) {
+		t.Run(name, func(t *testing.T) {
+			f := newGiteaWebhookFixture(t)
+			recorder := f.deliver(tc.body, map[string]string{
+				"X-Forgejo-Event":     tc.event,
+				"X-Forgejo-Signature": giteaSignature(f.secret, tc.body),
+				"X-Forgejo-Delivery":  "ref-1",
+			})
+			if recorder.Code != http.StatusAccepted || !strings.Contains(recorder.Body.String(), `"accepted":true`) {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			// The fixture's connection has no credentials, so the scheduled
+			// sync loads this repository and then fails to build its provider.
+			eventType, status, errorMessage := f.waitForDelivery(t, "ref-1")
+			if eventType != tc.event || status != "failed" || !strings.Contains(errorMessage, "failed to create provider") {
+				t.Fatalf("sync was not scheduled for the repository: event=%q status=%q error=%q", eventType, status, errorMessage)
+			}
+			var summary string
+			if err := f.db.QueryRow(`SELECT payload_summary FROM scm_webhook_deliveries WHERE delivery_id = 'ref-1'`).Scan(&summary); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(summary, tc.summary) {
+				t.Fatalf("summary lacks %s: %s", tc.summary, summary)
+			}
+		})
+	}
+}
+
+func TestGiteaWebhookRefDeliveryForOtherRepositoryIsRejected(t *testing.T) {
+	for name, tc := range giteaRefBodies(43) {
+		t.Run(name, func(t *testing.T) {
+			f := newGiteaWebhookFixture(t)
+			recorder := f.deliver(tc.body, map[string]string{"X-Forgejo-Event": tc.event, "X-Forgejo-Signature": giteaSignature(f.secret, tc.body)})
+			if recorder.Code != http.StatusForbidden {
+				t.Fatalf("status=%d want 403 body=%s", recorder.Code, recorder.Body.String())
+			}
+			if count := f.deliveryCount(t); count != 0 {
+				t.Fatalf("recorded %d deliveries, want none", count)
 			}
 		})
 	}
@@ -315,7 +393,7 @@ func TestGiteaWebhookRejectsOrIgnoresWithoutScheduling(t *testing.T) {
 		{"wrong secret", "pull_request", 42, func(_ string, body []byte) string { return giteaSignature("not-the-secret", body) }, http.StatusUnauthorized},
 		{"malformed signature", "pull_request", 42, func(string, []byte) string { return "not-hex" }, http.StatusUnauthorized},
 		{"other repository", "pull_request", 43, giteaSignature, http.StatusForbidden},
-		{"unhandled event", "push", 42, giteaSignature, http.StatusAccepted},
+		{"unhandled event", "delete", 42, giteaSignature, http.StatusAccepted},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -407,33 +485,57 @@ func TestGiteaWebhookIssueDeliverySchedulesIssueSync(t *testing.T) {
 	}
 }
 
-func TestGiteaWebhookIgnoresPullRequestCommentsAndUnwiredIssueSync(t *testing.T) {
-	cases := []struct {
-		name   string
-		event  string
-		isPull bool
-		wired  bool
-	}{
-		{"pull request comment", "issue_comment", true, true},
-		{"issue sync not wired", "issues", false, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+// A pull request's comments arrive as issue_comment with the issue marked
+// as a pull request; they sync the repository, whose sync reads the comments
+// of linked pull requests, whether or not issue sync is wired.
+func TestGiteaWebhookPullRequestCommentSchedulesRepositorySync(t *testing.T) {
+	for _, wired := range []bool{true, false} {
+		t.Run("issue sync wired="+strconv.FormatBool(wired), func(t *testing.T) {
 			f := newGiteaWebhookFixture(t)
 			issueSync := &recordedIssueSync{}
-			if tc.wired {
+			if wired {
 				f.handler.SetIssueSync(issueSync)
 			}
-			body := giteaIssueBody(tc.event, tc.isPull)
-			recorder := f.deliver(body, map[string]string{"X-Forgejo-Event": tc.event, "X-Forgejo-Signature": giteaSignature(f.secret, body)})
+			body := giteaIssueBody("issue_comment", true)
+			recorder := f.deliver(body, map[string]string{
+				"X-Forgejo-Event":     "issue_comment",
+				"X-Forgejo-Signature": giteaSignature(f.secret, body),
+				"X-Forgejo-Delivery":  "comment-1",
+			})
+			if recorder.Code != http.StatusAccepted || !strings.Contains(recorder.Body.String(), `"accepted":true`) {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			// The fixture's connection has no credentials, so the scheduled
+			// sync loads this repository and then fails to build its provider.
+			eventType, status, errorMessage := f.waitForDelivery(t, "comment-1")
+			if eventType != "issue_comment" || status != "failed" || !strings.Contains(errorMessage, "failed to create provider") {
+				t.Fatalf("sync was not scheduled for the repository: event=%q status=%q error=%q", eventType, status, errorMessage)
+			}
+			if got := issueSync.synced(); len(got) != 0 {
+				t.Fatalf("issue sync ran for %v", got)
+			}
+			var summary string
+			if err := f.db.QueryRow(`SELECT payload_summary FROM scm_webhook_deliveries WHERE delivery_id = 'comment-1'`).Scan(&summary); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(summary, `"number":3`) || !strings.Contains(summary, `"pull_request":true`) {
+				t.Fatalf("summary does not name the pull request: %s", summary)
+			}
+		})
+	}
+}
+
+func TestGiteaWebhookIgnoresIssueDeliveryWithoutIssueSync(t *testing.T) {
+	for _, event := range []string{"issues", "issue_comment"} {
+		t.Run(event, func(t *testing.T) {
+			f := newGiteaWebhookFixture(t)
+			body := giteaIssueBody(event, false)
+			recorder := f.deliver(body, map[string]string{"X-Forgejo-Event": event, "X-Forgejo-Signature": giteaSignature(f.secret, body)})
 			if recorder.Code != http.StatusAccepted || !strings.Contains(recorder.Body.String(), `"ignored":true`) {
 				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 			}
 			if count := f.deliveryCount(t); count != 0 {
 				t.Fatalf("recorded %d deliveries, want none", count)
-			}
-			if got := issueSync.synced(); len(got) != 0 {
-				t.Fatalf("issue sync ran for %v", got)
 			}
 		})
 	}
