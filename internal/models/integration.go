@@ -797,7 +797,8 @@ const (
 	// SCM pull-request lifecycle triggers emitted by the repo sync loop when
 	// a synced repository discovers a new pull request linked to an item
 	// (scm_pr_linked) or when a linked pull request transitions to merged
-	// (scm_pr_merged).
+	// (scm_pr_merged). The PR-link refresh also emits scm_pr_merged when it
+	// sees the merge first; each merge emits once.
 	ActionTriggerSCMPRLinked ActionTriggerType = "scm_pr_linked"
 	ActionTriggerSCMPRMerged ActionTriggerType = "scm_pr_merged"
 
