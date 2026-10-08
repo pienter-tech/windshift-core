@@ -34,6 +34,7 @@ cx
 !/internal/services/planning_milestones_release_test.go
 !/internal/database/milestone_comments_schema_test.go
 !/internal/repository/milestone_comment_repository_test.go
+!/internal/repository/scm_workspace_repository_test.go
 !/internal/services/milestone_comment_service_test.go
 !/internal/services/milestone_page_link_service_test.go
 !/internal/database/milestone_activity_schema_test.go
@@ -68,6 +69,7 @@ cx
 !frontend/src/lib/features/items/zammadPanelContext.spec.js
 !frontend/src/lib/features/items/ZammadLinkResolver.spec.js
 !frontend/src/lib/features/items/scmCIStatus.spec.js
+!frontend/src/lib/settings/issueSyncMappings.spec.js
 !internal/repository/zammad_repository_test.go
 
 # Output of the go coverage tool, specifically when used with LiteIDE

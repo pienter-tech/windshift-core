@@ -15,7 +15,7 @@ describe('ciStatusDisplay', () => {
   });
 
   it('shows nothing for pull requests without CI status, as GitHub and GitLab links are', () => {
-    expect(ciStatusDisplay({ link_type: 'pull_request', provider_type: 'github' })).toBeNull();
+    expect(ciStatusDisplay({ link_type: 'pull_request' })).toBeNull();
     expect(ciStatusDisplay({ link_type: 'pull_request', ci_state: 'unknown' })).toBeNull();
   });
 

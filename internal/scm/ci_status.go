@@ -27,7 +27,12 @@ var ciStatusLocks sync.Map // workspace repository ID -> *sync.Mutex
 
 func lockRepositoryCIStatus(repoID int) func() {
 	value, _ := ciStatusLocks.LoadOrStore(repoID, &sync.Mutex{})
-	mu := value.(*sync.Mutex)
+	mu, ok := value.(*sync.Mutex)
+	if !ok {
+		// Programmer error — ciStatusLocks is populated only by this
+		// function and only ever stores *sync.Mutex.
+		panic(fmt.Sprintf("ciStatusLocks: unexpected value type %T", value))
+	}
 	mu.Lock()
 	return mu.Unlock
 }

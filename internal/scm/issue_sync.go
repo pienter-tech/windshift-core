@@ -43,7 +43,12 @@ var issueSyncConfigLocks sync.Map
 // ends, and returns the release function.
 func lockIssueSyncConfig(ctx context.Context, configID int) (func(), error) {
 	slot, _ := issueSyncConfigLocks.LoadOrStore(configID, make(chan struct{}, 1))
-	lock := slot.(chan struct{})
+	lock, ok := slot.(chan struct{})
+	if !ok {
+		// Programmer error — issueSyncConfigLocks is populated only by this
+		// function and only ever stores chan struct{}.
+		panic(fmt.Sprintf("issueSyncConfigLocks: unexpected value type %T", slot))
+	}
 	select {
 	case lock <- struct{}{}:
 		return func() { <-lock }, nil
@@ -1073,8 +1078,15 @@ func (s *IssueSyncService) syncLabels(ctx context.Context, tx database.Tx, confi
 	case models.IssueSyncLabelMapped:
 		// Use explicit mappings
 		var mappings []models.LabelMapping
-		if err := json.Unmarshal([]byte(config.LabelMappings), &mappings); err != nil {
-			return fmt.Errorf("parse label mappings: %w", err)
+		if raw := strings.TrimSpace(config.LabelMappings); raw != "" {
+			if err := json.Unmarshal([]byte(raw), &mappings); err != nil {
+				return fmt.Errorf("parse label mappings: %w", err)
+			}
+		}
+		// Without mappings there is nothing to map to: leave the item's
+		// labels alone rather than replacing them with an empty set.
+		if len(mappings) == 0 {
+			return nil
 		}
 
 		// Build lookup: issue label name → windshift label ID

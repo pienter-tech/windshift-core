@@ -244,7 +244,7 @@ func newGiteaIssueSyncFixture(t *testing.T) *giteaIssueSyncFixture {
 	f := &giteaIssueSyncFixture{db: db}
 	f.userID = insert(`INSERT INTO users (email, username, first_name, last_name) VALUES ('alice@example.test', 'alice', 'Alice', 'Example')`)
 	workspaceID := insert(`INSERT INTO workspaces (name, key) VALUES ('Forgejo issues', 'FGI')`)
-	f.milestoneID = insert(`INSERT INTO milestones (name, is_global, workspace_id) VALUES ('Version 1', 0, ?)`, workspaceID)
+	f.milestoneID = insert(`INSERT INTO milestones (name, is_global, workspace_id) VALUES ('Version 1', false, ?)`, workspaceID)
 	providerID := insert(`INSERT INTO scm_providers (slug, name, provider_type, auth_method, enabled) VALUES ('forgejo', 'Forgejo', 'gitea', 'pat', true)`)
 	connectionID := insert(`INSERT INTO workspace_scm_connections (workspace_id, scm_provider_id) VALUES (?, ?)`, workspaceID, providerID)
 	f.repoID = insert(`INSERT INTO workspace_repositories (workspace_scm_connection_id, repository_external_id, repository_name, repository_url) VALUES (?, '42', 'pienter/app', 'https://git.example/pienter/app')`, connectionID)
@@ -375,4 +375,73 @@ func TestIssueSyncRunsOfOneConfigDoNotOverlap(t *testing.T) {
 		t.Fatal(err)
 	}
 	again()
+}
+
+func TestIssueSyncMappedLabelsWithoutMappingsKeepItemLabels(t *testing.T) {
+	f := newGiteaIssueSyncFixture(t)
+	ctx := context.Background()
+	if err := f.sync.SyncRepository(ctx, f.repoID); err != nil {
+		t.Fatal(err)
+	}
+	var itemID int
+	if err := f.db.QueryRow(`SELECT item_id FROM issue_sync_items WHERE github_issue_number = 3`).Scan(&itemID); err != nil {
+		t.Fatal(err)
+	}
+	result, err := f.db.Exec(`INSERT INTO labels (name, color) VALUES ('triage', '#00aa00')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	triageID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`INSERT INTO item_labels (item_id, label_id) VALUES (?, ?)`, itemID, triageID); err != nil {
+		t.Fatal(err)
+	}
+	itemLabels := func() string {
+		t.Helper()
+		rows, err := f.db.Query(`SELECT l.name FROM item_labels il JOIN labels l ON l.id = il.label_id WHERE il.item_id = ? ORDER BY l.name`, itemID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var names []string
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				t.Fatal(err)
+			}
+			names = append(names, name)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return strings.Join(names, ",")
+	}
+	// resyncWith switches to mapped mode with the given mappings and syncs a
+	// newer version of the issue, so the item is updated from it.
+	resyncWith := func(labelMappings string, updatedAt time.Time) {
+		t.Helper()
+		if _, err := f.db.Exec(`UPDATE issue_sync_configs SET label_sync_mode = ?, label_mappings = ?`, models.IssueSyncLabelMapped, labelMappings); err != nil {
+			t.Fatal(err)
+		}
+		f.forge.mu.Lock()
+		f.forge.issue["updated_at"] = updatedAt.UTC().Format(time.RFC3339)
+		f.forge.mu.Unlock()
+		if err := f.sync.SyncRepository(ctx, f.repoID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for i, empty := range []string{`[]`, ``} {
+		resyncWith(empty, time.Now().Add(time.Duration(i+1)*time.Minute))
+		if got := itemLabels(); got != "bug,triage" {
+			t.Fatalf("mapped mode with mappings %q left labels %q; want bug,triage untouched", empty, got)
+		}
+	}
+
+	resyncWith(fmt.Sprintf(`[{"github_label": "bug", "windshift_label_id": %d}]`, triageID), time.Now().Add(3*time.Minute))
+	if got := itemLabels(); got != "triage" {
+		t.Fatalf("mapped mode with a bug mapping left labels %q; want the mapped triage label only", got)
+	}
 }
