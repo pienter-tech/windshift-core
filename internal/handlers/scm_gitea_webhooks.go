@@ -17,8 +17,12 @@ import (
 // giteaWebhookEvents are the Gitea/Forgejo events to select on the repository
 // webhook; giteaWebhookAction must handle each of them. Forgejo has no commit
 // status event and reports Forgejo Actions results as action_run_* events;
-// Gitea sends commit statuses as the status event.
-var giteaWebhookEvents = []string{"pull_request", "status", "action_run_success", "action_run_failure"}
+// Gitea sends commit statuses as the status event. The issue_assign,
+// issue_label, and issue_milestone events are delivered as issues.
+var giteaWebhookEvents = []string{
+	"pull_request", "status", "action_run_success", "action_run_failure",
+	"issues", "issue_assign", "issue_label", "issue_milestone", "issue_comment",
+}
 
 type giteaWebhookRepository struct {
 	ID       int64  `json:"id"`
@@ -31,6 +35,13 @@ type giteaWebhookPayload struct {
 	PullRequest struct {
 		Merged bool `json:"merged"`
 	} `json:"pull_request"`
+	// Issue and IsPull are set on issues and issue_comment deliveries; a pull
+	// request's comments also arrive as issue_comment.
+	Issue struct {
+		Number      int       `json:"number"`
+		PullRequest *struct{} `json:"pull_request"`
+	} `json:"issue"`
+	IsPull     bool                   `json:"is_pull"`
 	Repository giteaWebhookRepository `json:"repository"`
 	// SHA and State are set on a Gitea commit status delivery.
 	SHA   string `json:"sha"`
@@ -102,9 +113,28 @@ func validGiteaSignature(secret string, body []byte, signature string) bool {
 	return hmac.Equal(mac.Sum(nil), provided)
 }
 
+// isGiteaIssueEvent reports whether eventType reports a change to an issue
+// or its comments.
+func isGiteaIssueEvent(eventType string) bool {
+	return eventType == "issues" || eventType == "issue_comment"
+}
+
+// isPullRequest reports whether an issue delivery is about a pull request.
+func (p giteaWebhookPayload) isPullRequest() bool {
+	return p.IsPull || p.Issue.PullRequest != nil
+}
+
+// issueNumber returns the issue an issue delivery is about.
+func (p giteaWebhookPayload) issueNumber() int {
+	if p.Issue.Number != 0 {
+		return p.Issue.Number
+	}
+	return p.Number
+}
+
 // giteaWebhookHandled reports whether Windshift acts on eventType.
 func giteaWebhookHandled(eventType string) bool {
-	return eventType == "pull_request" || isGiteaCIEvent(eventType)
+	return eventType == "pull_request" || isGiteaCIEvent(eventType) || isGiteaIssueEvent(eventType)
 }
 
 // giteaWebhookAction returns the work a delivery of eventType schedules for
@@ -124,6 +154,18 @@ func (h *SCMItemLinksHandler) giteaWebhookAction(eventType string, repoID int, p
 		sha := payload.commitSHA()
 		return func(ctx context.Context) error {
 			return h.syncService.RefreshPullRequestCIForCommit(ctx, repoID, sha)
+		}
+	case isGiteaIssueEvent(eventType):
+		// Pull request comments are not issue sync's; the pull request
+		// sync does not read comments either.
+		if payload.isPullRequest() || h.issueSync == nil {
+			return nil
+		}
+		// The issue sync of the repository's config picks the change up
+		// with every other one since its last run. Polling still catches a
+		// missed delivery.
+		return func(ctx context.Context) error {
+			return h.issueSync.SyncRepository(ctx, repoID)
 		}
 	default:
 		return nil
@@ -164,21 +206,29 @@ func (h *SCMItemLinksHandler) ReceiveGiteaWebhook(w http.ResponseWriter, r *http
 		respondJSON(w, http.StatusForbidden, map[string]string{"error": "repository mismatch"})
 		return
 	}
+	action := h.giteaWebhookAction(eventType, target.WorkspaceRepositoryID, payload)
+	if action == nil {
+		respondJSON(w, http.StatusAccepted, map[string]bool{"ignored": true})
+		return
+	}
 	deliveryID := giteaWebhookHeader(r, "Delivery")
 	if deliveryID == "" {
 		digest := sha256.Sum256(body)
 		deliveryID = hex.EncodeToString(digest[:])
 	}
 	summary := map[string]any{"event": eventType, "repository_id": repository.ID, "path": repository.FullName, "action": payload.Action}
-	if isGiteaCIEvent(eventType) {
+	switch {
+	case isGiteaCIEvent(eventType):
 		summary["sha"] = payload.commitSHA()
 		summary["state"] = payload.State
 		if payload.State == "" {
 			summary["state"] = payload.Run.Status
 		}
-	} else {
+	case isGiteaIssueEvent(eventType):
+		summary["number"] = payload.issueNumber()
+	default:
 		summary["number"] = payload.Number
 		summary["merged"] = payload.PullRequest.Merged
 	}
-	h.acceptWebhookDelivery(w, r, target, deliveryID, eventType, summary, h.giteaWebhookAction(eventType, target.WorkspaceRepositoryID, payload))
+	h.acceptWebhookDelivery(w, r, target, deliveryID, eventType, summary, action)
 }

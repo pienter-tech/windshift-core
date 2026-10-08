@@ -406,7 +406,7 @@ export default {
     "rotateWebhookSecret": "비밀 값 교체",
     "webhookSecretOnce": "지금 비밀 값을 복사하세요. 다시 표시되지 않습니다.",
     "giteaWebhook": "Forgejo / Gitea 웹훅",
-    "giteaWebhookHelp": "이 대상 URL과 비밀 값, POST 콘텐츠 유형 application/json, 풀 리퀘스트 이벤트로 Forgejo 또는 Gitea 웹훅을 추가하세요. 풀 리퀘스트 이벤트는 몇 초 안에 저장소를 동기화합니다. 풀 리퀘스트의 CI 상태를 몇 초 안에 갱신하려면 Actions 실행 이벤트(Forgejo) 또는 커밋 상태 이벤트(Gitea)도 선택하세요.",
+    "giteaWebhookHelp": "이 대상 URL과 비밀 값, POST 콘텐츠 유형 application/json, 풀 리퀘스트 이벤트로 Forgejo 또는 Gitea 웹훅을 추가하세요. 풀 리퀘스트 이벤트는 몇 초 안에 저장소를 동기화합니다. 풀 리퀘스트의 CI 상태를 몇 초 안에 갱신하려면 Actions 실행 이벤트(Forgejo) 또는 커밋 상태 이벤트(Gitea)도 선택하세요. 이슈 동기화를 몇 초 안에 하려면 담당자 지정, 라벨, 마일스톤을 포함한 이슈 이벤트와 이슈 댓글 이벤트도 선택하세요.",
     "webhookSecretRotated": "웹훅 비밀 값을 생성했습니다",
     "webhookLoadFailed": "웹훅 설정을 불러오지 못했습니다",
     "webhookRotateFailed": "웹훅 비밀 값을 생성하지 못했습니다"

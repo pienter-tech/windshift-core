@@ -27,7 +27,7 @@ var (
 )
 
 type ItemIssueSync interface {
-	PushStatusToGitHub(context.Context, int, int)
+	PushStatusToIssue(context.Context, int, int)
 }
 
 type ItemListRequest struct {
@@ -1376,7 +1376,7 @@ func (s *ItemApplicationService) syncStatus(ctx context.Context, itemID int, sta
 	go func(status int) {
 		syncContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
-		s.issueSync.PushStatusToGitHub(syncContext, itemID, status)
+		s.issueSync.PushStatusToIssue(syncContext, itemID, status)
 	}(*statusID)
 }
 

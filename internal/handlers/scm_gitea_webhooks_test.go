@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -183,7 +184,7 @@ func TestGiteaWebhookSettingsShowCallbackURLAndRotateSecret(t *testing.T) {
 	if !config.Configured || config.CallbackURL != wantURL || config.Secret != "" {
 		t.Fatalf("unexpected config: %#v", config)
 	}
-	if strings.Join(config.Events, ",") != "pull_request,status,action_run_success,action_run_failure" {
+	if strings.Join(config.Events, ",") != "pull_request,status,action_run_success,action_run_failure,issues,issue_assign,issue_label,issue_milestone,issue_comment" {
 		t.Fatalf("unexpected events: %#v", config.Events)
 	}
 
@@ -326,6 +327,113 @@ func TestGiteaWebhookRejectsOrIgnoresWithoutScheduling(t *testing.T) {
 			}
 			if count := f.deliveryCount(t); count != 0 {
 				t.Fatalf("recorded %d deliveries, want none", count)
+			}
+		})
+	}
+}
+
+// recordedIssueSync records the repositories whose issue sync a delivery ran.
+type recordedIssueSync struct {
+	mu    sync.Mutex
+	repos []int
+}
+
+func (r *recordedIssueSync) SyncRepository(_ context.Context, workspaceRepositoryID int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.repos = append(r.repos, workspaceRepositoryID)
+	return nil
+}
+
+func (r *recordedIssueSync) synced() []int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]int(nil), r.repos...)
+}
+
+// giteaIssueBody is an issues or issue_comment delivery for issue #3, or for
+// pull request #3 when isPull is set.
+func giteaIssueBody(event string, isPull bool) []byte {
+	issue := map[string]any{"number": 3, "title": "Crash on save", "state": "open"}
+	if isPull {
+		issue["pull_request"] = map[string]any{"merged": false}
+	}
+	payload := map[string]any{
+		"action":     "edited",
+		"issue":      issue,
+		"repository": map[string]any{"id": 42, "full_name": "pienter/app"},
+	}
+	if event == "issues" {
+		payload["number"] = 3
+		payload["action"] = "label_updated"
+	} else {
+		payload["comment"] = map[string]any{"id": 77, "body": "Same here"}
+		payload["is_pull"] = isPull
+	}
+	body, _ := json.Marshal(payload)
+	return body
+}
+
+func TestGiteaWebhookIssueDeliverySchedulesIssueSync(t *testing.T) {
+	for _, event := range []string{"issues", "issue_comment"} {
+		t.Run(event, func(t *testing.T) {
+			f := newGiteaWebhookFixture(t)
+			issueSync := &recordedIssueSync{}
+			f.handler.SetIssueSync(issueSync)
+			body := giteaIssueBody(event, false)
+			recorder := f.deliver(body, map[string]string{
+				"X-Forgejo-Event":     event,
+				"X-Forgejo-Signature": giteaSignature(f.secret, body),
+				"X-Forgejo-Delivery":  "issue-1",
+			})
+			if recorder.Code != http.StatusAccepted || !strings.Contains(recorder.Body.String(), `"accepted":true`) {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			eventType, status, errorMessage := f.waitForDelivery(t, "issue-1")
+			if eventType != event || status != "processed" || errorMessage != "" {
+				t.Fatalf("event=%q status=%q error=%q", eventType, status, errorMessage)
+			}
+			if got := issueSync.synced(); len(got) != 1 || got[0] != f.repoID {
+				t.Fatalf("issue sync ran for %v, want repository %d", got, f.repoID)
+			}
+			var summary string
+			if err := f.db.QueryRow(`SELECT payload_summary FROM scm_webhook_deliveries WHERE delivery_id = 'issue-1'`).Scan(&summary); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(summary, `"number":3`) {
+				t.Fatalf("summary does not name the issue: %s", summary)
+			}
+		})
+	}
+}
+
+func TestGiteaWebhookIgnoresPullRequestCommentsAndUnwiredIssueSync(t *testing.T) {
+	cases := []struct {
+		name   string
+		event  string
+		isPull bool
+		wired  bool
+	}{
+		{"pull request comment", "issue_comment", true, true},
+		{"issue sync not wired", "issues", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newGiteaWebhookFixture(t)
+			issueSync := &recordedIssueSync{}
+			if tc.wired {
+				f.handler.SetIssueSync(issueSync)
+			}
+			body := giteaIssueBody(tc.event, tc.isPull)
+			recorder := f.deliver(body, map[string]string{"X-Forgejo-Event": tc.event, "X-Forgejo-Signature": giteaSignature(f.secret, body)})
+			if recorder.Code != http.StatusAccepted || !strings.Contains(recorder.Body.String(), `"ignored":true`) {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			if count := f.deliveryCount(t); count != 0 {
+				t.Fatalf("recorded %d deliveries, want none", count)
+			}
+			if got := issueSync.synced(); len(got) != 0 {
+				t.Fatalf("issue sync ran for %v", got)
 			}
 		})
 	}
