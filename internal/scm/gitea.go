@@ -24,6 +24,7 @@ var (
 	_ IssueCommentProvider         = (*GiteaProvider)(nil) // WI-426: drives the "@agent" PR-comment trigger
 	_ PullRequestReviewProvider    = (*GiteaProvider)(nil)
 	_ RepositoryPermissionProvider = (*GiteaProvider)(nil)
+	_ CIStatusProvider             = (*GiteaProvider)(nil) // Forgejo Actions status on PR links
 )
 
 // GiteaProvider implements the Provider interface for Gitea/Forgejo
@@ -296,6 +297,85 @@ func (g *GiteaProvider) GetCommit(ctx context.Context, owner, repo, sha string) 
 
 	commit := giteaCommitResp.toCommit()
 	return &commit, nil
+}
+
+// giteaCombinedStatus is the combined commit status response. Forgejo Actions
+// posts one status per workflow job on the commit it ran for.
+type giteaCombinedStatus struct {
+	State    string              `json:"state"`
+	Statuses []giteaCommitStatus `json:"statuses"`
+}
+
+// giteaCommitStatus is one status of a commit. Gitea and Forgejo name its
+// state field "status" here, unlike the combined "state".
+type giteaCommitStatus struct {
+	State     string    `json:"status"`
+	TargetURL string    `json:"target_url"`
+	Context   string    `json:"context"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// giteaCIState maps a Gitea/Forgejo commit status state onto the displayed
+// CI state. Warning ranks below pending in Gitea's own ordering, so it shows
+// as a failure; skipped only wins the combined state when every status was
+// skipped, which blocks nothing.
+func giteaCIState(state string) string {
+	switch strings.ToLower(state) {
+	case "pending":
+		return CIStatePending
+	case "success", "skipped":
+		return CIStateSuccess
+	case "error", "failure", "warning":
+		return CIStateFailure
+	default:
+		return ""
+	}
+}
+
+// GetCombinedCIStatus returns the combined commit status of sha. The link is
+// the target of the most recently updated status that agrees with the
+// combined state: the failing run when CI failed, the running one while it is
+// pending, and the latest finished run when everything passed.
+func (g *GiteaProvider) GetCombinedCIStatus(ctx context.Context, owner, repo, sha string) (*CIStatus, error) {
+	reqURL := g.apiURL(fmt.Sprintf("/repos/%s/%s/commits/%s/status", url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(sha)))
+
+	var combined giteaCombinedStatus
+	if err := g.doJSON(ctx, http.MethodGet, reqURL, http.NoBody, http.StatusOK, &combined); err != nil {
+		return nil, err
+	}
+	state := giteaCIState(combined.State)
+	if state == "" || len(combined.Statuses) == 0 {
+		return nil, nil
+	}
+
+	var link, fallback *giteaCommitStatus
+	for i := range combined.Statuses {
+		status := &combined.Statuses[i]
+		if !isWebURL(status.TargetURL) {
+			continue
+		}
+		if fallback == nil || status.UpdatedAt.After(fallback.UpdatedAt) {
+			fallback = status
+		}
+		if giteaCIState(status.State) == state && (link == nil || status.UpdatedAt.After(link.UpdatedAt)) {
+			link = status
+		}
+	}
+	if link == nil {
+		link = fallback
+	}
+	result := &CIStatus{State: state}
+	if link != nil {
+		result.URL = link.TargetURL
+	}
+	return result, nil
+}
+
+// isWebURL reports whether raw is an absolute http(s) URL, the only kind of
+// CI link the item view should render.
+func isWebURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	return err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != ""
 }
 
 // ListCommits lists commits from a repository branch/tag, newest first.

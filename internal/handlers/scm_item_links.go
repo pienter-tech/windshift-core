@@ -61,6 +61,8 @@ type ItemSCMLinkResponse struct {
 	AuthorExternalID      string    `json:"author_external_id,omitempty"`
 	AuthorName            string    `json:"author_name,omitempty"`
 	DetectionSource       string    `json:"detection_source,omitempty"`
+	CIState               string    `json:"ci_state,omitempty"` // PR head CI: pending, success, failure; Gitea/Forgejo only
+	CIURL                 string    `json:"ci_url,omitempty"`   // CI run that explains CIState
 	CreatedAt             time.Time `json:"created_at"`
 	UpdatedAt             time.Time `json:"updated_at"`
 	// Joined fields
@@ -136,6 +138,7 @@ func (h *SCMItemLinksHandler) GetItemSCMLinks(w http.ResponseWriter, r *http.Req
 			isl.id, isl.item_id, isl.workspace_repository_id, isl.link_type,
 			isl.external_id, isl.external_url, isl.title, isl.state,
 			isl.author_external_id, isl.author_name, isl.detection_source,
+			isl.ci_state, isl.ci_url,
 			isl.created_at, isl.updated_at,
 			wr.repository_name, wr.repository_url,
 			sp.provider_type, sp.auth_method
@@ -157,12 +160,13 @@ func (h *SCMItemLinksHandler) GetItemSCMLinks(w http.ResponseWriter, r *http.Req
 	hasOAuthPRLinks := false
 	for rows.Next() {
 		var link ItemSCMLinkResponse
-		var externalURL, title, state, authorExternalID, authorName, detectionSource sql.NullString
+		var externalURL, title, state, authorExternalID, authorName, detectionSource, ciState, ciURL sql.NullString
 
 		err := rows.Scan(
 			&link.ID, &link.ItemID, &link.WorkspaceRepositoryID, &link.LinkType,
 			&link.ExternalID, &externalURL, &title, &state,
 			&authorExternalID, &authorName, &detectionSource,
+			&ciState, &ciURL,
 			&link.CreatedAt, &link.UpdatedAt,
 			&link.RepositoryName, &link.RepositoryURL,
 			&link.ProviderType, &link.AuthMethod,
@@ -190,6 +194,7 @@ func (h *SCMItemLinksHandler) GetItemSCMLinks(w http.ResponseWriter, r *http.Req
 		if detectionSource.Valid {
 			link.DetectionSource = detectionSource.String
 		}
+		link.CIState, link.CIURL = ciState.String, ciURL.String
 
 		// Refresh non-merged OAuth PR links after the response completes.
 		if link.AuthMethod == string(models.SCMAuthMethodOAuth) && link.LinkType == "pull_request" && link.State != "merged" {
@@ -906,13 +911,14 @@ func (h *SCMItemLinksHandler) CreatePRFromBranch(w http.ResponseWriter, r *http.
 // getLinkByID retrieves a single SCM link by ID
 func (h *SCMItemLinksHandler) getLinkByID(id int) (*ItemSCMLinkResponse, error) {
 	var link ItemSCMLinkResponse
-	var externalURL, title, state, authorExternalID, authorName, detectionSource sql.NullString
+	var externalURL, title, state, authorExternalID, authorName, detectionSource, ciState, ciURL sql.NullString
 
 	err := h.db.QueryRow(`
 		SELECT
 			isl.id, isl.item_id, isl.workspace_repository_id, isl.link_type,
 			isl.external_id, isl.external_url, isl.title, isl.state,
 			isl.author_external_id, isl.author_name, isl.detection_source,
+			isl.ci_state, isl.ci_url,
 			isl.created_at, isl.updated_at,
 			wr.repository_name, wr.repository_url,
 			sp.provider_type
@@ -925,6 +931,7 @@ func (h *SCMItemLinksHandler) getLinkByID(id int) (*ItemSCMLinkResponse, error) 
 		&link.ID, &link.ItemID, &link.WorkspaceRepositoryID, &link.LinkType,
 		&link.ExternalID, &externalURL, &title, &state,
 		&authorExternalID, &authorName, &detectionSource,
+		&ciState, &ciURL,
 		&link.CreatedAt, &link.UpdatedAt,
 		&link.RepositoryName, &link.RepositoryURL,
 		&link.ProviderType,
@@ -951,6 +958,7 @@ func (h *SCMItemLinksHandler) getLinkByID(id int) (*ItemSCMLinkResponse, error) 
 	if detectionSource.Valid {
 		link.DetectionSource = detectionSource.String
 	}
+	link.CIState, link.CIURL = ciState.String, ciURL.String
 
 	return &link, nil
 }

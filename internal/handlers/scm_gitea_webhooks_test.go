@@ -183,7 +183,7 @@ func TestGiteaWebhookSettingsShowCallbackURLAndRotateSecret(t *testing.T) {
 	if !config.Configured || config.CallbackURL != wantURL || config.Secret != "" {
 		t.Fatalf("unexpected config: %#v", config)
 	}
-	if len(config.Events) != 1 || config.Events[0] != "pull_request" {
+	if strings.Join(config.Events, ",") != "pull_request,status,action_run_success,action_run_failure" {
 		t.Fatalf("unexpected events: %#v", config.Events)
 	}
 
@@ -216,6 +216,72 @@ func TestGiteaWebhookPullRequestSchedulesRepositorySync(t *testing.T) {
 			eventType, status, errorMessage := f.waitForDelivery(t, "delivery-1")
 			if eventType != "pull_request" || status != "failed" || !strings.Contains(errorMessage, "failed to create provider") {
 				t.Fatalf("sync was not scheduled for the repository: event=%q status=%q error=%q", eventType, status, errorMessage)
+			}
+		})
+	}
+}
+
+// giteaCIBodies are the CI deliveries the receiver acts on: a Gitea commit
+// status, which names its repository at the top level, and a Forgejo Actions
+// run, which names it inside the run.
+func giteaCIBodies(repositoryID int64) map[string][]byte {
+	status, _ := json.Marshal(map[string]any{
+		"sha": "abc123", "state": "success", "context": "ci / test",
+		"target_url": "https://git.example/pienter/app/actions/runs/3",
+		"repository": map[string]any{"id": repositoryID, "full_name": "pienter/app"},
+	})
+	actionRun, _ := json.Marshal(map[string]any{
+		"action":       "failure",
+		"prior_status": "running",
+		"run": map[string]any{
+			"commit_sha": "abc123", "status": "failure",
+			"html_url":   "https://git.example/pienter/app/actions/runs/3",
+			"repository": map[string]any{"id": repositoryID, "full_name": "pienter/app"},
+		},
+	})
+	return map[string][]byte{"status": status, "action_run_failure": actionRun}
+}
+
+func TestGiteaWebhookCIDeliverySchedulesCIRefresh(t *testing.T) {
+	for event, body := range giteaCIBodies(42) {
+		t.Run(event, func(t *testing.T) {
+			f := newGiteaWebhookFixture(t)
+			recorder := f.deliver(body, map[string]string{
+				"X-Forgejo-Event":     event,
+				"X-Forgejo-Signature": giteaSignature(f.secret, body),
+				"X-Forgejo-Delivery":  "ci-1",
+			})
+			if recorder.Code != http.StatusAccepted || !strings.Contains(recorder.Body.String(), `"accepted":true`) {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			// The fixture's connection has no credentials, so the scheduled
+			// CI refresh loads this repository and then fails to build its
+			// provider.
+			eventType, status, errorMessage := f.waitForDelivery(t, "ci-1")
+			if eventType != event || status != "failed" || !strings.Contains(errorMessage, "failed to create provider") {
+				t.Fatalf("CI refresh was not scheduled: event=%q status=%q error=%q", eventType, status, errorMessage)
+			}
+			var summary string
+			if err := f.db.QueryRow(`SELECT payload_summary FROM scm_webhook_deliveries WHERE delivery_id = 'ci-1'`).Scan(&summary); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(summary, `"sha":"abc123"`) {
+				t.Fatalf("summary does not name the commit: %s", summary)
+			}
+		})
+	}
+}
+
+func TestGiteaWebhookCIDeliveryForOtherRepositoryIsRejected(t *testing.T) {
+	for event, body := range giteaCIBodies(43) {
+		t.Run(event, func(t *testing.T) {
+			f := newGiteaWebhookFixture(t)
+			recorder := f.deliver(body, map[string]string{"X-Forgejo-Event": event, "X-Forgejo-Signature": giteaSignature(f.secret, body)})
+			if recorder.Code != http.StatusForbidden {
+				t.Fatalf("status=%d want 403 body=%s", recorder.Code, recorder.Body.String())
+			}
+			if count := f.deliveryCount(t); count != 0 {
+				t.Fatalf("recorded %d deliveries, want none", count)
 			}
 		})
 	}
