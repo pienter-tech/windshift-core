@@ -35,8 +35,8 @@ type repositorySyncRun struct {
 	err  error
 }
 
-func newRepositorySyncs(sync func(ctx context.Context, repoID int) error, timeout time.Duration) *repositorySyncs {
-	return &repositorySyncs{sync: sync, timeout: timeout, repos: make(map[int]*repositorySyncState)}
+func newRepositorySyncs(syncRepo func(ctx context.Context, repoID int) error, timeout time.Duration) *repositorySyncs {
+	return &repositorySyncs{sync: syncRepo, timeout: timeout, repos: make(map[int]*repositorySyncState)}
 }
 
 // schedule requests a sync of repoID and returns the run that serves the
