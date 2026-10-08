@@ -17,11 +17,12 @@ GitHub issues and not in Shortcut.
 | Human assignee | Korneel Eeckhout (`korneel`, user id 1) |
 | Agent user | `agent` (user id 2); agent sessions use its token |
 
-## Goal-first rule
+## Goals and standalone tasks
 
-Every task belongs to a confirmed Goal through its milestone
-(`ws task set-milestone <KEY> <milestone-id>`). Do not create loose tasks. If no
-suitable Goal exists, create or confirm one with `workflow-to-spec` first.
+A task that belongs to a confirmed Goal joins it through its milestone
+(`ws task set-milestone <KEY> <milestone-id>`). Small, self-contained Tasks and
+Bugs may stay standalone, with no Goal or milestone. Use a Goal when several
+tasks share one outcome; create or confirm it with `workflow-to-spec` first.
 
 The milestone is the Goal: it groups the tasks and has its own lifecycle,
 `planning`, `in-progress`, `completed`, `cancelled`. Its description renders
@@ -38,11 +39,11 @@ A task description carries `## Subtasks`, `## Acceptance criteria`, and
 
 ## Ideas
 
-An `Idea` item is a raw thought that still needs a grilling session. Ideas are
-the only items allowed without a Goal, and a title is enough. Never implement an
-Idea directly. Grilling one ends in a new Goal (close the Idea as `Done` with a
-comment naming the Goal), a `Task` in an existing Goal (change its type and set
-the milestone), `Won't Do` with the reason, or a comment on what is still open.
+An `Idea` item is a raw thought that still needs a grilling session. A title is
+enough. Never implement an Idea directly. Grilling one ends in a new Goal (close
+the Idea as `Done` with a comment naming the Goal), a `Task` or `Bug` (change its
+type, and set the milestone when it joins a Goal), `Won't Do` with the reason, or
+a comment on what is still open.
 File out-of-scope discoveries as Ideas, naming the originating task.
 
 ## Statuses
