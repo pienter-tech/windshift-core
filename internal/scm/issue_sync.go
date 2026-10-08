@@ -43,7 +43,12 @@ var issueSyncConfigLocks sync.Map
 // ends, and returns the release function.
 func lockIssueSyncConfig(ctx context.Context, configID int) (func(), error) {
 	slot, _ := issueSyncConfigLocks.LoadOrStore(configID, make(chan struct{}, 1))
-	lock := slot.(chan struct{})
+	lock, ok := slot.(chan struct{})
+	if !ok {
+		// Programmer error — issueSyncConfigLocks is populated only by this
+		// function and only ever stores chan struct{}.
+		panic(fmt.Sprintf("issueSyncConfigLocks: unexpected value type %T", slot))
+	}
 	select {
 	case lock <- struct{}{}:
 		return func() { <-lock }, nil
