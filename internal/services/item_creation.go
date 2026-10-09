@@ -321,7 +321,11 @@ func (c *itemCreation) recordCreation(tx database.Tx, itemID, itemNumber int) er
 	}
 	metadata := itemCreateEventMetadata(c.params, c.createdAt)
 	if c.params.CreatorID != nil {
-		history := stampHistorySource(creationHistoryEntries(*item, *c.params.CreatorID, metadata.OccurredAt), metadata)
+		history := append(
+			creationHistoryEntries(*item, *c.params.CreatorID, metadata.OccurredAt),
+			creationMilestonesHistory(itemID, *c.params.CreatorID, c.params.MilestoneIDs, metadata.OccurredAt)...,
+		)
+		history = stampHistorySource(history, metadata)
 		if err := repository.NewItemRepository(c.db).RecordHistoryBatch(tx, history); err != nil {
 			return fmt.Errorf("record item creation history: %w", err)
 		}
