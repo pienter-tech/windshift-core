@@ -575,8 +575,11 @@
             }
           });
 
-          // Configure upload plugin following official docs pattern (only if attachments enabled)
-          if (!readonly && canUploadImages) {
+          // Configure upload plugin following official docs pattern. Always
+          // replace Milkdown's default uploader, which embeds pasted or dropped
+          // images as base64 data: URLs; ours inserts nothing when uploads are
+          // unavailable (canUploadImages is checked per upload).
+          if (!readonly) {
             ctx.update(uploadConfig.key, (prev) => ({
               ...prev,
               uploader,
