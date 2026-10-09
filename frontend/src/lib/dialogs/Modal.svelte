@@ -1,4 +1,10 @@
+<script module>
+  // Context key through which a ModalHeader names its dialog.
+  export const modalTitleKey = Symbol('modal-title');
+</script>
+
 <script>
+  import { setContext, untrack } from 'svelte';
   import { getShortcut, matchesShortcut, getDisplayString } from '../utils/keyboardShortcuts.js';
   import { portal } from '../actions/portal.js';
 
@@ -19,6 +25,22 @@
     dataTestid = undefined,
     children
   } = $props();
+
+  // A ModalHeader inside this dialog registers through context, takes this
+  // id for its heading, and so gives the dialog its accessible name
+  // (aria-labelledby). The id is per instance, so stacked dialogs don't clash.
+  const uid = $props.id();
+  const titleId = `${uid}-title`;
+  let titleCount = $state(0);
+  setContext(modalTitleKey, {
+    id: titleId,
+    // Called from the header's effect; untracked so that effect doesn't
+    // depend on the count it changes.
+    register() {
+      untrack(() => (titleCount += 1));
+      return () => untrack(() => (titleCount -= 1));
+    }
+  });
 
   let backdropElement = $state(null);
   let modalContentElement = $state(null);
@@ -191,6 +213,7 @@
     onfocusout={handleFocusOut}
     role="dialog"
     aria-modal="true"
+    aria-labelledby={titleCount > 0 ? titleId : undefined}
     data-testid={dataTestid}
   >
     <div

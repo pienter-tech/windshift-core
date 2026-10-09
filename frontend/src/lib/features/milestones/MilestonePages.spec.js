@@ -73,6 +73,8 @@ describe('MilestonePages link dialog', () => {
     expect(dialog).toHaveAttribute('role', 'dialog');
     expect(dialog).toHaveAttribute('aria-modal', 'true');
     expect(within(dialog).getByRole('heading', { name: 'items.addPage' })).toBeInTheDocument();
+    // The dialog is named by its heading (WCORE-62).
+    expect(dialog).toHaveAccessibleName('items.addPage');
     expect(within(dialog).getByTestId('milestone-page-link-cancel')).toHaveTextContent(
       'common.cancel'
     );
