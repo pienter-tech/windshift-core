@@ -627,6 +627,72 @@ func (c *Client) DeleteComment(commentID int) error {
 	return c.DELETE(fmt.Sprintf("/rest/api/v2/comments/%d", commentID))
 }
 
+// Milestone comment methods. The routes serve global and workspace-local
+// milestones alike, so no workspace is needed.
+
+// ListMilestoneComments returns every comment on a milestone, oldest first.
+func (c *Client) ListMilestoneComments(milestoneID int) ([]MilestoneComment, error) {
+	const pageSize = 100
+	comments := make([]MilestoneComment, 0)
+	for page := 1; ; page++ {
+		var response PaginatedResponse[MilestoneComment]
+		path := fmt.Sprintf("/rest/api/v2/milestones/%d/comments?sort=created_at&page=%d&page_size=%d", milestoneID, page, pageSize)
+		if err := c.GET(path, &response); err != nil {
+			return nil, err
+		}
+		comments = append(comments, response.Data...)
+		if page >= response.Pagination.TotalPages || len(response.Data) == 0 {
+			return comments, nil
+		}
+	}
+}
+
+func (c *Client) CreateMilestoneComment(milestoneID int, content string) (*MilestoneComment, error) {
+	req := map[string]string{"content": content}
+	var comment MilestoneComment
+	if err := c.POST(fmt.Sprintf("/rest/api/v2/milestones/%d/comments", milestoneID), req, &comment); err != nil {
+		return nil, err
+	}
+	return &comment, nil
+}
+
+func (c *Client) UpdateMilestoneComment(milestoneID, commentID int, content string) (*MilestoneComment, error) {
+	req := map[string]string{"content": content}
+	var comment MilestoneComment
+	if err := c.MERGEPATCH(fmt.Sprintf("/rest/api/v2/milestones/%d/comments/%d", milestoneID, commentID), req, &comment); err != nil {
+		return nil, err
+	}
+	return &comment, nil
+}
+
+func (c *Client) DeleteMilestoneComment(milestoneID, commentID int) error {
+	return c.DELETE(fmt.Sprintf("/rest/api/v2/milestones/%d/comments/%d", milestoneID, commentID))
+}
+
+// Milestone page link methods. Only workspace milestones have page links; the
+// list is a plain document, not paginated.
+
+func (c *Client) ListMilestonePageLinks(milestoneID int) ([]MilestonePageLink, error) {
+	links := make([]MilestonePageLink, 0)
+	if err := c.GET(fmt.Sprintf("/rest/api/v2/milestones/%d/page-links", milestoneID), &links); err != nil {
+		return nil, err
+	}
+	return links, nil
+}
+
+func (c *Client) CreateMilestonePageLink(milestoneID, pageID int) (*MilestonePageLink, error) {
+	req := map[string]int{"page_id": pageID}
+	var link MilestonePageLink
+	if err := c.POST(fmt.Sprintf("/rest/api/v2/milestones/%d/page-links", milestoneID), req, &link); err != nil {
+		return nil, err
+	}
+	return &link, nil
+}
+
+func (c *Client) DeleteMilestonePageLink(milestoneID, linkID int) error {
+	return c.DELETE(fmt.Sprintf("/rest/api/v2/milestones/%d/page-links/%d", milestoneID, linkID))
+}
+
 // Diagram routes accept opaque Excalidraw or Mermaid seed data.
 
 func (c *Client) ListDiagrams(itemID int) ([]Diagram, error) {
