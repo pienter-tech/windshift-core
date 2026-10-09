@@ -48,11 +48,14 @@
 		loading = true;
 		error = '';
 		try {
-			comments = (await api.milestones.getComments(milestoneId)) || [];
+			const loaded = (await api.milestones.getComments(milestoneId)) || [];
+			// The composer is usable while this first load runs, so keep any
+			// comment posted meanwhile that the response doesn't include yet.
+			const loadedIds = new Set(loaded.map((comment) => comment.id));
+			comments = [...loaded, ...comments.filter((comment) => !loadedIds.has(comment.id))];
 		} catch (err) {
 			console.error('Failed to load milestone comments:', err);
 			error = t('comments.failedToLoad');
-			comments = [];
 		} finally {
 			loading = false;
 		}
@@ -160,56 +163,56 @@
 		<AlertBox variant="error" message={error} class="mb-4" />
 	{/if}
 
+	{#if authStore.currentUser}
+		<div class="mb-6 flex items-start space-x-3">
+			<div class="flex-shrink-0">
+				<Avatar
+					src={authStore.currentUser?.avatar_url}
+					firstName={authStore.currentUser?.first_name}
+					lastName={authStore.currentUser?.last_name}
+					size="sm"
+					variant="blue"
+				/>
+			</div>
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
+			<div class="flex-1 min-w-0" onkeydown={handleCommentKeydown}>
+				<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+				<div data-testid="milestone-comment-editor" onclick={() => editorRef?.focus()}>
+					<MilkdownEditor
+						bind:this={editorRef}
+						bind:content={newCommentContent}
+						placeholder={t('comments.writePlaceholder')}
+						showToolbar={true}
+						hideToolbarUntilFocus={true}
+						compact={true}
+						allowImageUpload={false}
+						testId="milestone-comment-composer"
+						{workspaceId}
+					/>
+				</div>
+				<div class="flex items-center justify-between mt-3">
+					<div class="text-xs" style="color: var(--ds-text-subtle);">
+						{t('comments.markdownSupported')}
+					</div>
+					<!-- shortcut-guard-exempt: Cmd/Ctrl+Enter is handled by the form-scoped handleCommentKeydown handler. -->
+					<Button
+						variant="primary"
+						size="small"
+						dataTestid="milestone-comment-submit"
+						onclick={submitComment}
+						disabled={isSubmitting || !newCommentContent.trim()}
+						keyboardHint={getDisplayString(submitShortcut)}
+					>
+						{isSubmitting ? t('comments.posting') : t('comments.comment')}
+					</Button>
+				</div>
+			</div>
+		</div>
+	{/if}
+
 	{#if loading}
 		<StateDisplay type="loading" />
 	{:else}
-		{#if authStore.currentUser}
-			<div class="mb-6 flex items-start space-x-3">
-				<div class="flex-shrink-0">
-					<Avatar
-						src={authStore.currentUser?.avatar_url}
-						firstName={authStore.currentUser?.first_name}
-						lastName={authStore.currentUser?.last_name}
-						size="sm"
-						variant="blue"
-					/>
-				</div>
-				<!-- svelte-ignore a11y_no_static_element_interactions -->
-				<div class="flex-1 min-w-0" onkeydown={handleCommentKeydown}>
-					<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-					<div data-testid="milestone-comment-editor" onclick={() => editorRef?.focus()}>
-						<MilkdownEditor
-							bind:this={editorRef}
-							bind:content={newCommentContent}
-							placeholder={t('comments.writePlaceholder')}
-							showToolbar={true}
-							hideToolbarUntilFocus={true}
-							compact={true}
-							allowImageUpload={false}
-							testId="milestone-comment-composer"
-							{workspaceId}
-						/>
-					</div>
-					<div class="flex items-center justify-between mt-3">
-						<div class="text-xs" style="color: var(--ds-text-subtle);">
-							{t('comments.markdownSupported')}
-						</div>
-						<!-- shortcut-guard-exempt: Cmd/Ctrl+Enter is handled by the form-scoped handleCommentKeydown handler. -->
-						<Button
-							variant="primary"
-							size="small"
-							dataTestid="milestone-comment-submit"
-							onclick={submitComment}
-							disabled={isSubmitting || !newCommentContent.trim()}
-							keyboardHint={getDisplayString(submitShortcut)}
-						>
-							{isSubmitting ? t('comments.posting') : t('comments.comment')}
-						</Button>
-					</div>
-				</div>
-			</div>
-		{/if}
-
 		{#if comments.length === 0}
 			<p class="text-sm mb-4" style="color: var(--ds-text-subtle);">{t('comments.noComments')}</p>
 		{/if}
