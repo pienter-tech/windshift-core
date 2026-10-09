@@ -421,6 +421,7 @@ export default {
       changedStatus: 'changed the status from {from} to {to}',
       changedTargetDate: 'changed the target date from {from} to {to}',
       linkedPage: 'linked the page',
+      unlinkedPage: 'unlinked the page',
       commentedOn: 'commented on',
       changedItemStatus: 'changed the status of',
       fromTo: 'from {from} to {to}',

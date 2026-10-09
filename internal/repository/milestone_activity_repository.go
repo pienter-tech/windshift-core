@@ -23,13 +23,15 @@ import (
 //   - items added to or removed from the milestone (item_history milestones
 //     rows whose old and new milestone lists differ on this milestone),
 //     including items that have since left it
-//   - items created directly in the milestone, which item creation records no
-//     milestones history row for: current members with no milestones history
-//     at all, and items whose first milestones history row already listed the
-//     milestone. Their actor and time are the item's creator and creation time.
+//   - items created directly in the milestone before item creation recorded a
+//     milestones history row (WCORE-27): current members with no milestones
+//     history at all, and items whose first milestones history row already
+//     listed the milestone. Their actor and time are the item's creator and
+//     creation time. Newer items start with a milestones row whose old value
+//     is empty, so they match neither rule and get only the membership entry.
 //
-// Page links are not read here: the service adds them after the page
-// permission filter.
+// Page links and unlinks (milestone_history page_link rows) are not read
+// here: the service adds them after the page permission filter.
 //
 // Item rows are limited to items in the given workspaces, the same
 // workspace-access rule the milestone progress view applies.
