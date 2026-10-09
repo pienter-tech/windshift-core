@@ -9,7 +9,7 @@
   import { api } from '../api.js';
   import { t } from '../stores/i18n.svelte.js';
   import { useEventListener } from 'runed';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, tick } from 'svelte';
 
   const TEST_LINK_TYPE_ID = 1;
 
@@ -37,6 +37,7 @@
   let searching = $state(false);
   let highlightedIndex = $state(-1);
   let inputRef = $state(null);
+  let clearTargetButton = $state(null);
   let searchTimer;
   let searchVersion = 0;
 
@@ -195,12 +196,18 @@
     clearSearch({ clearQuery: true });
   }
 
-  function handleSelectPage(page) {
+  async function handleSelectPage(page) {
     if (!page) return;
     formData.target_id = page.id;
     formData.target_title = page.title;
     formData.target_type = 'page';
     clearSearch({ clearQuery: true });
+    // The summary card replaces the page picker, so the picker can't take
+    // focus back after the pick and a mouse pick left it on <body>, out of
+    // reach of the dialog's Enter and Escape (WCORE-60). Move it to the
+    // card's Clear button, where the field was.
+    await tick();
+    clearTargetButton?.focus();
   }
 
   function clearTarget() {
@@ -302,6 +309,7 @@
               <div class="text-sm font-medium" style="color: var(--ds-text);">{formData.target_title}</div>
             </div>
             <button
+              bind:this={clearTargetButton}
               type="button"
               class="text-xs cursor-pointer hover:underline"
               style="color: var(--ds-text-danger);"
