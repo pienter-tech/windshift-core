@@ -26,7 +26,7 @@ FRONTEND_DIR=frontend
 # builds-and-runs from the pinned source.
 SWAG := go tool swag
 OPENAPI_DIR = api
-GOLANGCI_LINT_VERSION := 2.13.1
+GOLANGCI_LINT_VERSION := 2.14.0
 GOVULNCHECK_VERSION := 1.3.0
 DEADCODE_VERSION := 0.45.0
 OAPI_CODEGEN_VERSION := 2.5.0
