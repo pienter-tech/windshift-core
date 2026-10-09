@@ -409,6 +409,7 @@ export default {
     noMatchingMilestones: 'No milestones match the filters',
     noMatchingMilestonesDescription: 'Change the filters to see more milestones.',
     clearFilters: 'Clear filters',
+    actionsFor: 'Actions for {name}',
     activity: {
       tabOverview: 'Overview',
       tabActivity: 'Activity',

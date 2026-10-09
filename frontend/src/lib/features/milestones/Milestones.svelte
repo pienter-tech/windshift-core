@@ -310,6 +310,12 @@
     return statusOptions.find(s => s.value === status) || statusOptions[0];
   }
 
+  // Names each row's "…" button after its milestone, so repeated rows
+  // stay distinguishable for screen readers.
+  function milestoneActionsLabel(milestone) {
+    return t('milestones.actionsFor', { name: milestone.name });
+  }
+
   function buildMilestoneDropdownItems(milestone) {
     const canManage = milestone.is_global 
       ? canManageGlobal 
@@ -936,6 +942,7 @@
           keyField="id"
           bind:sort={globalSort}
           actionItems={buildMilestoneDropdownItems}
+          actionTriggerLabel={milestoneActionsLabel}
           class="rounded-xl border shadow-sm"
           rowAttrs={(item) => ({ 'data-milestone-row': item.id, 'data-milestone-scope': item.is_global ? 'global' : 'local', 'data-milestone-ws': item.workspace_id ?? '', 'data-milestone-category': item.category_id ?? '' })}
         >
@@ -964,6 +971,7 @@
                 data={localMilestones}
                 keyField="id"
                 actionItems={buildMilestoneDropdownItems}
+                actionTriggerLabel={milestoneActionsLabel}
                 class="rounded-xl border shadow-sm"
                 rowAttrs={(item) => ({ 'data-milestone-row': item.id, 'data-milestone-scope': 'local', 'data-milestone-ws': workspaceId ?? '', 'data-milestone-category': item.category_id ?? '' })}
               >
@@ -991,6 +999,7 @@
                 data={globalMilestones}
                 keyField="id"
                 actionItems={buildMilestoneDropdownItems}
+                actionTriggerLabel={milestoneActionsLabel}
                 class="rounded-xl border shadow-sm"
                 rowAttrs={(item) => ({ 'data-milestone-row': item.id, 'data-milestone-scope': 'global', 'data-milestone-ws': '', 'data-milestone-category': item.category_id ?? '' })}
               >
