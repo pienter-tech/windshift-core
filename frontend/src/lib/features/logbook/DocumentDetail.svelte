@@ -301,6 +301,7 @@
         <LazyMilkdownEditor
           bind:content={articleContent}
           testId="logbook-document-editor"
+          ariaLabel={t('logbook.article')}
           placeholder={isNote ? t('logbook.noteContentPlaceholder') : 'Article content...'}
           showToolbar={true}
           customUploadFn={(formData) => api.logbook.uploadAttachment(resolvedDocumentId, formData)}

@@ -16,6 +16,8 @@
 
   // Props (Svelte 5)
   let { currentUser = null } = $props();
+  const uid = $props.id();
+  const reflectionHeadingId = `${uid}-reflection-heading`;
 
   // State (Svelte 5)
   let currentDate = $state(formatDate(new Date()));
@@ -480,7 +482,7 @@ ${t('personal.placeholderImprovements')}`;
           <div class="w-7 h-7 rounded-md flex items-center justify-center" style="background-color: var(--ds-accent-teal);">
             <Lightbulb class="w-4 h-4" style="color: white;" />
           </div>
-          <h2 class="text-xl font-light" style="color: var(--ds-text);">{t('personal.reflection')}</h2>
+          <h2 id={reflectionHeadingId} class="text-xl font-light" style="color: var(--ds-text);">{t('personal.reflection')}</h2>
           {#if saving}
             <div class="flex items-center space-x-2 text-sm" style="color: var(--ds-text-subtle);">
               <div class="animate-spin w-4 h-4 border-2 border-t-transparent rounded-full" style="border-color: var(--ds-text-subtle); border-top-color: transparent;"></div>
@@ -495,6 +497,7 @@ ${t('personal.placeholderImprovements')}`;
             bind:content={reviewContent}
             placeholder={t('personal.startWriting')}
             showToolbar={true}
+            ariaLabelledBy={reflectionHeadingId}
           />
         </div>
 

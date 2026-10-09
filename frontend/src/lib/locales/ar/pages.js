@@ -41,6 +41,7 @@ export default {
     "emptyPaneDescription": "حدد صفحة من الشجرة، أو أنشئ واحدة للبدء.",
     "titlePlaceholder": "بدون عنوان",
     "editorPlaceholder": "ابدأ الكتابة...",
+    "contentLabel": "محتوى الصفحة",
     "tocHeading": "في هذه الصفحة",
     "tocAriaLabel": "جدول المحتويات",
     "save": "حفظ",

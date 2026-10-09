@@ -42,7 +42,9 @@
     expectedContentHash = '',
     onBeforeDiagramOpen = async () => {},
     onDiagramPersisted = (_payload) => {},
-    testId = null
+    testId = null,
+    ariaLabel = null,
+    ariaLabelledBy = null
   } = $props();
 
   // Diagram modal state — only meaningful when enableDiagrams=true.
@@ -540,10 +542,13 @@
           // Context may not be initialized for update.
           ctx.set(editorViewOptionsCtx, {
             editable: () => !readonly,
-            attributes: {
+            // Milkdown already gives the root role="textbox"; editable roots
+            // also get an accessible name, read-only renders stay unnamed.
+            attributes: () => ({
               class: 'milkdown-editor-content',
-              'data-placeholder': effectivePlaceholder
-            },
+              'data-placeholder': effectivePlaceholder,
+              ...(readonly ? {} : accessibleNameAttributes())
+            }),
             // Handle DOM events for mention detection
             handleDOMEvents: {
               keydown: (_view, event) => {
@@ -830,6 +835,20 @@
     // Reset so the same file can be selected twice
     event.target.value = '';
   }
+
+  function accessibleNameAttributes() {
+    if (ariaLabelledBy) return { 'aria-labelledby': ariaLabelledBy };
+    if (ariaLabel) return { 'aria-label': ariaLabel };
+    return {};
+  }
+
+  // ProseMirror recomputes root attributes only on view updates.
+  $effect(() => {
+    ariaLabel;
+    ariaLabelledBy;
+    if (!editor) return;
+    editor.action((ctx) => ctx.get(editorViewCtx).setProps({}));
+  });
 
   // Keep readonly renders in sync when underlying markdown changes
   $effect(() => {
