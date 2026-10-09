@@ -31,6 +31,8 @@
     onclose = null,
     onSubmit = null
   } = $props();
+  const uid = $props.id();
+  const descriptionLabelId = `${uid}-description-label`;
 
   const statusOptions = $derived([
     { value: 'planning', label: t('milestones.status.planning') },
@@ -160,10 +162,11 @@
           {/if}
 
           <div class="md:col-span-2">
-            <Label class="mb-2">{t('common.description')}</Label>
+            <Label id={descriptionLabelId} class="mb-2">{t('common.description')}</Label>
             <MilkdownEditor
               bind:content={formData.description}
               placeholder={t('milestones.descriptionPlaceholder')}
+              ariaLabelledBy={descriptionLabelId}
               showToolbar={true}
               compact={true}
               allowImageUpload={false}

@@ -34,6 +34,8 @@
   import { categoriesStore } from '../../stores/categories.js';
 
   let { milestoneId, workspaceId = null } = $props();
+  const uid = $props.id();
+  const descriptionLabelId = `${uid}-description-label`;
 
   let loading = $state(true);
   let error = $state(null);
@@ -469,10 +471,11 @@
         </div>
 
         <div class="md:col-span-2">
-          <Label class="mb-2">{t('common.description')}</Label>
+          <Label id={descriptionLabelId} class="mb-2">{t('common.description')}</Label>
           <MilkdownEditor
             bind:content={formData.description}
             placeholder={t('milestones.descriptionPlaceholder')}
+            ariaLabelledBy={descriptionLabelId}
             showToolbar={true}
             compact={true}
             allowImageUpload={false}

@@ -182,6 +182,7 @@
 							bind:this={editorRef}
 							bind:content={newCommentContent}
 							placeholder={t('comments.writePlaceholder')}
+							ariaLabel={t('comments.comment')}
 							showToolbar={true}
 							hideToolbarUntilFocus={true}
 							compact={true}
@@ -269,6 +270,7 @@
 									bind:this={editEditorRef}
 									bind:content={editingContent}
 									placeholder={t('comments.editPlaceholder')}
+									ariaLabel={t('comments.editComment')}
 									showToolbar={true}
 									compact={true}
 									allowImageUpload={false}
