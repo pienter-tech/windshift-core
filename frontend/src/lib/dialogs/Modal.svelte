@@ -146,6 +146,28 @@
     });
   }
 
+  // Return focus to the control that opened the dialog once it closes
+  // (WCORE-63). The opener is whatever had focus when the dialog opened; this
+  // pre-effect runs before the dialog moves focus into itself. The restore
+  // waits a microtask so the dialog is gone, and only runs when focus fell
+  // to <body> with it: a caller that already moved focus elsewhere keeps
+  // it. It also skips an opener that left the document and a close caused
+  // by navigating to another page.
+  $effect.pre(() => {
+    if (!isOpen || inline) return;
+    const opener = document.activeElement;
+    const path = location.pathname;
+    return () => {
+      queueMicrotask(() => {
+        if (!opener || opener === document.body || !opener.isConnected) return;
+        if (location.pathname !== path) return;
+        const active = document.activeElement;
+        if (active && active !== document.body) return;
+        opener.focus();
+      });
+    };
+  });
+
   $effect(() => {
     if (!isOpen || inline) return;
     const press = () => {

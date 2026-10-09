@@ -282,7 +282,7 @@
 
       <!-- Target Item Search -->
       <div>
-        <label for="link-target-search" class="block text-sm font-medium mb-1" style="color: var(--ds-text-subtle);">
+        <label for={isPageLinkTypeSelected ? 'link-target-page-picker' : 'link-target-search'} class="block text-sm font-medium mb-1" style="color: var(--ds-text-subtle);">
           {isPageLinkTypeSelected ? t('items.targetPage') : t('items.targetItem')}
         </label>
 
