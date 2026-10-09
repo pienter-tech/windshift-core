@@ -27,6 +27,8 @@
   import RunActionMenu from './RunActionMenu.svelte';
 
   let { activeBucketId = null } = $props();
+  const uid = $props.id();
+  const noteContentLabelId = `${uid}-note-content-label`;
 
   let searchQuery = $state('');
   let showUploadModal = $state(false);
@@ -395,13 +397,14 @@
         </div>
 
         <div>
-          <span class="block text-sm font-medium mb-1" style="color: var(--ds-text);">
+          <span id={noteContentLabelId} class="block text-sm font-medium mb-1" style="color: var(--ds-text);">
             {t('logbook.noteContent')}
           </span>
           <div style="min-height: 300px;">
             <LazyMilkdownEditor
               bind:content={noteFormData.content}
               testId="logbook-note-editor"
+              ariaLabelledBy={noteContentLabelId}
               placeholder={t('logbook.noteContentPlaceholder')}
               showToolbar={true}
             />

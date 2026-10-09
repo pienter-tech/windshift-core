@@ -96,6 +96,7 @@
     <MilkdownEditor
       bind:content={form.values.description}
       placeholder={t('createModal.addDescription')}
+      ariaLabel={t('common.description')}
       compact={true}
       showToolbar={false}
       readonly={false}
