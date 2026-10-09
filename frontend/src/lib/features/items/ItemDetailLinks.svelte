@@ -358,11 +358,14 @@
                   showDot={false}
                 />
               {/if}
+              <!-- Shown on row hover and whenever focus is inside the row. -->
               <button
+                type="button"
                 data-testid="linked-item-delete"
-                class="delete-button p-1 rounded hidden group-hover:flex cursor-pointer"
+                class="delete-button p-1 rounded flex cursor-pointer opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus:opacity-100 transition-opacity"
                 onclick={() => removeLink(link.id)}
                 title={t('items.removeLink')}
+                aria-label={t('items.removeLink')}
               >
                 <Trash2 class="w-4 h-4" />
               </button>
@@ -428,11 +431,14 @@
               </LinkComponent>
             </div>
             <div class="flex items-center gap-2 flex-shrink-0">
+              <!-- Shown on row hover and whenever focus is inside the row. -->
               <button
+                type="button"
                 data-testid="linked-page-delete"
-                class="delete-button p-1 rounded hidden group-hover:flex cursor-pointer"
+                class="delete-button p-1 rounded flex cursor-pointer opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus:opacity-100 transition-opacity"
                 onclick={() => removeLink(link.id)}
                 title={t('items.removeLink')}
+                aria-label={t('items.removeLink')}
               >
                 <Trash2 class="w-4 h-4" />
               </button>
@@ -515,7 +521,6 @@
 
 <style>
   .delete-button {
-    animation: fadeIn 150ms ease-out;
     color: var(--ds-text-subtle);
   }
 
@@ -530,14 +535,5 @@
   .add-link-btn:hover {
     background-color: var(--ds-background-neutral-hovered);
     color: var(--ds-text);
-  }
-
-  @keyframes fadeIn {
-    from {
-      opacity: 0;
-    }
-    to {
-      opacity: 1;
-    }
   }
 </style>
