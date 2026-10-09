@@ -39,6 +39,7 @@ cx
 !/internal/repository/milestone_comment_repository_test.go
 !/internal/repository/scm_workspace_repository_test.go
 !/internal/services/milestone_comment_service_test.go
+!/internal/services/milestone_comment_mention_test.go
 !/internal/services/milestone_page_link_service_test.go
 !/internal/database/milestone_activity_schema_test.go
 !/internal/services/milestone_activity_service_test.go

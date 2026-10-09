@@ -614,6 +614,34 @@ func (ns *NotificationService) NotifyUsersForAsset(userIDs []int, setID, assetID
 		models.NotificationScopeAsset, nil, nil, "asset", &assetID, authorize)
 }
 
+// milestoneActionURL is the in-app deep link for a milestone's detail page.
+// Workspace milestones carry the workspace so the page's back link returns to
+// that workspace's milestone list, as the list's own links do.
+func milestoneActionURL(milestoneID int, workspaceID *int) string {
+	if workspaceID != nil {
+		return fmt.Sprintf("/milestones/%d?workspaceId=%d", milestoneID, *workspaceID)
+	}
+	return fmt.Sprintf("/milestones/%d", milestoneID)
+}
+
+// NotifyUsersForMilestone creates direct notifications that open a
+// milestone's detail page. authorize must confirm each recipient can view the
+// milestone. A workspace milestone's notification is re-checked at delivery
+// against that workspace; a global milestone's is visible to every active
+// user, like the milestone itself.
+func (ns *NotificationService) NotifyUsersForMilestone(userIDs []int, milestoneID int, workspaceID *int, actorUserID int, notifType, title, message string, authorize func(int) (bool, error)) error {
+	if authorize == nil {
+		return fmt.Errorf("milestone notification blocked: milestone read authorizer not configured")
+	}
+	scope := models.NotificationScopeSystem
+	if workspaceID != nil {
+		scope = models.NotificationScopeWorkspace
+	}
+	_, err := ns.notifyUsersAtURL(userIDs, actorUserID, notifType, title, message, milestoneActionURL(milestoneID, workspaceID),
+		scope, workspaceID, nil, "milestone", &milestoneID, authorize)
+	return err
+}
+
 func (ns *NotificationService) notifyUsersAtURL(
 	userIDs []int,
 	actorUserID int,

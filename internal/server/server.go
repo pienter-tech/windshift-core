@@ -1868,6 +1868,7 @@ func (s *Server) initialize() error {
 		repository.NewMilestoneCommentRepository(s.db),
 		planningApplication,
 	)
+	milestoneCommentService.SetMentionNotifier(mentionService)
 	milestonePageLinkService := services.NewMilestonePageLinkService(
 		repository.NewMilestonePageLinkRepository(s.db),
 		planningApplication,

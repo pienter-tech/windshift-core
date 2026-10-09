@@ -378,15 +378,7 @@ func (s *MentionService) emitMentionNotification(params ProcessMentionsParams, m
 		return
 	}
 
-	var actorFirstName, actorLastName string
-	err = s.db.QueryRow(`
-		SELECT first_name, last_name FROM users WHERE id = ?
-	`, params.ActorUserID).Scan(&actorFirstName, &actorLastName)
-	if err != nil {
-		slog.Error("Error fetching actor name", slog.String("component", "mentions"), slog.Any("error", err))
-		actorFirstName = "Someone"
-	}
-	actorName := strings.TrimSpace(actorFirstName + " " + actorLastName)
+	actorName := s.actorName(params.ActorUserID)
 
 	itemKey := fmt.Sprintf("%s-%d", item.WorkspaceKey, item.WorkspaceItemNumber)
 
@@ -429,6 +421,81 @@ func (s *MentionService) emitMentionNotification(params ProcessMentionsParams, m
 	if err != nil {
 		slog.Error("Error marking notification as sent", slog.String("component", "mentions"), slog.Any("error", err))
 	}
+}
+
+// actorName returns the display name used in mention notifications.
+func (s *MentionService) actorName(userID int) string {
+	var firstName, lastName string
+	err := s.db.QueryRow(`
+		SELECT first_name, last_name FROM users WHERE id = ?
+	`, userID).Scan(&firstName, &lastName)
+	if err != nil {
+		slog.Error("Error fetching actor name", slog.String("component", "mentions"), slog.Any("error", err))
+		firstName = "Someone"
+	}
+	return strings.TrimSpace(firstName + " " + lastName)
+}
+
+// MilestoneCommentMentionParams describes a created or edited milestone
+// comment whose @mentions should notify.
+type MilestoneCommentMentionParams struct {
+	Milestone       *MilestoneResult
+	ActorUserID     int
+	PreviousContent string // stored content before an edit; empty on create
+	Content         string
+	// CanView reports whether a mentioned user may view the milestone.
+	CanView func(userID int) (bool, error)
+}
+
+// NotifyMilestoneCommentMentions notifies users @mentioned in a milestone
+// comment. It follows the item comment rule: only users newly mentioned by
+// this write are notified (an edit re-notifies nobody it already mentioned),
+// the author is never notified, and users who can't view the milestone are
+// skipped. Milestone comments keep no mention records, so "already mentioned"
+// is read from the previous content. The notification opens the milestone.
+func (s *MentionService) NotifyMilestoneCommentMentions(params MilestoneCommentMentionParams) error {
+	if s.notificationService == nil || params.Milestone == nil {
+		return nil
+	}
+	current, err := s.ResolveMentionedUserIDs(params.Content)
+	if err != nil || len(current) == 0 {
+		return err
+	}
+	previous, err := s.ResolveMentionedUserIDs(params.PreviousContent)
+	if err != nil {
+		return err
+	}
+	already := make(map[int]bool, len(previous))
+	for _, userID := range previous {
+		already[userID] = true
+	}
+	recipients := make([]int, 0, len(current))
+	for _, userID := range current {
+		if !already[userID] {
+			recipients = append(recipients, userID)
+		}
+	}
+	if len(recipients) == 0 {
+		return nil
+	}
+
+	milestone := params.Milestone
+	var workspaceID *int
+	if !milestone.IsGlobal {
+		workspaceID = milestone.WorkspaceID
+	}
+	message := fmt.Sprintf("%s mentioned you in a comment on milestone %s",
+		s.actorName(params.ActorUserID), milestone.Name)
+	return s.notificationService.NotifyUsersForMilestone(
+		recipients,
+		milestone.ID,
+		workspaceID,
+		params.ActorUserID,
+		"mention", // same type as item mentions, so the UI toasts it
+		"You were mentioned",
+		message,
+		params.CanView,
+	)
 }
 
 // DeleteMentionsForSource removes all mentions for a source (called when comment/item is deleted)

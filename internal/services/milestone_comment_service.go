@@ -3,6 +3,7 @@ package services
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 
@@ -32,18 +33,32 @@ type MilestoneCommentStore interface {
 	Delete(id int) error
 }
 
+// MilestoneCommentMentionNotifier notifies users @mentioned in a milestone
+// comment. MentionService implements it.
+type MilestoneCommentMentionNotifier interface {
+	NotifyMilestoneCommentMentions(params MilestoneCommentMentionParams) error
+}
+
 // MilestoneCommentService owns Markdown comments on milestones (WCORE-20).
 // Anyone who can view the milestone may read and add comments; authors edit
-// and delete their own. Milestone comments deliberately emit no item events,
-// notifications, mention records, or webhooks.
+// and delete their own. @mentions notify users who can view the milestone
+// (WCORE-25); milestone comments emit no item events, mention records, or
+// webhooks.
 type MilestoneCommentService struct {
 	comments MilestoneCommentStore
 	access   MilestoneReadAuthorizer
+	mentions MilestoneCommentMentionNotifier
 }
 
 // NewMilestoneCommentService creates a MilestoneCommentService.
 func NewMilestoneCommentService(comments MilestoneCommentStore, access MilestoneReadAuthorizer) *MilestoneCommentService {
 	return &MilestoneCommentService{comments: comments, access: access}
+}
+
+// SetMentionNotifier wires @mention notifications. Without one, mentions
+// stay plain text.
+func (s *MilestoneCommentService) SetMentionNotifier(mentions MilestoneCommentMentionNotifier) {
+	s.mentions = mentions
 }
 
 // MilestoneCommentListParams selects one page of a milestone's comments.
@@ -71,7 +86,8 @@ func (s *MilestoneCommentService) List(userID, milestoneID int, params Milestone
 
 // Create adds a comment authored by userID to a milestone the user can view.
 func (s *MilestoneCommentService) Create(userID, milestoneID int, content string) (*models.MilestoneComment, error) {
-	if _, err := s.access.AuthorizeMilestoneRead(userID, milestoneID); err != nil {
+	milestone, err := s.access.AuthorizeMilestoneRead(userID, milestoneID)
+	if err != nil {
 		return nil, err
 	}
 	clean, err := cleanMilestoneCommentContent(content)
@@ -82,12 +98,14 @@ func (s *MilestoneCommentService) Create(userID, milestoneID int, content string
 	if err != nil {
 		return nil, err
 	}
+	s.notifyMentions(userID, milestone, "", clean)
 	return s.comments.GetByID(id)
 }
 
 // Update replaces the Markdown of the caller's own comment.
 func (s *MilestoneCommentService) Update(userID, milestoneID, commentID int, content string) (*models.MilestoneComment, error) {
-	if err := s.requireAuthor(userID, milestoneID, commentID); err != nil {
+	milestone, existing, err := s.requireAuthor(userID, milestoneID, commentID)
+	if err != nil {
 		return nil, err
 	}
 	clean, err := cleanMilestoneCommentContent(content)
@@ -97,12 +115,13 @@ func (s *MilestoneCommentService) Update(userID, milestoneID, commentID int, con
 	if err := s.comments.UpdateContent(commentID, clean); err != nil {
 		return nil, err
 	}
+	s.notifyMentions(userID, milestone, existing.Content, clean)
 	return s.comments.GetByID(commentID)
 }
 
 // Delete removes the caller's own comment.
 func (s *MilestoneCommentService) Delete(userID, milestoneID, commentID int) error {
-	if err := s.requireAuthor(userID, milestoneID, commentID); err != nil {
+	if _, _, err := s.requireAuthor(userID, milestoneID, commentID); err != nil {
 		return err
 	}
 	return s.comments.Delete(commentID)
@@ -110,21 +129,49 @@ func (s *MilestoneCommentService) Delete(userID, milestoneID, commentID int) err
 
 // requireAuthor confirms the user can view the milestone and wrote the
 // comment. A comment on a different milestone reads as not found.
-func (s *MilestoneCommentService) requireAuthor(userID, milestoneID, commentID int) error {
-	if _, err := s.access.AuthorizeMilestoneRead(userID, milestoneID); err != nil {
-		return err
+func (s *MilestoneCommentService) requireAuthor(userID, milestoneID, commentID int) (*MilestoneResult, *models.MilestoneComment, error) {
+	milestone, err := s.access.AuthorizeMilestoneRead(userID, milestoneID)
+	if err != nil {
+		return nil, nil, err
 	}
 	comment, err := s.comments.GetByID(commentID)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	if comment.MilestoneID != milestoneID {
-		return fmt.Errorf("milestone comment %d not on milestone %d: %w", commentID, milestoneID, repository.ErrNotFound)
+		return nil, nil, fmt.Errorf("milestone comment %d not on milestone %d: %w", commentID, milestoneID, repository.ErrNotFound)
 	}
 	if comment.AuthorID != userID {
-		return ErrMilestoneCommentNotAuthor
+		return nil, nil, ErrMilestoneCommentNotAuthor
 	}
-	return nil
+	return milestone, comment, nil
+}
+
+// notifyMentions notifies users newly @mentioned by a comment write who can
+// view the milestone. Like item comments, a failure is logged and does not
+// fail the write.
+func (s *MilestoneCommentService) notifyMentions(actorUserID int, milestone *MilestoneResult, previousContent, content string) {
+	if s.mentions == nil {
+		return
+	}
+	err := s.mentions.NotifyMilestoneCommentMentions(MilestoneCommentMentionParams{
+		Milestone:       milestone,
+		ActorUserID:     actorUserID,
+		PreviousContent: previousContent,
+		Content:         content,
+		CanView: func(userID int) (bool, error) {
+			_, err := s.access.AuthorizeMilestoneRead(userID, milestone.ID)
+			if errors.Is(err, ErrPlanningForbidden) {
+				return false, nil
+			}
+			return err == nil, err
+		},
+	})
+	if err != nil {
+		slog.Warn("failed to notify milestone comment mentions",
+			slog.Int("milestone_id", milestone.ID),
+			slog.Any("error", err))
+	}
 }
 
 // milestoneCommentBreakRegex matches the `<br />` hard breaks RichText keeps
