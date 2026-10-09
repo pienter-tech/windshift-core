@@ -1,6 +1,8 @@
 <script>
+  import { getContext } from 'svelte';
   import { X } from '@lucide/svelte';
   import { t } from '../stores/i18n.svelte.js';
+  import { modalTitleKey } from './Modal.svelte';
 
   let {
     title,
@@ -11,6 +13,10 @@
     onclose = null
   } = $props();
   const closeHandler = $derived(onClose || onclose);
+
+  // Inside a Modal, the title names the dialog (see Modal.svelte).
+  const modalTitle = getContext(modalTitleKey);
+  $effect(() => modalTitle?.register());
 </script>
 
 <div class="px-6 py-4 border-b flex items-center justify-between" style="border-color: var(--ds-border);">
@@ -19,7 +25,7 @@
       <Icon class="w-6 h-6" style="color: var(--ds-interactive);" />
     {/if}
     <div>
-      <h3 class="text-lg font-semibold" style="color: var(--ds-text);">{title}</h3>
+      <h3 id={modalTitle?.id} class="text-lg font-semibold" style="color: var(--ds-text);">{title}</h3>
       {#if subtitle}
         <p class="text-sm mt-0.5" style="color: var(--ds-text-subtle);">{subtitle}</p>
       {/if}
