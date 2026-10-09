@@ -48,6 +48,7 @@ cx
 !/internal/wscli/milestone_comment_test.go
 !/internal/wscli/milestone_page_test.go
 !/internal/wscli/root_test.go
+!/internal/restapi/v2/item_scm_links_test.go
 *_test.sh
 *.test.js
 *.test.ts

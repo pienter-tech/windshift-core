@@ -22161,6 +22161,116 @@
         ],
         "type": "object"
       },
+      "GetItemsItemIdScmLinksResult": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "auth_method": {
+                  "description": "The auth method value.",
+                  "type": "string"
+                },
+                "author_external_id": {
+                  "description": "The author external id value.",
+                  "type": "string"
+                },
+                "author_name": {
+                  "description": "The author name value.",
+                  "type": "string"
+                },
+                "ci_state": {
+                  "description": "The ci state value.",
+                  "type": "string"
+                },
+                "ci_url": {
+                  "description": "The ci url value.",
+                  "type": "string"
+                },
+                "created_at": {
+                  "description": "The created at value.",
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "detection_source": {
+                  "description": "The detection source value.",
+                  "type": "string"
+                },
+                "external_id": {
+                  "description": "The external id value.",
+                  "type": "string"
+                },
+                "external_url": {
+                  "description": "The external url value.",
+                  "type": "string"
+                },
+                "id": {
+                  "description": "The id value.",
+                  "type": "integer"
+                },
+                "is_mention": {
+                  "description": "The is mention value.",
+                  "type": "boolean"
+                },
+                "item_id": {
+                  "description": "The item id value.",
+                  "type": "integer"
+                },
+                "link_type": {
+                  "description": "The link type value.",
+                  "type": "string"
+                },
+                "provider_type": {
+                  "description": "The provider type value.",
+                  "type": "string"
+                },
+                "repository_name": {
+                  "description": "The repository name value.",
+                  "type": "string"
+                },
+                "repository_url": {
+                  "description": "The repository url value.",
+                  "type": "string"
+                },
+                "state": {
+                  "description": "The state value.",
+                  "type": "string"
+                },
+                "title": {
+                  "description": "The title value.",
+                  "type": "string"
+                },
+                "updated_at": {
+                  "description": "The updated at value.",
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "workspace_repository_id": {
+                  "description": "The workspace repository id value.",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "created_at",
+                "external_id",
+                "id",
+                "is_mention",
+                "item_id",
+                "link_type",
+                "updated_at",
+                "workspace_repository_id"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "GetItemsItemIdSlaResult": {
         "additionalProperties": false,
         "properties": {
@@ -108905,6 +109015,63 @@
         ],
         "x-required-scopes": [
           "items:write"
+        ]
+      }
+    },
+    "/items/{item_id}/scm-links": {
+      "get": {
+        "description": "List item SCM links. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "operationId": "getItemsItemIdScmLinks",
+        "parameters": [
+          {
+            "description": "The item identifier.",
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetItemsItemIdScmLinksResult"
+                }
+              }
+            },
+            "description": "List item SCM links response."
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationError"
+          },
+          "403": {
+            "$ref": "#/components/responses/PermissionError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimitError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "List item SCM links",
+        "tags": [
+          "Work items"
+        ],
+        "x-required-scopes": [
+          "items:read"
         ]
       }
     },

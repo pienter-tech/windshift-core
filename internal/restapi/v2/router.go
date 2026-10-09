@@ -303,6 +303,10 @@ type participantApplication interface {
 	Remove(ctx context.Context, actorID, itemID, customerID int) ([]models.ItemParticipant, error)
 }
 
+type itemSCMLinkReader interface {
+	ListItemSCMLinks(itemID int) ([]repository.ItemSCMLink, error)
+}
+
 type itemReader interface {
 	FindByID(int) (*models.Item, error)
 	FindByIDsInWorkspace(ctx context.Context, workspaceID int, ids []int) ([]*models.Item, error)
@@ -590,6 +594,7 @@ type Deps struct {
 	ItemTemplates                itemTemplateApplication
 	Labels                       labelApplication
 	Participants                 participantApplication
+	SCMLinks                     itemSCMLinkReader
 	Items                        itemReader
 	Access                       resourceAccess
 	Preferences                  preferencesApplication
@@ -695,6 +700,9 @@ func RegisterRoutes(deps Deps) error {
 	}
 	if deps.Participants == nil {
 		return errors.New("v2: Participants is required")
+	}
+	if deps.SCMLinks == nil {
+		return errors.New("v2: SCMLinks is required")
 	}
 	if deps.Items == nil {
 		return errors.New("v2: Items is required")
@@ -879,6 +887,7 @@ func buildRoutes(deps Deps) []route {
 	registerScopedCatalogRoutes(&builder, deps.Catalog, deps.Workspaces, deps.ItemTemplates)
 	registerLabelRoutes(&builder, deps)
 	registerItemParticipantRoutes(&builder, deps)
+	registerItemSCMLinkRoutes(&builder, deps)
 	registerPreferenceRoutes(&builder, deps.Preferences)
 	registerRecurrenceRoutes(&builder, deps)
 	registerItemDiagramRoutes(&builder, deps)

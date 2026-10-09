@@ -51,29 +51,7 @@ func getItemURL(r *http.Request, workspaceID, itemID int) string {
 }
 
 // ItemSCMLinkResponse represents an SCM link for API responses
-type ItemSCMLinkResponse struct {
-	ID                    int       `json:"id"`
-	ItemID                int       `json:"item_id"`
-	WorkspaceRepositoryID int       `json:"workspace_repository_id"`
-	LinkType              string    `json:"link_type"`
-	ExternalID            string    `json:"external_id"`
-	ExternalURL           string    `json:"external_url,omitempty"`
-	Title                 string    `json:"title,omitempty"`
-	State                 string    `json:"state,omitempty"`
-	AuthorExternalID      string    `json:"author_external_id,omitempty"`
-	AuthorName            string    `json:"author_name,omitempty"`
-	DetectionSource       string    `json:"detection_source,omitempty"`
-	CIState               string    `json:"ci_state,omitempty"` // PR head CI: pending, success, failure; Gitea/Forgejo only
-	CIURL                 string    `json:"ci_url,omitempty"`   // CI run that explains CIState
-	IsMention             bool      `json:"is_mention"`         // PR link whose body only mentions the item; PR automations skip it
-	CreatedAt             time.Time `json:"created_at"`
-	UpdatedAt             time.Time `json:"updated_at"`
-	// Joined fields
-	RepositoryName string `json:"repository_name,omitempty"`
-	RepositoryURL  string `json:"repository_url,omitempty"`
-	ProviderType   string `json:"provider_type,omitempty"`
-	AuthMethod     string `json:"auth_method,omitempty"`
-}
+type ItemSCMLinkResponse = repository.ItemSCMLink
 
 // CreateItemSCMLinkRequest represents a request to create an SCM link
 type CreateItemSCMLinkRequest struct {
@@ -164,79 +142,20 @@ func (h *SCMItemLinksHandler) GetItemSCMLinks(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	rows, err := h.db.Query(`
-		SELECT
-			isl.id, isl.item_id, isl.workspace_repository_id, isl.link_type,
-			isl.external_id, isl.external_url, isl.title, isl.state,
-			isl.author_external_id, isl.author_name, isl.detection_source,
-			isl.ci_state, isl.ci_url, isl.is_mention,
-			isl.created_at, isl.updated_at,
-			wr.repository_name, wr.repository_url,
-			sp.provider_type, sp.auth_method
-		FROM item_scm_links isl
-		JOIN workspace_repositories wr ON wr.id = isl.workspace_repository_id
-		JOIN workspace_scm_connections wsc ON wsc.id = wr.workspace_scm_connection_id
-		JOIN scm_providers sp ON sp.id = wsc.scm_provider_id
-		WHERE isl.item_id = ?
-		ORDER BY isl.created_at DESC
-	`, itemID)
+	links, err := repository.NewSCMWorkspaceRepository(h.db).ListItemSCMLinks(itemID)
 	if err != nil {
 		slog.Error("failed to get links", slog.String("component", "scm_item_links"), slog.Any("error", err))
 		respondInternalError(w, r, err)
 		return
 	}
-	defer func() { _ = rows.Close() }()
 
-	links := []ItemSCMLinkResponse{}
+	// Refresh non-merged OAuth PR links after the response completes.
 	hasOAuthPRLinks := false
-	for rows.Next() {
-		var link ItemSCMLinkResponse
-		var externalURL, title, state, authorExternalID, authorName, detectionSource, ciState, ciURL sql.NullString
-
-		err := rows.Scan(
-			&link.ID, &link.ItemID, &link.WorkspaceRepositoryID, &link.LinkType,
-			&link.ExternalID, &externalURL, &title, &state,
-			&authorExternalID, &authorName, &detectionSource,
-			&ciState, &ciURL, &link.IsMention,
-			&link.CreatedAt, &link.UpdatedAt,
-			&link.RepositoryName, &link.RepositoryURL,
-			&link.ProviderType, &link.AuthMethod,
-		)
-		if err != nil {
-			slog.Error("failed to scan link", slog.String("component", "scm_item_links"), slog.Any("error", err))
-			continue
-		}
-
-		if externalURL.Valid {
-			link.ExternalURL = externalURL.String
-		}
-		if title.Valid {
-			link.Title = title.String
-		}
-		if state.Valid {
-			link.State = state.String
-		}
-		if authorExternalID.Valid {
-			link.AuthorExternalID = authorExternalID.String
-		}
-		if authorName.Valid {
-			link.AuthorName = authorName.String
-		}
-		if detectionSource.Valid {
-			link.DetectionSource = detectionSource.String
-		}
-		link.CIState, link.CIURL = ciState.String, ciURL.String
-
-		// Refresh non-merged OAuth PR links after the response completes.
+	for _, link := range links {
 		if link.AuthMethod == string(models.SCMAuthMethodOAuth) && link.LinkType == "pull_request" && link.State != "merged" {
 			hasOAuthPRLinks = true
+			break
 		}
-
-		links = append(links, link)
-	}
-	if err := rows.Err(); err != nil {
-		respondInternalError(w, r, err)
-		return
 	}
 
 	respondJSONOK(w, links)

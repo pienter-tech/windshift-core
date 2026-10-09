@@ -6879,6 +6879,34 @@
         ]
       }
     },
+    "/items/{item_id}/scm-links": {
+      "get": {
+        "description": "List item SCM links. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "item_id",
+            "In": "path",
+            "Description": "The item identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "List item SCM links",
+        "tags": [
+          "Work items"
+        ]
+      }
+    },
     "/items/{item_id}/sla": {
       "get": {
         "description": "Get item SLA state. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
