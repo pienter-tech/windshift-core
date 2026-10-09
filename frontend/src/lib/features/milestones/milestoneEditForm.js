@@ -1,3 +1,4 @@
+import { preservePlanningScope } from '../../utils/planningScope.js';
 import { milestoneWorkspaceId } from './milestoneScope.js';
 
 // Edit form of the milestone detail page (WCORE-34). Name, description,
@@ -24,4 +25,24 @@ export function milestoneEditForm({ progress, milestone, workspaceId = null }) {
     is_global: milestone?.is_global ?? !workspaceId,
     workspace_id: milestoneWorkspaceId(milestone) ?? routeWorkspaceId,
   };
+}
+
+/**
+ * Payload for saving MilestoneFormDialog's form, shared by the list and
+ * detail pages (WCORE-50). An empty target date is sent as null, and an
+ * existing milestone keeps its scope: the server never moves a milestone
+ * between scopes on update.
+ *
+ * @param {object} formData the dialog's form
+ * @param {object | null} editingMilestone the record being edited; null when creating
+ */
+export function milestoneSaveData(formData, editingMilestone = null) {
+  const data = preservePlanningScope(
+    { ...formData, target_date: formData.target_date || null },
+    editingMilestone
+  );
+  if (data.is_global) {
+    data.workspace_id = null;
+  }
+  return data;
 }

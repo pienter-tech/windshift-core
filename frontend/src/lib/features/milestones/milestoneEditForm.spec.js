@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { milestones } from '../../api/milestones.js';
-import { milestoneEditForm } from './milestoneEditForm.js';
+import { milestoneEditForm, milestoneSaveData } from './milestoneEditForm.js';
 
 // Shapes match the real v2 responses: the progress report has no category_id,
 // is_global, or workspace_id; the milestone record has all three.
@@ -64,6 +64,56 @@ describe('milestoneEditForm', () => {
     expect(form.category_id).toBeUndefined();
     expect(form.is_global).toBe(false);
     expect(form.workspace_id).toBe(7);
+  });
+});
+
+describe('milestoneSaveData', () => {
+  it('sends an empty target date as null', () => {
+    const form = { ...milestoneEditForm({ progress, milestone: record }), target_date: '' };
+
+    expect(milestoneSaveData(form, record)).toMatchObject({ target_date: null, category_id: 3 });
+  });
+
+  it('keeps the scope of an existing workspace milestone', () => {
+    const form = {
+      ...milestoneEditForm({ progress, milestone: record }),
+      is_global: true,
+      workspace_id: null,
+    };
+
+    expect(milestoneSaveData(form, record)).toMatchObject({ is_global: false, workspace_id: 7 });
+  });
+
+  it('keeps the scope of an existing global milestone', () => {
+    const globalRecord = { ...record, is_global: true, workspace_id: null };
+    const form = {
+      ...milestoneEditForm({ progress, milestone: globalRecord }),
+      is_global: false,
+      workspace_id: 7,
+    };
+
+    expect(milestoneSaveData(form, globalRecord)).toMatchObject({
+      is_global: true,
+      workspace_id: null,
+    });
+  });
+
+  it('uses the chosen scope when creating', () => {
+    const form = {
+      name: 'New',
+      description: '',
+      target_date: '',
+      status: 'planning',
+      category_id: null,
+      is_global: true,
+      workspace_id: 7,
+    };
+
+    expect(milestoneSaveData(form)).toMatchObject({
+      is_global: true,
+      workspace_id: null,
+      target_date: null,
+    });
   });
 });
 

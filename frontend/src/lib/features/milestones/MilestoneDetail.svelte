@@ -10,9 +10,7 @@
   import Button from '../../components/Button.svelte';
   import Lozenge from '../../components/Lozenge.svelte';
   import Modal from '../../dialogs/Modal.svelte';
-  import ModalHeader from '../../dialogs/ModalHeader.svelte';
   import DropdownMenu from '../../layout/DropdownMenu.svelte';
-  import Label from '../../components/Label.svelte';
   import { milestonesStore } from '../../stores/milestones.js';
   import { formatDateShort, daysUntil } from '../../utils/dateFormatter.js';
   import { safeHref } from '../../utils/sanitize';
@@ -20,17 +18,15 @@
   import ItemsByStatusCategory from '../../components/ItemsByStatusCategory.svelte';
   import { permissionStore, isSystemAdmin } from '../../stores/permissions.svelte.js';
   import { workspacePermissions } from '../../stores/workspacePermissions.svelte.js';
-  import BasePicker from '../../pickers/BasePicker.svelte';
-  import DialogFooter from '../../dialogs/DialogFooter.svelte';
   import MilestoneReleaseModal from './MilestoneReleaseModal.svelte';
-	import TextField from '../../components/TextField.svelte';
+  import MilestoneFormDialog from './MilestoneFormDialog.svelte';
   import MilkdownEditor from '../../editors/LazyMilkdownEditor.svelte';
   import MilestoneComments from './MilestoneComments.svelte';
   import MilestonePages from './MilestonePages.svelte';
   import MilestoneActivity from './MilestoneActivity.svelte';
   import TabStrip from '../../components/TabStrip.svelte';
   import { canManageMilestone, milestoneWorkspaceId } from './milestoneScope.js';
-  import { milestoneEditForm } from './milestoneEditForm.js';
+  import { milestoneEditForm, milestoneSaveData } from './milestoneEditForm.js';
   import { categoriesStore } from '../../stores/categories.js';
 
   let { milestoneId, workspaceId = null } = $props();
@@ -58,12 +54,19 @@
     description: '',
     target_date: '',
     status: 'planning',
-    category_id: null
+    category_id: null,
+    is_global: true,
+    workspace_id: null
   });
 
   // Scope comes from the milestone record: the progress response has no
   // is_global or workspace_id (WCORE-29).
   const milestoneWsId = $derived(milestoneWorkspaceId(milestone));
+
+  // Same rule as the list page: shows the scope in the edit dialog.
+  const canManageGlobal = $derived(
+    $permissionStore.userPermissionKeys?.has('milestone.create') || $isSystemAdmin
+  );
 
   const canManage = $derived(
     canManageMilestone(milestone, {
@@ -135,12 +138,7 @@
 
   async function saveMilestone() {
     try {
-      // Convert empty strings to null for optional date fields
-      const dataToSave = {
-        ...formData,
-        target_date: formData.target_date || null
-      };
-      await milestonesStore.update(milestoneId, dataToSave);
+      await milestonesStore.update(milestoneId, milestoneSaveData(formData, milestone));
       showEditModal = false;
       await loadProgress();
     } catch (err) {
@@ -410,86 +408,17 @@
   </Modal>
 {/if}
 
-<!-- Edit Modal -->
-<Modal
-  isOpen={showEditModal}
-  onclose={() => showEditModal = false}
+<!-- Edit dialog: the same one as the list page (WCORE-50). Not a global
+     view, so users who manage global milestones see the scope, as on a
+     workspace list; an existing milestone keeps its scope, so there is no
+     toggle. -->
+<MilestoneFormDialog
+  bind:isOpen={showEditModal}
+  bind:formData
+  editingMilestone={milestone}
+  isGlobalView={false}
+  workspaceId={milestoneWsId ?? workspaceId}
+  {canManageGlobal}
+  canManageWorkspace={canManage}
   onSubmit={saveMilestone}
-  submitDisabled={!formData.name.trim()}
-  maxWidth="max-w-2xl"
->
-  {#snippet children(submitHint)}
-  <ModalHeader title={t('common.edit')} showCloseButton={false} />
-
-  <div class="px-6 py-4">
-    <form onsubmit={(e) => { e.preventDefault(); saveMilestone(); }}>
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div>
-          <TextField
-            label={t('milestones.milestoneName')}
-            id="milestone-name"
-            required
-            type="text"
-            placeholder={t('milestones.milestoneNamePlaceholder')}
-            bind:value={formData.name}
-          />
-        </div>
-
-        <div>
-          <TextField
-            label={t('milestones.targetDate')}
-            id="milestone-target-date"
-            type="date"
-            bind:value={formData.target_date}
-          />
-        </div>
-
-        <div>
-          <Label for="milestone-category" class="mb-2">{t('common.category')}</Label>
-          <BasePicker
-            bind:value={formData.category_id}
-            items={$categoriesStore}
-            placeholder={t('milestones.noCategory')}
-            showUnassigned={true}
-            unassignedLabel={t('milestones.noCategory')}
-            getValue={(item) => item.id}
-            getLabel={(item) => item.name}
-          />
-        </div>
-
-        <div>
-          <Label for="milestone-status" class="mb-2">{t('common.status')}</Label>
-          <BasePicker
-            bind:value={formData.status}
-            items={statusOptions}
-            placeholder={t('milestones.selectStatus')}
-            getValue={(item) => item.value}
-            getLabel={(item) => item.label}
-          />
-        </div>
-
-        <div class="md:col-span-2">
-          <Label class="mb-2">{t('common.description')}</Label>
-          <MilkdownEditor
-            bind:content={formData.description}
-            placeholder={t('milestones.descriptionPlaceholder')}
-            showToolbar={true}
-            compact={true}
-            allowImageUpload={false}
-            testId="milestone-description-editor"
-          />
-        </div>
-      </div>
-    </form>
-  </div>
-
-  <DialogFooter
-    onCancel={() => showEditModal = false}
-    onConfirm={saveMilestone}
-    confirmLabel={t('common.update')}
-    disabled={!formData.name.trim()}
-    showKeyboardHint={true}
-    confirmKeyboardHint={submitHint}
-  />
-  {/snippet}
-</Modal>
+/>

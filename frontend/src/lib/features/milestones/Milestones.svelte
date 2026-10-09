@@ -53,9 +53,7 @@
     milestoneWorkspaceOptions,
     parseStatusFilter
   } from './milestoneListFilters.js';
-  import {
-    preservePlanningScope
-  } from '../../utils/planningScope.js';
+  import { milestoneSaveData } from './milestoneEditForm.js';
 
   // Props for workspace-scoped view (optional)
   let { workspaceId = null } = $props();
@@ -261,17 +259,7 @@
 
   async function saveMilestone() {
     try {
-      // Convert empty strings to null for optional date fields
-      const dataToSave = preservePlanningScope(
-        {
-          ...formData,
-          target_date: formData.target_date || null
-        },
-        editingMilestone
-      );
-      if (dataToSave.is_global) {
-        dataToSave.workspace_id = null;
-      }
+      const dataToSave = milestoneSaveData(formData, editingMilestone);
 
       if (editingMilestone) {
         // Update existing milestone
