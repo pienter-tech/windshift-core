@@ -324,6 +324,7 @@
             workspaceId={workspaceId}
             bind:value={formData.target_id}
             placeholder={t('items.pagePickerPlaceholder')}
+            inlineMenu
             onSelect={handleSelectPage}
           />
         {:else}

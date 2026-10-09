@@ -119,6 +119,42 @@ describe('MilestonePages link dialog', () => {
     ).toEqual(['Spec page']);
   });
 
+  // WCORE-61: a dropdown floating over the dialog covered Cancel and took
+  // clicks aimed at it. The results now sit in the dialog's flow, above its
+  // buttons, so the dialog grows instead.
+  it('shows the results in the dialog, above its buttons', async () => {
+    const { dialog, input } = await openDialog();
+    await fireEvent.click(input);
+    await fireEvent.input(input, { target: { value: 'Spec' } });
+    await within(dialog).findByText('Spec page', {}, { timeout: 2000 });
+
+    const listbox = screen.getByRole('listbox');
+    const panel = dialog.firstElementChild;
+    expect(panel).toContainElement(listbox);
+    expect(listbox).not.toHaveClass('fixed');
+    expect(listbox.style.position).toBe('');
+    const cancel = within(dialog).getByTestId('milestone-page-link-cancel');
+    expect(listbox.compareDocumentPosition(cancel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('cancels on the first click on Cancel while the results are open', async () => {
+    const { add, dialog, input } = await openDialog();
+    await fireEvent.click(input);
+    await fireEvent.input(input, { target: { value: 'Spec' } });
+    await within(dialog).findByText('Spec page', {}, { timeout: 2000 });
+
+    // A press on a button focuses it in Chrome.
+    const cancel = within(dialog).getByTestId('milestone-page-link-cancel');
+    await fireEvent.mouseDown(cancel);
+    cancel.focus();
+    await fireEvent.mouseUp(cancel);
+    await fireEvent.click(cancel);
+
+    await expectDialogClosed();
+    expect(mocks.linkPage).not.toHaveBeenCalled();
+    await waitFor(() => expect(add).toHaveFocus());
+  });
+
   it('searches pages in the milestone workspace only', async () => {
     const { input } = await openDialog();
     await fireEvent.click(input);

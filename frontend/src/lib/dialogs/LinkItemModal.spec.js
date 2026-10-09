@@ -120,6 +120,59 @@ describe('LinkItemModal in Page mode', () => {
     await waitFor(() => expect(opener).toHaveFocus());
   });
 
+  // WCORE-61: a dropdown floating over the dialog covered Cancel and took
+  // clicks aimed at it. The results now sit in the dialog's flow, above its
+  // buttons, so the dialog grows instead.
+  describe('with page results open', () => {
+    beforeEach(() => {
+      api.pages.searchPages.mockResolvedValue({ results: [page] });
+    });
+
+    it('shows them in the dialog, above its buttons', async () => {
+      const { dialog, input } = await openPageDialog();
+      await searchPage(input);
+
+      const listbox = screen.getByRole('listbox');
+      expect(input).toHaveAttribute('aria-controls', listbox.id);
+      expect(dialog.firstElementChild).toContainElement(listbox);
+      expect(listbox).not.toHaveClass('fixed');
+      expect(listbox.style.position).toBe('');
+      const cancel = within(dialog).getByRole('button', { name: /common\.cancel/ });
+      expect(
+        listbox.compareDocumentPosition(cancel) & Node.DOCUMENT_POSITION_FOLLOWING
+      ).toBeTruthy();
+    });
+
+    it('leaves the Link Type dropdown floating in the dialog element', async () => {
+      const { dialog } = await openPageDialog();
+      const linkType = dialog.querySelector('#link-type-picker');
+      await fireEvent.click(linkType);
+      await fireEvent.input(linkType, { target: { value: 'Pa' } });
+
+      const listbox = await screen.findByRole('listbox');
+      expect(linkType).toHaveAttribute('aria-controls', listbox.id);
+      expect(listbox.parentElement).toBe(dialog);
+      expect(listbox).toHaveClass('fixed');
+    });
+
+    it('cancels on the first click on Cancel', async () => {
+      const onsubmit = vi.fn();
+      const { dialog, input } = await openPageDialog({ onsubmit });
+      await searchPage(input);
+
+      // A press on a button focuses it in Chrome.
+      const cancel = within(dialog).getByRole('button', { name: /common\.cancel/ });
+      await fireEvent.mouseDown(cancel);
+      cancel.focus();
+      await fireEvent.mouseUp(cancel);
+      await fireEvent.click(cancel);
+
+      await expectDialogClosed();
+      expect(onsubmit).not.toHaveBeenCalled();
+      await waitFor(() => expect(opener).toHaveFocus());
+    });
+  });
+
   it('leaves focus alone when the opener is gone', async () => {
     const { dialog } = await openPageDialog();
     opener.remove();

@@ -88,6 +88,12 @@
     // full-width dropdown anchored under a wide trigger (mobile field rows).
     positioning = null,
 
+    // Render the dropdown in the page flow under the field instead of
+    // floating it (combobox mode). In a short dialog the dialog grows to make
+    // room, so the list can't cover the dialog's own buttons (WCORE-61).
+    // Static, like positioning.
+    inlineMenu = false,
+
     // Multi-select values bindable (used in popover mode)
     values = $bindable([]),
 
@@ -125,20 +131,23 @@
     // Keep the page scrollable and fit the menu around its moving trigger.
     preventScroll: false,
     multiple: false, // We handle multi-select manually
-    positioning: {
+    // An inline dropdown is neither positioned nor portalled.
+    positioning: inlineMenu ? null : {
       strategy: 'fixed',
       placement: 'bottom-start',
       sameWidth: false,
       ...positioning,
       fitViewport: true
     },
-    portal: 'body'
+    portal: inlineMenu ? null : 'body'
   });
 
   // Inside a modal dialog, render the dropdown into the dialog element:
   // aria-modal hides everything outside it from screen readers (WCORE-64).
+  // An inline dropdown is already inside it.
   const modal = getContext(modalElementKey);
   $effect(() => {
+    if (inlineMenu) return;
     portalTarget.set(modal?.element ?? 'body');
   });
 
@@ -664,11 +673,27 @@
   {/if}
 
   <!-- Dropdown Menu -->
+  {#if !inlineMenu}{@render dropdownMenu()}{/if}
+
+  <!-- Error State (combobox mode) -->
+  {#if error && !popoverMode}
+    <div class="absolute z-50 w-full mt-2 rounded border shadow-lg"
+         style="background-color: var(--ds-surface-raised); border-color: var(--ds-border);">
+      <div class="px-4 py-4 text-center text-sm text-ds-text-danger">{error}</div>
+    </div>
+  {/if}
+</div>
+
+<!-- An inline dropdown follows the wrapper rather than sitting in it: the
+     wrapper's icons are centred on its height. -->
+{#if inlineMenu}{@render dropdownMenu()}{/if}
+
+{#snippet dropdownMenu()}
   {#if $open}
     <div bind:this={menuRef} use:melt={$menu} data-testid={menuTestid || 'picker-dropdown'}
          onmousedown={keepFocusOnPress}
          onfocusout={handleMenuFocusOut}
-         class="fixed z-[70] min-w-[250px] rounded border shadow-lg flex flex-col overflow-y-auto overscroll-contain"
+         class="{inlineMenu ? 'relative mt-1 w-full' : 'fixed z-[70] min-w-[250px]'} rounded border shadow-lg flex flex-col overflow-y-auto overscroll-contain"
          style="background-color: var(--ds-surface-raised); border-color: var(--ds-border);">
       {#if popoverMode}
         <!-- Search input inside dropdown -->
@@ -773,15 +798,7 @@
       {/if}
     </div>
   {/if}
-
-  <!-- Error State (combobox mode) -->
-  {#if error && !popoverMode}
-    <div class="absolute z-50 w-full mt-2 rounded border shadow-lg"
-         style="background-color: var(--ds-surface-raised); border-color: var(--ds-border);">
-      <div class="px-4 py-4 text-center text-sm text-ds-text-danger">{error}</div>
-    </div>
-  {/if}
-</div>
+{/snippet}
 
 <style>
   .picker-clear:hover {
