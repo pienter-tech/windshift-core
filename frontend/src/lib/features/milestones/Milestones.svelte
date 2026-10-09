@@ -21,7 +21,7 @@
   import { milestonesStore } from '../../stores/milestones.js';
   import { moduleSettings } from '../../stores/moduleSettings.js';
   import { currentRoute } from '../../router.js';
-  import { formatDateShort } from '../../utils/dateFormatter.js';
+  import { formatDateShort, formatRelativeTime } from '../../utils/dateFormatter.js';
   import { api } from '../../api.js';
   import { workspacesStore } from '../../stores/workspaces.svelte.js';
   import { permissionStore, isSystemAdmin } from '../../stores/permissions.svelte.js';
@@ -37,6 +37,13 @@
   import { useEventListener } from 'runed';
   import { loadMilestoneTestStatistics } from './milestoneStatisticsData.js';
   import { canReorderMilestoneRow } from './milestoneScope.js';
+  import {
+    DEFAULT_MILESTONE_SORT,
+    milestoneLastUpdated,
+    milestoneStatusSortValue,
+    milestoneTimelineSortValue,
+    timestampSortValue
+  } from './milestoneListSort.js';
   import {
     GLOBAL_WORKSPACE_KEY,
     MILESTONE_STATUSES,
@@ -137,6 +144,12 @@
     selectedWorkspaceKeys = defaults.workspaceKeys;
     searchQuery = defaults.search;
   }
+
+  // Column sort of the global view's table, bound to its DataTable.
+  // A column sort replaces the manual order, so rows only drag (and show the
+  // grip column) once the user clears the sort.
+  let globalSort = $state({ ...DEFAULT_MILESTONE_SORT });
+  const columnSortActive = $derived(isGlobalView && globalSort != null);
 
   // Drag-and-drop reorder state. One set of cleanups per render; the
   // milestone rows are re-wired whenever the visible list changes.
@@ -545,6 +558,7 @@
     void visibleMilestones;
     void localMilestones;
     void globalMilestones;
+    void columnSortActive;
 
     // Defer until after the DOM reflects the new rows.
     const timer = setTimeout(() => {
@@ -559,7 +573,7 @@
         const categoryId = row.dataset.milestoneCategory;
         if (Number.isNaN(id)) return;
 
-        const canDrag = scopeName === 'global' ? canReorderGlobal : canReorderLocal;
+        const canDrag = !columnSortActive && (scopeName === 'global' ? canReorderGlobal : canReorderLocal);
         if (!canDrag) return;
 
         dragEdge[id] = null;
@@ -620,31 +634,42 @@
   // DataTable configuration
   let milestoneColumns = $derived([
     // Drag handle column — only present when the user may reorder the
-    // active scope. The handle is the pragmatic-drag-and-drop dragHandle.
-    ...(canReorderGlobal || canReorderLocal)
+    // active scope and no column sort is active. The handle is the
+    // pragmatic-drag-and-drop dragHandle.
+    ...(canReorderGlobal || canReorderLocal) && !columnSortActive
       ? [{ key: 'reorder', label: '', width: 'w-10', slot: 'reorder' }]
       : [],
+    // Data columns sort on header click on the global view only; the
+    // workspace view keeps its manual order.
     {
       key: 'status',
       label: t('milestones.columnStatus'),
       width: 'w-40',
-      slot: 'status'
+      slot: 'status',
+      sortable: isGlobalView,
+      sortValue: milestoneStatusSortValue
     },
     { 
       key: 'name', 
       label: t('milestones.columnMilestone'),
-      slot: 'name'
+      slot: 'name',
+      sortable: isGlobalView,
+      sortValue: (milestone) => milestone.name
     },
     ...isGlobalView ? [{
       key: 'workspace',
       label: t('milestones.workspace'),
       width: 'w-48',
-      slot: 'workspace'
+      slot: 'workspace',
+      sortable: true,
+      sortValue: workspaceLabel
     }] : [],
     { 
       key: 'target_date', 
       label: t('milestones.columnTargetDate'),
       width: 'w-40',
+      sortable: isGlobalView,
+      sortValue: (milestone) => timestampSortValue(milestone.target_date),
       render: (milestone) => {
         return formatDateShort(milestone.target_date) || '-';
       }
@@ -653,8 +678,27 @@
       key: 'days_remaining', 
       label: t('milestones.columnTimeline'),
       width: 'w-48',
-      slot: 'days_remaining'
+      slot: 'days_remaining',
+      sortable: isGlobalView,
+      sortValue: milestoneTimelineSortValue
     },
+    ...isGlobalView ? [{
+      key: 'created_at',
+      label: t('milestones.columnCreated'),
+      width: 'w-36',
+      sortable: true,
+      sortValue: (milestone) => timestampSortValue(milestone.created_at),
+      render: (milestone) => formatDateShort(milestone.created_at),
+      textColor: 'var(--ds-text-subtle)'
+    }, {
+      key: 'last_updated_at',
+      label: t('milestones.columnUpdated'),
+      width: 'w-36',
+      sortable: true,
+      sortValue: (milestone) => timestampSortValue(milestoneLastUpdated(milestone)),
+      render: (milestone) => formatRelativeTime(milestoneLastUpdated(milestone)),
+      textColor: 'var(--ds-text-subtle)'
+    }] : [],
     ...$moduleSettings.test_management_enabled ? [{
       key: 'tests',
       label: t('milestones.columnTests'),
@@ -788,7 +832,11 @@
             {:else}
               <Building2 class="w-4 h-4 flex-shrink-0" />
             {/if}
-            <span class="truncate">{workspaceLabel(item)}</span>
+            {#if item.is_global || item.workspace_id == null}
+              <span class="truncate">{workspaceLabel(item)}</span>
+            {:else}
+              <a href="/workspaces/{item.workspace_id}" class="truncate hover:underline" style="color: inherit;">{workspaceLabel(item)}</a>
+            {/if}
           </span>
         {/if}
       {/snippet}
@@ -886,6 +934,7 @@
           columns={milestoneColumns}
           data={visibleMilestones}
           keyField="id"
+          bind:sort={globalSort}
           actionItems={buildMilestoneDropdownItems}
           class="rounded-xl border shadow-sm"
           rowAttrs={(item) => ({ 'data-milestone-row': item.id, 'data-milestone-scope': item.is_global ? 'global' : 'local', 'data-milestone-ws': item.workspace_id ?? '', 'data-milestone-category': item.category_id ?? '' })}

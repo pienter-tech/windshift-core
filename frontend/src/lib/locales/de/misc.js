@@ -283,6 +283,8 @@ export default {
     noMatchingMilestones: 'Keine Meilensteine entsprechen den Filtern',
     noMatchingMilestonesDescription: 'Ändern Sie die Filter, um weitere Meilensteine zu sehen.',
     clearFilters: 'Filter löschen',
+    columnCreated: 'Erstellt',
+    columnUpdated: 'Aktualisiert',
     activity: {
       tabOverview: 'Übersicht',
       tabActivity: 'Aktivität',

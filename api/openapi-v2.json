@@ -27019,6 +27019,11 @@
                   "description": "The is global value.",
                   "type": "boolean"
                 },
+                "last_updated_at": {
+                  "description": "The last updated at value.",
+                  "format": "date-time",
+                  "type": "string"
+                },
                 "latest_release": {
                   "additionalProperties": false,
                   "description": "The latest release value.",
@@ -27338,6 +27343,7 @@
                 "description",
                 "id",
                 "is_global",
+                "last_updated_at",
                 "name",
                 "position",
                 "status",
@@ -36817,6 +36823,11 @@
                   "description": "The is global value.",
                   "type": "boolean"
                 },
+                "last_updated_at": {
+                  "description": "The last updated at value.",
+                  "format": "date-time",
+                  "type": "string"
+                },
                 "latest_release": {
                   "additionalProperties": false,
                   "description": "The latest release value.",
@@ -37136,6 +37147,7 @@
                 "description",
                 "id",
                 "is_global",
+                "last_updated_at",
                 "name",
                 "position",
                 "status",

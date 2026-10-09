@@ -385,6 +385,8 @@ export default {
     noMatchingMilestones: '没有符合筛选条件的里程碑',
     noMatchingMilestonesDescription: '更改筛选条件以查看更多里程碑。',
     clearFilters: '清除筛选',
+    columnCreated: '创建时间',
+    columnUpdated: '更新时间',
     activity: {
       tabOverview: '概览',
       tabActivity: '动态',
