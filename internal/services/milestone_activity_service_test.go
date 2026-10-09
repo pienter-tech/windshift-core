@@ -33,9 +33,9 @@ func (w activityWorkspaces) AccessibleWorkspaceIDs(userID int) ([]int, error) {
 	return w[userID], nil
 }
 
-type activityPages []models.MilestonePageLink
+type activityPages []models.MilestonePageLinkEvent
 
-func (p activityPages) List(_, _ int) ([]models.MilestonePageLink, error) {
+func (p activityPages) History(_, _ int) ([]models.MilestonePageLinkEvent, error) {
 	return p, nil
 }
 
@@ -179,7 +179,7 @@ func TestMilestoneActivityFeedSourcesOrderAndVisibility(t *testing.T) {
 	adaID := activityAda
 	pages := activityPages{{
 		ID: 5, MilestoneID: f.milestone, PageID: 42, PageTitle: "Spec", WorkspaceID: 1,
-		CreatedBy: &adaID, CreatedByName: "Ada Lovelace", CreatedAt: f.base.Add(11 * time.Hour),
+		UserID: &adaID, UserName: "Ada Lovelace", OccurredAt: f.base.Add(11 * time.Hour),
 	}}
 
 	// Milestone edits by Bob, recorded by the update path.

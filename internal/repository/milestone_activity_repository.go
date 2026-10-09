@@ -28,8 +28,8 @@ import (
 //     at all, and items whose first milestones history row already listed the
 //     milestone. Their actor and time are the item's creator and creation time.
 //
-// Page links are not read here: the service adds them after the page
-// permission filter.
+// Page links and unlinks (milestone_history page_link rows) are not read
+// here: the service adds them after the page permission filter.
 //
 // Item rows are limited to items in the given workspaces, the same
 // workspace-access rule the milestone progress view applies.
