@@ -24,7 +24,7 @@
   import DialogFooter from '../../dialogs/DialogFooter.svelte';
   import MilestoneReleaseModal from './MilestoneReleaseModal.svelte';
 	import TextField from '../../components/TextField.svelte';
-	import TextareaField from '../../components/TextareaField.svelte';
+  import MilkdownEditor from '../../editors/LazyMilkdownEditor.svelte';
 
   let { milestoneId, workspaceId = null } = $props();
 
@@ -239,10 +239,12 @@
       <!-- Milestone Header Card -->
       <div class="rounded-xl border p-6 mb-6" style="background-color: var(--ds-surface-raised); border-color: var(--ds-border);">
         <div class="flex items-start justify-between mb-4">
-          <div>
+          <div class="min-w-0 flex-1">
             <h1 class="text-2xl font-semibold" style="color: var(--ds-text);">{progress.milestone_name}</h1>
             {#if progress.description}
-              <p class="text-sm mt-1" style="color: var(--ds-text-subtle);">{progress.description}</p>
+              <div class="mt-1" data-testid="milestone-description-display">
+                <MilkdownEditor content={progress.description} readonly={true} showToolbar={false} />
+              </div>
             {/if}
           </div>
           {#if progress.status}
@@ -410,12 +412,14 @@
         </div>
 
         <div class="md:col-span-2">
-          <TextareaField
-            label={t('common.description')}
-            id="milestone-description"
-            rows={3}
+          <Label class="mb-2">{t('common.description')}</Label>
+          <MilkdownEditor
+            bind:content={formData.description}
             placeholder={t('milestones.descriptionPlaceholder')}
-            bind:value={formData.description}
+            showToolbar={true}
+            compact={true}
+            allowImageUpload={false}
+            testId="milestone-description-editor"
           />
         </div>
       </div>
