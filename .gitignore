@@ -47,6 +47,7 @@ cx
 !/internal/utils/repository_path_test.go
 !/internal/wscli/milestone_comment_test.go
 !/internal/wscli/milestone_page_test.go
+!/internal/wscli/milestone_test.go
 !/internal/wscli/root_test.go
 *_test.sh
 *.test.js
