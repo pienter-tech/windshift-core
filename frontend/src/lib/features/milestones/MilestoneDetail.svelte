@@ -29,6 +29,7 @@
   import MilestonePages from './MilestonePages.svelte';
   import MilestoneActivity from './MilestoneActivity.svelte';
   import TabStrip from '../../components/TabStrip.svelte';
+  import { canManageMilestone, milestoneWorkspaceId } from './milestoneScope.js';
 
   let { milestoneId, workspaceId = null } = $props();
 
@@ -38,7 +39,8 @@
   let milestone = $state(null); // full milestone record (includes latest_release)
   let expandedCategories = $state({});
   let showEditModal = $state(false);
-  // Tabs: Overview keeps the progress, pages, and comments;
+  // Tabs: Overview keeps the progress and comments (pages sit in
+  // the header card above the tabs);
   // Activity shows the shared milestone feed.
   let activeTab = $state('overview');
   // Bumped after each reload so an open Activity tab shows the new entries.
@@ -57,18 +59,17 @@
     category_id: null
   });
 
-  const canManage = $derived.by(() => {
-    if (!progress) return false;
-    if ($isSystemAdmin) return true;
-    if (progress.is_global) {
-      return $permissionStore.userPermissionKeys?.has('milestone.create');
-    } else {
-      const wsId = progress.workspace_id || workspaceId;
-      if (!wsId) return false;
-      return workspacePermissions.canAdminWorkspace(wsId) || 
-             workspacePermissions.hasPermission(wsId, 'item.edit');
-    }
-  });
+  // Scope comes from the milestone record: the progress response has no
+  // is_global or workspace_id.
+  const milestoneWsId = $derived(milestoneWorkspaceId(milestone));
+
+  const canManage = $derived(
+    canManageMilestone(milestone, {
+      isSystemAdmin: $isSystemAdmin,
+      hasGlobalPermission: (key) => $permissionStore.userPermissionKeys?.has(key) ?? false,
+      hasWorkspacePermission: (wsId, key) => workspacePermissions.hasPermission(wsId, key)
+    })
+  );
 
   let statusOptions = $derived([
     { value: 'planning', label: t('milestones.status.planning'), lozengeColor: 'grey' },
@@ -129,8 +130,8 @@
         target_date: progress.target_date ? progress.target_date.split('T')[0] : '',
         status: progress.status,
         category_id: null, // We don't have this in progress response, but it's optional
-        is_global: progress.is_global ?? !workspaceId,
-        workspace_id: progress.workspace_id ?? (workspaceId ? parseInt(workspaceId, 10) : null)
+        is_global: milestone?.is_global ?? !workspaceId,
+        workspace_id: milestoneWsId ?? (workspaceId ? parseInt(workspaceId, 10) : null)
       };
       showEditModal = true;
     }
@@ -332,6 +333,17 @@
             </a>
           </div>
         {/if}
+
+        <!-- Pages list: workspace milestones only; global
+             milestones have no workspace. Part of the header card, so it shows
+             on both tabs. -->
+        {#if milestoneWsId != null}
+          <MilestonePages
+            {milestoneId}
+            workspaceId={milestoneWsId}
+            canEdit={canManage}
+          />
+        {/if}
       </div>
     {/if}
 
@@ -368,22 +380,12 @@
           />
         {/if}
 
-        <!-- Pages (workspace milestones only; global milestones have no
-             workspace). Outside the loading branch like Comments below. -->
-        {#if !progress.is_global && progress.workspace_id}
-          <MilestonePages
-            {milestoneId}
-            workspaceId={progress.workspace_id}
-            canEdit={canManage}
-          />
-        {/if}
-
         <!-- Comments (global and local milestones; no notifications). Kept
              outside the loading branch so a reload after editing the
              milestone keeps the thread and any draft mounted. -->
         <MilestoneComments
           {milestoneId}
-          workspaceId={progress.is_global ? null : (progress.workspace_id ?? null)}
+          workspaceId={milestoneWsId}
         />
       </div>
 

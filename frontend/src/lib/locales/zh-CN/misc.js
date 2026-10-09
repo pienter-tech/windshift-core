@@ -337,7 +337,6 @@ export default {
     allCategories: '所有分类',
     manageCategories: '管理分类',
     allMilestones: '所有里程碑',
-    noPagesLinked: '尚未关联页面',
     workspaceMilestones: '工作区里程碑',
     status: {
       planning: '计划中',

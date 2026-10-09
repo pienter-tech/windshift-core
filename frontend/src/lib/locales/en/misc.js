@@ -379,7 +379,6 @@ export default {
     workItems: 'Work Items',
     noItemsAssigned: 'No items assigned',
     assignItemsHint: 'Assign work items to this milestone to track progress',
-    noPagesLinked: 'No pages linked yet',
     milestoneName: 'Milestone Name',
     milestoneNamePlaceholder: 'e.g., Q1 Release, Beta Launch',
     targetDate: 'Target Date',

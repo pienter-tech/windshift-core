@@ -357,7 +357,6 @@ export default {
     allCategories: 'Toutes les catégories',
     manageCategories: 'Gérer les catégories',
     allMilestones: 'Tous les jalons',
-    noPagesLinked: 'Aucune page liée pour le moment',
     workspaceMilestones: 'Jalons de l’espace de travail',
     status: {
       planning: 'Planification',

@@ -235,7 +235,6 @@ export default {
     allCategories: 'Alle Kategorien',
     manageCategories: 'Kategorien verwalten',
     allMilestones: 'Alle Meilensteine',
-    noPagesLinked: 'Noch keine Seiten verknüpft',
     workspaceMilestones: 'Arbeitsbereich-Meilensteine',
     status: {
       planning: 'Planung',
