@@ -45,6 +45,7 @@ cx
 !/internal/services/planning_milestone_last_updated_test.go
 !/internal/services/milestone_membership_history_test.go
 !/internal/utils/repository_path_test.go
+!/internal/wscli/comment_test.go
 !/internal/wscli/milestone_comment_test.go
 !/internal/wscli/milestone_page_test.go
 !/internal/wscli/root_test.go
