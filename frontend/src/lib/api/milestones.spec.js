@@ -66,3 +66,33 @@ describe('milestones comments client', () => {
     expect(deleteOptions.method).toBe('DELETE');
   });
 });
+
+describe('milestones page links client', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('lists, links, and unlinks pages on a milestone', async () => {
+    const link = { id: 9, milestone_id: 7, page_id: 42, page_title: 'Spec' };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ data: [link] }))
+      .mockResolvedValueOnce(jsonResponse({ data: link }, 201))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(milestones.getPageLinks(7)).resolves.toEqual([link]);
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v2/milestones/7/page-links');
+
+    await expect(milestones.linkPage(7, 42)).resolves.toEqual(link);
+    const [createURL, createOptions] = fetchMock.mock.calls[1];
+    expect(createURL).toBe('/api/v2/milestones/7/page-links');
+    expect(createOptions.method).toBe('POST');
+    expect(JSON.parse(createOptions.body)).toEqual({ page_id: 42 });
+
+    await milestones.unlinkPage(7, 9);
+    const [deleteURL, deleteOptions] = fetchMock.mock.calls[2];
+    expect(deleteURL).toBe('/api/v2/milestones/7/page-links/9');
+    expect(deleteOptions.method).toBe('DELETE');
+  });
+});

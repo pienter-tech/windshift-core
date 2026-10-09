@@ -1044,9 +1044,19 @@ func (s *PlanningService) DeleteMilestone(id int, auditActors ...AuditActor) err
 		}
 		resourceName = existing.Name
 	}
-	_, err := s.db.ExecWrite("DELETE FROM milestones WHERE id = ?", id)
+	err := database.WithTx(s.db, func(tx database.Tx) error {
+		// item_links has no foreign keys, so remove the milestone's page links
+		// with it rather than leave them pointing at nothing.
+		if err := repository.NewMilestonePageLinkRepository(s.db).DeleteByMilestone(tx, id); err != nil {
+			return err
+		}
+		if _, err := tx.Exec("DELETE FROM milestones WHERE id = ?", id); err != nil {
+			return fmt.Errorf("failed to delete milestone: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("failed to delete milestone: %w", err)
+		return err
 	}
 	if actor := optionalAuditActor(auditActors); actor != nil {
 		emitServiceAudit(s.db, *actor, logger.ActionMilestoneDelete, logger.ResourceMilestone, &id, resourceName, nil)

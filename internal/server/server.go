@@ -1872,6 +1872,11 @@ func (s *Server) initialize() error {
 		repository.NewMilestoneCommentRepository(s.db),
 		planningApplication,
 	)
+	milestonePageLinkService := services.NewMilestonePageLinkService(
+		repository.NewMilestonePageLinkRepository(s.db),
+		planningApplication,
+		pagePermissionService,
+	)
 	agentRunApplication := services.NewAgentRunReadService(
 		repository.NewItemRepository(s.db),
 		repository.NewAgentRunRepository(s.db),
@@ -1968,6 +1973,7 @@ func (s *Server) initialize() error {
 		Collections:                  services.NewCollectionApplicationService(s.db, permService),
 		Planning:                     planningApplication,
 		MilestoneComments:            milestoneCommentService,
+		MilestonePageLinks:           milestonePageLinkService,
 		Links:                        itemLinkService,
 		AgentRuns:                    agentRunApplication,
 		AgentSkills:                  services.NewAgentSkillApplicationService(s.db, permService),
