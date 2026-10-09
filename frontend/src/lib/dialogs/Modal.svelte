@@ -1,6 +1,9 @@
 <script module>
   // Context key through which a ModalHeader names its dialog.
   export const modalTitleKey = Symbol('modal-title');
+  // Context key through which floating content (a picker's dropdown) finds
+  // the dialog element to render into.
+  export const modalElementKey = Symbol('modal-element');
 </script>
 
 <script>
@@ -44,6 +47,15 @@
 
   let backdropElement = $state(null);
   let modalContentElement = $state(null);
+
+  // aria-modal hides everything outside the dialog element from screen
+  // readers, so a dropdown opened from inside the dialog must render inside
+  // it too (WCORE-64). Null for an inline modal, which has no dialog element.
+  setContext(modalElementKey, {
+    get element() {
+      return backdropElement;
+    }
+  });
   let hasTextarea = $state(false);
 
   // Get shortcut configurations
@@ -57,12 +69,23 @@
     }
   }
 
+  // A press that starts inside the dialog and is released on the backdrop
+  // (a drag from a field, or from a picker's dropdown, which renders in the
+  // backdrop) ends in a click on the backdrop. That is not a click outside.
+  let pressStartedInside = false;
+
+  function handleBackdropMouseDown(e) {
+    pressStartedInside = e.target !== e.currentTarget;
+  }
+
   function handleBackdropClick(e) {
+    const startedInside = pressStartedInside;
+    pressStartedInside = false;
     // Clicking outside the modal content can silently dismiss it and lose
     // anything the user has typed. Creation / editing dialogs gate this off
     // (closeOnBackdropClick=false); the modal is closed through its explicit
     // buttons or Escape instead.
-    if (closeOnBackdropClick && e.target === e.currentTarget) {
+    if (closeOnBackdropClick && e.target === e.currentTarget && !startedInside) {
       close();
     }
   }
@@ -256,6 +279,7 @@
     class={`fixed inset-0 flex items-start justify-center pt-8 overflow-y-auto ${zIndexClass}`}
     style={noBackdrop ? '' : 'background-color: rgba(0, 0, 0, 0.4); backdrop-filter: blur(4px);'}
     tabindex="-1"
+    onmousedown={handleBackdropMouseDown}
     onclick={handleBackdropClick}
     onkeydown={handleKeydown}
     onfocusin={detectTextarea}

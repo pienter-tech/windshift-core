@@ -1,9 +1,10 @@
 <script>
-  import { untrack } from 'svelte';
+  import { getContext, untrack } from 'svelte';
   import { createCombobox, melt } from '@melt-ui/svelte';
   import { Check, ChevronDown, X, Search } from '@lucide/svelte';
   import Spinner from '../components/Spinner.svelte';
   import { t } from '../stores/i18n.svelte.js';
+  import { modalElementKey } from '../dialogs/Modal.svelte';
 
   let {
     // Core props
@@ -117,7 +118,8 @@
   const {
     elements: { menu, input, option, label: labelEl },
     states: { open, inputValue, touchedInput, selected },
-    helpers: { isSelected }
+    helpers: { isSelected, closeMenu },
+    options: { portal: portalTarget }
   } = createCombobox({
     forceVisible: true,
     // Keep the page scrollable and fit the menu around its moving trigger.
@@ -131,6 +133,13 @@
       fitViewport: true
     },
     portal: 'body'
+  });
+
+  // Inside a modal dialog, render the dropdown into the dialog element:
+  // aria-modal hides everything outside it from screen readers (WCORE-64).
+  const modal = getContext(modalElementKey);
+  $effect(() => {
+    portalTarget.set(modal?.element ?? 'body');
   });
 
   // In popover mode we maintain our own search term inside the dropdown.
@@ -378,6 +387,10 @@
       // the dialog instead of escaping behind it (WI-455).
       restoreFocusToTrigger();
       onCancel();
+      // The popover's search field sits in the dropdown. Inside a Modal the
+      // dialog stops the key before Melt's document listener sees it, so
+      // close the dropdown here.
+      if (popoverMode) closeMenu();
       return;
     }
 
@@ -527,6 +540,28 @@
     opts[highlightedIndex]?.scrollIntoView({ block: 'nearest' });
   });
 
+  // A press on an option or on the dropdown's empty space would take focus
+  // off the field (to <body>, or to a dialog the dropdown renders in). Keep
+  // it there, as a combobox should; controls in the dropdown, such as the
+  // popover's search field, still take focus.
+  function keepFocusOnPress(e) {
+    const control = e.target.closest?.('input, textarea, select, button, a[href], [tabindex]');
+    if (control && menuRef?.contains(control)) return;
+    e.preventDefault();
+  }
+
+  // Focus inside the dropdown (the popover's search field) is lost when the
+  // dropdown closes under it. Hand it to the trigger right away: inside a
+  // dialog, the dialog's focus guard would otherwise take it before the
+  // frame in restoreFocusToTrigger runs.
+  function handleMenuFocusOut(e) {
+    if (e.relatedTarget || $open) return;
+    const target = activeElementBeforeOpen;
+    if (target instanceof HTMLElement && target.isConnected && !menuRef?.contains(target)) {
+      target.focus();
+    }
+  }
+
   // Popover mode trigger handler
   function handleTriggerClick() {
     if (disabled) return;
@@ -631,6 +666,8 @@
   <!-- Dropdown Menu -->
   {#if $open}
     <div bind:this={menuRef} use:melt={$menu} data-testid={menuTestid || 'picker-dropdown'}
+         onmousedown={keepFocusOnPress}
+         onfocusout={handleMenuFocusOut}
          class="fixed z-[70] min-w-[250px] rounded border shadow-lg flex flex-col overflow-y-auto overscroll-contain"
          style="background-color: var(--ds-surface-raised); border-color: var(--ds-border);">
       {#if popoverMode}
@@ -652,7 +689,8 @@
       {#if loading}
         <div class="p-4 text-center" style="color: var(--ds-text-subtle);">{t('common.loading')}</div>
       {:else if options.length > 0}
-        <div role="listbox" data-testid={scrollTestid || 'picker-option-list'} class="min-h-0 max-h-60 overflow-y-auto overscroll-contain">
+        <!-- The menu itself is the listbox (Melt gives it role="listbox"). -->
+        <div data-testid={scrollTestid || 'picker-option-list'} class="min-h-0 max-h-60 overflow-y-auto overscroll-contain">
           {#each groupedVisibleOptions as group (group.key)}
             {#if group.label}
               <div class="px-3 py-2 text-xs font-semibold uppercase tracking-wide" style="background-color: var(--ds-background-neutral); color: var(--ds-text-subtle);">

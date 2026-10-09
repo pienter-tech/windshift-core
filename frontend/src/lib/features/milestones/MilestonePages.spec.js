@@ -47,6 +47,18 @@ async function choosePage(input) {
   await fireEvent.click(await within(dropdown).findByText('Spec page', {}, { timeout: 2000 }));
 }
 
+// A mouse press as the browser handles it: unless the page prevents the
+// default action, the press moves focus off the field. The dropdown renders
+// inside the dialog element, so focus goes to the dialog (WCORE-64).
+async function press(el, field, dialog) {
+  if (await fireEvent.mouseDown(el)) {
+    field.blur();
+    dialog.focus();
+  }
+  await fireEvent.mouseUp(el);
+  await fireEvent.click(el);
+}
+
 function expectDialogClosed() {
   return waitFor(() => expect(screen.queryByTestId('milestone-page-link-modal')).toBeNull());
 }
@@ -85,6 +97,26 @@ describe('MilestonePages link dialog', () => {
     expect(
       within(screen.getByTestId('milestone-pages')).queryByTestId('milestone-page-picker')
     ).toBeNull();
+  });
+
+  // WCORE-64: aria-modal hides everything outside the dialog element, so the
+  // results must render inside it, as one listbox holding the options.
+  it('lists the results as one listbox inside the dialog', async () => {
+    const { dialog, input } = await openDialog();
+    await fireEvent.click(input);
+    await fireEvent.input(input, { target: { value: 'Spec' } });
+    await within(dialog).findByText('Spec page', {}, { timeout: 2000 });
+
+    const listboxes = screen.getAllByRole('listbox');
+    expect(listboxes).toHaveLength(1);
+    const [listbox] = listboxes;
+    expect(dialog).toContainElement(listbox);
+    expect(input).toHaveAttribute('aria-controls', listbox.id);
+    expect(
+      within(listbox)
+        .getAllByRole('option')
+        .map((o) => o.textContent.trim())
+    ).toEqual(['Spec page']);
   });
 
   it('searches pages in the milestone workspace only', async () => {
@@ -224,30 +256,23 @@ describe('MilestonePages link dialog', () => {
     const dropdown = await screen.findByTestId('picker-dropdown');
     const option = await within(dropdown).findByText('Spec page', {}, { timeout: 2000 });
 
-    // A mouse press in the dropdown, which lives outside the dialog, blurs
-    // the field; the picker, not the dialog, takes focus back after the click.
-    await fireEvent.mouseDown(option);
-    input.blur();
-    await fireEvent.mouseUp(option);
-    await fireEvent.click(option);
+    // The press keeps focus on the field.
+    await press(option, input, dialog);
 
     await waitFor(() => expect(input).toHaveFocus());
     expect(within(dialog).getByTestId('milestone-page-link-confirm')).toBeEnabled();
   });
 
-  // WCORE-67: a press on the dropdown's empty space blurs the field and runs
-  // no picker code. Focus must come back to the field, so Escape still
-  // closes the dropdown and then the dialog.
+  // WCORE-67: a press on the dropdown's empty space runs no picker code.
+  // Focus must stay on the field, so Escape still closes the dropdown and
+  // then the dialog.
   it('keeps focus in the dialog after a press on empty space in the dropdown', async () => {
-    const { add, input } = await openDialog();
+    const { add, dialog, input } = await openDialog();
     await fireEvent.click(input);
     const dropdown = await screen.findByTestId('picker-dropdown');
     const empty = within(dropdown).getByText('pickers.noItemsFound');
 
-    await fireEvent.mouseDown(empty);
-    input.blur();
-    await fireEvent.mouseUp(empty);
-    await fireEvent.click(empty);
+    await press(empty, input, dialog);
 
     await waitFor(() => expect(input).toHaveFocus());
     expect(screen.getByTestId('picker-dropdown')).toBeInTheDocument();
@@ -280,6 +305,22 @@ describe('MilestonePages link dialog', () => {
     await expectDialogClosed();
     expect(mocks.linkPage).not.toHaveBeenCalled();
     expect(add).toHaveFocus();
+  });
+
+  // The dropdown renders in the dialog element, so a drag from it that is
+  // released on the backdrop clicks the backdrop (WCORE-64).
+  it('stays open when a press in the dropdown is released on the backdrop', async () => {
+    const { dialog, input } = await openDialog();
+    await fireEvent.click(input);
+    const dropdown = await screen.findByTestId('picker-dropdown');
+    expect(dialog).toContainElement(dropdown);
+
+    await fireEvent.mouseDown(within(dropdown).getByText('pickers.noItemsFound'));
+    await fireEvent.mouseUp(dialog);
+    await fireEvent.click(dialog);
+
+    expect(screen.getByTestId('milestone-page-link-modal')).toBeInTheDocument();
+    expect(input).toHaveFocus();
   });
 
   it('opens a fresh dialog after closing', async () => {

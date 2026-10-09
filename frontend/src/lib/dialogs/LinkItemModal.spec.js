@@ -63,14 +63,21 @@ async function pickWithKeyboard(input) {
   await fireEvent.keyDown(input, { key: 'Enter' });
 }
 
+// A mouse press as the browser handles it: unless the page prevents the
+// default action, the press moves focus off the field. The dropdown renders
+// inside the dialog element, so focus goes to the dialog (WCORE-64).
+async function press(el, field) {
+  if (await fireEvent.mouseDown(el)) {
+    field.blur();
+    screen.getByRole('dialog').focus();
+  }
+  await fireEvent.mouseUp(el);
+  await fireEvent.click(el);
+}
+
 async function pickWithMouse(input) {
   const option = await searchPage(input);
-  // A mouse press in the dropdown, which lives outside the dialog, blurs
-  // the field before the click picks the page.
-  await fireEvent.mouseDown(option);
-  input.blur();
-  await fireEvent.mouseUp(option);
-  await fireEvent.click(option);
+  await press(option, input);
 }
 
 describe('LinkItemModal in Page mode', () => {
@@ -171,18 +178,35 @@ describe('LinkItemModal in Page mode', () => {
     });
   });
 
-  // WCORE-67: the dropdown lives outside the dialog. A press on its empty
-  // space blurs the field and runs no picker code; focus must come back.
-  it('returns focus to the field after a press on empty space in the dropdown', async () => {
+  // WCORE-64: aria-modal hides everything outside the dialog element, so the
+  // results must render inside it, as one listbox holding the options.
+  it('lists the page results as one listbox inside the dialog', async () => {
+    api.pages.searchPages.mockResolvedValue({ results: [page] });
+    const { dialog, input } = await openPageDialog();
+
+    await searchPage(input);
+
+    const listboxes = screen.getAllByRole('listbox');
+    expect(listboxes).toHaveLength(1);
+    const [listbox] = listboxes;
+    expect(dialog).toContainElement(listbox);
+    expect(input).toHaveAttribute('aria-controls', listbox.id);
+    expect(
+      within(listbox)
+        .getAllByRole('option')
+        .map((o) => o.textContent.trim())
+    ).toEqual(['Spec page']);
+  });
+
+  // WCORE-67: a press on the dropdown's empty space runs no picker code;
+  // focus must stay on the field.
+  it('keeps focus on the field after a press on empty space in the dropdown', async () => {
     const { input } = await openPageDialog();
     await fireEvent.click(input);
     const dropdown = await screen.findByTestId('picker-dropdown');
     const empty = within(dropdown).getByText('pickers.noItemsFound');
 
-    await fireEvent.mouseDown(empty);
-    input.blur();
-    await fireEvent.mouseUp(empty);
-    await fireEvent.click(empty);
+    await press(empty, input);
 
     await waitFor(() => expect(input).toHaveFocus());
 
@@ -191,6 +215,8 @@ describe('LinkItemModal in Page mode', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument();
   });
 
+  // Focus lost to <body> during a press (for instance on the dropdown's
+  // scrollbar) comes back to the dialog when the field is gone.
   it('moves focus to the dialog when the pressed field is gone', async () => {
     const { dialog, input } = await openPageDialog();
     await fireEvent.click(input);
