@@ -96,3 +96,28 @@ describe('milestones page links client', () => {
     expect(deleteOptions.method).toBe('DELETE');
   });
 });
+
+describe('milestones activity client', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('reads one page of the activity feed with its pagination', async () => {
+    const entry = { id: 'item_comment:3', type: 'item_comment_added' };
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        data: [entry],
+        pagination: { page: 2, page_size: 20, total_items: 21, total_pages: 2 },
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(milestones.getActivity(7, { page: 2, pageSize: 20 })).resolves.toEqual({
+      entries: [entry],
+      page: 2,
+      totalPages: 2,
+      totalItems: 21,
+    });
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v2/milestones/7/activity?page=2&page_size=20');
+  });
+});

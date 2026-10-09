@@ -24,6 +24,8 @@ cx
 !/internal/database/gitlab_schema_test.go
 !/internal/scm/gitlab_test.go
 !/internal/services/planning_milestones_release_test.go
+!/internal/database/milestone_activity_schema_test.go
+!/internal/services/milestone_activity_service_test.go
 !/internal/services/milestone_page_link_service_test.go
 !/internal/database/milestone_comments_schema_test.go
 !/internal/repository/milestone_comment_repository_test.go
@@ -40,6 +42,7 @@ cx
 !frontend/src/lib/mobile/mobile-i18n.spec.js
 !frontend/scripts/hardcoded-i18n-ast.spec.js
 !frontend/src/lib/api/integrations.spec.js
+!frontend/src/lib/features/milestones/milestoneActivity.spec.js
 !frontend/src/lib/api/milestones.spec.js
 !frontend/src/lib/features/milestones/MilestoneComments.spec.js
 !frontend/src/lib/features/milestones/milestoneCommentOrder.spec.js

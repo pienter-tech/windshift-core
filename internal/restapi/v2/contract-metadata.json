@@ -8094,6 +8094,57 @@
         ]
       }
     },
+    "/milestones/{milestone_id}/activity": {
+      "get": {
+        "description": "List milestone activity, newest first. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "milestone_id",
+            "In": "path",
+            "Description": "The milestone identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "page",
+            "In": "query",
+            "Description": "One-based page number.",
+            "Required": false,
+            "Schema": {
+              "default": 1,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "page_size",
+            "In": "query",
+            "Description": "Maximum number of resources to return.",
+            "Required": false,
+            "Schema": {
+              "default": 50,
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "List milestone activity, newest first",
+        "tags": [
+          "Planning"
+        ]
+      }
+    },
     "/milestones/{milestone_id}/comments": {
       "get": {
         "description": "List milestone comments. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",

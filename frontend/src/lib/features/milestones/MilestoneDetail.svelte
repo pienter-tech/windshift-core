@@ -27,6 +27,8 @@
   import MilkdownEditor from '../../editors/LazyMilkdownEditor.svelte';
   import MilestoneComments from './MilestoneComments.svelte';
   import MilestonePages from './MilestonePages.svelte';
+  import MilestoneActivity from './MilestoneActivity.svelte';
+  import TabStrip from '../../components/TabStrip.svelte';
 
   let { milestoneId, workspaceId = null } = $props();
 
@@ -36,6 +38,15 @@
   let milestone = $state(null); // full milestone record (includes latest_release)
   let expandedCategories = $state({});
   let showEditModal = $state(false);
+  // Tabs: Overview keeps the progress, pages, and comments;
+  // Activity shows the shared milestone feed.
+  let activeTab = $state('overview');
+  // Bumped after each reload so an open Activity tab shows the new entries.
+  let activityReloadToken = $state(0);
+  const detailTabs = $derived([
+    { id: 'overview', label: t('milestones.activity.tabOverview'), testid: 'milestone-tab-overview' },
+    { id: 'activity', label: t('milestones.activity.tabActivity'), testid: 'milestone-tab-activity' }
+  ]);
   let showReleaseModal = $state(false);
   /** @type {{ name: string, description: string, target_date: string, status: string, category_id: any, is_global?: boolean, workspace_id?: number | null }} */
   let formData = $state({
@@ -90,6 +101,7 @@
       error = err.message || t('dialogs.alerts.failedToLoad', { error: 'milestone progress' });
     } finally {
       loading = false;
+      activityReloadToken += 1;
     }
   }
 
@@ -321,51 +333,63 @@
           </div>
         {/if}
       </div>
-
-      <ProgressSummary
-        {progress}
-        ariaLabel="Milestone progress"
-        completeLabel={t('milestones.complete')}
-        noItemsLabel={t('milestones.noItems')}
-        summaryLabel={t('common.summary')}
-        totalLabel={t('common.total')}
-        completedLabel={t('common.done')}
-        remainingLabel={t('time.remaining')}
-        statusLabel={t('milestones.byStatusCategory')}
-        noStatusDataLabel={t('milestones.noStatusData')}
-      />
-
-      <!-- Items Grouped by Category -->
-      <ItemsByStatusCategory
-        statusBreakdown={progress.status_breakdown}
-        itemsByCategory={progress.items_by_category}
-        {expandedCategories}
-        title={t('milestones.workItems')}
-        emptyIcon={Flag}
-        emptyTitle={t('milestones.noItemsAssigned')}
-        emptyDescription={t('milestones.assignItemsHint')}
-        ontoggle={toggleCategory}
-      />
     {/if}
 
-    <!-- Pages (workspace milestones only; global milestones have no
-         workspace). Outside the loading branch like Comments below. -->
-    {#if progress && !error && !progress.is_global && progress.workspace_id}
-      <MilestonePages
-        {milestoneId}
-        workspaceId={progress.workspace_id}
-        canEdit={canManage}
-      />
-    {/if}
-
-    <!-- Comments (global and local milestones; no notifications). Kept outside
-         the loading branch so a reload after editing the milestone keeps the
-         thread and any draft mounted. -->
     {#if progress && !error}
-      <MilestoneComments
-        {milestoneId}
-        workspaceId={progress.is_global ? null : (progress.workspace_id ?? null)}
-      />
+      <TabStrip tabs={detailTabs} bind:activeTab ariaLabel={progress.milestone_name} class="mb-6" />
+
+      <!-- Overview stays mounted while the Activity tab is open so a comment
+           draft survives switching tabs. -->
+      <div class:hidden={activeTab !== 'overview'} data-testid="milestone-overview">
+        {#if !loading}
+          <ProgressSummary
+            {progress}
+            ariaLabel="Milestone progress"
+            completeLabel={t('milestones.complete')}
+            noItemsLabel={t('milestones.noItems')}
+            summaryLabel={t('common.summary')}
+            totalLabel={t('common.total')}
+            completedLabel={t('common.done')}
+            remainingLabel={t('time.remaining')}
+            statusLabel={t('milestones.byStatusCategory')}
+            noStatusDataLabel={t('milestones.noStatusData')}
+          />
+
+          <!-- Items Grouped by Category -->
+          <ItemsByStatusCategory
+            statusBreakdown={progress.status_breakdown}
+            itemsByCategory={progress.items_by_category}
+            {expandedCategories}
+            title={t('milestones.workItems')}
+            emptyIcon={Flag}
+            emptyTitle={t('milestones.noItemsAssigned')}
+            emptyDescription={t('milestones.assignItemsHint')}
+            ontoggle={toggleCategory}
+          />
+        {/if}
+
+        <!-- Pages (workspace milestones only; global milestones have no
+             workspace). Outside the loading branch like Comments below. -->
+        {#if !progress.is_global && progress.workspace_id}
+          <MilestonePages
+            {milestoneId}
+            workspaceId={progress.workspace_id}
+            canEdit={canManage}
+          />
+        {/if}
+
+        <!-- Comments (global and local milestones; no notifications). Kept
+             outside the loading branch so a reload after editing the
+             milestone keeps the thread and any draft mounted. -->
+        <MilestoneComments
+          {milestoneId}
+          workspaceId={progress.is_global ? null : (progress.workspace_id ?? null)}
+        />
+      </div>
+
+      {#if activeTab === 'activity'}
+        <MilestoneActivity {milestoneId} reloadToken={activityReloadToken} />
+      {/if}
     {/if}
   </div>
 </div>
