@@ -101,7 +101,18 @@
     onOpen = () => {},
     onClose = () => {},
     onSelect = () => {},
+    // onCancel is not Escape-only. It runs on every Escape in the field or the
+    // popover search field (open dropdown or not), and again whenever a
+    // single-select dropdown closes while Melt's own selection is empty:
+    // Escape, Tab, a click outside, and a keyboard pick (only a mouse pick
+    // sets Melt's selection). One Escape can therefore call it twice.
     onCancel = () => {},
+    // onEscape({ open }) runs only on Escape in the field or the popover search
+    // field, once per key press, right before that key's onCancel. `open`
+    // tells whether the dropdown was open, i.e. whether this Escape closes it.
+    // BasePicker preventDefaults that Escape, so a caller inside a dialog can
+    // use this to close the dialog itself (WCORE-56).
+    onEscape = () => {},
     onChange = () => {}
   } = $props();
 
@@ -395,6 +406,7 @@
       // Return focus to the in-modal trigger so the next Tab continues inside
       // the dialog instead of escaping behind it (WI-455).
       restoreFocusToTrigger();
+      onEscape({ open: $open });
       onCancel();
       // The popover's search field sits in the dropdown. Inside a Modal the
       // dialog stops the key before Melt's document listener sees it, so
