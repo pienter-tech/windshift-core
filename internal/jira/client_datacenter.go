@@ -357,8 +357,13 @@ func (c *dataCenterClient) SearchIssuesJQL(ctx context.Context, req JQLSearchReq
 	return response, nil
 }
 
-// BulkFetchIssues fetches multiple issues by their IDs or keys
-// Data Center doesn't have /issue/bulkfetch, so we use search with key in (...) JQL
+// BulkFetchIssues fetches multiple issues by their IDs or keys.
+// Data Center doesn't have /issue/bulkfetch, so we use search with key in (...)
+// JQL. The legacy search endpoint can cap a page below the requested
+// maxResults (jira.search.views.default.max and the server's own limit), so a
+// single request would silently drop the rest of the batch. Walk every page
+// using the returned startAt/len offsets and let the caller reconcile any key
+// the server never returned.
 func (c *dataCenterClient) BulkFetchIssues(ctx context.Context, req BulkFetchRequest) (*BulkFetchResponse, error) {
 	if len(req.IssueIdsOrKeys) == 0 {
 		return &BulkFetchResponse{Issues: []JiraIssue{}}, nil
@@ -372,19 +377,36 @@ func (c *dataCenterClient) BulkFetchIssues(ctx context.Context, req BulkFetchReq
 	}
 	jql := "key in (" + strings.Join(quotedKeys, ",") + ")"
 
-	// Fetch in a single request if possible (Data Center typically allows large JQL)
-	result, err := c.searchIssues(ctx, SearchOptions{
-		JQL:        jql,
-		MaxResults: len(req.IssueIdsOrKeys),
-		Fields:     req.Fields,
-		Expand:     req.Expand,
-	})
-	if err != nil {
-		return nil, err
+	requested := len(req.IssueIdsOrKeys)
+	issues := make([]JiraIssue, 0, requested)
+	for startAt := 0; ; {
+		page, err := c.searchIssues(ctx, SearchOptions{
+			JQL:        jql,
+			StartAt:    startAt,
+			MaxResults: requested,
+			Fields:     req.Fields,
+			Expand:     req.Expand,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if page == nil || len(page.Issues) == 0 {
+			break
+		}
+		issues = append(issues, page.Issues...)
+		next := page.StartAt + len(page.Issues)
+		if next <= startAt {
+			// The server did not advance its offset; stop instead of looping.
+			break
+		}
+		if next >= requested || (page.Total > 0 && next >= page.Total) {
+			break
+		}
+		startAt = next
 	}
 
 	return &BulkFetchResponse{
-		Issues: result.Issues,
+		Issues: issues,
 	}, nil
 }
 

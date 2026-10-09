@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -974,14 +975,33 @@ type BulkFetchRequest struct {
 	Properties     []string `json:"properties,omitempty"`
 }
 
-// BulkFetchResponse is the response from POST /rest/api/3/issue/bulkfetch
+// BulkFetchResponse is the response from POST /rest/api/3/issue/bulkfetch.
+// Jira answers HTTP 200 with partial success: resolved issues land in Issues
+// and per-issue failures in IssueErrors.
 type BulkFetchResponse struct {
-	Issues []JiraIssue      `json:"issues"`
-	Errors []BulkFetchError `json:"errors,omitempty"`
+	Issues      []JiraIssue      `json:"issues"`
+	IssueErrors []BulkFetchError `json:"issueErrors,omitempty"`
 }
 
-// BulkFetchError represents an error when fetching a specific issue
+// BulkFetchError represents a per-issue failure in a bulk-fetch response.
 type BulkFetchError struct {
-	IssueIDOrKey string `json:"issueIdOrKey"`
-	ErrorMessage string `json:"errorMessage"`
+	IssueIDOrKey  string            `json:"issueIdOrKey"`
+	ErrorMessages []string          `json:"errorMessages,omitempty"`
+	Errors        map[string]string `json:"errors,omitempty"`
+}
+
+// Message renders the per-issue failure for logs and error accounting.
+func (e BulkFetchError) Message() string {
+	if len(e.ErrorMessages) > 0 {
+		return strings.Join(e.ErrorMessages, "; ")
+	}
+	if len(e.Errors) > 0 {
+		parts := make([]string, 0, len(e.Errors))
+		for field, message := range e.Errors {
+			parts = append(parts, field+": "+message)
+		}
+		sort.Strings(parts)
+		return strings.Join(parts, "; ")
+	}
+	return "unknown Jira bulk fetch error"
 }

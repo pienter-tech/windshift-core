@@ -138,6 +138,11 @@ let wizardState = $state({
   steps: defaultJiraWizardSteps(),
 });
 
+// Bumped whenever polling starts or resets. A poll loop captures the value it
+// started with and stops rescheduling once it no longer matches, so closing or
+// resetting the wizard cannot leave a stale loop polling a cleared job id.
+let importPollGeneration = 0;
+
 // Export reactive getters
 export const jiraImport = {
   // Getters for reactive access
@@ -694,9 +699,15 @@ export const jiraImport = {
   async pollJobStatus() {
     if (!importState.jobId) return;
 
+    const generation = ++importPollGeneration;
+    const jobId = importState.jobId;
+
     const poll = async () => {
+      if (generation !== importPollGeneration) return;
+
       try {
-        const status = await api.jiraImport.getJobStatus(importState.jobId);
+        const status = await api.jiraImport.getJobStatus(jobId);
+        if (generation !== importPollGeneration) return;
         importState.phase = status.phase || 'running';
         importState.progress = status.progress;
 
@@ -712,6 +723,7 @@ export const jiraImport = {
         // Continue polling every 2 seconds
         setTimeout(poll, 2000);
       } catch (err) {
+        if (generation !== importPollGeneration) return;
         console.error('Failed to poll job status:', err);
         // Continue polling even on error
         setTimeout(poll, 5000);
@@ -723,6 +735,8 @@ export const jiraImport = {
 
   // Reset everything
   reset() {
+    importPollGeneration++;
+
     connectionState = {
       jiraUrl: '',
       email: '',

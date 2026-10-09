@@ -687,9 +687,10 @@ func (s *WorkspaceService) ListTemplateSummaries(ctx context.Context) ([]models.
 	return s.templates.ListTemplateSummaries(ctx)
 }
 
-// GetItemTypes retrieves item types available for a workspace via its configuration set.
-// If the workspace has a config set with item types defined, only those are returned.
-// If no config set exists, all item types are returned.
+// GetItemTypes retrieves item types available for a workspace via its effective
+// configuration set (assigned, else the global default). When the effective set
+// enumerates item types, only those are returned; otherwise all item types are
+// returned.
 func (s *WorkspaceService) GetItemTypes(workspaceID int) ([]ItemTypeResult, error) {
 	rows, err := repository.NewItemTypeRepository(s.db).ListForWorkspace(workspaceID)
 	if err != nil {

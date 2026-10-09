@@ -6,11 +6,18 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"time"
 
 	"windshift/internal/database"
 	"windshift/internal/repository"
 	"windshift/internal/services"
 )
+
+// JiraImportLeaseDuration bounds how long a queued/running job is considered
+// owned by a live worker without a renewal. executeImport renews the lease on
+// a heartbeat while it runs, so startup reconciliation only fails jobs whose
+// worker died.
+const JiraImportLeaseDuration = 2 * time.Minute
 
 type Service struct {
 	db           database.Database
@@ -277,10 +284,10 @@ func (s *Service) UpdateStatus(jobID, status, phase string, progress *Progress, 
 	var args []any
 	switch status {
 	case "running":
-		query = `UPDATE jira_import_jobs SET status = ?, phase = ?, progress_json = ?, started_at = CURRENT_TIMESTAMP WHERE id = ?`
-		args = []any{status, phase, progressJSON, jobID}
+		query = `UPDATE jira_import_jobs SET status = ?, phase = ?, progress_json = ?, started_at = CURRENT_TIMESTAMP, lease_expires_at = ? WHERE id = ?`
+		args = []any{status, phase, progressJSON, leaseExpiry(), jobID}
 	case "completed", "completed_with_errors", "failed":
-		query = `UPDATE jira_import_jobs SET status = ?, phase = ?, progress_json = ?, error_message = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?`
+		query = `UPDATE jira_import_jobs SET status = ?, phase = ?, progress_json = ?, error_message = ?, completed_at = CURRENT_TIMESTAMP, lease_expires_at = NULL WHERE id = ?`
 		args = []any{status, phase, progressJSON, errorMessage, jobID}
 	default:
 		query = `UPDATE jira_import_jobs SET status = ?, phase = ?, progress_json = ? WHERE id = ?`
@@ -290,14 +297,52 @@ func (s *Service) UpdateStatus(jobID, status, phase string, progress *Progress, 
 	return err
 }
 
+func leaseExpiry() int64 {
+	return time.Now().UTC().Add(JiraImportLeaseDuration).Unix()
+}
+
+// RenewLease extends the job's lease while its worker is alive. It only
+// touches a job that is still queued or running so a completed job is never
+// resurrected.
+func (s *Service) RenewLease(jobID string) error {
+	_, err := s.db.ExecWrite(`
+		UPDATE jira_import_jobs SET lease_expires_at = ?
+		WHERE id = ? AND status IN ('queued', 'running')
+	`, leaseExpiry(), jobID)
+	return err
+}
+
+// ReconcileInterrupted fails queued/running jobs whose worker lease expired
+// (for example after a server restart) so they no longer block retry or
+// cleanup. A live worker that keeps renewing its lease is left untouched.
+func (s *Service) ReconcileInterrupted(now time.Time) (int, error) {
+	result, err := s.db.ExecWrite(`
+		UPDATE jira_import_jobs
+		SET status = 'failed', phase = 'failed',
+		    error_message = 'Import interrupted by server restart',
+		    completed_at = CURRENT_TIMESTAMP, lease_expires_at = NULL
+		WHERE status IN ('queued', 'running')
+		  AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+	`, now.UTC().Unix())
+	if err != nil {
+		return 0, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return int(affected), nil
+}
+
 func (s *Service) UpdateProgress(jobID string, progress *Progress) error {
 	data, err := json.Marshal(progress)
 	if err != nil {
 		return err
 	}
 	_, err = s.db.ExecWrite(`
-		UPDATE jira_import_jobs SET phase = ?, progress_json = ? WHERE id = ?
-	`, progress.Phase, string(data), jobID)
+		UPDATE jira_import_jobs SET phase = ?, progress_json = ?, lease_expires_at = ?
+		WHERE id = ? AND status = 'running'
+	`, progress.Phase, string(data), leaseExpiry(), jobID)
 	return err
 }
 

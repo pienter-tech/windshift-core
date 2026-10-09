@@ -68,8 +68,10 @@ type Progress struct {
 	ImportedAttachments int    `json:"imported_attachments"`
 	TotalComments       int    `json:"total_comments"`
 	ImportedComments    int    `json:"imported_comments"`
+	FailedComments      int    `json:"failed_comments"`
 	TotalWorklogs       int    `json:"total_worklogs"`
 	ImportedWorklogs    int    `json:"imported_worklogs"`
+	FailedWorklogs      int    `json:"failed_worklogs"`
 }
 
 type ImportedWorkspace struct {

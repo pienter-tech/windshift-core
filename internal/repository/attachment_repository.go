@@ -28,8 +28,23 @@ type AttachmentRepository struct {
 
 // ListItem returns a stable, newest-first page of item attachment metadata.
 func (r *AttachmentRepository) ListItem(itemID, limit, offset int) ([]models.Attachment, int, error) {
+	return r.listItem(itemID, limit, offset, false)
+}
+
+// ListPortalItem returns the customer-visible attachment page for one portal
+// request. Internal attachments (for example files attached to agent-only JSM
+// notes) are excluded so they never surface in the portal.
+func (r *AttachmentRepository) ListPortalItem(itemID, limit, offset int) ([]models.Attachment, int, error) {
+	return r.listItem(itemID, limit, offset, true)
+}
+
+func (r *AttachmentRepository) listItem(itemID, limit, offset int, portalOnly bool) ([]models.Attachment, int, error) {
+	internalFilter := ""
+	if portalOnly {
+		internalFilter = " AND COALESCE(is_internal, false) = false"
+	}
 	var total int
-	if err := r.db.QueryRow(`SELECT COUNT(*) FROM attachments WHERE item_id = ? AND COALESCE(entity_type, 'item') = 'item'`, itemID).Scan(&total); err != nil {
+	if err := r.db.QueryRow(`SELECT COUNT(*) FROM attachments WHERE item_id = ? AND COALESCE(entity_type, 'item') = 'item'`+internalFilter, itemID).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count item attachments: %w", err)
 	}
 	rows, err := r.db.Query(`
@@ -41,7 +56,7 @@ func (r *AttachmentRepository) ListItem(itemID, limit, offset int) ([]models.Att
 		FROM attachments a
 		LEFT JOIN users u ON u.id = a.uploaded_by
 		LEFT JOIN portal_customers pc ON pc.id = a.uploaded_by_portal_customer_id
-		WHERE a.item_id = ? AND COALESCE(a.entity_type, 'item') = 'item'
+		WHERE a.item_id = ? AND COALESCE(a.entity_type, 'item') = 'item'`+internalFilter+`
 		ORDER BY a.created_at DESC, a.id DESC
 		LIMIT ? OFFSET ?
 	`, itemID, limit, offset)
@@ -220,6 +235,7 @@ func (r *AttachmentRepository) GetPortalRequestAttachmentRecord(attachmentID, it
 		JOIN items i ON i.id = a.item_id
 		WHERE a.id = ? AND a.item_id = ?
 		  AND (a.entity_type IS NULL OR a.entity_type = '' OR a.entity_type = 'item')
+		  AND COALESCE(a.is_internal, false) = false
 	`, attachmentID, itemID).Scan(&rec.WorkspaceID, &rec.Filename, &rec.OriginalFilename, &rec.FilePath, &rec.MimeType, &rec.FileSize)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound

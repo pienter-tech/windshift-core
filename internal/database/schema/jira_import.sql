@@ -30,6 +30,10 @@ CREATE TABLE IF NOT EXISTS jira_import_jobs (
     created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
     started_at DATETIME,
     completed_at DATETIME,
+    -- Epoch seconds until which the in-process worker owns this job. A live
+    -- worker renews it; startup reconciliation fails queued/running jobs whose
+    -- lease expired so a restart cannot block retry or cleanup.
+    lease_expires_at BIGINT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 

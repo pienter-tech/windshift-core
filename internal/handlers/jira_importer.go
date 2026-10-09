@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"windshift/internal/jiraimport"
 	"windshift/internal/logger"
@@ -21,6 +22,13 @@ import (
 
 	"uuid"
 )
+
+// ReconcileInterruptedImports fails Jira import jobs whose worker lease
+// expired, so a server restart cannot leave a queued/running job blocking
+// retry or cleanup forever. Safe to call at startup and on demand.
+func (h *JiraImportHandler) ReconcileInterruptedImports() (int, error) {
+	return h.imports.ReconcileInterrupted(time.Now().UTC())
+}
 
 // GetJobStatus handles GET /api/admin/jira-import/jobs/{jobId}
 func (h *JiraImportHandler) GetJobStatus(w http.ResponseWriter, r *http.Request) {
@@ -362,6 +370,12 @@ func (h *JiraImportHandler) enqueueJiraImport(
 	planFingerprint string,
 	userID *int,
 ) (*jiraImportEnqueueResult, error) {
+	// Recover jobs whose worker lease expired before checking conflicts so a
+	// server crash cannot permanently block a retry.
+	if _, err := h.imports.ReconcileInterrupted(time.Now().UTC()); err != nil {
+		return nil, fmt.Errorf("reconcile interrupted Jira imports: %w", err)
+	}
+
 	jobID := uuid.New().String()
 	jobRepository := repository.NewJiraImportJobRepository(h.db)
 	var result *jiraImportEnqueueResult

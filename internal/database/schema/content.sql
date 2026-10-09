@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS attachments (
 	has_thumbnail BOOLEAN DEFAULT false,
 	thumbnail_path TEXT,
 	category TEXT DEFAULT '',
+	is_internal BOOLEAN NOT NULL DEFAULT false, -- hidden from portal customers (e.g. JSM internal-note files)
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 	FOREIGN KEY (uploaded_by) REFERENCES users(id) ON DELETE SET NULL,
 	FOREIGN KEY (uploaded_by_portal_customer_id) REFERENCES portal_customers(id) ON DELETE SET NULL

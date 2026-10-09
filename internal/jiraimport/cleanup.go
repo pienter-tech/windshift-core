@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"windshift/internal/repository"
 )
@@ -37,6 +38,12 @@ type referenceQuery struct {
 // this job explicitly owns. Unknown or malformed provenance never authorizes a
 // destructive operation.
 func (s *Service) DeleteImportedData(jobID string, confirmedWorkspaceCount int) (map[string]int, error) {
+	// An interrupted worker may still hold the job as queued/running; recover
+	// its expired lease first so a crash no longer blocks cleanup.
+	if _, err := s.ReconcileInterrupted(time.Now().UTC()); err != nil {
+		return nil, fmt.Errorf("reconcile interrupted Jira imports: %w", err)
+	}
+
 	var status string
 	err := s.db.QueryRow(`SELECT status FROM jira_import_jobs WHERE id = ?`, jobID).Scan(&status)
 	if errors.Is(err, sql.ErrNoRows) {

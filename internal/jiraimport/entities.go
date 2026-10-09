@@ -438,15 +438,18 @@ func (s *Service) UpsertExternalIssueLink(
 		})
 }
 
-func (s *Service) ReassignAttachment(attachmentID, itemID int) (mimeType, originalFilename string, ok bool) {
+// ReassignAttachment moves a previously imported attachment onto a new item
+// and refreshes its portal visibility, so a re-import can both relocate and
+// reclassify the file.
+func (s *Service) ReassignAttachment(attachmentID, itemID int, isInternal bool) (mimeType, originalFilename string, ok bool) {
 	if err := s.db.QueryRow(`
 		SELECT mime_type, original_filename FROM attachments WHERE id = ?
 	`, attachmentID).Scan(&mimeType, &originalFilename); err != nil {
 		return "", "", false
 	}
 	if _, err := s.db.ExecWrite(`
-		UPDATE attachments SET item_id = ?, entity_type = 'item' WHERE id = ?
-	`, itemID, attachmentID); err != nil {
+		UPDATE attachments SET item_id = ?, entity_type = 'item', is_internal = ? WHERE id = ?
+	`, itemID, isInternal, attachmentID); err != nil {
 		return "", "", false
 	}
 	return mimeType, originalFilename, true

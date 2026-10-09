@@ -70,25 +70,38 @@ func (r *ItemTypeRepository) List(configurationSetID *int) ([]models.ItemType, e
 	return itemTypes, nil
 }
 
-// ListForWorkspace returns the workspace-applicable item type catalog.
+// ListForWorkspace returns the workspace-applicable item type catalog. It
+// follows the workspace's effective configuration set (assigned, else the
+// global default), the same resolution ResolveEffective uses. Personal
+// workspaces, workspaces with no effective set, and sets that enumerate no item
+// types expose the full catalog.
 func (r *ItemTypeRepository) ListForWorkspace(workspaceID int) ([]models.ItemType, error) {
 	rows, err := r.db.Query(`
+		WITH effective AS (
+			SELECT w.is_personal,
+			       COALESCE(wcs.configuration_set_id,
+			         (SELECT id FROM configuration_sets WHERE is_default = true ORDER BY id LIMIT 1)) AS configuration_set_id
+			FROM workspaces w
+			LEFT JOIN workspace_configuration_sets wcs ON wcs.workspace_id = w.id
+			WHERE w.id = ?
+		)
 		SELECT it.id, COALESCE(it.builtin_key, ''), it.name, COALESCE(it.description, ''), COALESCE(it.icon, ''), COALESCE(it.color, ''),
 		       it.hierarchy_level, it.sort_order, it.is_default
 		FROM item_types it
-		WHERE NOT EXISTS (
-			SELECT 1 FROM workspace_configuration_sets wcs
-			JOIN configuration_set_item_types csit ON wcs.configuration_set_id = csit.configuration_set_id
-			WHERE wcs.workspace_id = ?
-		)
-		OR EXISTS (
-			SELECT 1 FROM workspace_configuration_sets wcs
-			JOIN configuration_set_item_types csit ON wcs.configuration_set_id = csit.configuration_set_id
-			WHERE wcs.workspace_id = ? AND csit.item_type_id = it.id
-		)
+		LEFT JOIN effective e ON 1 = 1
+		WHERE e.is_personal = true
+		   OR e.configuration_set_id IS NULL
+		   OR NOT EXISTS (
+		        SELECT 1 FROM configuration_set_item_types csit
+		        WHERE csit.configuration_set_id = e.configuration_set_id
+		      )
+		   OR EXISTS (
+		        SELECT 1 FROM configuration_set_item_types csit
+		        WHERE csit.configuration_set_id = e.configuration_set_id AND csit.item_type_id = it.id
+		      )
 		ORDER BY CASE WHEN it.hierarchy_level = -1 THEN 1 ELSE 0 END,
 		         it.hierarchy_level, it.sort_order, it.name
-	`, workspaceID, workspaceID)
+	`, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("list item types for workspace %d: %w", workspaceID, err)
 	}

@@ -1002,6 +1002,11 @@ func (s *Server) initialize() error {
 
 	jiraImportHandler := handlers.NewJiraImportHandler(s.db, cfg.Auth.SessionSecret, cfg.Jira.CapturePayloadsDir).
 		WithAuthorizationCacheInvalidator(authorizationCacheInvalidator)
+	if n, err := jiraImportHandler.ReconcileInterruptedImports(); err != nil {
+		slog.Warn("failed to reconcile interrupted Jira imports", slog.Any("error", err))
+	} else if n > 0 {
+		slog.Info("reconciled interrupted Jira imports", slog.Int("count", n))
+	}
 
 	// Share one credential manager so every in-process refresh/callback path
 	// uses the same per-channel lock and CAS config writer.

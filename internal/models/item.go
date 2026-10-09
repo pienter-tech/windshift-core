@@ -270,10 +270,14 @@ type Attachment struct {
 	// UploadedByPortalCustomerID carries the portal-customer uploader when
 	// the file was submitted through a portal or public form; UploadedBy is
 	// nil in that case.
-	UploadedByPortalCustomerID *int      `json:"uploaded_by_portal_customer_id,omitempty"`
-	HasThumbnail               bool      `json:"has_thumbnail"` // Whether thumbnail was generated
-	ThumbnailPath              string    `json:"-"`             // Thumbnail file path, not sent to client
-	CreatedAt                  time.Time `json:"created_at"`
+	UploadedByPortalCustomerID *int   `json:"uploaded_by_portal_customer_id,omitempty"`
+	HasThumbnail               bool   `json:"has_thumbnail"` // Whether thumbnail was generated
+	ThumbnailPath              string `json:"-"`             // Thumbnail file path, not sent to client
+	// IsInternal hides an attachment from portal customers (for example a
+	// file attached to an agent-only JSM note). Internal workspace members
+	// still see it.
+	IsInternal bool      `json:"is_internal"`
+	CreatedAt  time.Time `json:"created_at"`
 	// Joined fields for API responses
 	UploaderName  string `json:"uploader_name,omitempty"`
 	UploaderEmail string `json:"uploader_email,omitempty"`
