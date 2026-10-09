@@ -171,6 +171,40 @@ describe('LinkItemModal in Page mode', () => {
     });
   });
 
+  // WCORE-67: the dropdown lives outside the dialog. A press on its empty
+  // space blurs the field and runs no picker code; focus must come back.
+  it('returns focus to the field after a press on empty space in the dropdown', async () => {
+    const { input } = await openPageDialog();
+    await fireEvent.click(input);
+    const dropdown = await screen.findByTestId('picker-dropdown');
+    const empty = within(dropdown).getByText('pickers.noItemsFound');
+
+    await fireEvent.mouseDown(empty);
+    input.blur();
+    await fireEvent.mouseUp(empty);
+    await fireEvent.click(empty);
+
+    await waitFor(() => expect(input).toHaveFocus());
+
+    await fireEvent.keyDown(input, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByTestId('picker-dropdown')).toBeNull());
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('moves focus to the dialog when the pressed field is gone', async () => {
+    const { dialog, input } = await openPageDialog();
+    await fireEvent.click(input);
+    const dropdown = await screen.findByTestId('picker-dropdown');
+    const empty = within(dropdown).getByText('pickers.noItemsFound');
+
+    await fireEvent.mouseDown(empty);
+    input.blur();
+    input.remove();
+    await fireEvent.mouseUp(empty);
+
+    await waitFor(() => expect(dialog).toHaveFocus());
+  });
+
   it('keeps focus where the caller moved it on close', async () => {
     const other = document.createElement('button');
     document.body.appendChild(other);

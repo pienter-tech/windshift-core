@@ -235,6 +235,32 @@ describe('MilestonePages link dialog', () => {
     expect(within(dialog).getByTestId('milestone-page-link-confirm')).toBeEnabled();
   });
 
+  // WCORE-67: a press on the dropdown's empty space blurs the field and runs
+  // no picker code. Focus must come back to the field, so Escape still
+  // closes the dropdown and then the dialog.
+  it('keeps focus in the dialog after a press on empty space in the dropdown', async () => {
+    const { add, input } = await openDialog();
+    await fireEvent.click(input);
+    const dropdown = await screen.findByTestId('picker-dropdown');
+    const empty = within(dropdown).getByText('pickers.noItemsFound');
+
+    await fireEvent.mouseDown(empty);
+    input.blur();
+    await fireEvent.mouseUp(empty);
+    await fireEvent.click(empty);
+
+    await waitFor(() => expect(input).toHaveFocus());
+    expect(screen.getByTestId('picker-dropdown')).toBeInTheDocument();
+
+    await fireEvent.keyDown(input, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByTestId('picker-dropdown')).toBeNull());
+    expect(screen.getByTestId('milestone-page-link-modal')).toBeInTheDocument();
+
+    await fireEvent.keyDown(input, { key: 'Escape' });
+    await expectDialogClosed();
+    expect(add).toHaveFocus();
+  });
+
   it('closes on the X button and refocuses "+ Add"', async () => {
     const { add, dialog } = await openDialog();
 
