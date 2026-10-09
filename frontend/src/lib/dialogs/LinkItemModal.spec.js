@@ -3,6 +3,7 @@
 import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { api } from '../api.js';
 import LinkItemModal from './LinkItemModal.svelte';
 
 vi.mock('../api.js', () => ({
@@ -45,6 +46,31 @@ async function openPageDialog(props = {}) {
 
 function expectDialogClosed() {
   return waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+}
+
+const page = { id: 42, title: 'Spec page' };
+
+// Types into the Target Page field and waits for the page option.
+async function searchPage(input) {
+  await fireEvent.click(input);
+  await fireEvent.input(input, { target: { value: 'Spec' } });
+  const dropdown = await screen.findByTestId('picker-dropdown');
+  return within(dropdown).findByText('Spec page', {}, { timeout: 2000 });
+}
+
+async function pickWithKeyboard(input) {
+  await searchPage(input);
+  await fireEvent.keyDown(input, { key: 'Enter' });
+}
+
+async function pickWithMouse(input) {
+  const option = await searchPage(input);
+  // A mouse press in the dropdown, which lives outside the dialog, blurs
+  // the field before the click picks the page.
+  await fireEvent.mouseDown(option);
+  input.blur();
+  await fireEvent.mouseUp(option);
+  await fireEvent.click(option);
 }
 
 describe('LinkItemModal in Page mode', () => {
@@ -96,6 +122,53 @@ describe('LinkItemModal in Page mode', () => {
     await expectDialogClosed();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(document.activeElement).toBe(document.body);
+  });
+
+  describe.each([
+    ['keyboard', pickWithKeyboard],
+    ['mouse', pickWithMouse],
+  ])('after a %s pick', (_, pick) => {
+    beforeEach(() => {
+      api.pages.searchPages.mockResolvedValue({ results: [page] });
+    });
+
+    it('keeps focus in the dialog on the Clear button', async () => {
+      const { dialog, input } = await openPageDialog();
+
+      await pick(input);
+
+      const clear = await within(dialog).findByRole('button', { name: 'common.clear' });
+      await waitFor(() => expect(clear).toHaveFocus());
+      expect(within(dialog).getByText('Spec page')).toBeInTheDocument();
+    });
+
+    it('submits on Enter', async () => {
+      const onsubmit = vi.fn();
+      const { dialog, input } = await openPageDialog({ onsubmit });
+      await pick(input);
+      await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true));
+
+      await fireEvent.keyDown(document.activeElement, { key: 'Enter' });
+
+      expect(onsubmit).toHaveBeenCalledWith({
+        link_type_id: pageLinkType.id,
+        target_id: page.id,
+        target_type: 'page',
+      });
+      await expectDialogClosed();
+    });
+
+    it('closes on Escape', async () => {
+      const onsubmit = vi.fn();
+      const { dialog, input } = await openPageDialog({ onsubmit });
+      await pick(input);
+      await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true));
+
+      await fireEvent.keyDown(document.activeElement, { key: 'Escape' });
+
+      await expectDialogClosed();
+      expect(onsubmit).not.toHaveBeenCalled();
+    });
   });
 
   it('keeps focus where the caller moved it on close', async () => {
