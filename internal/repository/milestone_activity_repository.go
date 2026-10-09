@@ -34,7 +34,8 @@ import (
 // here: the service adds them after the page permission filter.
 //
 // Item rows are limited to items in the given workspaces, the same
-// workspace-access rule the milestone progress view applies.
+// workspace-access rule the milestone progress view applies. A non-zero since
+// keeps only entries that occurred at or after it (WCORE-43).
 type MilestoneActivityRepository struct {
 	db database.Database
 }
@@ -57,10 +58,11 @@ const (
 )
 
 type milestoneActivitySource struct {
-	kind  milestoneActivitySourceKind
-	query string // SELECT … FROM … WHERE …, projected as milestoneActivityColumns
-	order string
-	args  []any
+	kind       milestoneActivitySourceKind
+	query      string // SELECT … FROM … WHERE …, projected as milestoneActivityColumns
+	timeColumn string // the occurred_at column, for the since filter
+	order      string
+	args       []any
 }
 
 // Every source projects the same columns so one scanner reads them all:
@@ -85,12 +87,20 @@ type milestoneActivityRow struct {
 
 // List returns the newest limit entries across the stored sources, newest
 // first, and the total number of entries. Each source reads at most limit
-// rows, so callers paging with an offset pass offset+limit and slice.
-func (r *MilestoneActivityRepository) List(milestoneID int, workspaceIDs []int, limit int) ([]models.MilestoneActivity, int, error) {
+// rows, so callers paging with an offset pass offset+limit and slice. A
+// non-zero since limits entries and total to those at or after it.
+func (r *MilestoneActivityRepository) List(milestoneID int, workspaceIDs []int, since time.Time, limit int) ([]models.MilestoneActivity, int, error) {
 	if limit <= 0 {
 		return []models.MilestoneActivity{}, 0, nil
 	}
 	sources := milestoneActivitySources(milestoneID, workspaceIDs)
+	if !since.IsZero() {
+		bound := r.sinceBound(since)
+		for i := range sources {
+			sources[i].query += "\n\t\t\tAND " + sources[i].timeColumn + " >= ?"
+			sources[i].args = append(sources[i].args, bound)
+		}
+	}
 	rows := []milestoneActivityRow{}
 	total := 0
 	for _, source := range sources {
@@ -131,11 +141,25 @@ func (r *MilestoneActivityRepository) List(milestoneID int, workspaceIDs []int, 
 	return result, total, nil
 }
 
+// sinceBound returns the since argument for the source time columns. SQLite
+// stores times as text and compares them as strings: driver-written values
+// look like "2026-01-01 09:00:00.5+00:00", CURRENT_TIMESTAMP defaults like
+// "2026-01-01 09:00:00". The UTC value without a zone suffix sorts at or
+// before both spellings of the same instant and after every earlier one, so
+// ">=" keeps the inclusive boundary for either format.
+func (r *MilestoneActivityRepository) sinceBound(since time.Time) any {
+	if database.IsPostgresDriver(r.db.GetDriverName()) {
+		return since.UTC()
+	}
+	return since.UTC().Format("2006-01-02 15:04:05.999999999")
+}
+
 func milestoneActivitySources(milestoneID int, workspaceIDs []int) []milestoneActivitySource {
 	sources := make([]milestoneActivitySource, 0, int(activitySourceItemComment)+1)
 	sources = append(sources,
 		milestoneActivitySource{
-			kind: activitySourceMilestoneHistory,
+			kind:       activitySourceMilestoneHistory,
+			timeColumn: "mh.changed_at",
 			query: `SELECT mh.id, mh.changed_at,
 				CASE WHEN mh.user_id IS NULL THEN 'system' ELSE 'user' END,
 				mh.user_id, ` + activityUserName + `, '', ` + activityNoItem + `,
@@ -147,7 +171,8 @@ func milestoneActivitySources(milestoneID int, workspaceIDs []int) []milestoneAc
 			args:  []any{milestoneID},
 		},
 		milestoneActivitySource{
-			kind: activitySourceMilestoneComment,
+			kind:       activitySourceMilestoneComment,
+			timeColumn: "mc.created_at",
 			query: `SELECT mc.id, mc.created_at, 'user', mc.author_id, ` + activityUserName + `, '', ` + activityNoItem + `,
 				NULL, NULL, NULL
 			FROM milestone_comments mc
@@ -168,7 +193,8 @@ func milestoneActivitySources(milestoneID int, workspaceIDs []int) []milestoneAc
 	}
 	sources = append(sources,
 		milestoneActivitySource{
-			kind: activitySourceItemCreatedIn,
+			kind:       activitySourceItemCreatedIn,
+			timeColumn: "i.created_at",
 			query: `SELECT i.id, i.created_at,
 				CASE WHEN i.creator_id IS NOT NULL THEN 'user'
 				     WHEN i.creator_portal_customer_id IS NOT NULL THEN 'portal_customer'
@@ -201,7 +227,8 @@ func milestoneActivitySources(milestoneID int, workspaceIDs []int) []milestoneAc
 			args:  withWorkspaces(milestoneID, pattern),
 		},
 		milestoneActivitySource{
-			kind: activitySourceItemMembership,
+			kind:       activitySourceItemMembership,
+			timeColumn: "h.changed_at",
 			query: `SELECT h.id, h.changed_at, h.actor_kind, h.user_id, ` + activityUserName + `, ` + activityCustomerName + `, ` + activityItemColumns + `,
 				h.field_name, h.old_value, h.new_value
 			FROM item_history h
@@ -216,7 +243,8 @@ func milestoneActivitySources(milestoneID int, workspaceIDs []int) []milestoneAc
 			args:  withWorkspaces(pattern, pattern),
 		},
 		milestoneActivitySource{
-			kind: activitySourceItemStatus,
+			kind:       activitySourceItemStatus,
+			timeColumn: "h.changed_at",
 			query: `SELECT h.id, h.changed_at, h.actor_kind, h.user_id, ` + activityUserName + `, ` + activityCustomerName + `, ` + activityItemColumns + `,
 				h.field_name, h.old_value, h.new_value
 			FROM item_history h
@@ -231,7 +259,8 @@ func milestoneActivitySources(milestoneID int, workspaceIDs []int) []milestoneAc
 			args:  withWorkspaces(milestoneID),
 		},
 		milestoneActivitySource{
-			kind: activitySourceItemComment,
+			kind:       activitySourceItemComment,
+			timeColumn: "c.created_at",
 			query: `SELECT c.id, c.created_at,
 				CASE WHEN c.author_id IS NULL AND c.portal_customer_id IS NOT NULL THEN 'portal_customer' ELSE 'user' END,
 				c.author_id, ` + activityUserName + `, ` + activityCustomerName + `, ` + activityItemColumns + `,

@@ -1098,6 +1098,13 @@ func applyParameterCorrections(route *Route) {
 		}
 	case "GET /milestones/{milestone_id}/comments":
 		upsertParameter(route, enumQuery("sort", "Sort field; prefix with '-' for descending order. ID is the stable final tie-breaker.", "created_at", "-created_at"))
+	case "GET /milestones/{milestone_id}/activity":
+		route.Description = "Lists the milestone's Activity feed newest first, limited to entries the caller can see. Pass since to fetch only entries that occurred at or after a timestamp; page, page_size, and total_items then apply to the filtered feed. since is inclusive, so a poller passes the newest occurred_at it has seen and drops entries whose id it already has: entries recorded later with the same timestamp are not skipped. since filters by occurred_at, not by recording time, so entries that become visible later with an earlier occurred_at (for example the history of an item added to the milestone) are not returned for a later since."
+		upsertParameter(route, ParameterMetadata{Name: "since", In: "query", Description: "Inclusive RFC 3339 timestamp; returns only entries whose occurred_at is at or after it. Encode a '+' zone offset as %2B. Invalid values return 400.", Schema: map[string]any{"type": "string", "format": "date-time"}})
+		if !slices.Contains(route.DocumentedErrors, http.StatusBadRequest) {
+			route.DocumentedErrors = append(route.DocumentedErrors, http.StatusBadRequest)
+			slices.Sort(route.DocumentedErrors)
+		}
 	case "GET /iterations", "GET /workspaces/{workspace_id}/iterations":
 		upsertParameter(route, positiveIDQuery("type_id", "Restricts results to one iteration type."))
 		upsertParameter(route, stringQuery("status", "Restricts results to an iteration status."))

@@ -379,3 +379,104 @@ func TestMilestoneHistoryRecordsOnlyChangedFields(t *testing.T) {
 		t.Fatalf("local milestone history: got %v, want %v", got, want)
 	}
 }
+
+func TestMilestoneActivitySinceFiltersMergedSources(t *testing.T) {
+	f := newActivityFixture(t)
+	at := func(hours int) time.Time { return f.base.Add(time.Duration(hours) * time.Hour) }
+	pages := activityPages{
+		{ID: 5, MilestoneID: f.milestone, PageID: 42, PageTitle: "Old", WorkspaceID: 1, OccurredAt: at(5)},
+		{ID: 6, MilestoneID: f.milestone, PageID: 43, PageTitle: "Tie", WorkspaceID: 1, OccurredAt: at(6)},
+		{ID: 7, MilestoneID: f.milestone, PageID: 44, PageTitle: "New", WorkspaceID: 1, OccurredAt: at(11)},
+	}
+	service := f.service(pages)
+	list := func(since time.Time, limit, offset int) ([]models.MilestoneActivity, int) {
+		t.Helper()
+		entries, total, err := service.List(activityViewer, f.milestone, MilestoneActivityListParams{Limit: limit, Offset: offset, Since: since})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return entries, total
+	}
+
+	// since is inclusive: the stored status change and the page link at
+	// exactly at(6) are both kept; everything older is dropped.
+	want := []string{
+		models.MilestoneActivityMilestonePageLinked,
+		models.MilestoneActivityMilestoneCommentAdded,
+		models.MilestoneActivityItemCommentAdded + " HUB-1",
+		models.MilestoneActivityItemStatusChanged + " HUB-2",
+		models.MilestoneActivityMilestonePageLinked,
+	}
+	entries, total := list(at(6), 50, 0)
+	if got := activityTypes(entries); !reflect.DeepEqual(got, want) || total != len(want) {
+		t.Fatalf("since at(6):\n got %v (total %d)\nwant %v", got, total, want)
+	}
+	if entries[0].ID != "milestone_history:7" || entries[4].ID != "milestone_history:6" {
+		t.Fatalf("page entries: %s, %s", entries[0].ID, entries[4].ID)
+	}
+
+	// Paging and the total apply to the filtered feed.
+	page2, pageTotal := list(at(6), 2, 2)
+	if got := activityTypes(page2); !reflect.DeepEqual(got, want[2:4]) || pageTotal != len(want) {
+		t.Fatalf("since page 2: got %v (total %d), want %v", got, pageTotal, want[2:4])
+	}
+	last, _ := list(at(6), 2, 4)
+	if len(last) != 1 || last[0].ID != "milestone_history:6" {
+		t.Fatalf("since page 3: %v", activityTypes(last))
+	}
+
+	// One nanosecond later drops both at(6) entries.
+	_, total = list(at(6).Add(time.Nanosecond), 50, 0)
+	if total != 3 {
+		t.Fatalf("since just after at(6): total %d, want 3", total)
+	}
+	// A later since than every entry returns nothing.
+	none, noneTotal := list(at(12), 50, 0)
+	if len(none) != 0 || noneTotal != 0 {
+		t.Fatalf("since after the newest entry: %v (total %d)", activityTypes(none), noneTotal)
+	}
+	// Without since the whole feed is listed.
+	if _, all := list(time.Time{}, 50, 0); all != 7+len(pages) {
+		t.Fatalf("unfiltered total %d, want %d", all, 7+len(pages))
+	}
+}
+
+func TestMilestoneActivitySinceTimestampPrecision(t *testing.T) {
+	f := newActivityFixture(t)
+	service := f.service(nil)
+	fraction := f.base.Add(20*time.Hour + 500*time.Millisecond)
+	if _, err := f.db.ExecWrite(`INSERT INTO milestone_comments (milestone_id, author_id, content, created_at, updated_at) VALUES (?, ?, 'fraction', ?, ?)`,
+		f.milestone, activityAda, fraction, fraction); err != nil {
+		t.Fatal(err)
+	}
+	// A CURRENT_TIMESTAMP-style value: whole seconds, no zone suffix.
+	legacy := f.base.Add(21 * time.Hour)
+	if _, err := f.db.ExecWrite(`INSERT INTO milestone_comments (milestone_id, author_id, content, created_at, updated_at) VALUES (?, ?, 'legacy', ?, ?)`,
+		f.milestone, activityAda, legacy.Format(time.DateTime), legacy.Format(time.DateTime)); err != nil {
+		t.Fatal(err)
+	}
+	count := func(since time.Time) int {
+		t.Helper()
+		_, total, err := service.List(activityViewer, f.milestone, MilestoneActivityListParams{Limit: 50, Since: since})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return total
+	}
+	for _, tc := range []struct {
+		name  string
+		since time.Time
+		want  int
+	}{
+		{"fractional boundary", fraction, 2},
+		{"just after the fraction", fraction.Add(time.Microsecond), 1},
+		{"whole second before the fraction", fraction.Truncate(time.Second), 2},
+		{"legacy boundary", legacy, 1},
+		{"legacy boundary in another zone", legacy.In(time.FixedZone("CEST", 2*60*60)), 1},
+		{"just after the legacy row", legacy.Add(time.Millisecond), 0},
+	} {
+		if got := count(tc.since); got != tc.want {
+			t.Errorf("%s: total %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}

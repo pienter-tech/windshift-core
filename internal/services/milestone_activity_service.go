@@ -4,14 +4,16 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"time"
 
 	"windshift/internal/models"
 )
 
 // MilestoneActivityStore reads the stored Activity sources of a milestone.
-// repository.MilestoneActivityRepository implements it.
+// repository.MilestoneActivityRepository implements it. A non-zero since keeps
+// only entries that occurred at or after it.
 type MilestoneActivityStore interface {
-	List(milestoneID int, workspaceIDs []int, limit int) ([]models.MilestoneActivity, int, error)
+	List(milestoneID int, workspaceIDs []int, since time.Time, limit int) ([]models.MilestoneActivity, int, error)
 }
 
 // MilestoneActivityWorkspaces lists the workspaces whose items a user may
@@ -49,10 +51,15 @@ func NewMilestoneActivityService(store MilestoneActivityStore, access MilestoneR
 	return &MilestoneActivityService{store: store, access: access, workspaces: workspaces, pages: pages}
 }
 
-// MilestoneActivityListParams selects one page of the feed.
+// MilestoneActivityListParams selects one page of the feed. A non-zero Since
+// limits the feed to entries that occurred at or after it (WCORE-43); Limit,
+// Offset, and the total then apply to that filtered feed. Since is inclusive
+// so an entry recorded later with the same timestamp as the newest entry a
+// poller has seen is not skipped; pollers drop already-seen entries by ID.
 type MilestoneActivityListParams struct {
 	Limit  int
 	Offset int
+	Since  time.Time
 }
 
 const defaultMilestoneActivityLimit = 50
@@ -77,7 +84,7 @@ func (s *MilestoneActivityService) List(userID, milestoneID int, params Mileston
 	if err != nil {
 		return nil, 0, err
 	}
-	entries, total, err := s.store.List(milestoneID, workspaceIDs, window)
+	entries, total, err := s.store.List(milestoneID, workspaceIDs, params.Since, window)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -89,9 +96,12 @@ func (s *MilestoneActivityService) List(userID, milestoneID int, params Mileston
 		// History is oldest first; append newest first so the stable sort
 		// keeps a later event ahead of an earlier one with the same time.
 		for i := len(events) - 1; i >= 0; i-- {
+			if !params.Since.IsZero() && events[i].OccurredAt.Before(params.Since) {
+				continue
+			}
 			entries = append(entries, pageLinkActivity(events[i]))
+			total++
 		}
-		total += len(events)
 		sort.SliceStable(entries, func(a, b int) bool {
 			return entries[a].OccurredAt.After(entries[b].OccurredAt)
 		})
