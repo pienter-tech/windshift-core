@@ -80,6 +80,22 @@ export const milestones = {
       headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
       body: JSON.stringify(data),
     }),
+  // Milestone comments: oldest first, author-only edit/delete.
+  // They send no notifications and are separate from item comments.
+  getComments: (id) => fetchAllV2Pages(`/milestones/${id}/comments`),
+  createComment: (id, content) =>
+    fetchV2Data(`/milestones/${id}/comments`, {
+      method: 'POST',
+      body: JSON.stringify({ content }),
+    }),
+  updateComment: (id, commentId, content) =>
+    fetchV2Data(`/milestones/${id}/comments/${commentId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/merge-patch+json' },
+      body: JSON.stringify({ content }),
+    }),
+  deleteComment: (id, commentId) =>
+    fetchV2Data(`/milestones/${id}/comments/${commentId}`, { method: 'DELETE' }),
   reorder: (scope, orderedIds) => {
     const path = scope?.is_global
       ? '/milestones/reorder'

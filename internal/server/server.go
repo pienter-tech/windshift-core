@@ -1868,6 +1868,10 @@ func (s *Server) initialize() error {
 			return planningReleaseProviderAdapter{provider: releaseProvider}, nil
 		},
 	)
+	milestoneCommentService := services.NewMilestoneCommentService(
+		repository.NewMilestoneCommentRepository(s.db),
+		planningApplication,
+	)
 	agentRunApplication := services.NewAgentRunReadService(
 		repository.NewItemRepository(s.db),
 		repository.NewAgentRunRepository(s.db),
@@ -1963,6 +1967,7 @@ func (s *Server) initialize() error {
 		PageAttachments:              services.NewPageAttachmentUploadService(s.db, cfg.AttachmentPath, permService, pagePermissionService),
 		Collections:                  services.NewCollectionApplicationService(s.db, permService),
 		Planning:                     planningApplication,
+		MilestoneComments:            milestoneCommentService,
 		Links:                        itemLinkService,
 		AgentRuns:                    agentRunApplication,
 		AgentSkills:                  services.NewAgentSkillApplicationService(s.db, permService),

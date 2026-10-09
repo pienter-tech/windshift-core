@@ -512,6 +512,13 @@ type planningApplication interface {
 	GetIterationProgressBatch(int, []int) (map[int]*services.IterationProgressReport, error)
 }
 
+type milestoneCommentApplication interface {
+	List(userID, milestoneID int, params services.MilestoneCommentListParams) ([]models.MilestoneComment, int, error)
+	Create(userID, milestoneID int, content string) (*models.MilestoneComment, error)
+	Update(userID, milestoneID, commentID int, content string) (*models.MilestoneComment, error)
+	Delete(userID, milestoneID, commentID int) error
+}
+
 type linkApplication interface {
 	ListLinkTypes(bool) ([]models.LinkType, error)
 	ListLinksForEntityWithChecks(int, string, int) ([]models.ItemLink, []models.ItemLink, error)
@@ -603,6 +610,7 @@ type Deps struct {
 	PageAttachments              pageAttachmentApplication
 	Collections                  collectionApplication
 	Planning                     planningApplication
+	MilestoneComments            milestoneCommentApplication
 	Links                        linkApplication
 	AgentRuns                    agentRunApplication
 	AgentSkills                  agentSkillReader
@@ -763,6 +771,9 @@ func RegisterRoutes(deps Deps) error {
 	if deps.Planning == nil {
 		return errors.New("v2: Planning is required")
 	}
+	if deps.MilestoneComments == nil {
+		return errors.New("v2: MilestoneComments is required")
+	}
 	if deps.Links == nil {
 		return errors.New("v2: Links is required")
 	}
@@ -865,6 +876,7 @@ func buildRoutes(deps Deps) []route {
 	registerAttachmentRoutes(&builder, deps)
 	registerCollectionRoutes(&builder, deps.Collections)
 	registerPlanningRoutes(&builder, deps.Planning)
+	registerMilestoneCommentRoutes(&builder, deps)
 	registerLinkRoutes(&builder, deps.Links, deps.CatalogMutations)
 	registerAgentRunRoutes(&builder, deps.AgentRuns)
 	registerAgentSkillRoutes(&builder, deps.AgentSkills)
@@ -1064,6 +1076,8 @@ func applyParameterCorrections(route *Route) {
 		} else {
 			upsertParameter(route, booleanQuery("include_global", "Includes global milestones alongside the workspace's own.", false))
 		}
+	case "GET /milestones/{milestone_id}/comments":
+		upsertParameter(route, enumQuery("sort", "Sort field; prefix with '-' for descending order. ID is the stable final tie-breaker.", "created_at", "-created_at"))
 	case "GET /iterations", "GET /workspaces/{workspace_id}/iterations":
 		upsertParameter(route, positiveIDQuery("type_id", "Restricts results to one iteration type."))
 		upsertParameter(route, stringQuery("status", "Restricts results to an iteration status."))

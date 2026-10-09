@@ -2622,6 +2622,40 @@ var Catalog = []Migration{
 		ApplySQLite:   applyAssetReportsWorkspacePinned,
 		ApplyPostgres: applyAssetReportsWorkspacePinned,
 	},
+	{
+		Version:       "20261005_milestone_comments",
+		Name:          "Markdown comments on milestones",
+		CheckSQLite:   sqliteTableCheck("milestone_comments"),
+		CheckPostgres: pgTableCheck("milestone_comments"),
+		SQLite: `
+			CREATE TABLE milestone_comments (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				milestone_id INTEGER NOT NULL,
+				author_id INTEGER NOT NULL,
+				content TEXT NOT NULL,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+				updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+				FOREIGN KEY (milestone_id) REFERENCES milestones(id) ON DELETE CASCADE,
+				FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE CASCADE
+			);
+			CREATE INDEX idx_milestone_comments_milestone ON milestone_comments(milestone_id, created_at, id);
+			CREATE INDEX idx_milestone_comments_author ON milestone_comments(author_id);
+		`,
+		Postgres: `
+			CREATE TABLE milestone_comments (
+				id SERIAL PRIMARY KEY,
+				milestone_id INTEGER NOT NULL,
+				author_id INTEGER NOT NULL,
+				content TEXT NOT NULL,
+				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+				FOREIGN KEY (milestone_id) REFERENCES milestones(id) ON DELETE CASCADE,
+				FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE CASCADE
+			);
+			CREATE INDEX IF NOT EXISTS idx_milestone_comments_milestone ON milestone_comments(milestone_id, created_at, id);
+			CREATE INDEX IF NOT EXISTS idx_milestone_comments_author ON milestone_comments(author_id);
+		`,
+	},
 }
 
 // applyAssetReportsWorkspacePinned backfills form-mode asset reports that have
