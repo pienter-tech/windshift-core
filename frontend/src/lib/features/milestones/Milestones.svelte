@@ -36,7 +36,7 @@
   import PageHeader from '../../layout/PageHeader.svelte';
   import { useEventListener } from 'runed';
   import { loadMilestoneTestStatistics } from './milestoneStatisticsData.js';
-  import { canReorderMilestoneRow } from './milestoneScope.js';
+  import { canReorderMilestoneRow, hasReorderableMilestoneRow } from './milestoneScope.js';
   import {
     DEFAULT_MILESTONE_SORT,
     milestoneLastUpdated,
@@ -633,10 +633,11 @@
 
   // DataTable configuration
   let milestoneColumns = $derived([
-    // Drag handle column — only present when the user may reorder the
-    // active scope and no column sort is active. The handle is the
+    // Drag handle column — only present when no column sort is active and
+    // at least one visible row shows a grip (WCORE-48). The workspace view's
+    // two tables share it, so their columns stay aligned. The handle is the
     // pragmatic-drag-and-drop dragHandle.
-    ...(canReorderGlobal || canReorderLocal) && !columnSortActive
+    ...!columnSortActive && hasReorderableMilestoneRow(visibleMilestones, { canReorderGlobal, canReorderLocal })
       ? [{ key: 'reorder', label: '', width: 'w-10', slot: 'reorder' }]
       : [],
     // Data columns sort on header click on the global view only; the
