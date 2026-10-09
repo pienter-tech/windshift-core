@@ -26999,7 +26999,7 @@
                   "type": "boolean"
                 },
                 "last_updated_at": {
-                  "description": "The last updated at value.",
+                  "description": "When the milestone or anything in it last changed: the latest of the milestone's own updated_at, its description, status, and target date changes, its comments (including edits), and its page links and unlinks, and, counting only items in workspaces the caller can access, member item updates, comments on member items (including edits), and items added to or removed from the milestone.",
                   "format": "date-time",
                   "type": "string"
                 },
@@ -36613,7 +36613,7 @@
                   "type": "boolean"
                 },
                 "last_updated_at": {
-                  "description": "The last updated at value.",
+                  "description": "When the milestone or anything in it last changed: the latest of the milestone's own updated_at, its description, status, and target date changes, its comments (including edits), and its page links and unlinks, and, counting only items in workspaces the caller can access, member item updates, comments on member items (including edits), and items added to or removed from the milestone.",
                   "format": "date-time",
                   "type": "string"
                 },
