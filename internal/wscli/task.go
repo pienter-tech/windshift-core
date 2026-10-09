@@ -534,12 +534,18 @@ Examples:
 var taskSetMilestoneCmd = &cobra.Command{
 	Use:   "set-milestone <item> [milestone]",
 	Short: "Assign item to milestone",
-	Long: `Assign an item to a milestone or remove it from its current milestone.
+	Long: `Assign an item to a milestone or remove it from its milestones.
+
+By default the milestone replaces all of the item's current milestones, so
+the item ends up in exactly that one. Use --add to keep the existing
+milestones and add this one (nothing changes if the item is already in it).
+--clear removes the item from all its milestones.
 
 Examples:
-  ws task set-milestone PROJ-123 5           # By milestone ID
-  ws task set-milestone PROJ-123 "v1.0"      # By milestone name
-  ws task set-milestone PROJ-123 --clear     # Remove from milestone`,
+  ws task set-milestone PROJ-123 5           # By milestone ID (replaces others)
+  ws task set-milestone PROJ-123 "v1.0"      # By milestone name (replaces others)
+  ws task set-milestone PROJ-123 5 --add     # Add milestone, keep the others
+  ws task set-milestone PROJ-123 --clear     # Remove from all milestones`,
 	Args: cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, err := NewClient()
@@ -563,6 +569,7 @@ Examples:
 		// pointer-to-slice: nil = "leave alone", non-nil empty slice =
 		// "clear all", non-nil populated slice = "replace with these".
 		var item *Item
+		alreadyMember := false
 		if clearMilestone {
 			empty := []int{}
 			req := ItemUpdateRequest{MilestoneIDs: &empty}
@@ -580,10 +587,30 @@ Examples:
 				return fmt.Errorf("failed to resolve milestone: %w", err)
 			}
 			ids := []int{id}
-			req := ItemUpdateRequest{MilestoneIDs: &ids}
-			item, err = client.UpdateItem(itemID, req)
-			if err != nil {
-				return fmt.Errorf("failed to update item: %w", err)
+			if addMilestone {
+				// The API has no add-one-membership endpoint, only the full
+				// milestone_ids list, so --add is read-modify-write: a
+				// membership changed by someone else between the GET above and
+				// this PATCH is overwritten.
+				ids = make([]int, 0, len(itemForScope.Milestones)+1)
+				for _, m := range itemForScope.Milestones {
+					if m.ID == id {
+						alreadyMember = true
+					}
+					ids = append(ids, m.ID)
+				}
+				if !alreadyMember {
+					ids = append(ids, id)
+				}
+			}
+			if alreadyMember {
+				item = itemForScope
+			} else {
+				req := ItemUpdateRequest{MilestoneIDs: &ids}
+				item, err = client.UpdateItem(itemID, req)
+				if err != nil {
+					return fmt.Errorf("failed to update item: %w", err)
+				}
 			}
 		}
 
@@ -596,7 +623,11 @@ Examples:
 				for i, m := range item.Milestones {
 					names[i] = m.Name
 				}
-				_, _ = fmt.Fprintf(stdout, "Assigned %s to milestone(s) %q\n", args[0], strings.Join(names, ", "))
+				if alreadyMember {
+					_, _ = fmt.Fprintf(stdout, "%s is already in that milestone; nothing changed. Milestone(s): %q\n", args[0], strings.Join(names, ", "))
+				} else {
+					_, _ = fmt.Fprintf(stdout, "Assigned %s to milestone(s) %q\n", args[0], strings.Join(names, ", "))
+				}
 			} else {
 				_, _ = fmt.Fprintf(stdout, "Updated %s milestone assignment\n", args[0])
 			}
@@ -1080,6 +1111,7 @@ var (
 	updatedFilter  string
 	openInBrowser  bool
 	clearMilestone bool
+	addMilestone   bool
 	historyLimit   int
 
 	childStatusFilter string
@@ -1151,7 +1183,9 @@ func init() {
 	taskCreateCmd.Flags().BoolVar(&openInBrowser, "web", false, "open task in browser after creation")
 
 	// Set-milestone flags
-	taskSetMilestoneCmd.Flags().BoolVar(&clearMilestone, "clear", false, "remove item from milestone")
+	taskSetMilestoneCmd.Flags().BoolVar(&clearMilestone, "clear", false, "remove item from all its milestones")
+	taskSetMilestoneCmd.Flags().BoolVar(&addMilestone, "add", false, "add the milestone and keep the item's other milestones")
+	taskSetMilestoneCmd.MarkFlagsMutuallyExclusive("add", "clear")
 
 	// Search flags
 	taskSearchCmd.Flags().IntVar(&taskSearchLimit, "limit", 0, "maximum results per page (server default if omitted, max 100)")
