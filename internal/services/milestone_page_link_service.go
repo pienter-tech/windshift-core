@@ -9,19 +9,14 @@ import (
 )
 
 var (
-	// ErrMilestonePageLinksGlobal rejects page links on global milestones. A
-	// global milestone has no workspace, and page links stay inside one
-	// workspace, so only workspace (local) milestones link pages.
-	ErrMilestonePageLinksGlobal = errors.New("page links are only available on workspace milestones")
-
 	// ErrMilestonePageLinksForbidden rejects page-link changes by a user who
 	// can view the milestone but not edit it.
 	ErrMilestonePageLinksForbidden = errors.New("changing page links requires edit rights on the milestone")
 
-	// ErrMilestonePageNotFound covers a page that does not exist, lives in
-	// another workspace, or is hidden from the user. They share one response
-	// so page existence does not leak.
-	ErrMilestonePageNotFound = errors.New("page not found in the milestone's workspace")
+	// ErrMilestonePageNotFound covers a page that does not exist, lives
+	// outside the workspace a workspace milestone links from, or is hidden
+	// from the user. They share one response so page existence does not leak.
+	ErrMilestonePageNotFound = errors.New("page not found")
 )
 
 // MilestonePageLinkAccess loads a milestone and checks the user's rights on
@@ -39,12 +34,14 @@ type MilestonePageLinkStore interface {
 	Create(milestoneID, pageID, createdBy int) (int, error)
 	Delete(id, deletedBy int) error
 	ListHistory(milestoneID int) ([]models.MilestonePageLinkEvent, error)
+	PageWorkspaceID(pageID int) (int, error)
 }
 
-// MilestonePageLinkService links pages to workspace milestones (WCORE-19).
-// Anyone who can view the milestone sees the linked pages they may view;
-// users with edit rights on the milestone link and unlink pages from the
-// milestone's own workspace. Global milestones have no page links. Each link
+// MilestonePageLinkService links pages to milestones (WCORE-19). Anyone who
+// can view the milestone sees the linked pages they may view; users with edit
+// rights on the milestone link and unlink pages. A workspace milestone links
+// pages from its own workspace; a global milestone links pages from any
+// workspace, each checked in the page's own workspace (WCORE-44). Each link
 // and unlink is kept in the milestone history (WCORE-26).
 type MilestonePageLinkService struct {
 	links  MilestonePageLinkStore
@@ -59,17 +56,16 @@ func NewMilestonePageLinkService(links MilestonePageLinkStore, access MilestoneP
 }
 
 // List returns the milestone's linked pages that the user may view, oldest
-// link first. Global milestones always return an empty list.
+// link first.
 func (s *MilestonePageLinkService) List(userID, milestoneID int) ([]models.MilestonePageLink, error) {
 	milestone, err := s.access.AuthorizeMilestoneRead(userID, milestoneID)
 	if err != nil {
 		return nil, err
 	}
 	result := []models.MilestonePageLink{}
-	if milestone.IsGlobal || milestone.WorkspaceID == nil || s.pages == nil {
+	if s.pages == nil {
 		return result, nil
 	}
-	workspaceID := *milestone.WorkspaceID
 	rows, err := s.links.ListByMilestone(milestoneID)
 	if err != nil {
 		return nil, err
@@ -77,16 +73,16 @@ func (s *MilestonePageLinkService) List(userID, milestoneID int) ([]models.Miles
 	if len(rows) == 0 {
 		return result, nil
 	}
-	pageIDs := make([]int, 0, len(rows))
+	pageWorkspaces := make(map[int]int, len(rows))
 	for _, row := range rows {
-		pageIDs = append(pageIDs, row.PageID)
+		pageWorkspaces[row.PageID] = row.WorkspaceID
 	}
-	visible, err := s.pages.ListVisiblePageIDs(userID, workspaceID, pageIDs)
+	visible, err := s.visiblePageIDs(userID, pageScope(milestone), pageWorkspaces)
 	if err != nil {
 		return nil, err
 	}
 	for _, row := range rows {
-		if row.WorkspaceID == workspaceID && visible[row.PageID] {
+		if visible[row.PageID] {
 			result = append(result, row)
 		}
 	}
@@ -95,17 +91,16 @@ func (s *MilestonePageLinkService) List(userID, milestoneID int) ([]models.Miles
 
 // History returns the milestone's recorded page links and unlinks for pages
 // the user may view, oldest first (WCORE-26). Archived, deleted, and hidden
-// pages are left out; global milestones always return an empty list.
+// pages are left out.
 func (s *MilestonePageLinkService) History(userID, milestoneID int) ([]models.MilestonePageLinkEvent, error) {
 	milestone, err := s.access.AuthorizeMilestoneRead(userID, milestoneID)
 	if err != nil {
 		return nil, err
 	}
 	result := []models.MilestonePageLinkEvent{}
-	if milestone.IsGlobal || milestone.WorkspaceID == nil || s.pages == nil {
+	if s.pages == nil {
 		return result, nil
 	}
-	workspaceID := *milestone.WorkspaceID
 	events, err := s.links.ListHistory(milestoneID)
 	if err != nil {
 		return nil, err
@@ -113,25 +108,31 @@ func (s *MilestonePageLinkService) History(userID, milestoneID int) ([]models.Mi
 	if len(events) == 0 {
 		return result, nil
 	}
-	pageIDs := make([]int, 0, len(events))
+	pageWorkspaces := make(map[int]int, len(events))
 	for _, event := range events {
-		pageIDs = append(pageIDs, event.PageID)
+		pageWorkspaces[event.PageID] = event.WorkspaceID
 	}
-	visible, err := s.pages.ListVisiblePageIDs(userID, workspaceID, pageIDs)
+	visible, err := s.visiblePageIDs(userID, pageScope(milestone), pageWorkspaces)
 	if err != nil {
 		return nil, err
 	}
 	for _, event := range events {
-		if event.WorkspaceID == workspaceID && visible[event.PageID] {
+		if visible[event.PageID] {
 			result = append(result, event)
 		}
 	}
 	return result, nil
 }
 
-// Create links a page from the milestone's workspace to the milestone.
+// Create links a page to the milestone: a page from the milestone's own
+// workspace, or for a global milestone a page from any workspace. The user
+// must be able to view the page.
 func (s *MilestonePageLinkService) Create(userID, milestoneID, pageID int) (*models.MilestonePageLink, error) {
-	workspaceID, err := s.requireEditable(userID, milestoneID)
+	scope, err := s.requireEditable(userID, milestoneID)
+	if err != nil {
+		return nil, err
+	}
+	workspaceID, err := s.linkableWorkspace(scope, pageID)
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +149,7 @@ func (s *MilestonePageLinkService) Create(userID, milestoneID, pageID int) (*mod
 // Delete unlinks a page from the milestone. A link on another milestone, or
 // to a page the user cannot view, reads as not found.
 func (s *MilestonePageLinkService) Delete(userID, milestoneID, linkID int) error {
-	workspaceID, err := s.requireEditable(userID, milestoneID)
+	scope, err := s.requireEditable(userID, milestoneID)
 	if err != nil {
 		return err
 	}
@@ -156,30 +157,87 @@ func (s *MilestonePageLinkService) Delete(userID, milestoneID, linkID int) error
 	if err != nil {
 		return err
 	}
+	workspaceID := link.WorkspaceID
+	if scope != nil {
+		workspaceID = *scope
+	}
 	if link.MilestoneID != milestoneID || !s.pageVisible(userID, workspaceID, link.PageID) {
 		return fmt.Errorf("milestone page link %d not on milestone %d: %w", linkID, milestoneID, repository.ErrNotFound)
 	}
 	return s.links.Delete(linkID, userID)
 }
 
-// requireEditable confirms the user can view the milestone, that it is a
-// workspace milestone, and that the user may edit it. It returns the
-// milestone's workspace ID.
-func (s *MilestonePageLinkService) requireEditable(userID, milestoneID int) (int, error) {
+// requireEditable confirms the user can view and edit the milestone. It
+// returns the milestone's page scope (see pageScope).
+func (s *MilestonePageLinkService) requireEditable(userID, milestoneID int) (*int, error) {
 	milestone, err := s.access.AuthorizeMilestoneRead(userID, milestoneID)
 	if err != nil {
-		return 0, err
-	}
-	if milestone.IsGlobal || milestone.WorkspaceID == nil {
-		return 0, ErrMilestonePageLinksGlobal
+		return nil, err
 	}
 	if _, err := s.access.AuthorizeMilestoneWrite(userID, milestoneID); err != nil {
 		if errors.Is(err, ErrPlanningForbidden) {
-			return 0, ErrMilestonePageLinksForbidden
+			return nil, ErrMilestonePageLinksForbidden
 		}
-		return 0, err
+		return nil, err
 	}
-	return *milestone.WorkspaceID, nil
+	return pageScope(milestone), nil
+}
+
+// pageScope returns the workspace a milestone links pages from: its own
+// workspace for a workspace milestone, nil (any workspace) for a global one.
+// A workspace milestone without a workspace gets 0, which matches no page.
+func pageScope(milestone *MilestoneResult) *int {
+	if milestone.IsGlobal {
+		return nil
+	}
+	workspaceID := 0
+	if milestone.WorkspaceID != nil {
+		workspaceID = *milestone.WorkspaceID
+	}
+	return &workspaceID
+}
+
+// linkableWorkspace returns the workspace to check a page in before linking
+// it: the scope's workspace, or for a global milestone the page's own.
+func (s *MilestonePageLinkService) linkableWorkspace(scope *int, pageID int) (int, error) {
+	if scope != nil {
+		return *scope, nil
+	}
+	if pageID <= 0 {
+		return 0, ErrMilestonePageNotFound
+	}
+	workspaceID, err := s.links.PageWorkspaceID(pageID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return 0, ErrMilestonePageNotFound
+	}
+	return workspaceID, err
+}
+
+// visiblePageIDs reports which pages the user may view, given each page's
+// workspace. With a scope only pages from that workspace count; without one
+// (global milestones) each page is checked in its own workspace, one batch
+// per workspace.
+func (s *MilestonePageLinkService) visiblePageIDs(userID int, scope *int, pageWorkspaces map[int]int) (map[int]bool, error) {
+	byWorkspace := map[int][]int{}
+	for pageID, workspaceID := range pageWorkspaces {
+		if scope != nil && workspaceID != *scope {
+			continue
+		}
+		byWorkspace[workspaceID] = append(byWorkspace[workspaceID], pageID)
+	}
+	visible := map[int]bool{}
+	for workspaceID, pageIDs := range byWorkspace {
+		got, err := s.pages.ListVisiblePageIDs(userID, workspaceID, pageIDs)
+		if err != nil {
+			return nil, err
+		}
+		for pageID, ok := range got {
+			if ok {
+				visible[pageID] = true
+			}
+		}
+	}
+	return visible, nil
 }
 
 // pageVisible reports whether the page exists in the workspace and the user

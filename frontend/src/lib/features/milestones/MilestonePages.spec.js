@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   unlinkPage: vi.fn(),
   searchPages: vi.fn(),
   errorToast: vi.fn(),
+  loadWorkspaces: vi.fn(),
 }));
 
 vi.mock('../../api.js', () => ({
@@ -26,6 +27,12 @@ vi.mock('../../api.js', () => ({
 
 vi.mock('../../stores/i18n.svelte.js', () => ({ t: (key) => key }));
 vi.mock('../../stores/toasts.svelte.js', () => ({ errorToast: mocks.errorToast }));
+vi.mock('../../stores/workspaces.svelte.js', () => ({
+  workspacesStore: {
+    load: mocks.loadWorkspaces,
+    searchWorkspaces: vi.fn().mockResolvedValue({ workspaces: [] }),
+  },
+}));
 
 const page = { id: 42, title: 'Spec page' };
 
@@ -86,7 +93,8 @@ describe('MilestonePages link dialog', () => {
   });
 
   it('searches pages in the milestone workspace only', async () => {
-    const { input } = await openDialog();
+    const { dialog, input } = await openDialog();
+    expect(within(dialog).queryByTestId('milestone-page-workspace-picker')).toBeNull();
     await fireEvent.click(input);
     await fireEvent.input(input, { target: { value: 'Spec' } });
 
@@ -275,5 +283,68 @@ describe('MilestonePages link dialog', () => {
     expect(screen.queryByTestId('milestone-page-add')).toBeNull();
     expect(screen.queryByTestId('milestone-page-unlink')).toBeNull();
     expect(screen.queryByTestId('milestone-page-link-modal')).toBeNull();
+  });
+});
+
+// WCORE-44: a global milestone has no workspace, so its dialog asks for the
+// workspace to search pages in first.
+describe('MilestonePages on a global milestone', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.getPageLinks.mockResolvedValue([
+      { id: 5, page_id: 40, page_title: 'Hub spec', workspace_id: 7 },
+    ]);
+    mocks.loadWorkspaces.mockResolvedValue([
+      { id: 7, key: 'HUB', name: 'Hub' },
+      { id: 8, key: 'LAB', name: 'Lab' },
+    ]);
+    mocks.searchPages.mockResolvedValue({ results: [page] });
+    mocks.linkPage.mockResolvedValue({
+      id: 9,
+      page_id: 42,
+      page_title: 'Spec page',
+      workspace_id: 8,
+    });
+  });
+
+  afterEach(() => cleanup());
+
+  it('links a page from the chosen workspace and links each page in its own workspace', async () => {
+    render(MilestonePages, { milestoneId: 1, isGlobal: true, canEdit: true });
+    const row = await screen.findByTestId('milestone-page-row');
+    expect(within(row).getByRole('link', { name: 'Hub spec' })).toHaveAttribute(
+      'href',
+      '/workspaces/7/pages/40'
+    );
+
+    await fireEvent.click(screen.getByTestId('milestone-page-add'));
+    const dialog = await screen.findByTestId('milestone-page-link-modal');
+    const workspaceInput = within(dialog).getByTestId('milestone-page-workspace-picker');
+    expect(workspaceInput.labels?.[0]).toHaveTextContent('common.workspace');
+    // No workspace yet: nothing to search.
+    expect(within(dialog).getByTestId('milestone-page-picker')).toBeDisabled();
+
+    await fireEvent.click(workspaceInput);
+    const workspaces = await screen.findByTestId('picker-dropdown');
+    await fireEvent.click(await within(workspaces).findByText('Lab'));
+
+    const pageInput = within(dialog).getByTestId('milestone-page-picker');
+    await waitFor(() => expect(pageInput).toBeEnabled());
+    await choosePage(pageInput);
+    expect(mocks.searchPages.mock.calls.every(([workspaceId]) => workspaceId === 8)).toBe(true);
+
+    const confirm = within(dialog).getByTestId('milestone-page-link-confirm');
+    await waitFor(() => expect(confirm).toBeEnabled());
+    await fireEvent.click(confirm);
+
+    await waitFor(() => expect(mocks.linkPage).toHaveBeenCalledWith(1, 42));
+    await expectDialogClosed();
+    const links = screen
+      .getAllByTestId('milestone-page-row')
+      .map((r) => within(r).getByRole('link'));
+    expect(links.map((link) => link.getAttribute('href'))).toEqual([
+      '/workspaces/7/pages/40',
+      '/workspaces/8/pages/42',
+    ]);
   });
 });

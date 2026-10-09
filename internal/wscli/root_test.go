@@ -11,8 +11,8 @@ import (
 // non-zero, and (as before) prints no usage block for argument errors.
 func TestRunPrintsCommandErrorsOnce(t *testing.T) {
 	server, _ := milestoneCommentServer(t, func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]string{
-			"code": "invalid_request", "message": "Page links are only available on workspace milestones",
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": map[string]string{
+			"code": "insufficient_permission", "message": "Changing page links requires edit rights on the milestone",
 		}})
 	})
 
@@ -25,7 +25,7 @@ func TestRunPrintsCommandErrorsOnce(t *testing.T) {
 		{
 			name:    "server error",
 			args:    []string{"milestone", "page", "add", "5", "66"},
-			message: "Page links are only available on workspace milestones",
+			message: "Changing page links requires edit rights on the milestone",
 		},
 		{
 			name:    "invalid argument",

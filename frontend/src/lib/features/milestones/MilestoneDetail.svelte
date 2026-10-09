@@ -330,13 +330,14 @@
           </div>
         {/if}
 
-        <!-- Pages list (WCORE-46): workspace milestones only; global
-             milestones have no workspace. Part of the header card, so it shows
-             on both tabs. -->
-        {#if milestoneWsId != null}
+        <!-- Pages list (WCORE-46). Global milestones link pages from any
+             workspace (WCORE-44). Part of the header card, so it shows on
+             both tabs. -->
+        {#if milestoneWsId != null || milestone?.is_global}
           <MilestonePages
             {milestoneId}
             workspaceId={milestoneWsId}
+            isGlobal={!!milestone?.is_global}
             canEdit={canManage}
           />
         {/if}

@@ -96,8 +96,8 @@ export const milestones = {
     }),
   deleteComment: (id, commentId) =>
     fetchV2Data(`/milestones/${id}/comments/${commentId}`, { method: 'DELETE' }),
-  // Page links (WCORE-19): workspace milestones only; pages come from the
-  // milestone's own workspace. Global milestones always list no links.
+  // Page links (WCORE-19): a workspace milestone links pages from its own
+  // workspace, a global milestone pages from any workspace (WCORE-44).
   getPageLinks: (id) => fetchV2Data(`/milestones/${id}/page-links`),
   linkPage: (id, pageId) =>
     fetchV2Data(`/milestones/${id}/page-links`, {

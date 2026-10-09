@@ -6,21 +6,22 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Milestone page links (WCORE-19 API). Only workspace milestones have page
-// links, and only to pages in the milestone's workspace. Anyone who can view
-// the milestone lists the pages they may view; linking and unlinking need edit
-// rights on the milestone, which the server enforces.
+// Milestone page links (WCORE-19 API). A workspace milestone links pages from
+// its own workspace; a global milestone links pages from any workspace the
+// user can view (WCORE-44). Anyone who can view the milestone lists the pages
+// they may view; linking and unlinking need edit rights on the milestone,
+// which the server enforces.
 
 var milestonePageCmd = &cobra.Command{
 	Use:   "page",
 	Short: "Manage pages linked to milestones",
-	Long:  `Commands for listing, linking, and unlinking the pages of a workspace milestone.`,
+	Long:  `Commands for listing, linking, and unlinking the pages of a milestone.`,
 }
 
 var milestonePageListCmd = &cobra.Command{
 	Use:   "list <milestone-id>",
 	Short: "List pages linked to a milestone",
-	Long: `List the pages linked to a workspace milestone that you may view.
+	Long: `List the pages linked to a milestone that you may view.
 
 Examples:
   ws milestone page list 5
@@ -50,7 +51,8 @@ Examples:
 var milestonePageAddCmd = &cobra.Command{
 	Use:   "add <milestone-id> <page-id>",
 	Short: "Link a page to a milestone",
-	Long: `Link a page from the milestone's workspace to a workspace milestone.
+	Long: `Link a page to a milestone. A workspace milestone links pages from its own
+workspace; a global milestone links pages from any workspace you can view.
 
 Examples:
   ws milestone page add 5 66`,
@@ -79,7 +81,7 @@ Examples:
 var milestonePageRemoveCmd = &cobra.Command{
 	Use:   "remove <milestone-id> <page-id>",
 	Short: "Unlink a page from a milestone",
-	Long: `Unlink a page from a workspace milestone. The page is identified by its
+	Long: `Unlink a page from a milestone. The page is identified by its
 page ID; the link ID is looked up from the milestone's page links.
 
 Examples:

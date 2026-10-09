@@ -2,8 +2,9 @@ package models
 
 import "time"
 
-// MilestonePageLink is a link from a workspace (local) milestone to a page in
-// the same workspace (WCORE-19). It is stored as an item_links row with
+// MilestonePageLink is a link from a milestone to a page (WCORE-19): a page
+// in the same workspace for a workspace milestone, a page in any workspace
+// for a global milestone (WCORE-44). WorkspaceID is the page's workspace. It is stored as an item_links row with
 // source_type "milestone", target_type "page", and the built-in Page link
 // type; ID is that row's ID.
 type MilestonePageLink struct {

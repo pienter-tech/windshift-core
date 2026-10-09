@@ -9,10 +9,11 @@ import (
 	"windshift/internal/services"
 )
 
-// registerMilestonePageLinkRoutes publishes page links on workspace (local)
-// milestones (WCORE-19). Anyone who can view the milestone lists the linked
-// pages they may view; users with edit rights on the milestone link pages
-// from its workspace and unlink them. Global milestones have no page links.
+// registerMilestonePageLinkRoutes publishes milestone page links (WCORE-19).
+// Anyone who can view the milestone lists the linked pages they may view;
+// users with edit rights on the milestone link pages and unlink them. A
+// workspace milestone links pages from its workspace, a global milestone
+// pages from any workspace the user can view (WCORE-44).
 func registerMilestonePageLinkRoutes(builder *routeBuilder, deps Deps) {
 	const links = "/milestones/{milestone_id}/page-links"
 	const link = links + "/{link_id}"
@@ -76,12 +77,10 @@ func milestonePageLinkError(err error) error {
 	switch {
 	case err == nil:
 		return nil
-	case errors.Is(err, services.ErrMilestonePageLinksGlobal):
-		return newError(http.StatusBadRequest, "invalid_request", "Page links are only available on workspace milestones")
 	case errors.Is(err, services.ErrMilestonePageLinksForbidden):
 		return newError(http.StatusForbidden, "insufficient_permission", "Changing page links requires edit rights on the milestone")
 	case errors.Is(err, services.ErrMilestonePageNotFound):
-		return newError(http.StatusNotFound, "not_found", "Page was not found in the milestone's workspace")
+		return newError(http.StatusNotFound, "not_found", "Page was not found")
 	case errors.Is(err, repository.ErrDuplicateEntry):
 		return newError(http.StatusConflict, "conflict", "Page is already linked to this milestone")
 	case errors.Is(err, repository.ErrPageLinkTypeUnavailable):

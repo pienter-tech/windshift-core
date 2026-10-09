@@ -8,6 +8,8 @@
 
   let {
     value = $bindable([]),
+    id = undefined,
+    inputTestid = undefined,
     placeholder = '',
     label = '',
     disabled = false,
@@ -102,6 +104,8 @@
 </script>
 
 <BasePicker
+  {id}
+  {inputTestid}
   bind:value
   items={workspaces}
   {loading}

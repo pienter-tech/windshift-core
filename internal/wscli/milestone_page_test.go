@@ -77,13 +77,13 @@ func TestMilestonePageAdd(t *testing.T) {
 
 func TestMilestonePageAddReportsServerError(t *testing.T) {
 	server, _ := milestoneCommentServer(t, func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]string{
-			"code": "invalid_request", "message": "Page links are only available on workspace milestones",
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": map[string]string{
+			"code": "insufficient_permission", "message": "Changing page links requires edit rights on the milestone",
 		}})
 	})
 
 	code, _, errOut := runWS(t, server.URL, "", "milestone", "page", "add", "5", "66")
-	if code == 0 || !strings.Contains(errOut, "Page links are only available on workspace milestones") {
+	if code == 0 || !strings.Contains(errOut, "Changing page links requires edit rights on the milestone") {
 		t.Fatalf("exit %d, stderr %q", code, errOut)
 	}
 }

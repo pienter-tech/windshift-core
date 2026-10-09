@@ -226,6 +226,21 @@ func (r *MilestonePageLinkRepository) ListHistory(milestoneID int) ([]models.Mil
 	return result, nil
 }
 
+// PageWorkspaceID returns the workspace of a page, so a global milestone can
+// check a page in its own workspace before linking it (WCORE-44). Returns
+// ErrNotFound when the page does not exist.
+func (r *MilestonePageLinkRepository) PageWorkspaceID(pageID int) (int, error) {
+	var workspaceID int
+	err := r.db.QueryRow("SELECT workspace_id FROM pages WHERE id = ?", pageID).Scan(&workspaceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("load workspace of page %d: %w", pageID, err)
+	}
+	return workspaceID, nil
+}
+
 // DeleteByMilestone removes every page link of a milestone inside tx. Call it
 // when deleting the milestone so no links point at a missing milestone.
 func (r *MilestonePageLinkRepository) DeleteByMilestone(tx database.Tx, milestoneID int) error {

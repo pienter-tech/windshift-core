@@ -8,17 +8,19 @@
 	import Modal from '../../dialogs/Modal.svelte';
 	import ModalHeader from '../../dialogs/ModalHeader.svelte';
 	import PagePicker from '../../pickers/PagePicker.svelte';
+	import WorkspacePicker from '../../pickers/WorkspacePicker.svelte';
 	import { errorToast } from '../../stores/toasts.svelte.js';
 	import { t } from '../../stores/i18n.svelte.js';
 
-	// Pages linked to a workspace milestone (WCORE-19), shown as a list in the
-	// milestone header card (WCORE-46). Global milestones have no workspace and
-	// therefore no Pages section. Anyone who can view the milestone sees the
-	// linked pages they may view; users with edit rights on the milestone
-	// (canEdit) link pages from its workspace through "+ Add", which opens a
-	// link dialog like the item detail's Pages "+ Add" (WCORE-58), and unlink
-	// them per row.
-	let { milestoneId, workspaceId, canEdit = false } = $props();
+	// Pages linked to a milestone (WCORE-19), shown as a list in the milestone
+	// header card (WCORE-46). Anyone who can view the milestone sees the linked
+	// pages they may view; users with edit rights on the milestone (canEdit)
+	// link pages through "+ Add", which opens a link dialog like the item
+	// detail's Pages "+ Add" (WCORE-58), and unlink them per row. A workspace
+	// milestone links pages from its workspace; a global milestone (isGlobal,
+	// no workspaceId) links pages from any workspace the user can view, so its
+	// dialog asks for the workspace first (WCORE-44).
+	let { milestoneId, workspaceId = null, isGlobal = false, canEdit = false } = $props();
 
 	let links = $state([]);
 	let loading = $state(true);
@@ -30,6 +32,9 @@
 	let selectedPageId = $state(null);
 	let selectedPage = $state(null);
 	let linking = $state(false);
+	// Global milestones: the workspace the page picker searches.
+	let pageWorkspaceId = $state(null);
+	const pickerWorkspaceId = $derived(isGlobal ? pageWorkspaceId : workspaceId);
 
 	const linkedPageIds = $derived(new Set(links.map((link) => link.page_id)));
 	const selectedAlreadyLinked = $derived(!!selectedPage && linkedPageIds.has(selectedPage.id));
@@ -59,6 +64,7 @@
 	function openDialog() {
 		selectedPageId = null;
 		selectedPage = null;
+		pageWorkspaceId = null;
 		dialogOpen = true;
 	}
 
@@ -74,6 +80,12 @@
 
 	function handleSelectPage(page) {
 		selectedPage = page || null;
+	}
+
+	// A page chosen in another workspace no longer applies.
+	function handleSelectWorkspace() {
+		selectedPageId = null;
+		selectedPage = null;
 	}
 
 	// PagePicker marks Escape as handled (preventDefault), which stops Modal
@@ -199,7 +211,8 @@
 {#if canEdit}
 	<!-- Link dialog, built from the same Modal pieces as the item detail's
 	     LinkItemModal in Page mode (WCORE-58): title, page picker limited to the
-	     milestone's workspace, Cancel and "Add Link". -->
+	     milestone's workspace (for a global milestone: the workspace chosen
+	     above it), Cancel and "Add Link". -->
 	<Modal
 		bind:isOpen={dialogOpen}
 		maxWidth="max-w-md"
@@ -216,6 +229,25 @@
 				<ModalHeader title={t('items.addPage')} onClose={closeDialog} />
 
 				<div class="p-6 space-y-1">
+					{#if isGlobal}
+						<label
+							for="milestone-page-workspace-picker"
+							class="block text-sm font-medium mb-1"
+							style="color: var(--ds-text-subtle);"
+						>
+							{t('common.workspace')}
+						</label>
+						<WorkspacePicker
+							id="milestone-page-workspace-picker"
+							bind:value={pageWorkspaceId}
+							multiple={false}
+							placeholder={t('workspaces.selectWorkspace')}
+							disabled={linking}
+							inputTestid="milestone-page-workspace-picker"
+							onChange={handleSelectWorkspace}
+							class="mb-4"
+						/>
+					{/if}
 					<label
 						for="milestone-page-picker"
 						class="block text-sm font-medium mb-1"
@@ -223,15 +255,18 @@
 					>
 						{t('items.targetPage')}
 					</label>
-					<PagePicker
-						id="milestone-page-picker"
-						{workspaceId}
-						bind:value={selectedPageId}
-						placeholder={t('items.pagePickerPlaceholder')}
-						disabled={linking}
-						inputTestid="milestone-page-picker"
-						onSelect={handleSelectPage}
-					/>
+					<!-- Remount on a workspace change so the old search goes too. -->
+					{#key pickerWorkspaceId}
+						<PagePicker
+							id="milestone-page-picker"
+							workspaceId={pickerWorkspaceId}
+							bind:value={selectedPageId}
+							placeholder={t('items.pagePickerPlaceholder')}
+							disabled={linking || !pickerWorkspaceId}
+							inputTestid="milestone-page-picker"
+							onSelect={handleSelectPage}
+						/>
+					{/key}
 					{#if selectedAlreadyLinked}
 						<p class="text-xs" style="color: var(--ds-text-subtle);" data-testid="milestone-page-already-linked">
 							{t('pickers.alreadyLinked')}

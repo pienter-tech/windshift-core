@@ -669,8 +669,8 @@ func (c *Client) DeleteMilestoneComment(milestoneID, commentID int) error {
 	return c.DELETE(fmt.Sprintf("/rest/api/v2/milestones/%d/comments/%d", milestoneID, commentID))
 }
 
-// Milestone page link methods. Only workspace milestones have page links; the
-// list is a plain document, not paginated.
+// Milestone page link methods. Workspace and global milestones both have page
+// links; the list is a plain document, not paginated.
 
 func (c *Client) ListMilestonePageLinks(milestoneID int) ([]MilestonePageLink, error) {
 	links := make([]MilestonePageLink, 0)
