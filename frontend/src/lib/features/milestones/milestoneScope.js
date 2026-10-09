@@ -29,3 +29,17 @@ export function canManageMilestone(milestone, access) {
     access.hasWorkspacePermission(workspaceId, 'item.edit')
   );
 }
+
+/**
+ * Whether a milestone list row shows the drag grip: global rows
+ * need the global reorder right, workspace rows the local one. The caller
+ * computes both rights for the page; on the global page `canReorderLocal` is
+ * false, because workspace milestones are reordered on their own workspace page.
+ *
+ * @param {object | null} milestone milestone row
+ * @param {{ canReorderGlobal: boolean, canReorderLocal: boolean }} rights
+ */
+export function canReorderMilestoneRow(milestone, rights) {
+  if (!milestone) return false;
+  return milestone.is_global ? rights.canReorderGlobal : rights.canReorderLocal;
+}

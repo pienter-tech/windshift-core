@@ -43,6 +43,8 @@ cx
 !frontend/src/lib/mobile/mobile-i18n.spec.js
 !frontend/scripts/hardcoded-i18n-ast.spec.js
 !frontend/src/lib/api/integrations.spec.js
+!frontend/src/lib/features/milestones/milestoneListFilters.spec.js
+!frontend/src/lib/utils/markdownExcerpt.spec.js
 !frontend/src/lib/features/milestones/MilestonePages.spec.js
 !frontend/src/lib/features/milestones/milestoneScope.spec.js
 !frontend/src/lib/features/milestones/milestoneActivity.spec.js
