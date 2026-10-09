@@ -21,19 +21,21 @@ type MilestoneActivityWorkspaces interface {
 	AccessibleWorkspaceIDs(userID int) ([]int, error)
 }
 
-// MilestoneActivityPageLinks lists the page links of a milestone that a user
-// may view. MilestonePageLinkService implements it.
+// MilestoneActivityPageLinks lists the recorded page links and unlinks of a
+// milestone for pages a user may view. MilestonePageLinkService implements it.
 type MilestoneActivityPageLinks interface {
-	List(userID, milestoneID int) ([]models.MilestonePageLink, error)
+	History(userID, milestoneID int) ([]models.MilestonePageLinkEvent, error)
 }
 
 // MilestoneActivityService builds a milestone's Activity feed (WCORE-21): one
 // shared, newest-first feed of milestone events (comments; description,
-// status, and target-date changes; linked pages) and member-item events
+// status, and target-date changes; pages linked and unlinked) and member-item events
 // (comments, status changes, items added or removed). Every viewer sees the
 // same feed, except that item events are limited to items in workspaces the
-// viewer can access (the progress view's rule) and page links to pages the
-// viewer may view.
+// viewer can access (the progress view's rule) and page link entries to pages
+// the viewer may view. Page link entries come from the milestone history
+// (WCORE-26), so an unlinked page keeps its "linked" entry and gains an
+// "unlinked" one; links made before that history existed have no entry.
 type MilestoneActivityService struct {
 	store      MilestoneActivityStore
 	access     MilestoneReadAuthorizer
@@ -80,14 +82,16 @@ func (s *MilestoneActivityService) List(userID, milestoneID int, params Mileston
 		return nil, 0, err
 	}
 	if s.pages != nil {
-		links, err := s.pages.List(userID, milestoneID)
+		events, err := s.pages.History(userID, milestoneID)
 		if err != nil {
 			return nil, 0, err
 		}
-		for _, link := range links {
-			entries = append(entries, pageLinkedActivity(link))
+		// History is oldest first; append newest first so the stable sort
+		// keeps a later event ahead of an earlier one with the same time.
+		for i := len(events) - 1; i >= 0; i-- {
+			entries = append(entries, pageLinkActivity(events[i]))
 		}
-		total += len(links)
+		total += len(events)
 		sort.SliceStable(entries, func(a, b int) bool {
 			return entries[a].OccurredAt.After(entries[b].OccurredAt)
 		})
@@ -100,23 +104,26 @@ func (s *MilestoneActivityService) List(userID, milestoneID int, params Mileston
 	return entries[offset:end], total, nil
 }
 
-func pageLinkedActivity(link models.MilestonePageLink) models.MilestoneActivity {
+func pageLinkActivity(event models.MilestonePageLinkEvent) models.MilestoneActivity {
 	activity := models.MilestoneActivity{
-		ID:         "milestone_page_link:" + strconv.Itoa(link.ID),
+		ID:         "milestone_history:" + strconv.Itoa(event.ID),
 		Type:       models.MilestoneActivityMilestonePageLinked,
-		OccurredAt: link.CreatedAt.UTC(),
+		OccurredAt: event.OccurredAt.UTC(),
 		ActorKind:  models.MilestoneActivityActorSystem,
 		Page: &models.MilestoneActivityPage{
-			ID:          link.PageID,
-			Title:       link.PageTitle,
-			WorkspaceID: link.WorkspaceID,
+			ID:          event.PageID,
+			Title:       event.PageTitle,
+			WorkspaceID: event.WorkspaceID,
 		},
 	}
-	if link.CreatedBy != nil {
-		id := *link.CreatedBy
+	if event.Unlinked {
+		activity.Type = models.MilestoneActivityMilestonePageUnlinked
+	}
+	if event.UserID != nil {
+		id := *event.UserID
 		activity.ActorKind = models.MilestoneActivityActorUser
 		activity.ActorID = &id
-		activity.ActorName = link.CreatedByName
+		activity.ActorName = event.UserName
 	}
 	return activity
 }
