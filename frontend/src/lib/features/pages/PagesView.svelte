@@ -869,6 +869,7 @@
           <LazyMilkdownEditor
             bind:content={draftContent}
             placeholder={t('pages.editorPlaceholder')}
+            ariaLabel={t('pages.contentLabel')}
             showToolbar={true}
             readonly={mode === 'read' || !canEditPage}
             entityType="page"

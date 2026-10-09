@@ -360,6 +360,7 @@ export default {
     "discardMessage": "La page actuelle comporte des modifications non enregistrées. Elles seront perdues si vous changez de page.",
     "discardTitle": "Ignorer les modifications non enregistrées ?",
     "editorPlaceholder": "Commencez à écrire…",
+    "contentLabel": "Contenu de la page",
     "emptyPaneDescription": "Sélectionnez une page dans l'arborescence ou créez-en une pour commencer.",
     "emptyPaneTitle": "Pages de connaissances",
     "errorArchive": "Échec de l'archivage",

@@ -175,6 +175,7 @@
         bind:this={milkdownEditor}
         bind:content={editorContent}
         placeholder={t('items.enterDescription')}
+        ariaLabel={t('common.description')}
         showToolbar={true}
         itemId={item.id}
         workspaceId={item.workspace_id}

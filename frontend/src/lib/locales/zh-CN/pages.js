@@ -41,6 +41,7 @@ export default {
     "emptyPaneDescription": "从树中选择一个页面，或创建一个页面以开始。",
     "titlePlaceholder": "无标题",
     "editorPlaceholder": "开始写作...",
+    "contentLabel": "页面内容",
     "tocHeading": "本页",
     "tocAriaLabel": "目录",
     "save": "保存",
