@@ -477,6 +477,22 @@ func creationHistoryEntries(item models.Item, userID int, changedAt time.Time) [
 	return history
 }
 
+// creationMilestonesHistory is the milestones history row for an item created
+// directly in milestones, in the old/new CSV form the update path writes, so
+// the milestone Activity feed shows "item added" from it (WCORE-27). Items
+// created without milestones get no row.
+func creationMilestonesHistory(itemID, userID int, milestoneIDs []int, changedAt time.Time) []HistoryEntry {
+	if len(milestoneIDs) == 0 {
+		return nil
+	}
+	ids := append([]int(nil), milestoneIDs...)
+	sort.Ints(ids)
+	return []HistoryEntry{{
+		ItemID: itemID, UserID: userID, FieldName: "milestones",
+		OldValue: "", NewValue: joinIntsCSV(ids), ChangedAt: changedAt,
+	}}
+}
+
 // recordItemHistory records history entries in the database
 func (s *ItemUpdateService) recordItemHistory(tx database.Tx, history []HistoryEntry) error {
 	return repository.NewItemRepository(s.db).RecordHistoryBatch(tx, history)

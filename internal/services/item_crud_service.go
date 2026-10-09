@@ -336,7 +336,11 @@ func (s *ItemCRUDService) Copy(itemID int, opts CopyOptions) (*CopyResult, error
 		if err != nil {
 			return err
 		}
-		if err := s.repo.RecordHistoryBatch(tx, creationHistoryEntries(*created, opts.CreatorID, metadata.OccurredAt)); err != nil {
+		history := append(
+			creationHistoryEntries(*created, opts.CreatorID, metadata.OccurredAt),
+			creationMilestonesHistory(itemID, opts.CreatorID, milestoneIDs, metadata.OccurredAt)...,
+		)
+		if err := s.repo.RecordHistoryBatch(tx, history); err != nil {
 			return fmt.Errorf("record copied item creation history: %w", err)
 		}
 		_, err = itemevents.NewRecorder(s.db).Created(context.Background(), tx, created, milestoneIDs, metadata)
