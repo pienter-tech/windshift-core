@@ -115,6 +115,7 @@ export default {
       changedStatus: 'изменил(а) статус с «{from}» на «{to}»',
       changedTargetDate: 'изменил(а) целевую дату с {from} на {to}',
       linkedPage: 'связал(а) страницу',
+      unlinkedPage: 'отвязал(а) страницу',
       commentedOn: 'прокомментировал(а)',
       changedItemStatus: 'изменил(а) статус',
       fromTo: 'с «{from}» на «{to}»',

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"windshift/internal/database"
 	"windshift/internal/models"
@@ -18,7 +19,8 @@ var ErrPageLinkTypeUnavailable = errors.New("the built-in Page link type is miss
 // "milestone", target_type "page", the built-in Page link type, and the
 // table's created_by/created_at for who linked the page and when. The generic
 // link endpoints ignore these rows; only the milestone page-link routes
-// manage them.
+// manage them. Linking and unlinking also write a milestone_history page_link
+// row, so the Activity tab keeps both after the link is gone.
 type MilestonePageLinkRepository struct {
 	db database.Database
 }
@@ -69,9 +71,11 @@ func (r *MilestonePageLinkRepository) GetByID(id int) (*models.MilestonePageLink
 	return &link, nil
 }
 
-// Create links a page to a milestone and returns the link ID. It returns
-// ErrDuplicateEntry when the page is already linked and
-// ErrPageLinkTypeUnavailable when the built-in Page link type is unusable.
+// Create links a page to a milestone and returns the link ID. It records the
+// link in the milestone history in the same transaction, with
+// createdBy as the actor. It returns ErrDuplicateEntry when the page is
+// already linked and ErrPageLinkTypeUnavailable when the built-in Page link
+// type is unusable.
 func (r *MilestonePageLinkRepository) Create(milestoneID, pageID, createdBy int) (int, error) {
 	var linkTypeID int
 	err := r.db.QueryRow("SELECT id FROM link_types WHERE builtin_key = 'page' AND active = TRUE").Scan(&linkTypeID)
@@ -81,36 +85,145 @@ func (r *MilestonePageLinkRepository) Create(milestoneID, pageID, createdBy int)
 	if err != nil {
 		return 0, fmt.Errorf("load page link type: %w", err)
 	}
-	var id int
-	err = r.db.QueryRow(`
-		INSERT INTO item_links (link_type_id, source_type, source_id, target_type, target_id, created_by, created_at)
-		VALUES (?, 'milestone', ?, 'page', ?, ?, CURRENT_TIMESTAMP)
-		ON CONFLICT DO NOTHING
-		RETURNING id
-	`, linkTypeID, milestoneID, pageID, createdBy).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, ErrDuplicateEntry
-	}
-	if err != nil {
-		return 0, fmt.Errorf("create milestone page link: %w", err)
-	}
-	return id, nil
+	return database.WithTxResult(r.db, func(tx database.Tx) (int, error) {
+		var id int
+		err := tx.QueryRow(`
+			INSERT INTO item_links (link_type_id, source_type, source_id, target_type, target_id, created_by, created_at)
+			VALUES (?, 'milestone', ?, 'page', ?, ?, CURRENT_TIMESTAMP)
+			ON CONFLICT DO NOTHING
+			RETURNING id
+		`, linkTypeID, milestoneID, pageID, createdBy).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, ErrDuplicateEntry
+		}
+		if err != nil {
+			return 0, fmt.Errorf("create milestone page link: %w", err)
+		}
+		if err := RecordMilestoneHistory(tx, MilestoneHistoryEntry{
+			MilestoneID: milestoneID,
+			UserID:      &createdBy,
+			FieldName:   MilestoneHistoryPageLink,
+			NewValue:    strconv.Itoa(pageID),
+		}); err != nil {
+			return 0, err
+		}
+		return id, nil
+	})
 }
 
-// Delete removes one milestone page link.
-func (r *MilestonePageLinkRepository) Delete(id int) error {
-	result, err := r.db.ExecWrite("DELETE FROM item_links WHERE id = ? AND source_type = 'milestone'", id)
+// Delete removes one milestone page link and records the unlink in the
+// milestone history in the same transaction, with deletedBy as the
+// actor.
+func (r *MilestonePageLinkRepository) Delete(id, deletedBy int) error {
+	return database.WithTx(r.db, func(tx database.Tx) error {
+		var milestoneID, pageID int
+		err := tx.QueryRow(`
+			DELETE FROM item_links WHERE id = ? AND source_type = 'milestone' AND target_type = 'page'
+			RETURNING source_id, target_id
+		`, id).Scan(&milestoneID, &pageID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("delete milestone page link %d: %w", id, err)
+		}
+		return RecordMilestoneHistory(tx, MilestoneHistoryEntry{
+			MilestoneID: milestoneID,
+			UserID:      &deletedBy,
+			FieldName:   MilestoneHistoryPageLink,
+			OldValue:    strconv.Itoa(pageID),
+		})
+	})
+}
+
+// ListHistory returns a milestone's recorded page links and unlinks,
+// oldest first, with each page's current title and workspace.
+// Events for pages that no longer exist are dropped. Links made before the
+// history was recorded have no event.
+func (r *MilestonePageLinkRepository) ListHistory(milestoneID int) ([]models.MilestonePageLinkEvent, error) {
+	rows, err := r.db.Query(`
+		SELECT mh.id, mh.old_value, mh.new_value, mh.user_id, mh.changed_at,
+		       COALESCE(NULLIF(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')), ''), u.username, '') AS user_name
+		FROM milestone_history mh
+		LEFT JOIN users u ON u.id = mh.user_id
+		WHERE mh.milestone_id = ? AND mh.field_name = ?
+		ORDER BY mh.changed_at, mh.id`, milestoneID, MilestoneHistoryPageLink)
 	if err != nil {
-		return fmt.Errorf("delete milestone page link %d: %w", id, err)
+		return nil, fmt.Errorf("list page link history for milestone %d: %w", milestoneID, err)
 	}
-	affected, err := result.RowsAffected()
+	defer func() { _ = rows.Close() }()
+	events := []models.MilestonePageLinkEvent{}
+	pageIDs := []int{}
+	seen := map[int]bool{}
+	for rows.Next() {
+		var (
+			event              models.MilestonePageLinkEvent
+			oldValue, newValue sql.NullString
+			userID             sql.NullInt64
+			userName           sql.NullString
+		)
+		if err := rows.Scan(&event.ID, &oldValue, &newValue, &userID, &event.OccurredAt, &userName); err != nil {
+			return nil, fmt.Errorf("scan milestone page link history: %w", err)
+		}
+		raw := newValue.String
+		if !newValue.Valid || raw == "" {
+			raw = oldValue.String
+			event.Unlinked = true
+		}
+		pageID, err := strconv.Atoi(raw)
+		if err != nil {
+			continue
+		}
+		event.MilestoneID = milestoneID
+		event.PageID = pageID
+		assignNullableInt(&event.UserID, userID)
+		event.UserName = userName.String
+		event.OccurredAt = event.OccurredAt.UTC()
+		events = append(events, event)
+		if !seen[pageID] {
+			seen[pageID] = true
+			pageIDs = append(pageIDs, pageID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate milestone page link history: %w", err)
+	}
+	clause, args := inPlaceholders(pageIDs)
+	if clause == "" {
+		return events, nil
+	}
+	type pageInfo struct {
+		title       string
+		workspaceID int
+	}
+	pages := map[int]pageInfo{}
+	pageRows, err := r.db.Query("SELECT id, title, workspace_id FROM pages WHERE id IN ("+clause+")", args...)
 	if err != nil {
-		return fmt.Errorf("milestone page link %d rows affected: %w", id, err)
+		return nil, fmt.Errorf("load pages for milestone %d page link history: %w", milestoneID, err)
 	}
-	if affected == 0 {
-		return ErrNotFound
+	defer func() { _ = pageRows.Close() }()
+	for pageRows.Next() {
+		var id int
+		var info pageInfo
+		if err := pageRows.Scan(&id, &info.title, &info.workspaceID); err != nil {
+			return nil, fmt.Errorf("scan page for milestone page link history: %w", err)
+		}
+		pages[id] = info
 	}
-	return nil
+	if err := pageRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pages for milestone page link history: %w", err)
+	}
+	result := make([]models.MilestonePageLinkEvent, 0, len(events))
+	for _, event := range events {
+		info, ok := pages[event.PageID]
+		if !ok {
+			continue
+		}
+		event.PageTitle = info.title
+		event.WorkspaceID = info.workspaceID
+		result = append(result, event)
+	}
+	return result, nil
 }
 
 // DeleteByMilestone removes every page link of a milestone inside tx. Call it

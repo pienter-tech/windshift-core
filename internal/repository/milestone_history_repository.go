@@ -6,11 +6,13 @@ import (
 )
 
 // Milestone history fields. Only the fields the milestone Activity
-// tab shows are recorded.
+// tab shows are recorded. A page_link row records a page linked
+// (new_value is the page ID) or unlinked (old_value is the page ID).
 const (
 	MilestoneHistoryDescription = "description"
 	MilestoneHistoryStatus      = "status"
 	MilestoneHistoryTargetDate  = "target_date"
+	MilestoneHistoryPageLink    = "page_link"
 )
 
 // MilestoneHistoryEntry is one recorded change to a milestone field.

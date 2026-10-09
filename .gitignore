@@ -24,6 +24,7 @@ cx
 !/internal/database/gitlab_schema_test.go
 !/internal/scm/gitlab_test.go
 !/internal/services/planning_milestones_release_test.go
+!/internal/services/milestone_membership_history_test.go
 !/internal/database/milestone_activity_schema_test.go
 !/internal/services/milestone_activity_service_test.go
 !/internal/services/milestone_page_link_service_test.go

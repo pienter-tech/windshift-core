@@ -389,6 +389,7 @@ export default {
       changedStatus: '将状态从 {from} 更改为 {to}',
       changedTargetDate: '将目标日期从 {from} 更改为 {to}',
       linkedPage: '关联了页面',
+      unlinkedPage: '取消关联了页面',
       commentedOn: '评论了',
       changedItemStatus: '将',
       fromTo: '的状态从 {from} 更改为 {to}',

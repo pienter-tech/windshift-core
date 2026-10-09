@@ -5,6 +5,7 @@
 		IconFlag,
 		IconCalendar,
 		IconFileText,
+		IconFileOff,
 		IconProgress,
 		IconCirclePlus,
 		IconCircleMinus,
@@ -32,6 +33,7 @@
 		milestone_status_changed: IconFlag,
 		milestone_target_date_changed: IconCalendar,
 		milestone_page_linked: IconFileText,
+		milestone_page_unlinked: IconFileOff,
 		item_comment_added: IconMessage,
 		item_status_changed: IconProgress,
 		item_added: IconCirclePlus,
@@ -40,12 +42,10 @@
 
 	let entries = $state([]);
 	let page = $state(0);
-	let totalPages = $state(0);
+	let hasMore = $state(false);
 	let loading = $state(true);
 	let loadingMore = $state(false);
 	let error = $state('');
-
-	const hasMore = $derived(page < totalPages);
 
 	$effect(() => {
 		// Track the inputs that require a fresh first page.
@@ -61,7 +61,7 @@
 			const result = await api.milestones.getActivity(milestoneId, { page: 1, pageSize: PAGE_SIZE });
 			entries = result.entries;
 			page = 1;
-			totalPages = result.totalPages;
+			hasMore = result.hasMore;
 		} catch (err) {
 			console.error('Failed to load milestone activity:', err);
 			error = t('dialogs.alerts.failedToLoad', { error: t('milestones.activity.tabActivity') });
@@ -79,7 +79,7 @@
 			const seen = new Set(entries.map((entry) => entry.id));
 			entries = [...entries, ...result.entries.filter((entry) => !seen.has(entry.id))];
 			page = result.page;
-			totalPages = result.totalPages;
+			hasMore = result.hasMore;
 		} catch (err) {
 			console.error('Failed to load more milestone activity:', err);
 			error = t('dialogs.alerts.failedToLoad', { error: t('milestones.activity.tabActivity') });

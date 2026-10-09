@@ -287,6 +287,7 @@ export default {
       changedStatus: 'änderte den Status von {from} zu {to}',
       changedTargetDate: 'änderte das Zieldatum von {from} zu {to}',
       linkedPage: 'verknüpfte die Seite',
+      unlinkedPage: 'entfernte die Verknüpfung zur Seite',
       commentedOn: 'kommentierte',
       changedItemStatus: 'änderte den Status von',
       fromTo: 'von {from} zu {to}',

@@ -10,6 +10,7 @@ const (
 	MilestoneActivityMilestoneStatusChanged    = "milestone_status_changed"
 	MilestoneActivityMilestoneTargetDateChange = "milestone_target_date_changed"
 	MilestoneActivityMilestonePageLinked       = "milestone_page_linked"
+	MilestoneActivityMilestonePageUnlinked     = "milestone_page_unlinked"
 	MilestoneActivityItemCommentAdded          = "item_comment_added"
 	MilestoneActivityItemStatusChanged         = "item_status_changed"
 	MilestoneActivityItemAdded                 = "item_added"
@@ -49,7 +50,8 @@ type MilestoneActivityItem struct {
 	WorkspaceID int    `json:"workspace_id"`
 }
 
-// MilestoneActivityPage references the page a "page linked" entry is about.
+// MilestoneActivityPage references the page a "page linked" or "page
+// unlinked" entry is about.
 type MilestoneActivityPage struct {
 	ID          int    `json:"id"`
 	Title       string `json:"title"`

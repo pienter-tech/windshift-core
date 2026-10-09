@@ -526,7 +526,7 @@ type milestonePageLinkApplication interface {
 }
 
 type milestoneActivityApplication interface {
-	List(userID, milestoneID int, params services.MilestoneActivityListParams) ([]models.MilestoneActivity, int, error)
+	List(userID, milestoneID int, params services.MilestoneActivityListParams) ([]models.MilestoneActivity, bool, error)
 }
 
 type linkApplication interface {

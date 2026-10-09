@@ -424,6 +424,7 @@ export default {
       changedStatus: 'a changé le statut de {from} à {to}',
       changedTargetDate: 'a changé la date cible de {from} à {to}',
       linkedPage: 'a lié la page',
+      unlinkedPage: 'a délié la page',
       commentedOn: 'a commenté',
       changedItemStatus: 'a changé le statut de',
       fromTo: 'de {from} à {to}',

@@ -33,6 +33,12 @@ export function describeMilestoneActivity(entry, { t, formatDate }) {
         href: itemUrl({ workspaceId: entry.item.workspace_id, itemId: entry.item.id }),
       }
     : null;
+  const pageTarget = entry?.page
+    ? {
+        label: entry.page.title || t('pages.untitled'),
+        href: `/workspaces/${entry.page.workspace_id}/pages/${entry.page.id}`,
+      }
+    : null;
 
   switch (entry?.type) {
     case 'milestone_comment_added':
@@ -65,17 +71,9 @@ export function describeMilestoneActivity(entry, { t, formatDate }) {
         trail: '',
       };
     case 'milestone_page_linked':
-      return {
-        actor,
-        lead: t('milestones.activity.linkedPage'),
-        target: entry.page
-          ? {
-              label: entry.page.title || t('pages.untitled'),
-              href: `/workspaces/${entry.page.workspace_id}/pages/${entry.page.id}`,
-            }
-          : null,
-        trail: '',
-      };
+      return { actor, lead: t('milestones.activity.linkedPage'), target: pageTarget, trail: '' };
+    case 'milestone_page_unlinked':
+      return { actor, lead: t('milestones.activity.unlinkedPage'), target: pageTarget, trail: '' };
     case 'item_comment_added':
       return { actor, lead: t('milestones.activity.commentedOn'), target: itemTarget, trail: '' };
     case 'item_status_changed':
