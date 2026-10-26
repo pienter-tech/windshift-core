@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -96,14 +97,18 @@ func (s *ItemCRUDService) deleteSingleWithAuthorization(itemID int, metadata ite
 		if err != nil {
 			return err
 		}
-		if authorize != nil {
-			if err := authorize([]*models.Item{root}); err != nil {
-				return err
-			}
-		}
 		children, err = s.repo.FindChildrenForUpdateContext(ctx, tx, []int{itemID})
 		if err != nil {
 			return err
+		}
+		if authorize != nil {
+			// Deleting the parent detaches every direct child, including children
+			// in other workspaces. Authorize root and children together and refuse
+			// the whole operation if the actor lacks item.delete in any of them.
+			targets := append([]*models.Item{root}, children...)
+			if err := authorize(targets); err != nil {
+				return err
+			}
 		}
 		hasProtectedLinks, err := s.integrationLinkGuards.HasLinksForItemsTx(tx, []int{itemID})
 		if err != nil {
@@ -140,6 +145,9 @@ func (s *ItemCRUDService) deleteSingleWithAuthorization(itemID int, metadata ite
 		if _, err := recorder.Deleted(ctx, tx, root, 0, metadata); err != nil {
 			return err
 		}
+		if err := s.stampEmailTrackingCompletedTx(tx, []int{itemID}); err != nil {
+			return err
+		}
 		if err := s.deleteItemRelationsTx(tx, itemID); err != nil {
 			return err
 		}
@@ -153,7 +161,7 @@ func (s *ItemCRUDService) deleteSingleWithAuthorization(itemID int, metadata ite
 	for _, child := range children {
 		childIDs = append(childIDs, child.ID)
 		repository.InvalidateItemListCountCache(s.db, child.WorkspaceID)
-		PublishItemChange(child.ID, ItemChangeUpdated)
+		PublishItemChange(child.ID)
 	}
 	return childIDs, nil
 }
@@ -216,6 +224,9 @@ func (s *ItemCRUDService) deleteWithAuthorization(itemID int, metadata itemevent
 				return err
 			}
 		}
+		if err := s.stampEmailTrackingCompletedTx(tx, itemIDs); err != nil {
+			return err
+		}
 		// Remove children first so the foreign key cannot bypass their cleanup.
 		for i := len(items) - 1; i >= 0; i-- {
 			id := items[i].ID
@@ -235,9 +246,37 @@ func (s *ItemCRUDService) deleteWithAuthorization(itemID int, metadata itemevent
 		s.finishItemDeletion(item.WorkspaceID, []int{item.ID}, nil)
 	}
 	if result.AffectedParent != nil {
-		PublishItemChange(*result.AffectedParent, ItemChangeUpdated)
+		PublishItemChange(*result.AffectedParent)
 	}
 	return &result, nil
+}
+
+// stampEmailTrackingCompletedTx marks the inbound-email tracking rows tied to
+// the items about to be deleted. The item/comment FKs null their references
+// during the delete, but completed_at is the durable tombstone that keeps the
+// message deduplicated, so a mailbox refetch cannot recreate the deleted
+// ticket. Rows for reply comments are matched through the comment's item.
+func (s *ItemCRUDService) stampEmailTrackingCompletedTx(tx database.Tx, itemIDs []int) error {
+	if len(itemIDs) == 0 {
+		return nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(itemIDs)), ",")
+	args := make([]any, 0, len(itemIDs)*2)
+	for _, id := range itemIDs {
+		args = append(args, id)
+	}
+	for _, id := range itemIDs {
+		args = append(args, id)
+	}
+	if _, err := tx.Exec(`
+		UPDATE email_message_tracking
+		SET completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP)
+		WHERE item_id IN (`+placeholders+`)
+		   OR comment_id IN (SELECT id FROM comments WHERE item_id IN (`+placeholders+`))
+	`, args...); err != nil {
+		return fmt.Errorf("stamp email tracking completed for deleted items: %w", err)
+	}
+	return nil
 }
 
 func (s *ItemCRUDService) deleteItemRelationsTx(tx database.Tx, itemID int) error {
@@ -258,12 +297,12 @@ func (s *ItemCRUDService) deleteItemRelationsTx(tx database.Tx, itemID int) erro
 
 func (s *ItemCRUDService) finishItemDeletion(workspaceID int, itemIDs []int, parentID *int) {
 	repository.InvalidateItemListCountCache(s.db, workspaceID)
-	PublishWorkspaceChange(workspaceID, WorkspaceChangeItems)
+	PublishWorkspaceChange(workspaceID)
 	for _, id := range itemIDs {
 		PublishItemDeletion(id, workspaceID)
 	}
 	if parentID != nil {
-		PublishItemChange(*parentID, ItemChangeUpdated)
+		PublishItemChange(*parentID)
 	}
 }
 
@@ -293,58 +332,48 @@ func (s *ItemCRUDService) Copy(itemID int, opts CopyOptions) (*CopyResult, error
 	if parentID == nil {
 		parentID = source.ParentID
 	}
-	newItem := &models.Item{
-		WorkspaceID:       source.WorkspaceID,
-		ItemTypeID:        source.ItemTypeID,
-		Title:             opts.NewTitle,
-		Description:       source.Description,
-		StatusID:          source.StatusID,
-		PriorityID:        source.PriorityID,
-		DueDate:           source.DueDate,
-		StartDate:         source.StartDate,
-		EndDate:           source.EndDate,
-		IsTask:            source.IsTask,
-		IterationID:       source.IterationID,
-		ProjectID:         source.ProjectID,
-		InheritProject:    source.InheritProject,
-		AssigneeID:        source.AssigneeID,
-		CreatorID:         &opts.CreatorID,
-		CustomFieldValues: source.CustomFieldValues,
-		ParentID:          parentID,
-		RelatedWorkItemID: source.RelatedWorkItemID,
-		StoryPoints:       source.StoryPoints,
-	}
-	if err := validation.ValidateTaskState(s.db, newItem.WorkspaceID, opts.CreatorID, newItem.IsTask, newItem.StatusID); err != nil {
+	if err := validation.ValidateTaskState(s.db, source.WorkspaceID, opts.CreatorID, source.IsTask, source.StatusID); err != nil {
 		return nil, err
 	}
 
-	newID, err := s.repo.CreateWithRetry(context.Background(), newItem, func(tx database.Tx, itemID int) error {
-		now := time.Now()
-		if _, err := tx.Exec(`
-			INSERT INTO item_milestones (item_id, milestone_id, created_at)
-			SELECT ?, milestone_id, ? FROM item_milestones WHERE item_id = ?
-		`, itemID, now, source.ID); err != nil {
-			return fmt.Errorf("copy item milestones: %w", err)
-		}
-		created, err := s.repo.FindByIDForUpdate(tx, itemID)
+	milestoneIDs, err := s.repo.GetMilestoneIDs(source.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load source milestones: %w", err)
+	}
+	customFieldValuesJSON := ""
+	if len(source.CustomFieldValues) > 0 {
+		encoded, err := json.Marshal(source.CustomFieldValues)
 		if err != nil {
-			return err
+			return nil, fmt.Errorf("encode source custom fields: %w", err)
 		}
-		metadata := itemevents.User(opts.CreatorID, "application")
-		metadata.OccurredAt = now
-		milestoneIDs, err := itemMilestoneIDsInTx(tx, itemID)
-		if err != nil {
-			return err
-		}
-		history := append(
-			creationHistoryEntries(*created, opts.CreatorID, metadata.OccurredAt),
-			creationMilestonesHistory(itemID, opts.CreatorID, milestoneIDs, metadata.OccurredAt)...,
-		)
-		if err := s.repo.RecordHistoryBatch(tx, history); err != nil {
-			return fmt.Errorf("record copied item creation history: %w", err)
-		}
-		_, err = itemevents.NewRecorder(s.db).Created(context.Background(), tx, created, milestoneIDs, metadata)
-		return err
+		customFieldValuesJSON = string(encoded)
+	}
+
+	newID, err := CreateItem(s.db, ItemCreationParams{
+		WorkspaceID:           source.WorkspaceID,
+		ItemTypeID:            source.ItemTypeID,
+		ValidatingUserID:      opts.CreatorID,
+		Title:                 opts.NewTitle,
+		Description:           source.Description,
+		StatusID:              source.StatusID,
+		PriorityID:            source.PriorityID,
+		DueDate:               source.DueDate,
+		StartDate:             source.StartDate,
+		EndDate:               source.EndDate,
+		IsTask:                source.IsTask,
+		IterationID:           source.IterationID,
+		ProjectID:             source.ProjectID,
+		InheritProject:        source.InheritProject,
+		AssigneeID:            source.AssigneeID,
+		CreatorID:             &opts.CreatorID,
+		CustomFieldValuesJSON: customFieldValuesJSON,
+		ParentID:              parentID,
+		RelatedWorkItemID:     source.RelatedWorkItemID,
+		StoryPoints:           source.StoryPoints,
+		MilestoneIDs:          milestoneIDs,
+		SkipMandatoryTemplate: true,
+		SkipAssigneeTrigger:   true,
+		SkipPublish:           true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("copy item %d: %w", source.ID, err)
@@ -352,21 +381,27 @@ func (s *ItemCRUDService) Copy(itemID int, opts CopyOptions) (*CopyResult, error
 
 	// Live-update publish (WI-483): the copy committed. Announce the new item and
 	// refresh the destination parent's child list.
-	PublishItemChange(newID, ItemChangeCreated)
+	PublishItemChange(int(newID))
 	effectiveParent := opts.NewParentID
 	if effectiveParent == nil {
 		effectiveParent = source.ParentID
 	}
 	if effectiveParent != nil {
-		PublishItemChange(*effectiveParent, ItemChangeUpdated)
+		PublishItemChange(*effectiveParent)
 	}
 
-	return &CopyResult{NewItemID: newID, CopyCount: 1}, nil
+	return &CopyResult{NewItemID: int(newID), CopyCount: 1}, nil
 }
 
 // GetChildren returns direct children of an item
 func (s *ItemCRUDService) GetChildren(parentID int) ([]*models.Item, error) {
 	return s.repo.GetChildren(parentID)
+}
+
+// GetChildrenInWorkspacesContext returns direct children restricted to the
+// given accessible workspaces.
+func (s *ItemCRUDService) GetChildrenInWorkspacesContext(ctx context.Context, parentID int, workspaceIDs []int) ([]*models.Item, error) {
+	return s.repo.GetChildrenInWorkspacesContext(ctx, parentID, workspaceIDs)
 }
 
 // GetDescendants returns all descendants of an item

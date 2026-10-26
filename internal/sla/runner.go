@@ -89,6 +89,12 @@ func (e *Engine) runBreachJob(ctx context.Context, job models.SLAJob) error {
 			return e.completeCycle(ctx, tx, config, workspaceID, cycle, stoppedAt)
 		}
 		deadline := *job.DeadlineAt
+		// The breach event represents the promised deadline, so extend elapsed
+		// to it before recording and emitting; an untouched cycle would
+		// otherwise report zero elapsed time.
+		if err := e.advanceCycle(config, cycle, deadline); err != nil {
+			return err
+		}
 		if cycle.BreachedAt == nil || deadline.Before(*cycle.BreachedAt) {
 			cycle.BreachedAt = &deadline
 		}
@@ -164,6 +170,11 @@ func (e *Engine) runWarningJob(ctx context.Context, job models.SLAJob) error {
 			return e.retireClaimedJob(ctx, tx, job)
 		}
 		firedAt := e.clock.Now()
+		// Extend elapsed to the firing instant so the warning carries the
+		// current time rather than the last stored value.
+		if err := e.advanceCycle(nil, cycle, firedAt); err != nil {
+			return err
+		}
 		fired, err := e.repo.MarkThresholdFired(ctx, tx, cycle.ID, job.ThresholdKey, firedAt)
 		if err != nil {
 			return err

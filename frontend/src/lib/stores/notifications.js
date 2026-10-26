@@ -1,5 +1,5 @@
 import { get, writable } from 'svelte/store';
-import { api } from '../api.js';
+import { notifications as notificationsApi } from '../api/notifications.js';
 import { navigate } from '../router.js';
 import { toExternal } from '../runtime/contextPath.js';
 import { itemIdFromActionUrl } from '../utils/actionUrl.js';
@@ -11,7 +11,6 @@ import {
 import { formatDateSimple } from '../utils/dateFormatter.js';
 import { isTauri } from '../utils/isTauri.js';
 import { serverNow } from '../utils/serverClock.js';
-import { activityStore } from './activityStore.svelte.js';
 import { addToast } from './toasts.svelte.js';
 
 // Notification store
@@ -22,20 +21,24 @@ export const notifications = writable([]);
 // comments, and toasting every comment would be noisy.
 const TOASTABLE_TYPES = new Set(['mention', 'assignment']);
 
-const ACTIVE_POLL_MS = 30_000;
-const IDLE_POLL_MS = 5 * 60_000;
 const NOTIFICATION_PAGE_SIZE = 100;
 
 // Load notifications from API
 let loadPromise = null;
 let pollerGeneration = 0;
+// The poller opens the stream before requesting the first snapshot, so that
+// snapshot already covers everything up to the subscription. Track that
+// ordering so the first healthy connection does not reconcile a second time.
+let streamOpened = false;
+let initialLoadIssuedAfterStreamOpen = false;
+let streamEverConnected = false;
 
 async function loadNotificationPages(generation) {
   const allNotifications = [];
   let offset = 0;
 
   while (true) {
-    const page = await api.notifications.getAll({ limit: NOTIFICATION_PAGE_SIZE, offset });
+    const page = await notificationsApi.getAll({ limit: NOTIFICATION_PAGE_SIZE, offset });
     if (generation !== pollerGeneration) return [];
     if (!page || !Array.isArray(page)) {
       if (offset === 0) return [];
@@ -56,7 +59,7 @@ function loadNotifications() {
   // Keep component tests and optional consumers resilient when they provide a
   // partial API mock. Importing this module never starts authenticated work;
   // startNotificationPoller owns the first load after auth is established.
-  if (typeof api?.notifications?.getAll !== 'function') {
+  if (typeof notificationsApi?.getAll !== 'function') {
     notifications.set([]);
     return Promise.resolve([]);
   }
@@ -94,7 +97,7 @@ export const notificationActions = {
   // Mark notification as read
   markAsRead: async (id) => {
     try {
-      await api.notifications.markAsRead(id);
+      await notificationsApi.markAsRead(id);
       notifications.update((items) =>
         items.map((item) => (item.id === id ? { ...item, read: true } : item))
       );
@@ -111,7 +114,7 @@ export const notificationActions = {
   // Delete every notification from the server-backed inbox.
   clearAll: async () => {
     try {
-      await api.notifications.clearAll();
+      await notificationsApi.clearAll();
       // An older inbox request may have started before the delete. Let it
       // settle first so its response cannot restore deleted notifications.
       if (loadPromise) await loadPromise;
@@ -125,7 +128,7 @@ export const notificationActions = {
   // Mark all as read
   markAllAsRead: async () => {
     try {
-      await api.notifications.markAllAsRead();
+      await notificationsApi.markAllAsRead();
       notifications.update((items) =>
         items.map((item) => (item.read ? item : { ...item, read: true }))
       );
@@ -140,7 +143,7 @@ export const notificationActions = {
   // auto-timer so passive viewing doesn't silently snooze the email digest.
   markAllAsSeen: async () => {
     try {
-      await api.notifications.markAllAsSeen();
+      await notificationsApi.markAllAsSeen();
       const now = new Date().toISOString();
       notifications.update((items) =>
         items.map((item) => (item.seen_at ? item : { ...item, seen_at: now }))
@@ -160,7 +163,7 @@ export const notificationActions = {
 
     const itemIdString = String(itemId);
     try {
-      await api.notifications.markItemAsRead(itemId);
+      await notificationsApi.markItemAsRead(itemId);
       // If the initial inbox request was already in flight, let it settle before
       // applying the local patch so an older response cannot restore unread.
       if (loadPromise) await loadPromise;
@@ -188,7 +191,7 @@ export const notificationActions = {
         ...notification,
       };
 
-      const createdNotification = await api.notifications.create(newNotification);
+      const createdNotification = await notificationsApi.create(newNotification);
       // Convert response to match our format
       const processedNotification = {
         ...createdNotification,
@@ -269,7 +272,11 @@ function _toastFor(n) {
 }
 
 function _dispatchNew(items) {
-  for (const n of items) {
+  // Add oldest first: addToast prepends, so the newest notification must be
+  // added last to land on top of the stack. Iterating newest-first would bury
+  // the newest toast under the older ones (and past the visible stack).
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const n = items[i];
     if (n.read || _seenIds.has(n.id)) continue;
     _seenIds.add(n.id);
     _emitNew(n);
@@ -277,24 +284,12 @@ function _dispatchNew(items) {
   }
 }
 
-// --- Global poller ---
+// --- Global notification stream ---
 let _pollerStarted = false;
-let _pollTimer = null;
 let _stopReconnectListener = null;
-
-function _scheduleNextPoll() {
-  if (!_pollerStarted) return;
-  clearTimeout(_pollTimer);
-  // While the user-scoped stream is healthy it owns freshness (WI-1625); the
-  // poller resumes automatically if the stream errors or is unsupported.
-  if (_streamConnected) return;
-  const delay = activityStore.isIdle ? IDLE_POLL_MS : ACTIVE_POLL_MS;
-  _pollTimer = setTimeout(_tick, delay);
-}
 
 // --- User-scoped invalidation stream (WI-1625) ---
 let _eventSource = null;
-let _streamConnected = false;
 let _streamReconcileTimer = null;
 
 function _scheduleStreamReconcile() {
@@ -302,12 +297,24 @@ function _scheduleStreamReconcile() {
   _streamReconcileTimer = setTimeout(() => {
     _streamReconcileTimer = null;
     const generation = pollerGeneration;
-    loadNotifications()
-      .then(() => {
-        if (!_pollerStarted || generation !== pollerGeneration) return;
-        _dispatchNew(get(notifications));
-      })
-      .catch((err) => console.warn('notification stream: reconcile failed', err));
+    const reconcile = () => {
+      loadNotifications()
+        .then(() => {
+          if (!_pollerStarted || generation !== pollerGeneration) return;
+          _dispatchNew(get(notifications));
+        })
+        .catch((err) => console.warn('notification stream: reconcile failed', err));
+    };
+    // A change that arrives while the initial snapshot is in flight would
+    // otherwise share that stale snapshot and be dropped. Wait for it to seed
+    // the seen set, then fetch again so the new notification is surfaced.
+    if (!_seeded && loadPromise) {
+      loadPromise.finally(() => {
+        if (generation === pollerGeneration) reconcile();
+      });
+      return;
+    }
+    reconcile();
   }, 250);
 }
 
@@ -315,20 +322,18 @@ function _startNotificationStream() {
   if (typeof EventSource === 'undefined' || _eventSource) return;
   const source = new EventSource(toExternal('/api/notifications/events'));
   _eventSource = source;
+  streamOpened = true;
   const markConnected = () => {
-    _streamConnected = true;
-    clearTimeout(_pollTimer);
-    _pollTimer = null;
+    const firstConnection = !streamEverConnected;
+    streamEverConnected = true;
+    // The first snapshot was requested after this stream opened, so it already
+    // reflects every invalidation the stream would replay. Reconcile only on a
+    // reconnect (or when the snapshot predates the stream).
+    if (firstConnection && initialLoadIssuedAfterStreamOpen) return;
     _scheduleStreamReconcile();
   };
   source.addEventListener('connected', markConnected);
-  source.addEventListener('notifications', _scheduleStreamReconcile);
-  source.addEventListener('reload', _scheduleStreamReconcile);
-  // The browser auto-reconnects; until it does, drop to polling.
-  source.onerror = () => {
-    _streamConnected = false;
-    _scheduleNextPoll();
-  };
+  source.addEventListener('changed', _scheduleStreamReconcile);
 }
 
 function _stopNotificationStream() {
@@ -336,57 +341,30 @@ function _stopNotificationStream() {
     clearTimeout(_streamReconcileTimer);
     _streamReconcileTimer = null;
   }
-  _streamConnected = false;
   if (_eventSource) {
     _eventSource.close();
     _eventSource = null;
   }
 }
 
-async function _tick() {
-  if (!canRunBackgroundSync()) {
-    _scheduleNextPoll();
-    return;
-  }
-
-  const generation = pollerGeneration;
-  try {
-    await loadNotifications();
-    if (!_pollerStarted || generation !== pollerGeneration) return;
-    _dispatchNew(get(notifications));
-  } catch (err) {
-    console.warn('notification poller: tick failed', err);
-  } finally {
-    if (_pollerStarted && generation === pollerGeneration) _scheduleNextPoll();
-  }
-}
-
 function _loadInitialNotifications(generation) {
+  initialLoadIssuedAfterStreamOpen = streamOpened;
   loadNotifications().then(() => {
     if (!_pollerStarted || generation !== pollerGeneration) return;
     if (!_seeded) {
       for (const n of get(notifications)) _seenIds.add(n.id);
       _seeded = true;
     }
-    _scheduleNextPoll();
   });
 }
 
-function _resumeNotificationPolling() {
+function _resumeNotificationStream() {
   if (!_pollerStarted) return;
-  clearTimeout(_pollTimer);
-  _pollTimer = null;
-
-  if (!canRunBackgroundSync()) {
-    _scheduleNextPoll();
-    return;
-  }
-
   if (!_seeded) {
     _loadInitialNotifications(pollerGeneration);
     return;
   }
-  void _tick();
+  _scheduleStreamReconcile();
 }
 
 /**
@@ -400,15 +378,14 @@ export function startNotificationPoller() {
   const generation = ++pollerGeneration;
 
   _stopReconnectListener = onBackgroundSyncAvailable(() => {
-    _resumeNotificationPolling();
+    _resumeNotificationStream();
   });
 
   _startNotificationStream();
 
-  if (!canRunBackgroundSync()) {
-    _scheduleNextPoll();
-    return;
-  }
+  // Defer the first snapshot while the tab is hidden or offline; the background
+  // sync listener loads it when the tab returns.
+  if (!canRunBackgroundSync()) return;
   _loadInitialNotifications(generation);
 }
 
@@ -416,12 +393,13 @@ export function startNotificationPoller() {
 export function stopNotificationPoller() {
   _pollerStarted = false;
   pollerGeneration += 1;
-  clearTimeout(_pollTimer);
-  _pollTimer = null;
   _stopNotificationStream();
   _stopReconnectListener?.();
   _stopReconnectListener = null;
   loadPromise = null;
+  streamOpened = false;
+  initialLoadIssuedAfterStreamOpen = false;
+  streamEverConnected = false;
   _seeded = false;
   _seenIds.clear();
   notifications.set([]);

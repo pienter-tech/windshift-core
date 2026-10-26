@@ -1,6 +1,6 @@
 import { milestoneWorkspaceId } from './milestoneScope.js';
 
-// Edit form of the milestone detail page (WCORE-34). Name, description,
+// Edit form of the milestone detail page. Name, description,
 // target date, and status come from the progress report the page shows;
 // category and scope come from the milestone record (`GET /milestones/{id}`),
 // because the progress report carries neither. The PATCH is a merge-patch, so

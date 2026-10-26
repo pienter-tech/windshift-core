@@ -23,10 +23,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const LOCALES_DIR = join(__dirname, '..', 'src', 'lib', 'locales');
 const SRC_DIR = join(__dirname, '..', 'src');
 const REFERENCE_LOCALE = 'en';
-// Russian is shipped as a fully reviewed locale and must never silently fall
-// back to English. Older locales may remain partially translated while still
-// using the application's documented English runtime fallback.
-const REQUIRED_FULL_COVERAGE_LOCALES = new Set(['ru']);
+// Russian, German, French, and Simplified Chinese are shipped as fully reviewed
+// locales and must never silently fall back to English. Older locales may remain
+// partially translated while still using the application's documented English
+// runtime fallback.
+const REQUIRED_FULL_COVERAGE_LOCALES = new Set(['ru', 'de', 'fr', 'zh-CN']);
 const PLURAL_SUFFIX_PATTERN = /_(zero|one|two|few|many|other)$/;
 
 // These values intentionally retain product names, code syntax, URLs, or sample identifiers.
@@ -42,6 +43,8 @@ const INTENTIONAL_CARRYOVERS = new Set([
   'portal.qlQueryFormPlaceholder',
   'portal.qlQueryPlaceholder',
   'settings.sso.title',
+  // Placeholder-only format string; there is no translatable text.
+  'zammad.overview.statusWithConnection',
   'workspaces.customers.placeholders.phone',
 ]);
 const ENGLISH_FUNCTION_WORDS = new Set([

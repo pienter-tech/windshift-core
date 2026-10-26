@@ -8,19 +8,34 @@ import (
 	"windshift/internal/markdown"
 	"windshift/internal/models"
 	"windshift/internal/services"
+	"windshift/internal/validation"
 )
 
-// registerMilestoneCommentRoutes publishes Markdown comments on milestones
-// (WCORE-20). The same routes serve global and workspace-local milestones:
-// anyone who can view the milestone reads and adds comments, and authors
-// edit and delete their own. Milestone comments send no notifications.
+// registerMilestoneCommentRoutes publishes Markdown comments on milestones.
+// The same routes serve global and workspace-local milestones. Viewers read
+// comments; local milestones apply their workspace's item comment
+// permissions (see MilestoneCommentService). Milestone comments send no
+// notifications.
 func registerMilestoneCommentRoutes(builder *routeBuilder, deps Deps) {
 	const comments = "/milestones/{milestone_id}/comments"
 	const comment = comments + "/{comment_id}"
-	builder.Page(comments, AuthAuthenticated, []string{"milestones:read"}, listMilestoneComments(deps.MilestoneComments))
+	builder.Read(comments, AuthAuthenticated, []string{"milestones:read"}, listMilestoneComments(deps.MilestoneComments))
 	builder.JSON(http.MethodPost, comments, http.StatusCreated, false, AuthAuthenticated, []string{"milestones:write"}, createMilestoneComment(deps.MilestoneComments))
 	builder.JSON(http.MethodPatch, comment, http.StatusOK, true, AuthAuthenticated, []string{"milestones:write"}, updateMilestoneComment(deps.MilestoneComments))
 	builder.Command(http.MethodDelete, comment, AuthAuthenticated, []string{"milestones:delete"}, deleteMilestoneComment(deps.MilestoneComments))
+}
+
+// milestoneCommentCursorKind binds cursors to the milestone comment feed.
+const milestoneCommentCursorKind = "milestone_comments"
+
+// milestoneCommentFeedDTO pages like the item comment feed (commentFeedDTO):
+// newest first, opaque cursors, and a total on the first page only.
+type milestoneCommentFeedDTO struct {
+	Comments      []models.MilestoneComment `json:"comments"`
+	NextCursor    string                    `json:"next_cursor,omitempty"`
+	RefreshCursor string                    `json:"refresh_cursor,omitempty"`
+	HasMore       bool                      `json:"has_more"`
+	Total         *int                      `json:"total"`
 }
 
 type milestoneCommentCreateRequest struct {
@@ -31,28 +46,40 @@ type milestoneCommentPatchRequest struct {
 	Content Optional[string] `json:"content"`
 }
 
-func listMilestoneComments(comments milestoneCommentApplication) pageOperation[models.MilestoneComment] {
-	return func(r *http.Request) ([]models.MilestoneComment, Pagination, int, error) {
+func listMilestoneComments(comments milestoneCommentApplication) readOperation[milestoneCommentFeedDTO] {
+	return func(r *http.Request) (milestoneCommentFeedDTO, error) {
 		user, milestoneID, err := planningTarget(r, "milestone_id")
 		if err != nil {
-			return nil, Pagination{}, 0, err
+			return milestoneCommentFeedDTO{}, err
 		}
-		page, err := ParsePagination(r, map[string]bool{"created_at": true}, "created_at")
+		options, err := parseCommentFeedOptions(r, milestoneCommentCursorKind)
 		if err != nil {
-			return nil, Pagination{}, 0, err
+			return milestoneCommentFeedDTO{}, err
 		}
-		rows, total, err := comments.List(user.ID, milestoneID, services.MilestoneCommentListParams{
-			Limit: page.PageSize, Offset: page.Offset, Desc: page.Desc,
-		})
+		page, err := comments.GetFeed(user.ID, milestoneID, options)
 		if err != nil {
-			return nil, page, 0, milestoneCommentError(err)
+			return milestoneCommentFeedDTO{}, milestoneCommentError(err)
 		}
-		for i := range rows {
-			if err := renderMilestoneCommentHTML(&rows[i]); err != nil {
-				return nil, page, 0, internalError(err)
+		positions := make([]services.CommentFeedCursor, len(page.Comments))
+		for i := range page.Comments {
+			if err := renderMilestoneCommentHTML(&page.Comments[i]); err != nil {
+				return milestoneCommentFeedDTO{}, internalError(err)
 			}
+			positions[i] = services.CommentFeedCursor{CreatedAt: page.Comments[i].CreatedAt, ID: page.Comments[i].ID}
 		}
-		return rows, page, total, nil
+		var total *int
+		if options.Before == nil && options.Since == nil {
+			count, err := comments.CountFeed(milestoneID)
+			if err != nil {
+				return milestoneCommentFeedDTO{}, internalError(err)
+			}
+			total = &count
+		}
+		nextCursor, refreshCursor := commentFeedCursors(milestoneCommentCursorKind, positions, options, page.HasMore)
+		return milestoneCommentFeedDTO{
+			Comments: page.Comments, NextCursor: nextCursor, RefreshCursor: refreshCursor,
+			HasMore: page.HasMore, Total: total,
+		}, nil
 	}
 }
 
@@ -124,12 +151,13 @@ func renderMilestoneCommentHTML(comment *models.MilestoneComment) error {
 	return nil
 }
 
-// milestoneCommentError maps service errors. Unreadable milestones and
-// comments on other milestones read as not found (planningError); editing
-// someone else's comment is forbidden.
+// milestoneCommentError maps service errors. Invalid Markdown is a bad
+// request, like item comments. Missing permissions and comments on other
+// milestones read as not found (planningError).
 func milestoneCommentError(err error) error {
-	if errors.Is(err, services.ErrMilestoneCommentNotAuthor) {
-		return newError(http.StatusForbidden, "insufficient_permission", "Only the author can change this comment")
+	var invalid *validation.ValidationError
+	if errors.As(err, &invalid) {
+		return newError(http.StatusBadRequest, "invalid_request", invalid.Message)
 	}
 	return planningError(err)
 }

@@ -21,6 +21,7 @@ import (
 	"windshift/internal/models"
 	"windshift/internal/repository"
 	"windshift/internal/sso"
+	"windshift/internal/utils"
 
 	"uuid"
 )
@@ -204,8 +205,20 @@ func (h *IntegrationOAuthHandler) OAuthCallback(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// Delete used state
+	// Consume the state before any further checks so a rejected callback cannot
+	// be replayed.
 	_, _ = h.db.ExecWrite("DELETE FROM integration_oauth_state WHERE state = ?", state)
+
+	// Bind the flow to the initiating account. The state row records who started
+	// it; the browser completing the redirect must be signed in as that same
+	// user, otherwise a forwarded authorization URL would attach the victim's
+	// provider credentials to the attacker's Windshift identity.
+	currentUser := utils.GetCurrentUser(r)
+	if currentUser == nil || fmt.Sprintf("%d", currentUser.ID) != userID {
+		slog.Warn("integration OAuth state/account mismatch", slog.String("component", "integrations"))
+		h.redirectWithError(w, r, "Sign in to the account that started this connection and try again")
+		return
+	}
 
 	// Get provider details
 	var providerType models.IntegrationProviderType

@@ -10,6 +10,7 @@ import (
 
 	"windshift/internal/database"
 	"windshift/internal/itemevents"
+	"windshift/internal/logger"
 	"windshift/internal/models"
 	"windshift/internal/repository"
 	"windshift/internal/validation"
@@ -309,8 +310,33 @@ func (s *ItemLifecycleService) Merge(ctx context.Context, input ItemMergeInput) 
 				if _, err := tx.Exec(`UPDATE email_message_tracking SET item_id = ? WHERE item_id = ?`, target.ID, plan.item.ID); err != nil {
 					return fmt.Errorf("re-point email threads from item %d: %w", plan.item.ID, err)
 				}
+				// Intake receipts are one per item
+				// (uq_email_reply_outbox_confirmation), so the canonical's own
+				// receipt wins and the duplicate's extra one is dropped before
+				// the move. Everything that remains then lives on the canonical,
+				// so mail delivered after the merge tracks back to it.
+				if _, err := tx.Exec(`
+					DELETE FROM email_reply_outbox
+					WHERE item_id = ? AND kind = 'intake_confirmation'
+					  AND EXISTS (SELECT 1 FROM email_reply_outbox WHERE item_id = ? AND kind = 'intake_confirmation')
+				`, plan.item.ID, target.ID); err != nil {
+					return fmt.Errorf("drop duplicate intake receipt for item %d: %w", plan.item.ID, err)
+				}
 				if _, err := tx.Exec(`UPDATE email_reply_outbox SET item_id = ? WHERE item_id = ?`, target.ID, plan.item.ID); err != nil {
 					return fmt.Errorf("re-point pending replies from item %d: %w", plan.item.ID, err)
+				}
+				// External participants follow the content too, or a source-only
+				// participant loses canonical portal access and reply notifications.
+				// Dedupe first: the unique (item_id, portal_customer_id) index
+				// would otherwise reject a customer on both tickets.
+				if _, err := tx.Exec(`
+					DELETE FROM item_participants
+					WHERE item_id = ? AND portal_customer_id IN (SELECT portal_customer_id FROM item_participants WHERE item_id = ?)
+				`, plan.item.ID, target.ID); err != nil {
+					return fmt.Errorf("deduplicate participants for item %d: %w", plan.item.ID, err)
+				}
+				if _, err := tx.Exec(`UPDATE item_participants SET item_id = ? WHERE item_id = ?`, target.ID, plan.item.ID); err != nil {
+					return fmt.Errorf("move participants from item %d: %w", plan.item.ID, err)
 				}
 			}
 
@@ -332,6 +358,15 @@ func (s *ItemLifecycleService) Merge(ctx context.Context, input ItemMergeInput) 
 				ItemID: plan.item.ID, UserID: input.ActorUserID,
 				FieldName: "merged_into_item_id", OldValueNull: true,
 				NewValue: fmt.Sprintf("%d", target.ID), ChangedAt: now,
+			}); err != nil {
+				return err
+			}
+			// The canonical records its half of the fold so its own history
+			// explains where the duplicate's content came from.
+			if err := s.items.RecordHistory(tx, repository.HistoryEntry{
+				ItemID: target.ID, UserID: input.ActorUserID,
+				FieldName: "merged_item_id", OldValueNull: true,
+				NewValue: fmt.Sprintf("%d", plan.item.ID), ChangedAt: now,
 			}); err != nil {
 				return err
 			}
@@ -384,17 +419,24 @@ func (s *ItemLifecycleService) Merge(ctx context.Context, input ItemMergeInput) 
 			s.emitter.EmitItemUpdated(source, source, false, false, input.ActorUserID, nil, input.ActorUsername)
 		}
 	}
+	emitServiceAudit(s.db, AuditActor{UserID: input.ActorUserID, Username: input.ActorUsername},
+		logger.ActionItemMerge, logger.ResourceItem, &input.TargetItemID, target.Title, map[string]any{
+			"source_item_ids": input.SourceItemIDs,
+			"sources":         len(result.Sources),
+		})
 	return result, nil
 }
 
 // ItemSplitInput carves a subticket out of a source ticket with explicit
-// customer/agent ownership.
+// customer/agent ownership. ItemTypeID is optional: when nil the child type
+// is derived from the source type's hierarchy.
 type ItemSplitInput struct {
 	ActorUserID      int
 	ActorUsername    string
 	SourceItemID     int
 	Title            string
 	Description      string
+	ItemTypeID       *int
 	CommentIDs       []int
 	AttachmentIDs    []int
 	AssigneeID       *int
@@ -408,6 +450,86 @@ type ItemSplitResult struct {
 	SplitItemID      int          `json:"split_item_id"`
 	MovedComments    int          `json:"moved_comments"`
 	MovedAttachments int          `json:"moved_attachments"`
+}
+
+// resolveSplitChildType picks the item type for a split child. An explicit
+// request is honored only when it is a legal child of the source type — the
+// next hierarchy level down or the generic sub-task sentinel. When the caller
+// omits a type, the first next-level type in catalog order is used, falling
+// back to the generic sub-task. Copying the source type is deliberately not a
+// fallback: a regular type may not parent its own level, so an Initiative's
+// subticket is an Epic, never another Initiative.
+func resolveSplitChildType(db database.Database, source *models.Item, requested *int) (*int, error) {
+	if source.ItemTypeID == nil {
+		return nil, &validation.ValidationError{Field: "item_type_id", Message: "Source item has no item type"}
+	}
+	// The source type may predate the workspace's config-set binding (for
+	// example the global default), so resolve the hierarchy from the full
+	// catalog and only constrain the child candidates to workspace-allowed
+	// types.
+	types, err := repository.NewItemTypeRepository(db).List(nil)
+	if err != nil {
+		return nil, fmt.Errorf("resolve split child type: %w", err)
+	}
+
+	findType := func(id int) *models.ItemType {
+		for i := range types {
+			if types[i].ID == id {
+				return &types[i]
+			}
+		}
+		return nil
+	}
+
+	sourceType := findType(*source.ItemTypeID)
+	if sourceType == nil {
+		return nil, &validation.ValidationError{Field: "item_type_id", Message: "Source item type was not found"}
+	}
+	if sourceType.HierarchyLevel == models.HierarchyLevelGenericSubtask {
+		return nil, &validation.ValidationError{Field: "item_type_id", Message: "Generic sub-tasks are terminal and cannot have child items"}
+	}
+
+	allowed := func(id int) bool {
+		ok, err := IsItemTypeAllowedInWorkspace(db, source.WorkspaceID, id)
+		return err == nil && ok
+	}
+
+	var nextLevel, generic *int
+	for i := range types {
+		switch types[i].HierarchyLevel {
+		case sourceType.HierarchyLevel + 1:
+			if nextLevel == nil && allowed(types[i].ID) {
+				nextLevel = &types[i].ID
+			}
+		case models.HierarchyLevelGenericSubtask:
+			if generic == nil && allowed(types[i].ID) {
+				generic = &types[i].ID
+			}
+		}
+	}
+
+	if requested != nil {
+		requestedType := findType(*requested)
+		if requestedType == nil {
+			return nil, &validation.ValidationError{Field: "item_type_id", Message: "Item type was not found"}
+		}
+		legal := requestedType.HierarchyLevel == sourceType.HierarchyLevel+1 ||
+			requestedType.HierarchyLevel == models.HierarchyLevelGenericSubtask
+		if !legal {
+			return nil, &validation.ValidationError{Field: "item_type_id", Message: "Item type is not a valid child of the source item type"}
+		}
+		if !allowed(*requested) {
+			return nil, &validation.ValidationError{Field: "item_type_id", Message: "Item type is not allowed in this workspace"}
+		}
+		return requested, nil
+	}
+	if nextLevel != nil {
+		return nextLevel, nil
+	}
+	if generic != nil {
+		return generic, nil
+	}
+	return nil, &validation.ValidationError{Field: "item_type_id", Message: "No child item type is available for this item type"}
 }
 
 // Split creates a child ticket of the source and moves exactly the selected
@@ -427,92 +549,76 @@ func (s *ItemLifecycleService) Split(ctx context.Context, input ItemSplitInput) 
 	if len(input.CommentIDs) == 0 && len(input.AttachmentIDs) == 0 {
 		return nil, &validation.ValidationError{Field: "comment_ids", Message: "Select at least one comment or attachment to split out"}
 	}
+	childTypeID, err := resolveSplitChildType(s.db, source, input.ItemTypeID)
+	if err != nil {
+		return nil, err
+	}
 
 	// The moved counts are reported after commit, so they live outside the
-	// transaction closure.
+	// AfterCreate hook. The child goes through the shared creation API; the
+	// moves and the split fact commit with it in the same transaction.
 	var movedComments, movedAttachments int64
-	childID, err := repository.WithItemCreateTransaction(ctx, s.db, func(tx database.Tx) (int, error) {
-		creation, err := prepareItemCreation(ctx, s.db, ItemCreationParams{
-			WorkspaceID:             source.WorkspaceID,
-			Title:                   strings.TrimSpace(input.Title),
-			Description:             input.Description,
-			ItemTypeID:              source.ItemTypeID,
-			ParentID:                &source.ID,
-			AssigneeID:              input.AssigneeID,
-			CreatorID:               &input.ActorUserID,
-			CreatorPortalCustomerID: input.PortalCustomerID,
-			ChannelID:               source.ChannelID,
-		})
-		if err != nil {
-			return 0, err
-		}
-
-		fracIndex, err := repository.GenerateFracIndexForNewItem(tx, s.db.GetDriverName())
-		if err != nil {
-			return 0, fmt.Errorf("generate frac_index for split: %w", err)
-		}
-		itemNumber, err := s.items.GetNextWorkspaceItemNumber(tx, source.WorkspaceID)
-		if err != nil {
-			return 0, fmt.Errorf("generate workspace item number for split: %w", err)
-		}
-		newChildID, err := creation.insertRow(tx, itemNumber, fracIndex)
-		if err != nil {
-			return 0, fmt.Errorf("insert split item: %w", err)
-		}
-		if err := creation.extendTransaction(tx, newChildID); err != nil {
-			return 0, fmt.Errorf("extend split item: %w", err)
-		}
-		if err := creation.recordCreation(tx, newChildID, itemNumber); err != nil {
-			return 0, fmt.Errorf("record split item creation: %w", err)
-		}
-
-		if len(input.CommentIDs) > 0 {
-			var moved int64
-			moved, err = s.comments.MoveCommentsByID(tx, int64(source.ID), int64(newChildID), int64s(input.CommentIDs))
-			movedComments = moved
-			if err != nil {
-				return 0, fmt.Errorf("move comments to split item: %w", err)
+	childID64, err := CreateItem(s.db, ItemCreationParams{
+		WorkspaceID:             source.WorkspaceID,
+		Title:                   strings.TrimSpace(input.Title),
+		Description:             input.Description,
+		ItemTypeID:              childTypeID,
+		ParentID:                &source.ID,
+		AssigneeID:              input.AssigneeID,
+		CreatorID:               &input.ActorUserID,
+		CreatorPortalCustomerID: input.PortalCustomerID,
+		ChannelID:               source.ChannelID,
+		SkipAssigneeTrigger:     true,
+		SkipPublish:             true,
+		EventMetadata:           itemEventMetadata(input.ActorUserID, "application", nil),
+		AfterCreate: func(ctx context.Context, tx database.Tx, newChildID int) error {
+			if len(input.CommentIDs) > 0 {
+				var moved int64
+				moved, err = s.comments.MoveCommentsByID(tx, int64(source.ID), int64(newChildID), int64s(input.CommentIDs))
+				movedComments = moved
+				if err != nil {
+					return fmt.Errorf("move comments to split item: %w", err)
+				}
+				if int(movedComments) != len(input.CommentIDs) {
+					return &validation.ValidationError{Field: "comment_ids", Message: "One or more comments do not belong to this item"}
+				}
 			}
-			if int(movedComments) != len(input.CommentIDs) {
-				return 0, &validation.ValidationError{Field: "comment_ids", Message: "One or more comments do not belong to this item"}
+			if len(input.AttachmentIDs) > 0 {
+				query := fmt.Sprintf(`
+					UPDATE attachments SET item_id = ? WHERE item_id = ? AND COALESCE(entity_type, 'item') = 'item' AND id IN (%s)
+				`, placeholderList(input.AttachmentIDs))
+				args := append([]any{newChildID, source.ID}, intSliceToAny(input.AttachmentIDs)...)
+				res, err := tx.Exec(query, args...)
+				if err != nil {
+					return fmt.Errorf("move attachments to split item: %w", err)
+				}
+				movedAttachments, _ = res.RowsAffected()
+				if int(movedAttachments) != len(input.AttachmentIDs) {
+					return &validation.ValidationError{Field: "attachment_ids", Message: "One or more attachments do not belong to this item"}
+				}
 			}
-		}
-		if len(input.AttachmentIDs) > 0 {
-			query := fmt.Sprintf(`
-				UPDATE attachments SET item_id = ? WHERE item_id = ? AND COALESCE(entity_type, 'item') = 'item' AND id IN (%s)
-			`, placeholderList(input.AttachmentIDs))
-			args := append([]any{newChildID, source.ID}, intSliceToAny(input.AttachmentIDs)...)
-			res, err := tx.Exec(query, args...)
-			if err != nil {
-				return 0, fmt.Errorf("move attachments to split item: %w", err)
-			}
-			movedAttachments, _ = res.RowsAffected()
-			if int(movedAttachments) != len(input.AttachmentIDs) {
-				return 0, &validation.ValidationError{Field: "attachment_ids", Message: "One or more attachments do not belong to this item"}
-			}
-		}
 
-		now := time.Now().UTC()
-		if err := s.items.RecordHistory(tx, repository.HistoryEntry{
-			ItemID: source.ID, UserID: input.ActorUserID,
-			FieldName: "split_item_id", OldValueNull: true,
-			NewValue: fmt.Sprintf("%d", newChildID), ChangedAt: now,
-		}); err != nil {
-			return 0, err
-		}
+			now := time.Now().UTC()
+			if err := s.items.RecordHistory(tx, repository.HistoryEntry{
+				ItemID: source.ID, UserID: input.ActorUserID,
+				FieldName: "split_item_id", OldValueNull: true,
+				NewValue: fmt.Sprintf("%d", newChildID), ChangedAt: now,
+			}); err != nil {
+				return err
+			}
 
-		if _, err := itemevents.NewRecorder(s.db).Split(ctx, tx, source.WorkspaceID, itemevents.SplitV1{
-			SourceItemID: source.ID, SplitItemID: newChildID,
-			MovedComments: int(movedComments), MovedAttachments: int(movedAttachments),
-			AssigneeID: input.AssigneeID, PortalCustomerID: input.PortalCustomerID,
-		}, itemevents.User(input.ActorUserID, "application")); err != nil {
-			return 0, err
-		}
-		return newChildID, nil
+			_, err := itemevents.NewRecorder(s.db).Split(ctx, tx, source.WorkspaceID, itemevents.SplitV1{
+				SourceItemID: source.ID, SplitItemID: newChildID,
+				MovedComments: int(movedComments), MovedAttachments: int(movedAttachments),
+				AssigneeID: input.AssigneeID, PortalCustomerID: input.PortalCustomerID,
+			}, itemevents.User(input.ActorUserID, "application"))
+			return err
+		},
 	})
 	if err != nil {
 		return nil, err
 	}
+	childID := int(childID64)
 
 	child, err := s.items.FindByID(childID)
 	if err != nil {
@@ -523,14 +629,22 @@ func (s *ItemLifecycleService) Split(ctx context.Context, input ItemSplitInput) 
 		return nil, err
 	}
 
-	PublishItemChange(childID, ItemChangeCreated)
-	PublishItemChange(source.ID, ItemChangeUpdated)
-	PublishWorkspaceChange(source.WorkspaceID, WorkspaceChangeItems)
+	PublishItemChange(childID)
+	PublishItemChange(source.ID)
+	PublishWorkspaceChange(source.WorkspaceID)
 	repository.InvalidateItemListCountCache(s.db, source.WorkspaceID)
 	if s.emitter != nil {
 		s.emitter.EmitItemCreated(child, input.ActorUserID, input.ActorUsername)
 		s.emitter.EmitItemUpdated(source, source, false, false, input.ActorUserID, nil, input.ActorUsername)
 	}
+
+	splitID := childID
+	emitServiceAudit(s.db, AuditActor{UserID: input.ActorUserID, Username: input.ActorUsername},
+		logger.ActionItemSplit, logger.ResourceItem, &splitID, input.Title, map[string]any{
+			"source_item_id":    input.SourceItemID,
+			"moved_comments":    movedComments,
+			"moved_attachments": movedAttachments,
+		})
 
 	return &ItemSplitResult{
 		Source: source, Split: child, SplitItemID: childID,
@@ -631,9 +745,9 @@ func (s *ItemLifecycleService) sourceItemLinks(tx database.Tx, itemID int) ([]so
 
 func (s *ItemLifecycleService) invalidateAfterMutation(workspaceID int, itemIDs []int) {
 	repository.InvalidateItemListCountCache(s.db, workspaceID)
-	PublishWorkspaceChange(workspaceID, WorkspaceChangeItems)
+	PublishWorkspaceChange(workspaceID)
 	for _, id := range itemIDs {
-		PublishItemChange(id, ItemChangeUpdated)
+		PublishItemChange(id)
 	}
 }
 

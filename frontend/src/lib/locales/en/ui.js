@@ -240,6 +240,7 @@ export default {
     numberedList: 'Numbered List',
     insertImage: 'Insert Image',
     userNotFound: 'User not found',
+    multipleUsersMatch: 'Multiple users match',
     insertDiagram: 'Insert diagram',
     insertPageLink: 'Insert knowledge page link',
     searchPagesToLink: 'Search pages…',
@@ -440,7 +441,7 @@ export default {
     widthTwoThirds: 'Two-thirds',
     widthFull: 'Full',
     resizeAriaLabel: 'Resize widget',
-    resizeColumnsValue: '{count} of 12 columns',
+    resizeColumnsValue: '{count} of {total} columns',
     rowCount: 'Row count',
     density: 'Density',
     densityComfortable: 'Comfortable',
@@ -455,6 +456,7 @@ export default {
     chart: {
       items: 'items',
       noDataAvailable: 'No data available',
+      otherSlices: 'Other ({count} more)',
     },
     completionChart: {
       title: 'Completion Chart',

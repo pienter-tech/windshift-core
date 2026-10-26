@@ -1,8 +1,10 @@
 <script>
   import Button from '../components/Button.svelte';
+  import DelayedMount from '../components/DelayedMount.svelte';
   import Spinner from '../components/Spinner.svelte';
   import PermissionGuard from '../layout/PermissionGuard.svelte';
-  import { authStore, workspacesStore } from '../stores';
+  import { authStore } from '../stores/auth.svelte.js';
+  import { workspacesStore } from '../stores/workspaces.svelte.js';
   import { t } from '../stores/i18n.svelte.js';
   import { moduleSettings } from '../stores/moduleSettings.js';
   import UnauthorizedAccess from './UnauthorizedAccess.svelte';
@@ -30,12 +32,14 @@
 </script>
 
 {#snippet loadingState(message)}
-  <div class="flex items-center justify-center h-full">
-    <div class="text-center">
-      <Spinner class="mx-auto mb-4" />
-      <p class="text-ds-text-subtle">{message}</p>
+  <DelayedMount>
+    <div class="flex items-center justify-center h-full" data-testid="root-view-loading">
+      <div class="text-center">
+        <Spinner class="mx-auto mb-4" />
+        <p class="text-ds-text-subtle">{message}</p>
+      </div>
     </div>
-  </div>
+  </DelayedMount>
 {/snippet}
 
 {#snippet errorState(message, retryFn)}
@@ -80,6 +84,9 @@
       />
     {/snippet}
   </PermissionGuard>
+{:else if view === 'delegated-admin'}
+  <!-- The shell owns its own full-height layout and per-surface guards. -->
+  {@render lazyLoadedComponent(view, routeProps)}
 {:else if view === 'workspace-actions'}
   <div class="h-full" style="background-color: var(--ds-surface); height: calc(100vh - 56px);">
     {@render lazyLoadedComponent(view, routeProps)}

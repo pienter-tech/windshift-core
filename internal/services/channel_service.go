@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"uuid"
@@ -254,6 +255,16 @@ func (s *ChannelService) Create(ctx context.Context, req ChannelCreateRequest) (
 	}
 
 	channel.ID = id
+	// Portal channels get their system Email request type up front so admins can
+	// see and edit its item type before the first email arrives. Best-effort: a
+	// portal without served workspaces is provisioned on a later config save, and
+	// email intake heals a missing row lazily.
+	if req.Type == "portal" {
+		if _, err := EnsureEmailRequestType(s.db, id, 0, nil); err != nil {
+			slog.Warn("failed to provision portal email request type",
+				"channel_id", id, "error", err)
+		}
+	}
 	// Scrub sensitive data before returning
 	channel.Config = repository.ScrubChannelConfig(channel.Config)
 	return channel, nil

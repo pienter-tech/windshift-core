@@ -1,5 +1,18 @@
 <script>
-  import { IconUsers as Users, IconMail as Mail, IconSearch as Search, IconGripVertical as GripVertical, IconPlus as Plus, IconEdit as Edit2, IconTrash as Trash2, IconDots as MoreHorizontal, IconFile as FileIcon, IconTicket as Ticket, IconFileText as FileText, IconNote as StickyNote, IconExternalLink as ExternalLink, IconShare as Share } from '@tabler/icons-svelte-runes';
+  import Users from '@tabler/icons-svelte-runes/icons/users';
+  import Mail from '@tabler/icons-svelte-runes/icons/mail';
+  import Search from '@tabler/icons-svelte-runes/icons/search';
+  import GripVertical from '@tabler/icons-svelte-runes/icons/grip-vertical';
+  import Plus from '@tabler/icons-svelte-runes/icons/plus';
+  import Edit2 from '@tabler/icons-svelte-runes/icons/edit';
+  import Trash2 from '@tabler/icons-svelte-runes/icons/trash';
+  import MoreHorizontal from '@tabler/icons-svelte-runes/icons/dots';
+  import FileIcon from '@tabler/icons-svelte-runes/icons/file';
+  import Ticket from '@tabler/icons-svelte-runes/icons/ticket';
+  import FileText from '@tabler/icons-svelte-runes/icons/file-text';
+  import StickyNote from '@tabler/icons-svelte-runes/icons/note';
+  import ExternalLink from '@tabler/icons-svelte-runes/icons/external-link';
+  import Share from '@tabler/icons-svelte-runes/icons/share';
   import { toHotkeyString } from '../utils/keyboardShortcuts.js';
   import Button from '../components/Button.svelte';
   import Input from '../components/Input.svelte';
@@ -12,12 +25,13 @@
   import Spinner from '../components/Spinner.svelte';
   import Lozenge from '../components/Lozenge.svelte';
   import DataTable from '../components/DataTable.svelte';
+  import ItemKey from '../components/ItemKey.svelte';
   import Select from '../components/Select.svelte';
   import Label from '../components/Label.svelte';
   import Checkbox from '../components/Checkbox.svelte';
   import { errorToast, successToast } from '../stores/toasts.svelte.js';
   import { t } from '../stores/i18n.svelte.js';
-  import { api } from '../api.js';
+  import { contactRoles as contactRolesApi, customerOrganisations } from '../api/portal.js';
   import { logbook } from '../api/logbook.js';
   import { capabilitiesStore } from '../stores/capabilities.svelte.js';
   import { formatDateShort } from '../utils/dateFormatter.js';
@@ -37,6 +51,7 @@
     hasMoreCustomers = false,
     onLoadMore = () => {},
     buildCustomerActions = () => [],
+    onOrganisationUpdated = () => {},
   } = $props();
 
   let activeTab = $state('contacts');
@@ -78,7 +93,7 @@
   $effect(() => {
     if (activeTab !== 'sharing' || contactRolesLoaded) return;
     contactRolesLoaded = true;
-    api.contactRoles
+    contactRolesApi
       .getAll()
       .then((roles) => {
         contactRoles = Array.isArray(roles) ? roles : (roles?.data ?? []);
@@ -112,10 +127,18 @@
     sharingSaving = true;
     sharingSaved = false;
     try {
-      await api.customerOrganisations.setRequestSharing(organisation.id, {
+      await customerOrganisations.setRequestSharing(organisation.id, {
         request_sharing: sharingMode,
         request_sharing_audience: sharingAudience,
         visible_role_ids: sharingAudience === 'roles' ? sharingRoleIDs : [],
+      });
+      // Persist the saved values back into the organisation record so a revisit
+      // does not re-hydrate the form from stale settings.
+      onOrganisationUpdated(organisation.id, {
+        ...(organisation.settings || {}),
+        request_sharing: sharingMode,
+        request_sharing_audience: sharingAudience,
+        request_visible_role_ids: sharingAudience === 'roles' ? [...sharingRoleIDs] : [],
       });
       sharingSaved = true;
       successToast(t('workspaces.customers.sharingSaved') || 'Request sharing updated');
@@ -130,51 +153,64 @@
   let orgDocuments = $state([]);
   let orgDocsLoading = $state(false);
   let orgDocsLoaded = $state(false);
+  // Plain (non-reactive) guards so a late response for a previous organisation
+  // cannot populate the current one.
+  let orgDocsOrgID = null;
 
   // Tickets tab state
   let orgTickets = $state([]);
   let orgTicketsLoading = $state(false);
   let orgTicketsLoaded = $state(false);
+  let orgTicketsOrgID = null;
 
   $effect(() => {
-    if (activeTab === 'files' && organisation?.id) {
-      const orgId = organisation.id;
-      orgDocsLoading = true;
-      orgDocsLoaded = false;
-      logbook.listDocumentsByOrganisation(orgId)
-        .then((result) => {
-          orgDocuments = result?.data ?? result ?? [];
-          if (!Array.isArray(orgDocuments)) orgDocuments = [];
-        })
-        .catch((err) => {
-          console.error('Failed to load organisation documents:', err);
-          orgDocuments = [];
-        })
-        .finally(() => {
-          orgDocsLoading = false;
-          orgDocsLoaded = true;
-        });
-    }
+    if (activeTab !== 'files' || !organisation?.id) return;
+    const orgId = organisation.id;
+    orgDocsOrgID = orgId;
+    orgDocsLoading = true;
+    orgDocsLoaded = false;
+    logbook.listDocumentsByOrganisation(orgId)
+      .then((result) => {
+        if (orgDocsOrgID !== orgId) return;
+        const list = result?.data ?? result ?? [];
+        orgDocuments = Array.isArray(list) ? list : [];
+      })
+      .catch((err) => {
+        if (orgDocsOrgID !== orgId) return;
+        console.error('Failed to load organisation documents:', err);
+        orgDocuments = [];
+      })
+      .finally(() => {
+        if (orgDocsOrgID !== orgId) return;
+        orgDocsLoading = false;
+        orgDocsLoaded = true;
+      });
   });
 
   $effect(() => {
-    if (activeTab === 'tickets' && organisation?.id && !orgTicketsLoaded) {
-      const orgId = organisation.id;
-      orgTicketsLoading = true;
-      api.customerOrganisations.getTickets(orgId)
-        .then((result) => {
-          orgTickets = result?.data ?? result ?? [];
-          if (!Array.isArray(orgTickets)) orgTickets = [];
-        })
-        .catch((err) => {
-          console.error('Failed to load organisation tickets:', err);
-          orgTickets = [];
-        })
-        .finally(() => {
-          orgTicketsLoading = false;
-          orgTicketsLoaded = true;
-        });
-    }
+    if (activeTab !== 'tickets' || !organisation?.id) return;
+    const orgId = organisation.id;
+    if (orgId === orgTicketsOrgID) return;
+    orgTicketsOrgID = orgId;
+    orgTickets = [];
+    orgTicketsLoading = true;
+    orgTicketsLoaded = false;
+    customerOrganisations.getTickets(orgId)
+      .then((result) => {
+        if (orgTicketsOrgID !== orgId) return;
+        const list = result?.data ?? result ?? [];
+        orgTickets = Array.isArray(list) ? list : [];
+      })
+      .catch((err) => {
+        if (orgTicketsOrgID !== orgId) return;
+        console.error('Failed to load organisation tickets:', err);
+        orgTickets = [];
+      })
+      .finally(() => {
+        if (orgTicketsOrgID !== orgId) return;
+        orgTicketsLoading = false;
+        orgTicketsLoaded = true;
+      });
   });
 
   let ticketColumns = $derived([
@@ -383,7 +419,7 @@
               {/if}
 
               <!-- Open in new tab button -->
-              <div class="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+              <div class="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100 transition-opacity">
                 <button
                   onclick={(e) => { e.stopPropagation(); window.open(logbook.getDocumentFileUrl(doc.id), '_blank'); }}
                   class="p-1.5 rounded-lg shadow-sm border transition-colors hover:bg-opacity-90"
@@ -438,16 +474,16 @@
               <div class="font-medium truncate text-sm" style="color: var(--ds-text);">
                 {item.title}
               </div>
-              <div class="text-xs" style="color: var(--ds-text-subtle);">
-                {item.workspace_key}-{item.workspace_item_number}
+              <div class="text-xs">
+                <ItemKey item={item} clickable={false} />
               </div>
             </a>
           {:else}
             <div class="font-medium truncate text-sm" style="color: var(--ds-text);">
               {item.title}
             </div>
-            <div class="text-xs" style="color: var(--ds-text-subtle);">
-              {item.workspace_key}-{item.workspace_item_number}
+            <div class="text-xs">
+              <ItemKey item={item} />
             </div>
           {/if}
         {/snippet}

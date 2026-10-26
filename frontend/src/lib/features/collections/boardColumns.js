@@ -12,10 +12,12 @@ export const RIGHTMOST_COLUMN_LIMIT = 50;
 export const PERSONAL_TASK_OPEN_STATUS_ID = 1;
 export const PERSONAL_TASK_DONE_STATUS_ID = 3;
 
+// Non-completed categories: To Do first, In Progress second, then every
+// custom category (rank 3). Completed categories are forced to the end by
+// the primary is_completed sort below.
 const CATEGORY_ORDER = {
   to_do: 1,
   in_progress: 2,
-  done: 3,
 };
 
 function categoryBuiltinKey(status) {
@@ -26,14 +28,25 @@ function categoryColor(status) {
   return status.category_color ?? status.category?.color;
 }
 
+/** Whether a status belongs to a completed category. */
+export function statusIsCompleted(status) {
+  return status.is_completed ?? status.category?.is_completed ?? false;
+}
+
 /**
- * Sorts statuses into board order: To Do -> In Progress -> Done categories,
- * alphabetical within a category.
+ * Sorts statuses into a sensible default board order: non-completed work
+ * first, completed categories last. Within each group To Do precedes
+ * In Progress and custom categories follow In Progress, alphabetical within
+ * a category.
  */
 export function sortStatusesForBoard(statuses = []) {
   return statuses.slice().sort((a, b) => {
-    const aOrder = CATEGORY_ORDER[categoryBuiltinKey(a)] || 999;
-    const bOrder = CATEGORY_ORDER[categoryBuiltinKey(b)] || 999;
+    const aCompleted = statusIsCompleted(a) ? 1 : 0;
+    const bCompleted = statusIsCompleted(b) ? 1 : 0;
+    if (aCompleted !== bCompleted) return aCompleted - bCompleted;
+
+    const aOrder = CATEGORY_ORDER[categoryBuiltinKey(a)] || 3;
+    const bOrder = CATEGORY_ORDER[categoryBuiltinKey(b)] || 3;
     if (aOrder !== bOrder) return aOrder - bOrder;
     return a.name.localeCompare(b.name);
   });

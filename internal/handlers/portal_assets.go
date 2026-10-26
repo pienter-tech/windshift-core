@@ -104,10 +104,9 @@ func (h *PortalHandler) assetReportBindingAvailable(config *models.ChannelConfig
 	if !itemTypeExists {
 		return false, nil
 	}
-	if workspaceID == nil {
-		return true, nil
-	}
-	if *workspaceID <= 0 || !containsID(config.PortalWorkspaceIDs, *workspaceID) {
+	// A form-mode report pins both bindings; an unpinned report is not
+	// routable and is not exposed to the portal.
+	if workspaceID == nil || *workspaceID <= 0 || !containsID(config.PortalWorkspaceIDs, *workspaceID) {
 		return false, nil
 	}
 	return services.IsItemTypeAllowedInWorkspace(h.db, *workspaceID, *itemTypeID)
@@ -685,7 +684,7 @@ func (h *PortalHandler) visibleRequestTypeIDs(ctx context.Context, channelID int
 	rows, err := h.db.QueryContext(ctx, `
 		SELECT id, visibility_group_ids, visibility_org_ids
 		FROM request_types
-		WHERE channel_id = ? AND is_active = true
+		WHERE channel_id = ? AND is_active = true AND kind != 'email'
 	`, channelID)
 	if err != nil {
 		return nil, err

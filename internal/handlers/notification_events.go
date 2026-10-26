@@ -21,6 +21,12 @@ func (nh *NotificationHandler) NotificationEvents(w http.ResponseWriter, r *http
 	if !ok {
 		return
 	}
+	release, ok := nh.sseHub.AcquireUserStream(user.ID)
+	if !ok {
+		respondTooManyRequests(w, r, "Too many live update streams are already open for this account")
+		return
+	}
+	defer release()
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		respondServiceUnavailable(w, r, "streaming is unsupported on this connection")
@@ -45,15 +51,13 @@ func (nh *NotificationHandler) NotificationEvents(w http.ResponseWriter, r *http
 
 	for {
 		select {
-		case ev := <-sub.Events():
-			writeUserSSEEvent(w, string(ev.Kind))
-			if sub.TakeStale() {
-				writeUserSSEEvent(w, "reload")
-			}
+		case <-sub.Events():
+			writeUserSSEEvent(w, "changed")
 			flusher.Flush()
 		case <-heartbeat.C:
 			if sub.TakeStale() {
-				writeUserSSEEvent(w, "reload")
+				// A frame was dropped; force the client to reconcile.
+				writeUserSSEEvent(w, "changed")
 			}
 			_, _ = fmt.Fprint(w, ": ping\n\n")
 			flusher.Flush()
@@ -63,7 +67,7 @@ func (nh *NotificationHandler) NotificationEvents(w http.ResponseWriter, r *http
 	}
 }
 
-// writeUserSSEEvent writes one SSE frame naming the invalidation kind.
-func writeUserSSEEvent(w http.ResponseWriter, kind string) {
-	_, _ = fmt.Fprintf(w, "event: %s\ndata: {}\n\n", kind) //nolint:gosec // G705: kind is a controlled enum; response is text/event-stream, not HTML
+// writeUserSSEEvent writes one SSE frame naming the coarse event.
+func writeUserSSEEvent(w http.ResponseWriter, event string) {
+	_, _ = fmt.Fprintf(w, "event: %s\ndata: {}\n\n", event) //nolint:gosec // G705: event is a controlled constant; response is text/event-stream, not HTML
 }

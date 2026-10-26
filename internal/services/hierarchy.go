@@ -150,6 +150,17 @@ func (h *HierarchyService) GetChildrenContext(ctx context.Context, itemID int) (
 	return itemPtrsToValues(items), nil
 }
 
+// GetChildrenInWorkspacesContext returns direct children restricted to the
+// given accessible workspaces, so cross-workspace children are not disclosed
+// through a visible parent.
+func (h *HierarchyService) GetChildrenInWorkspacesContext(ctx context.Context, itemID int, workspaceIDs []int) ([]models.Item, error) {
+	items, err := repository.NewItemRepository(h.db).GetChildrenInWorkspacesContext(ctx, itemID, workspaceIDs)
+	if err != nil {
+		return nil, err
+	}
+	return itemPtrsToValues(items), nil
+}
+
 // GetRoot returns the root item for a given item (walks up to top level).
 // The walk is capped at maxHierarchyDepth so a stored cycle can't loop the
 // DB; exhaustion surfaces as an error rather than a silent nil so callers

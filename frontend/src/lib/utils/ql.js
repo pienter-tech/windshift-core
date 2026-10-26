@@ -1058,6 +1058,9 @@ export class QLBuilder {
     if (fieldName === 'title' && isComparison && node.operator === '~') {
       const value = QLBuilder._builderNodeValue(node.right);
       if (value === null) return false;
+      // The builder's search matches title, description, and key together, so a
+      // title-only predicate cannot round-trip losslessly.
+      result.dropped = true;
       if (result.search !== '' && result.search !== value) result.dropped = true;
       result.search = value;
       return true;
@@ -1068,6 +1071,9 @@ export class QLBuilder {
     const valueNodes = isComparison ? [node.right] : node.values?.values || [];
     const values = valueNodes.map(QLBuilder._builderNodeValue).filter((value) => value !== null);
     if (values.length !== valueNodes.length || values.length === 0) return false;
+    // A second predicate on the same builder field collapses into one IN union,
+    // turning an AND intersection into a union. Keep such queries in raw mode.
+    if (result[definition.state].length > 0) result.dropped = true;
 
     if (definition.mode === 'workspace') {
       result[definition.state].push(...values);

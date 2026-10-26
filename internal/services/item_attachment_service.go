@@ -166,7 +166,7 @@ func (s *ItemAttachmentService) OpenItemAttachment(userID, attachmentID int, thu
 // request. Portal ownership was resolved by the caller, so no workspace
 // permission check runs here.
 func (s *ItemAttachmentService) ListPortalRequestAttachments(itemID, limit, offset int) ([]models.Attachment, int, error) {
-	return repository.NewAttachmentRepository(s.db).ListItem(itemID, limit, offset)
+	return repository.NewAttachmentRepository(s.db).ListPortalItem(itemID, limit, offset)
 }
 
 // OpenPortalRequestAttachment opens an item attachment for a portal

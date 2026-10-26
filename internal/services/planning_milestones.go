@@ -95,9 +95,8 @@ type milestoneScanner interface {
 }
 
 // scanMilestoneRow scans a single milestone row (with LEFT JOIN release columns)
-// into a MilestoneResult. The column order must match the standard milestone
-// query; extra receives any columns a caller appends after it.
-func scanMilestoneRow(sc milestoneScanner, extra ...any) (MilestoneResult, error) {
+// into a MilestoneResult. The column order must match the standard milestone query.
+func scanMilestoneRow(sc milestoneScanner) (MilestoneResult, error) {
 	var m MilestoneResult
 	var description, targetDate, categoryName, categoryColor, workspaceName, externalKey sql.NullString
 	var categoryID, workspaceID sql.NullInt64
@@ -109,21 +108,24 @@ func scanMilestoneRow(sc milestoneScanner, extra ...any) (MilestoneResult, error
 	var mrIsDraft, mrIsPrerelease sql.NullBool
 	var mrCreatedAt sql.NullString
 
-	const milestoneColumnCount = 34
-	dest := make([]any, 0, milestoneColumnCount+len(extra))
-	dest = append(dest, &m.ID, &m.Name, &description, &targetDate, &m.Status, &categoryID,
+	var lastActivityAt sql.NullTime
+
+	err := sc.Scan(&m.ID, &m.Name, &description, &targetDate, &m.Status, &categoryID,
 		&categoryName, &categoryColor, &m.IsGlobal, &workspaceID, &workspaceName,
 		&externalKey, &m.Position,
 		&mrID, &mrTagName, &mrName, &mrBody, &mrIsDraft, &mrIsPrerelease,
 		&mrTargetCommitish, &mrWorkspaceRepositoryID, &mrTagURL, &mrReleaseStatus,
 		&mrReleasedAt, &mrAssetsJSON, &mrLastSyncedAt, &mrSCMConnectionID, &mrSCMRepository,
 		&mrSCMReleaseID, &mrSCMReleaseURL, &mrCreatedBy, &mrCreatedAt,
-		&m.CreatedAt, &m.UpdatedAt)
-	err := sc.Scan(append(dest, extra...)...)
+		&m.CreatedAt, &m.UpdatedAt, &lastActivityAt)
 	if err != nil {
 		return m, err
 	}
 
+	if lastActivityAt.Valid {
+		at := lastActivityAt.Time.UTC()
+		m.LastActivityAt = &at
+	}
 	m.Description = description.String
 	m.TargetDate = targetDate.String
 	m.CategoryName = categoryName.String
@@ -152,15 +154,20 @@ func scanMilestoneRow(sc milestoneScanner, extra ...any) (MilestoneResult, error
 	return m, nil
 }
 
-// scanMilestones scans all rows from a milestone query into a slice.
-func scanMilestones(rows *sql.Rows) ([]MilestoneResult, error) { //nolint:unparam // error is always nil but kept for consistency with scan pattern
+// scanMilestones scans all rows from a milestone query into a slice. A scan or
+// iteration failure is returned rather than silently dropping rows, so callers
+// never mistake an incomplete read for a complete empty result.
+func scanMilestones(rows *sql.Rows) ([]MilestoneResult, error) {
 	var milestones []MilestoneResult
 	for rows.Next() {
 		m, err := scanMilestoneRow(rows)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("failed to scan milestone row: %w", err)
 		}
 		milestones = append(milestones, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate milestones: %w", err)
 	}
 	if milestones == nil {
 		milestones = []MilestoneResult{}
@@ -223,9 +230,10 @@ type MilestoneResult struct {
 	Releases      []MilestoneReleaseResult
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
-	// LastUpdatedAt is the latest change to the milestone or anything in it
-	// (WCORE-31). Only ListMilestones with IncludeLastUpdated sets it.
-	LastUpdatedAt *time.Time
+	// LastActivityAt is the time of the newest Activity entry: a milestone
+	// change, comment, or page link, or an item added, removed, changing
+	// status, or commented on. Nil until the first activity.
+	LastActivityAt *time.Time
 }
 
 // milestoneOrderByClause returns the ORDER BY clause for ListMilestones.
@@ -272,24 +280,12 @@ type MilestoneListParams struct {
 	SortBy string
 	// SortOrder is "asc" or "desc"; defaults to "asc" when SortBy is set.
 	SortOrder string
-	// IncludeLastUpdated adds each milestone's LastUpdatedAt. Item changes
-	// count only for items in ViewerWorkspaceIDs (WCORE-31).
-	IncludeLastUpdated bool
-	ViewerWorkspaceIDs []int
 }
 
 // ListMilestones retrieves milestones with pagination and filtering.
 func (s *PlanningService) ListMilestones(params MilestoneListParams) ([]MilestoneResult, int, error) {
-	selectQuery := milestoneSelectQuery
-	var columnArgs []any
-	if params.IncludeLastUpdated {
-		// The last-updated columns' placeholders precede the filter arguments.
-		var columns string
-		columns, columnArgs = milestoneLastUpdatedColumns(params.ViewerWorkspaceIDs)
-		selectQuery = "\n\tSELECT" + milestoneSelectColumns + columns + milestoneSelectFrom
-	}
-	list := newPlanningListQuery(selectQuery+"\nWHERE 1=1", "SELECT COUNT(*) FROM milestones m WHERE 1=1")
-	list.args = columnArgs
+	params.Status = normalizePlanningStatus(params.Status)
+	list := newPlanningListQuery(milestoneSelectQuery+"\nWHERE 1=1", "SELECT COUNT(*) FROM milestones m WHERE 1=1")
 	list.addWorkspaceScope("m.workspace_id", "m.is_global", params.WorkspaceID, params.WorkspaceIDs, params.IncludeGlobal)
 	list.addNullableIDFilter("m.category_id", params.CategoryID)
 	list.addStringFilter("m.status", params.Status)
@@ -301,14 +297,9 @@ func (s *PlanningService) ListMilestones(params MilestoneListParams) ([]Mileston
 	}
 	defer rows.Close()
 
-	var milestones []MilestoneResult
-	if params.IncludeLastUpdated {
-		milestones, err = scanMilestonesWithLastUpdated(rows)
-		if err != nil {
-			return nil, 0, err
-		}
-	} else {
-		milestones, _ = scanMilestones(rows)
+	milestones, err := scanMilestones(rows)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	var total int
@@ -317,30 +308,6 @@ func (s *PlanningService) ListMilestones(params MilestoneListParams) ([]Mileston
 	}
 
 	return milestones, total, nil
-}
-
-// scanMilestonesWithLastUpdated scans milestone rows followed by the
-// milestoneLastUpdatedColumns and sets each LastUpdatedAt.
-func scanMilestonesWithLastUpdated(rows *sql.Rows) ([]MilestoneResult, error) {
-	milestones := []MilestoneResult{}
-	for rows.Next() {
-		sources := make([]any, milestoneLastUpdatedSourceCount)
-		dest := make([]any, len(sources))
-		for i := range sources {
-			dest[i] = &sources[i]
-		}
-		m, err := scanMilestoneRow(rows, dest...)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan milestone: %w", err)
-		}
-		lastUpdated := latestMilestoneUpdate(m.UpdatedAt, sources)
-		m.LastUpdatedAt = &lastUpdated
-		milestones = append(milestones, m)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("failed to list milestones: %w", err)
-	}
-	return milestones, nil
 }
 
 // GetMilestone retrieves a milestone by ID.
@@ -497,6 +464,7 @@ func (s *PlanningService) CreateMilestone(params CreateMilestoneParams) (*Milest
 	if params.Status == "" {
 		params.Status = "planning"
 	}
+	params.Status = normalizePlanningStatus(params.Status)
 	if err := s.validateMilestoneMutation(params); err != nil {
 		return nil, err
 	}
@@ -574,6 +542,7 @@ func (s *PlanningService) FindMilestoneByName(workspaceID int, name string) (*Mi
 // milestone to "in-progress" or "completed" without disturbing the other
 // fields. Returns a "not found" error when no row matches the scope.
 func (s *PlanningService) SetMilestoneStatus(milestoneID, workspaceID int, status string) error {
+	status = normalizePlanningStatus(status)
 	if !validMilestoneStatus(status) {
 		return planningValidationError("status", milestoneStatusValidationMessage)
 	}
@@ -635,6 +604,7 @@ type UpdateMilestoneParams struct {
 // UpdateMilestone updates an existing milestone within its declared scope.
 // is_global / workspace_id cannot be changed via this method.
 func (s *PlanningService) UpdateMilestone(params UpdateMilestoneParams) (*MilestoneResult, error) {
+	params.Status = normalizePlanningStatus(params.Status)
 	if err := s.validateMilestoneMutation(CreateMilestoneParams{
 		Name:        params.Name,
 		Description: params.Description,
@@ -659,7 +629,7 @@ func (s *PlanningService) UpdateMilestone(params UpdateMilestoneParams) (*Milest
 	}
 	err := database.WithTx(s.db, func(tx database.Tx) error {
 		// Read the current values in the same transaction so the milestone
-		// history (WCORE-21) records exactly what this update changed.
+		// history records exactly what this update changed.
 		var oldDescription, oldTargetDate sql.NullString
 		var oldStatus string
 		err := tx.QueryRow(`SELECT description, target_date, status FROM milestones WHERE id = ? AND `+scope, scopeArgs...).
@@ -717,7 +687,7 @@ type milestoneFieldChange struct {
 }
 
 // milestoneHistoryChanges keeps the fields whose value changed, as milestone
-// history rows (WCORE-21).
+// history rows.
 func milestoneHistoryChanges(milestoneID int, actorID *int, changes []milestoneFieldChange) []repository.MilestoneHistoryEntry {
 	now := time.Now().UTC()
 	entries := []repository.MilestoneHistoryEntry{}
@@ -1173,7 +1143,7 @@ func (s *PlanningService) DeleteMilestone(id int, auditActors ...AuditActor) err
 	}
 	err := database.WithTx(s.db, func(tx database.Tx) error {
 		// item_links has no foreign keys, so remove the milestone's page links
-		// (WCORE-19) with it rather than leave them pointing at nothing.
+		// with it rather than leave them pointing at nothing.
 		if err := repository.NewMilestonePageLinkRepository(s.db).DeleteByMilestone(tx, id); err != nil {
 			return err
 		}
@@ -1185,10 +1155,66 @@ func (s *PlanningService) DeleteMilestone(id int, auditActors ...AuditActor) err
 	if err != nil {
 		return err
 	}
+	s.enqueueMilestoneReferenceCleanup(id)
 	if actor := optionalAuditActor(auditActors); actor != nil {
 		emitServiceAudit(s.db, *actor, logger.ActionMilestoneDelete, logger.ResourceMilestone, &id, resourceName, nil)
 	}
 	return nil
+}
+
+// enqueueMilestoneReferenceCleanup strips a deleted milestone from single- and
+// multi-value milestone custom fields. Cleanup runs asynchronously so a large
+// item population does not block deletion.
+func (s *PlanningService) enqueueMilestoneReferenceCleanup(milestoneID int) {
+	rows, err := s.db.Query(`SELECT id, field_type FROM custom_field_definitions WHERE field_type IN ('milestone', 'multi_milestone')`)
+	if err != nil {
+		slog.Warn("failed to load milestone custom fields for cleanup", slog.Int("milestone_id", milestoneID), slog.Any("error", err))
+		return
+	}
+	type fieldRef struct {
+		id        int
+		fieldType string
+	}
+	var fields []fieldRef
+	for rows.Next() {
+		var field fieldRef
+		if err := rows.Scan(&field.id, &field.fieldType); err != nil {
+			slog.Warn("failed to read milestone custom field for cleanup", slog.Int("milestone_id", milestoneID), slog.Any("error", err))
+			break
+		}
+		fields = append(fields, field)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Warn("failed to list milestone custom fields for cleanup", slog.Int("milestone_id", milestoneID), slog.Any("error", err))
+	}
+	_ = rows.Close()
+
+	for _, field := range fields {
+		payload, err := json.Marshal(milestoneCleanupPayload{
+			FieldID:    field.id,
+			FieldType:  field.fieldType,
+			RemovedIDs: []int{milestoneID},
+		})
+		if err != nil {
+			slog.Warn("failed to encode milestone reference cleanup", slog.Int("milestone_id", milestoneID), slog.Int("field_id", field.id), slog.Any("error", err))
+			continue
+		}
+		// The payload matches scheduler.optionRemovalPayload; importing the
+		// scheduler here would create an import cycle through email/services.
+		if _, err := s.db.ExecWrite(
+			`INSERT INTO pending_custom_field_cleanups (field_id, job_type, payload, status, created_at)
+			 VALUES (?, 'option_removal', ?, 'pending', ?)`,
+			field.id, string(payload), time.Now(),
+		); err != nil {
+			slog.Warn("failed to enqueue milestone reference cleanup", slog.Int("milestone_id", milestoneID), slog.Int("field_id", field.id), slog.Any("error", err))
+		}
+	}
+}
+
+type milestoneCleanupPayload struct {
+	FieldID    int    `json:"field_id"`
+	FieldType  string `json:"field_type"`
+	RemovedIDs []int  `json:"removed_ids"`
 }
 
 // MilestoneTestStats aggregates test-plan activity for a milestone.
@@ -1376,7 +1402,7 @@ func (s *PlanningService) ReorderMilestones(scope MilestoneScope, orderedIDs []i
 
 	if err := database.WithTx(s.db, func(tx database.Tx) error {
 		// Only position changes: a reorder is not an edit, so updated_at stays
-		// put and the Updated sort doesn't jump the renumbered milestones (WCORE-36).
+		// put and the Updated sort doesn't jump the renumbered milestones.
 		for i, id := range orderedIDs {
 			position := (i + 1) * milestonePositionStep
 			updateArgs := append([]any{position, id}, scopeArgs...)

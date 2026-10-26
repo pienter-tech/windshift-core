@@ -4,10 +4,17 @@
   import { t } from '../../stores/i18n.svelte.js';
   import { confirm } from '../../composables/useConfirm.js';
   import { errorToast } from '../../stores/toasts.svelte.js';
-  import { IconArrowLeft as ArrowLeft, IconCalendar as Calendar, IconFlag as Flag, IconEdit as Edit, IconTrash as Trash2, IconDots as MoreHorizontal, IconTag as Tag, IconExternalLink as ExternalLink } from '@tabler/icons-svelte-runes';
-  import { api } from '../../api.js';
+  import Calendar from '@tabler/icons-svelte-runes/icons/calendar';
+  import Flag from '@tabler/icons-svelte-runes/icons/flag';
+  import Edit from '@tabler/icons-svelte-runes/icons/edit';
+  import Trash2 from '@tabler/icons-svelte-runes/icons/trash';
+  import MoreHorizontal from '@tabler/icons-svelte-runes/icons/dots';
+  import Tag from '@tabler/icons-svelte-runes/icons/tag';
+  import ExternalLink from '@tabler/icons-svelte-runes/icons/external-link';
+  import { milestones } from '../../api/milestones.js';
   import { navigate } from '../../router.js';
   import Button from '../../components/Button.svelte';
+  import BackButton from '../../components/BackButton.svelte';
   import Lozenge from '../../components/Lozenge.svelte';
   import Modal from '../../dialogs/Modal.svelte';
   import ModalHeader from '../../dialogs/ModalHeader.svelte';
@@ -41,8 +48,8 @@
   let milestone = $state(null); // full milestone record (includes latest_release)
   let expandedCategories = $state({});
   let showEditModal = $state(false);
-  // Tabs (WCORE-21): Overview keeps the progress and comments (pages sit in
-  // the header card above the tabs, WCORE-46);
+  // Tabs: Overview keeps the progress and comments (pages sit in
+  // the header card above the tabs);
   // Activity shows the shared milestone feed.
   let activeTab = $state('overview');
   // Bumped after each reload so an open Activity tab shows the new entries.
@@ -62,7 +69,7 @@
   });
 
   // Scope comes from the milestone record: the progress response has no
-  // is_global or workspace_id (WCORE-29).
+  // is_global or workspace_id.
   const milestoneWsId = $derived(milestoneWorkspaceId(milestone));
 
   const canManage = $derived(
@@ -82,7 +89,7 @@
 
 
   onMount(async () => {
-    // Options for the edit dialog's category picker (WCORE-34).
+    // Options for the edit dialog's category picker.
     categoriesStore.init();
     await loadProgress();
   });
@@ -92,8 +99,8 @@
     error = null;
     try {
       [progress, milestone] = await Promise.all([
-        api.milestones.getProgress(milestoneId),
-        api.milestones.get(milestoneId)
+        milestones.getProgress(milestoneId),
+        milestones.get(milestoneId)
       ]);
       // Expand all categories by default
       if (progress?.status_breakdown) {
@@ -217,14 +224,7 @@
   <div class="flex-1 max-w-5xl mx-auto p-6">
     <!-- Header -->
     <div class="flex items-center justify-between mb-6">
-      <button
-        onclick={goBack}
-        class="flex items-center gap-2 text-sm font-medium hover:opacity-80 transition-opacity"
-        style="color: var(--ds-text-subtle);"
-      >
-        <ArrowLeft class="w-4 h-4" />
-        {t('common.back')}
-      </button>
+      <BackButton onclick={goBack} label={t('common.back')} />
 
       {#if progress}
         <DropdownMenu
@@ -330,7 +330,7 @@
           </div>
         {/if}
 
-        <!-- Pages list (WCORE-46): workspace milestones only; global
+        <!-- Pages list: workspace milestones only; global
              milestones have no workspace. Part of the header card, so it shows
              on both tabs. -->
         {#if milestoneWsId != null}

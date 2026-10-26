@@ -5,7 +5,7 @@
   import { draggable, dropTargetForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter';
   import { attachClosestEdge, extractClosestEdge } from '@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge';
   import { navigate } from '../router.js';
-  import { api } from '../api.js';
+  import { collections } from '../api/collections.js';
   import { t } from '../stores/i18n.svelte.js';
   import { errorToast } from '../stores/toasts.svelte.js';
   import { CARD_SELECTABLE_FIELDS } from '../stores/fieldConfig.js';
@@ -14,7 +14,14 @@
   import { collectionStore } from '../stores/collectionContext.svelte.js';
   import { workspaceDataStore } from '../stores/workspaceDataStore.svelte.js';
   import { loadBoardConfigurationPageData } from './boardConfigurationData.js';
-  import { Plus, GripVertical, X, Grip, Settings } from '@lucide/svelte';
+  import Plus from '@lucide/svelte/icons/plus';
+  import GripVertical from '@lucide/svelte/icons/grip-vertical';
+  import X from '@lucide/svelte/icons/x';
+  import Grip from '@lucide/svelte/icons/grip';
+  import Settings from '@lucide/svelte/icons/settings';
+  import ListChecks from '@lucide/svelte/icons/list-checks';
+  import Columns3 from '@lucide/svelte/icons/columns-3';
+  import IconSelector from '../pickers/IconSelector.svelte';
   import { useGradientStyles, loadWorkspaceGradient } from '../stores/workspaceGradient.svelte.js';
   import ViewHeader from '../layout/ViewHeader.svelte';
   import StaticViewBackground from '../layout/StaticViewBackground.svelte';
@@ -169,9 +176,7 @@
 
   async function loadData() {
     try {
-      const data = await loadBoardConfigurationPageData(
-        api,
-        workspaceDataStore,
+      const data = await loadBoardConfigurationPageData(workspaceDataStore,
         workspaceId,
         collectionId
       );
@@ -567,6 +572,12 @@
     hasChanges = true;
   }
 
+  function updateColumnColor(index, color) {
+    columns[index].color = color;
+    columns = [...columns];
+    hasChanges = true;
+  }
+
   function getStatusName(statusId) {
     const s = statuses.find(s => s.id === statusId);
     return s ? objectDisplayName(s, 'status') : statusId;
@@ -748,9 +759,9 @@
       }
 
       if (boardConfig && boardConfig.id) {
-        await api.collections.updateBoardConfiguration(collectionId, boardConfig.id, payload, workspaceId);
+        await collections.updateBoardConfiguration(collectionId, boardConfig.id, payload, workspaceId);
       } else {
-        const newConfig = await api.collections.createBoardConfiguration(collectionId, workspaceId, payload);
+        const newConfig = await collections.createBoardConfiguration(collectionId, workspaceId, payload);
         boardConfig = newConfig;
       }
       collectionStore.invalidateBoardConfiguration(workspaceId, collectionId);
@@ -784,7 +795,7 @@
 
     if (boardConfig) {
       try {
-        await api.collections.deleteBoardConfiguration(collectionId, boardConfig.id, workspaceId);
+        await collections.deleteBoardConfiguration(collectionId, boardConfig.id, workspaceId);
         boardConfig = null;
         columns = [];
         backlogStatusIDs = [];
@@ -876,7 +887,11 @@
 
         <!-- Columns Tab -->
         {#if activeTab === 'columns'}
-        <div class="mt-4 flex flex-col gap-4 rounded border p-4" style="background-color: var(--ds-surface-raised); border-color: var(--ds-border);">
+        <div class="mt-5 flex flex-col gap-4 rounded-xl border p-5" style="background-color: var(--ds-surface-raised); border-color: var(--ds-border);">
+          <div>
+            <h4 class="text-sm font-semibold" style="color: var(--ds-text);">{t('settings.boardConfig.displayOptions')}</h4>
+            <p class="text-xs mt-0.5" style="color: var(--ds-text-subtle);">{t('settings.boardConfig.displayOptionsHint')}</p>
+          </div>
           <Checkbox
             bind:checked={showRightmostColumnLast50}
             onchange={setShowRightmostColumnLast50}
@@ -935,15 +950,22 @@
           {/if}
         </div>
 
-        <div class="grid grid-cols-1 lg:grid-cols-6 gap-3 mt-4 mb-6">
+        <div class="grid grid-cols-1 lg:grid-cols-6 gap-5 mt-5 mb-8">
           <!-- Left Panel: Available Statuses -->
-          <div class="lg:col-span-2 rounded-xl p-3 border" style="background-color: var(--ds-surface); border-color: var(--ds-border);">
-            <h4 class="text-sm font-semibold mb-1" style="color: var(--ds-text);">
-              {t('settings.boardConfig.availableStatuses')} ({availableStatuses.length})
-            </h4>
-            <p class="text-xs mb-3" style="color: var(--ds-text-subtle);">
-              {t('settings.boardConfig.dragStatusesToColumns')}
-            </p>
+          <div class="lg:col-span-2 rounded-xl p-4 border flex flex-col" style="background-color: var(--ds-surface); border-color: var(--ds-border);">
+            <div class="flex items-start gap-3 mb-3">
+              <span class="flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center" style="background-color: var(--ds-interactive-subtle, var(--ds-background-neutral-hovered)); color: var(--ds-interactive);">
+                <ListChecks class="w-4 h-4" />
+              </span>
+              <div class="min-w-0">
+                <h4 class="text-sm font-semibold" style="color: var(--ds-text);">
+                  {t('settings.boardConfig.availableStatuses')} ({availableStatuses.length})
+                </h4>
+                <p class="text-xs mt-0.5" style="color: var(--ds-text-subtle);">
+                  {t('settings.boardConfig.dragStatusesToColumns')}
+                </p>
+              </div>
+            </div>
 
             <SearchInput
               bind:value={statusSearchQuery}
@@ -957,7 +979,7 @@
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
                   data-available-status={JSON.stringify({ id: status.id, name: status.name, color: status.category_color })}
-                  class="available-status-row group flex items-center gap-2 px-2 py-1.5 rounded border transition-all duration-200 cursor-grab hover:border-ds-border-focused active:cursor-grabbing"
+                  class="available-status-row group flex items-center gap-2.5 px-2.5 py-2 rounded-lg border transition-all duration-200 cursor-grab hover:border-ds-border-focused active:cursor-grabbing"
                 >
                   <!-- 6-dot drag handle -->
                   <div class="flex-shrink-0">
@@ -985,24 +1007,34 @@
           </div>
 
           <!-- Right Panel: Board Columns -->
-          <div class="lg:col-span-4 rounded-xl p-3 border" style="background-color: var(--ds-surface); border-color: var(--ds-border);">
-            <div class="flex items-center justify-between mb-3">
-              <h4 class="text-sm font-semibold" style="color: var(--ds-text);">
-                {t('settings.boardConfig.boardColumns')}
-              </h4>
+          <div class="lg:col-span-4 rounded-xl p-4 border" style="background-color: var(--ds-surface); border-color: var(--ds-border);">
+            <div class="flex items-center justify-between gap-3 mb-4">
+              <div class="flex items-start gap-3 min-w-0">
+                <span class="flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center" style="background-color: var(--ds-interactive-subtle, var(--ds-background-neutral-hovered)); color: var(--ds-interactive);">
+                  <Columns3 class="w-4 h-4" />
+                </span>
+                <div class="min-w-0">
+                  <h4 class="text-sm font-semibold" style="color: var(--ds-text);">
+                    {t('settings.boardConfig.boardColumns')}
+                  </h4>
+                  <p class="text-xs mt-0.5" style="color: var(--ds-text-subtle);">
+                    {t('settings.boardConfig.dragToReorder')}
+                  </p>
+                </div>
+              </div>
               <Button variant="default" size="small" onclick={addColumn}>
                 <Plus class="w-4 h-4 mr-1" />
                 {t('settings.boardConfig.addColumn')}
               </Button>
             </div>
 
-            <div class="flex gap-2 min-h-48 max-h-[70vh] overflow-x-auto overflow-y-hidden pb-1" style="overscroll-behavior: contain;">
+            <div class="flex gap-3 min-h-56 max-h-[70vh] overflow-x-auto overflow-y-hidden pb-1" style="overscroll-behavior: contain;">
               {#each columns as column, colIndex (colIndex)}
                 <!-- Column section -->
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
                   data-board-column={colIndex}
-                  class="relative rounded-lg border transition-all w-60 flex-shrink-0 flex flex-col"
+                  class="relative rounded-xl border transition-all w-60 flex-shrink-0 flex flex-col overflow-hidden"
                   style="border-color: {column.status_ids.length === 0 ? 'var(--ds-border-warning, #ca8a04)' : 'var(--ds-border)'}; border-style: {column.status_ids.length === 0 ? 'dashed' : 'solid'}; background-color: var(--ds-surface-raised);"
                 >
                   <!-- Column reorder DropIndicator -->
@@ -1010,8 +1042,11 @@
                     <DropIndicator edge={columnDragState.get(colIndex)?.closestEdge} gap={8} />
                   {/if}
 
+                  <!-- Column color accent -->
+                  <div class="h-1.5 flex-shrink-0" style="background-color: {column.color || 'var(--ds-border)'};"></div>
+
                   <!-- Column name and actions -->
-                  <div class="flex items-center gap-1.5 px-2 py-1.5">
+                  <div class="flex items-center gap-1.5 px-2.5 py-2">
                     <!-- svelte-ignore a11y_no_static_element_interactions -->
                     <div
                       data-column-drag-handle
@@ -1040,8 +1075,22 @@
                     </button>
                   </div>
 
+                  <!-- Column color -->
+                  <div class="flex items-center justify-between gap-3 px-2.5 py-2 border-b" style="border-color: var(--ds-border);">
+                    <span class="text-xs font-medium" style="color: var(--ds-text-subtle);">
+                      {t('settings.boardConfig.columnColor')}
+                    </span>
+                    <IconSelector
+                      selectedColor={column.color}
+                      onchange={(event) => updateColumnColor(colIndex, event.detail.color)}
+                      colorOnly
+                      compact
+                      dataTestid={`board-column-color-${colIndex}`}
+                    />
+                  </div>
+
                   <!-- WIP limit -->
-                  <div class="flex items-center justify-between gap-3 px-2 pb-2 border-b" style="border-color: var(--ds-border);">
+                  <div class="flex items-center justify-between gap-3 px-2.5 py-2 border-b" style="border-color: var(--ds-border);">
                     <label
                       for={`board-column-wip-${colIndex}`}
                       class="text-xs font-medium"
@@ -1065,7 +1114,7 @@
                   </div>
 
                   <!-- Column Body -->
-                  <div class="p-1.5 flex flex-col gap-1 flex-1 overflow-y-auto">
+                  <div class="p-2 flex flex-col gap-1.5 flex-1 overflow-y-auto">
                     {#each column.status_ids as statusId, statusIndex (statusId)}
                       <!-- svelte-ignore a11y_no_static_element_interactions -->
                       <div
@@ -1073,7 +1122,7 @@
                         data-status-id={statusId}
                         data-col-index={colIndex}
                         data-status-index={statusIndex}
-                        class="relative group flex items-center gap-2 px-2 py-1.5 rounded border transition-all duration-200"
+                        class="relative group flex items-center gap-2.5 px-2.5 py-2 rounded-lg border transition-all duration-200"
                         style="background: var(--ds-background-input); border-color: var(--ds-border); user-select: none;"
                       >
                         <!-- DropIndicator for status insertion -->
@@ -1092,7 +1141,7 @@
                         <!-- Remove button -->
                         <button
                           onclick={() => removeStatusFromColumn(colIndex, statusId)}
-                          class="remove-btn opacity-0 group-hover:opacity-100 p-0.5 rounded transition-all flex-shrink-0"
+                          class="remove-btn opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100 p-0.5 rounded transition-all flex-shrink-0"
                           title={t('common.remove')}
                         >
                           <X class="w-3.5 h-3.5" />

@@ -1,21 +1,39 @@
+<script module>
+  // Site title from index.html, captured once so nested item views (e.g. a modal
+  // over an item page) don't stack item titles on top of each other.
+  const siteTitle = typeof document !== 'undefined' ? document.title : '';
+</script>
+
 <script>
   import { onMount, onDestroy, untrack } from 'svelte';
   import { copyToClipboard } from '../../utils/clipboard.js';
   import { useEventListener } from 'runed';
-  import { api } from '../../api.js';
+  import { time } from '../../api/time.js';
+  import { recurrence } from '../../api/recurrence.js';
+  import { items as itemsApi } from '../../api/items.js';
+  import { ai } from '../../api/ai.js';
   import { navigate, currentRoute } from '../../router.js';
   import { publicBaseURL } from '../../runtime/contextPath.js';
-  import { workspacePermissions, itemDetailStore } from '../../stores';
+  import { workspacePermissions } from '../../stores/workspacePermissions.svelte.js';
+  import { itemDetailStore } from '../../stores/itemDetailStore.svelte.js';
   import { t } from '../../stores/i18n.svelte.js';
   import { getShortcut, matchesShortcut, isTypingInField } from '../../utils/keyboardShortcuts.js';
-  import { Trash2, X, Copy, BookOpen, Search, GitBranch, GitMerge, Repeat, FolderInput } from '@lucide/svelte';
-  import { Bookmark, BookmarkCheck, ExternalLink } from '@lucide/svelte';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
+  import X from '@lucide/svelte/icons/x';
+  import Copy from '@lucide/svelte/icons/copy';
+  import BookOpen from '@lucide/svelte/icons/book-open';
+  import Search from '@lucide/svelte/icons/search';
+  import GitBranch from '@lucide/svelte/icons/git-branch';
+  import GitMerge from '@lucide/svelte/icons/git-merge';
+  import Repeat from '@lucide/svelte/icons/repeat';
+  import FolderInput from '@lucide/svelte/icons/folder-input';
+  import Bookmark from '@lucide/svelte/icons/bookmark';
+  import BookmarkCheck from '@lucide/svelte/icons/bookmark-check';
+  import ExternalLink from '@lucide/svelte/icons/external-link';
   import { addToast, successToast, errorToast, infoToast } from '../../stores/toasts.svelte.js';
   import { timerStore } from '../../stores/timerStore.svelte.js';
   import { useItemAttachments } from '../../composables/useItemAttachments.svelte.js';
-  import { useWorkItemPoller } from '../../composables/useWorkItemPoller.svelte.js';
   import { useItemEventStream } from '../../composables/useItemEventStream.svelte.js';
-  import { itemLiveUpdates } from '../../stores/itemLiveUpdates.svelte.js';
   import { notificationActions } from '../../stores/notifications.js';
   import { agentRuns } from '../../stores/agentRuns.svelte.js';
   import {
@@ -69,11 +87,17 @@ import NativeSelect from '../../components/NativeSelect.svelte';
   let item = $derived(itemDetailStore.item);
   let workspace = $derived(itemDetailStore.workspace);
 
-  // Keep the open issue detail in sync with agent/background changes. While the
-  // SSE stream is healthy the poller is demoted (it resumes automatically if the
-  // stream drops or is unsupported).
-  useWorkItemPoller(() => itemDetailStore.refreshCurrentItem(), {
-    enabled: () => !itemLiveUpdates.isLive(itemId),
+  // Show "KEY-123 Title - <site title>" in the browser tab while the item is open;
+  // restore the previous title when the detail view closes.
+  const previousDocumentTitle = document.title;
+  $effect(() => {
+    if (!item?.workspace_item_number) return;
+    const k = item.workspace_key || workspace?.key;
+    const itemKey = k ? `${k}-${item.workspace_item_number}` : `ITEM-${item.workspace_item_number}`;
+    document.title = `${itemKey} ${item.title || ''}`.trim() + ` - ${siteTitle}`;
+  });
+  onDestroy(() => {
+    document.title = previousDocumentTitle;
   });
 
   // A reconcile request that arrives while the detail is loading must not be
@@ -88,7 +112,9 @@ import NativeSelect from '../../components/NativeSelect.svelte';
     reconcilePending = false;
     itemDetailStore.transitioning = true;
     return loadData()
-      .then(() => populateDropdownItems())
+      .then((loaded) => {
+        if (loaded) populateDropdownItems();
+      })
       .finally(() => {
         itemDetailStore.transitioning = false;
       });
@@ -100,29 +126,16 @@ import NativeSelect from '../../components/NativeSelect.svelte';
     }
   });
 
-  // Live updates (WI-484): push changes instead of waiting for the 30s poll.
-  // Maps each event kind to a targeted reload. Every healthy connection
-  // reconciles the full detail; a failed handler falls back to polling.
+  // Live updates (WI-484): the stream is coarse, so any change pushes a full
+  // reconcile instead of waiting for a poll. Comments, SCM links, and Zammad
+  // links are separate components, so the reconcile also nudges them.
   const liveStream = useItemEventStream(() => itemId, {
-    // Full reconcile (connect/reconnect/server reload): reload the item AND
-    // comments. Comments is a separate component, so loadData() alone would
-    // leave it stale.
     onReconcile: () => {
       window.dispatchEvent(new CustomEvent('item-comments-changed', { detail: { itemId } }));
       window.dispatchEvent(new CustomEvent('item-scm-links-changed', { detail: { itemId } }));
       window.dispatchEvent(new CustomEvent('item-zammad-links-changed', { detail: { itemId } }));
       return runFullReconcile();
     },
-    onItem: () => itemDetailStore.refreshCurrentItem(),
-    onChildren: () => itemDetailStore.loadChildItems(),
-    onComment: () => window.dispatchEvent(new CustomEvent('item-comments-changed', { detail: { itemId } })),
-    // Generic and SCM links have independent targeted refresh paths. A link
-    // event must not restart the full item-detail bootstrap.
-    onLinks: () => {
-      window.dispatchEvent(new CustomEvent('item-scm-links-changed', { detail: { itemId } }));
-      return itemDetailStore.loadLinks();
-    },
-    onZammad: () => window.dispatchEvent(new CustomEvent('item-zammad-links-changed', { detail: { itemId } })),
     // The viewed item was deleted (its own topic published `deleted`). This is
     // authoritative — mark it gone so the view closes instead of refetching
     // (which would 404) and showing stale data.
@@ -142,7 +155,7 @@ import NativeSelect from '../../components/NativeSelect.svelte';
     itemDetailStore.notFound = false;
     showDeletionFeedback();
     if (isModal && onclose) {
-      onclose({ hasChanges: false });
+      onclose();
     } else if (!isModal) {
       closeModal();
     }
@@ -151,6 +164,11 @@ import NativeSelect from '../../components/NativeSelect.svelte';
   // Whether the open ticket is a merged duplicate comes straight from the
   // detail summary via the store; no extra request.
   let mergedInto = $derived(itemDetailStore.mergedIntoItemId);
+
+  function openMergeDialog(duplicate = null) {
+    mergePreselected = duplicate;
+    showMergeDialog = true;
+  }
 
   function handleMerged() {
     successToast(t('items.mergeSuccess'));
@@ -190,6 +208,9 @@ import NativeSelect from '../../components/NativeSelect.svelte';
   // Ticket lifecycle (merge/split) state
   let showMergeDialog = $state(false);
   let showSplitDialog = $state(false);
+  // Candidate passed in when the merge dialog is opened from the duplicates
+  // panel; null when opened from the actions menu.
+  let mergePreselected = $state(null);
 
   // Item type change state
   let showTypeChangeModal = $state(false);
@@ -201,9 +222,27 @@ import NativeSelect from '../../components/NativeSelect.svelte';
 
   let availableSubIssueTypes = $derived(itemDetailStore.availableSubIssueTypes);
 
+  // Identity of a key-addressed route (workspace key + item number), or null
+  // for numeric/global routes.
+  function lookupIdentity(key, number) {
+    return key ? `${key}\u0000${number}` : null;
+  }
+
   // Track itemId changes for reactivity
   // svelte-ignore state_referenced_locally
   let previousItemId = $state(itemId);
+
+  // The requested key-route identity. Item numbers repeat across workspaces, so
+  // itemId alone cannot tell a same-number destination in another workspace
+  // apart from a re-render of the current one.
+  // svelte-ignore state_referenced_locally
+  let previousLookupKey = lookupIdentity(workspaceKey, itemNumber);
+
+  // Guards asynchronous load continuations. Every navigation and unmount bumps
+  // the generation, so a superseded load cannot rewrite route identity or
+  // canonicalize the URL after the user has moved on.
+  let loadGeneration = 0;
+  let destroyed = false;
 
   // Timer guard flag to prevent duplicate timer starts
   let isStartingTimer = $state(false);
@@ -211,7 +250,7 @@ import NativeSelect from '../../components/NativeSelect.svelte';
   // Modal control functions
   function closeModal() {
     if (isModal && onclose) {
-      onclose({ hasChanges: itemDetailStore.hasChanges });
+      onclose();
     } else if (!isModal) {
       const collectionId = $currentRoute.params?.collectionId;
       const url = collectionId
@@ -416,6 +455,10 @@ import NativeSelect from '../../components/NativeSelect.svelte';
         console.error('Failed to load time entries:', error);
       });
     }
+    // The modal is mounted on top of a board/list route; navigating to the item
+    // route here would replace it with the full-page view. Only the full-page
+    // detail needs to mirror the active tab into the URL.
+    if (isModal) return;
     const url = `/workspaces/${workspaceId}/items/${itemId}${tab !== 'comments' ? `?tab=${tab}` : ''}`;
     navigate(url);
   }
@@ -443,14 +486,20 @@ import NativeSelect from '../../components/NativeSelect.svelte';
   }
 
   function handleViewTestCase(detail) {
-    const { testCaseId } = detail || {};
+    const { testCaseId, workspaceId: testCaseWorkspaceId } = detail || {};
     if (!testCaseId) return;
     const normalizedId = Number(testCaseId);
     if (!Number.isFinite(normalizedId)) {
       console.warn('Received invalid test case ID from link:', testCaseId);
       return;
     }
-    itemDetailStore.openTestCaseModal(normalizedId);
+    const normalizedWorkspaceId = Number(testCaseWorkspaceId);
+    itemDetailStore.openTestCaseModal(
+      normalizedId,
+      Number.isFinite(normalizedWorkspaceId) && normalizedWorkspaceId > 0
+        ? normalizedWorkspaceId
+        : null
+    );
   }
 
   function handleCloseTestCaseModal() {
@@ -594,7 +643,7 @@ import NativeSelect from '../../components/NativeSelect.svelte';
   async function handleDeleteWorklog(detail) {
     const worklog = detail;
     try {
-      await api.time.worklogs.delete(worklog.id);
+      await time.worklogs.delete(worklog.id);
       // Reload worklogs
       await itemDetailStore.reloadWorklogs();
     } catch (error) {
@@ -607,9 +656,9 @@ import NativeSelect from '../../components/NativeSelect.svelte';
     try {
       const data = event.detail;
       if (itemDetailStore.editingWorklog) {
-        await api.time.worklogs.update(itemDetailStore.editingWorklog.id, data);
+        await time.worklogs.update(itemDetailStore.editingWorklog.id, data);
       } else {
-        await api.time.worklogs.create(data);
+        await time.worklogs.create(data);
       }
 
       // Reload worklogs
@@ -634,7 +683,7 @@ import NativeSelect from '../../components/NativeSelect.svelte';
   async function loadRecurrence() {
     if (!itemId) return;
     try {
-      recurrenceRule = await api.recurrence.get(itemId);
+      recurrenceRule = await recurrence.get(itemId);
     } catch {
       recurrenceRule = null;
     }
@@ -665,7 +714,7 @@ import NativeSelect from '../../components/NativeSelect.svelte';
 
   async function handleRecurrenceDelete() {
     try {
-      await api.recurrence.delete(itemId);
+      await recurrence.delete(itemId);
       recurrenceRule = null;
       showRecurrenceModal = false;
       populateDropdownItems();
@@ -710,6 +759,16 @@ import NativeSelect from '../../components/NativeSelect.svelte';
     }
   }
 
+  // A linked or child item's status changed from the detail view; refresh
+  // only the list that row came from.
+  async function handleRelatedStatusChanged({ kind }) {
+    if (kind === 'child-item') {
+      await itemDetailStore.loadChildItems();
+    } else {
+      await itemDetailStore.loadLinks();
+    }
+  }
+
   async function handleParentChanged() {
     // Reload the item data to get updated parent hierarchy
     try {
@@ -726,7 +785,7 @@ import NativeSelect from '../../components/NativeSelect.svelte';
 
     try {
       changingItemType = true;
-      const analysis = await api.items.analyzeTypeChange(item.id, targetType.id);
+      const analysis = await itemsApi.analyzeTypeChange(item.id, targetType.id);
       if (analysis?.requires_migration) {
         typeChangeAnalysis = analysis;
         selectedTypeChangeStatusId = analysis.suggested_status_id || null;
@@ -750,18 +809,17 @@ import NativeSelect from '../../components/NativeSelect.svelte';
     try {
       changingItemType = true;
       typeChangeError = null;
-      const updated = await api.items.changeType(item.id, {
+      const updated = await itemsApi.changeType(item.id, {
         target_item_type_id: itemTypeId,
         ...(targetStatusId ? { target_status_id: targetStatusId } : {})
       });
       itemDetailStore.item = { ...itemDetailStore.item, ...updated };
-      itemDetailStore.hasChanges = true;
       showTypeChangeModal = false;
       typeChangeAnalysis = null;
       typeChangeTarget = null;
       selectedTypeChangeStatusId = null;
       await itemDetailStore.loadItem(workspaceId, item.id);
-      successToast('Item type changed');
+      successToast(t('items.itemTypeChanged'));
     } catch (error) {
       console.error('Failed to change item type:', error);
       typeChangeError = error.message || String(error);
@@ -799,7 +857,7 @@ import NativeSelect from '../../components/NativeSelect.svelte';
     const deletedId = String(itemId);
     if (deletionFeedbackItemId === deletedId) return;
     deletionFeedbackItemId = deletedId;
-    infoToast('This item was deleted.');
+    infoToast(t('items.deleted'));
   }
 
   function handleDeleteComplete(result) {
@@ -808,6 +866,12 @@ import NativeSelect from '../../components/NativeSelect.svelte';
     itemDetailStore.reset();
     // Reparent navigation can reuse this component; allow its next item load.
     itemDetailStore.loading = false;
+    // In a modal, close in place instead of navigating away; the host view
+    // reconciles the deletion through its own event stream.
+    if (isModal && onclose) {
+      onclose();
+      return;
+    }
     const collectionId = $currentRoute.params?.collectionId;
     // Navigate based on deletion result
     if (result?.mode === 'reparent' && result?.newParentId) {
@@ -891,7 +955,7 @@ import NativeSelect from '../../components/NativeSelect.svelte';
           icon: GitMerge,
           testid: 'item-merge-open',
           title: t('items.mergeMenu'),
-          onClick: () => { showMergeDialog = true; }
+          onClick: () => openMergeDialog()
         },
         {
           id: 'split-subticket',
@@ -933,12 +997,20 @@ import NativeSelect from '../../components/NativeSelect.svelte';
   // Stale-while-revalidate: keep the previous item rendered while the new one
   // loads so the swap is atomic instead of skeleton-flashing.
   $effect(() => {
-    if (itemId !== previousItemId && !itemDetailStore.loading) {
+    const lookupKey = lookupIdentity(workspaceKey, itemNumber);
+    const lookupChanged = lookupKey != null && lookupKey !== previousLookupKey;
+    if (
+      (String(itemId) !== String(previousItemId) || lookupChanged) &&
+      !itemDetailStore.loading
+    ) {
       previousItemId = itemId;
+      previousLookupKey = lookupKey;
       itemDetailStore.transitioning = true;
 
       loadData()
-        .then(() => populateDropdownItems())
+        .then((loaded) => {
+          if (loaded) populateDropdownItems();
+        })
         .catch((error) => console.error('Failed to load item data after navigation:', error))
         .finally(() => { itemDetailStore.transitioning = false; });
     }
@@ -956,7 +1028,9 @@ import NativeSelect from '../../components/NativeSelect.svelte';
     if (currentId == null || String(id) !== String(currentId)) return;
     itemDetailStore.transitioning = true;
     loadData()
-      .then(() => populateDropdownItems())
+      .then((loaded) => {
+        if (loaded) populateDropdownItems();
+      })
       .catch((error) => console.error('Failed to reload open item detail:', error))
       .finally(() => { itemDetailStore.transitioning = false; });
   });
@@ -976,11 +1050,11 @@ import NativeSelect from '../../components/NativeSelect.svelte';
     aiResult = null;
     try {
       if (action === 'catch-me-up') {
-        aiResult = await api.ai.catchMeUp(itemId);
+        aiResult = await ai.catchMeUp(itemId);
       } else if (action === 'find-similar') {
-        aiResult = await api.ai.findSimilar(itemId);
+        aiResult = await ai.findSimilar(itemId);
       } else if (action === 'decompose') {
-        aiResult = await api.ai.decompose(itemId);
+        aiResult = await ai.decompose(itemId);
       }
     } catch (err) {
       aiError = err.message || 'AI analysis failed';
@@ -1003,11 +1077,11 @@ import NativeSelect from '../../components/NativeSelect.svelte';
     try {
       const childTypeId = availableSubIssueTypes[0]?.id;
       if (!childTypeId) {
-        errorToast('No child item type available');
+        errorToast(t('items.noChildItemType'));
         return;
       }
       for (const task of selectedTasks) {
-        await api.items.create({
+        await itemsApi.create({
           title: task.title,
           description: task.description || '',
           workspace_id: parseInt(workspaceId),
@@ -1015,13 +1089,13 @@ import NativeSelect from '../../components/NativeSelect.svelte';
           item_type_id: childTypeId,
         });
       }
-      successToast(`Created ${selectedTasks.length} sub-task${selectedTasks.length > 1 ? 's' : ''}`);
+      successToast(t('items.subtasksCreated', { count: selectedTasks.length }));
       closeAIModal();
       // Reload child items
       await itemDetailStore.loadChildItems();
     } catch (err) {
       console.error('Failed to create sub-tasks:', err);
-      errorToast(err.message || 'Failed to create sub-tasks');
+      errorToast(err.message || t('items.subtasksCreateFailed'));
     } finally {
       aiCreating = false;
     }
@@ -1195,19 +1269,29 @@ import NativeSelect from '../../components/NativeSelect.svelte';
   });
 
   onDestroy(() => {
+    destroyed = true;
+    loadGeneration += 1;
     // Unregister context commands when component is destroyed
     unregisterContextCommands('item-detail');
   });
 
   // Load data using the store
   async function loadData() {
+    const generation = ++loadGeneration;
     const lookupWorkspaceKey = workspaceKey || (workspaceId && !/^\d+$/.test(String(workspaceId)) ? workspaceId : null);
     const lookupItemNumber = itemNumber || (lookupWorkspaceKey ? itemId : null);
 
-    await itemDetailStore.loadItem(workspaceId, itemId, {
+    const result = await itemDetailStore.loadItem(workspaceId, itemId, {
       workspaceKey: lookupWorkspaceKey,
       itemNumber: lookupItemNumber,
     });
+
+    // A newer navigation or unmount owns the view now. Drop this continuation
+    // before it can rewrite route identity or canonicalize the URL.
+    if (destroyed || generation !== loadGeneration) return false;
+    if (result?.status !== 'success') return false;
+
+    const resolvedItem = result.item;
 
     // Diagrams are non-blocking detail data, but they should appear without a
     // separate "Show Diagram" control.
@@ -1215,13 +1299,14 @@ import NativeSelect from '../../components/NativeSelect.svelte';
 
     if (tab === 'time') {
       await itemDetailStore.loadWorklogs();
+      if (destroyed || generation !== loadGeneration) return false;
     }
 
     // Backfill route props from the resolved item when the URL used a stable
     // key form (/workspace/WI/item/123 or /workspaces/WI/items/123).
-    if (itemDetailStore.item?.id) {
-      workspaceId = itemDetailStore.workspaceId;
-      itemId = itemDetailStore.item.id;
+    if (resolvedItem?.id) {
+      workspaceId = resolvedItem.workspace_id ?? itemDetailStore.workspaceId;
+      itemId = resolvedItem.id;
       previousItemId = itemId;
 
       // Clear notifications pointing at this item: viewing an item should
@@ -1232,19 +1317,22 @@ import NativeSelect from '../../components/NativeSelect.svelte';
       workspaceId = itemDetailStore.workspaceId;
     }
 
-    if (canonicalizeKeyRoute && !isModal && itemDetailStore.item?.id && itemDetailStore.workspaceId) {
+    if (canonicalizeKeyRoute && !isModal && resolvedItem?.id && resolvedItem.workspace_id) {
       const suffix = tab !== 'comments' ? `?tab=${tab}` : '';
-      navigate(`/workspaces/${itemDetailStore.workspaceId}/items/${itemDetailStore.item.id}${suffix}`, { replace: true });
+      navigate(`/workspaces/${resolvedItem.workspace_id}/items/${resolvedItem.id}${suffix}`, { replace: true });
     }
 
     // Load attachment settings and attachments (still using composable)
     await attachmentManager.loadSettings();
+    if (destroyed || generation !== loadGeneration) return false;
     if (attachmentManager.isEnabled()) {
       await attachmentManager.load();
+      if (destroyed || generation !== loadGeneration) return false;
     }
 
     // Load recurrence rule
     loadRecurrence();
+    return true;
   }
 
   function startCreateSubIssue() {
@@ -1377,6 +1465,7 @@ import NativeSelect from '../../components/NativeSelect.svelte';
     ondeleteWorklog={handleDeleteWorklog}
     onparentChanged={handleParentChanged}
     onitemtypechange={handleItemTypeChange}
+    onrequestmerge={openMergeDialog}
     onattachmentUpload={attachmentManager.handleUpload}
     onattachmentUploadFiles={attachmentManager.uploadFiles}
     onattachmentDelete={attachmentManager.handleDelete}
@@ -1385,6 +1474,7 @@ import NativeSelect from '../../components/NativeSelect.svelte';
     ondiagramSaved={handleDiagramSaved}
     onexecuteAction={handleExecuteAction}
     onreorderChildren={handleReorderChildren}
+    onrelatedStatusChanged={handleRelatedStatusChanged}
     onclose={closeModal}
     {recurrenceRule}
     onsetupRecurrence={handleSetupRecurrence}
@@ -1397,6 +1487,7 @@ import NativeSelect from '../../components/NativeSelect.svelte';
     isOpen={true}
     maxWidth={'max-w-6xl'}
     autoFocus={false}
+    dataTestid="item-detail-modal"
     onclose={closeModal}
     onKeydown={handleItemDetailShortcuts}
   >
@@ -1411,6 +1502,7 @@ import NativeSelect from '../../components/NativeSelect.svelte';
           embedded={true}
           isOpen={itemDetailStore.showTestCaseModal}
           testCaseId={itemDetailStore.selectedTestCaseId}
+          workspaceId={itemDetailStore.selectedTestCaseWorkspaceId ?? itemDetailStore.workspaceId}
           onclose={handleCloseTestCaseModal}
         />
       {:else}
@@ -1489,11 +1581,14 @@ import NativeSelect from '../../components/NativeSelect.svelte';
   <TestCaseViewModal
     isOpen={itemDetailStore.showTestCaseModal}
     testCaseId={itemDetailStore.selectedTestCaseId}
+    workspaceId={itemDetailStore.selectedTestCaseWorkspaceId ?? itemDetailStore.workspaceId}
     onclose={handleCloseTestCaseModal}
   />
 {/if}
+{/if}
 
-<!-- Time Log Modal -->
+<!-- Time Log Modal: rendered outside the isModal branch so logging time
+     works from both the item detail modal and the full-page view. -->
 {#if itemDetailStore.showTimeLogModal}
   <TimeLogModal
     defaultProjectId={getDefaultProjectForTimeLogging()}
@@ -1509,7 +1604,6 @@ import NativeSelect from '../../components/NativeSelect.svelte';
     oncancel={handleModalCancel}
   />
 {/if}
-{/if}
 
 <ItemMoveWorkspaceDialog
   bind:isOpen={showWorkspaceMoveDialog}
@@ -1520,12 +1614,14 @@ import NativeSelect from '../../components/NativeSelect.svelte';
 <ItemMergeDialog
   bind:isOpen={showMergeDialog}
   item={itemDetailStore.item}
+  preselected={mergePreselected}
   onMerged={handleMerged}
 />
 
 <ItemSplitDialog
   bind:isOpen={showSplitDialog}
   item={itemDetailStore.item}
+  itemTypes={itemDetailStore.availableSubIssueTypes}
   onSplit={handleSplit}
 />
 

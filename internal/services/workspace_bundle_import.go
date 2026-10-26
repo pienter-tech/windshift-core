@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -40,6 +41,9 @@ type WorkspaceBundleImportResult struct {
 	ItemsImported     int                            `json:"items_imported"`
 	ItemLinksImported int                            `json:"item_links_imported"`
 	LabelsCreated     int                            `json:"labels_created"`
+	ViewsApplied      bool                           `json:"views_applied"`
+	CalendarsImported int                            `json:"calendars_imported"`
+	MetricsImported   int                            `json:"metrics_imported"`
 	Outcomes          []WorkspaceBundleImportOutcome `json:"outcomes"`
 }
 
@@ -66,11 +70,14 @@ type WorkspaceBundleImportService struct {
 	configSetRepo *repository.ConfigurationSetRepository
 	itemTypes     *repository.ItemTypeRepository
 	labels        *repository.LabelRepository
+	boards        *repository.BoardConfigurationRepository
 	pages         *PageApplicationService
 	pageLabels    *PageLabelService
 	items         *ItemCreationService
 	links         *ItemLinkService
 	permissions   *PermissionService
+	slaCalendars  *SLACalendarService
+	slaMetrics    *SLAMetricService
 }
 
 func NewWorkspaceBundleImportService(
@@ -78,15 +85,19 @@ func NewWorkspaceBundleImportService(
 	configSetRepo *repository.ConfigurationSetRepository,
 	itemTypes *repository.ItemTypeRepository,
 	labels *repository.LabelRepository,
+	boards *repository.BoardConfigurationRepository,
 	pages *PageApplicationService,
 	pageLabels *PageLabelService,
 	items *ItemCreationService,
 	links *ItemLinkService,
 	permissions *PermissionService,
+	slaCalendars *SLACalendarService,
+	slaMetrics *SLAMetricService,
 ) *WorkspaceBundleImportService {
 	return &WorkspaceBundleImportService{
-		db: db, configSetRepo: configSetRepo, itemTypes: itemTypes, labels: labels,
+		db: db, configSetRepo: configSetRepo, itemTypes: itemTypes, labels: labels, boards: boards,
 		pages: pages, pageLabels: pageLabels, items: items, links: links, permissions: permissions,
+		slaCalendars: slaCalendars, slaMetrics: slaMetrics,
 	}
 }
 
@@ -100,6 +111,9 @@ func (s *WorkspaceBundleImportService) AuditImport(actor AuditActor, workspaceID
 		"items_imported":      result.ItemsImported,
 		"item_links_imported": result.ItemLinksImported,
 		"labels_created":      result.LabelsCreated,
+		"views_applied":       result.ViewsApplied,
+		"calendars_imported":  result.CalendarsImported,
+		"metrics_imported":    result.MetricsImported,
 	})
 }
 
@@ -119,6 +133,7 @@ func (s *WorkspaceBundleImportService) Import(ctx context.Context, actor AuditAc
 func (s *WorkspaceBundleImportService) ImportWithOptions(ctx context.Context, actor AuditActor, workspaceID int, bundle *WorkspaceBundle, opts *WorkspaceBundleImportOptions) (*WorkspaceBundleImportResult, error) {
 	if bundle == nil || bundle.Payload.Pages == nil && bundle.Payload.Items == nil &&
 		bundle.Payload.PageLabels == nil && bundle.Payload.Labels == nil && bundle.Payload.ItemLinks == nil &&
+		bundle.Payload.ViewSettings == nil && bundle.Payload.SLAs == nil &&
 		bundle.ConfigurationSet == nil {
 		return nil, ErrWorkspaceBundleEmpty
 	}
@@ -171,6 +186,24 @@ func (s *WorkspaceBundleImportService) ImportWithOptions(ctx context.Context, ac
 		}
 	}
 
+	// 2b. Workspace nav preset and SLA seeds. SLA name resolution depends on
+	// the configuration set's statuses and priorities, so this runs after the
+	// embedded set import above (and after the pack schema stage in apply).
+	if bundle.Payload.ViewSettings != nil {
+		if err := s.applyViewSettings(workspaceID, bundle.Payload.ViewSettings); err != nil {
+			return nil, err
+		}
+		result.ViewsApplied = true
+	}
+	if bundle.Payload.SLAs != nil {
+		calendarsImported, metricsImported, err := s.applySLAs(ctx, workspaceID, bundle.Payload.SLAs)
+		if err != nil {
+			return nil, err
+		}
+		result.CalendarsImported = calendarsImported
+		result.MetricsImported = metricsImported
+	}
+
 	// 3. Label catalogs (created on demand, dedup by name).
 	if err := s.ensurePageLabels(imp); err != nil {
 		return nil, err
@@ -209,6 +242,238 @@ func (s *WorkspaceBundleImportService) ImportWithOptions(ctx context.Context, ac
 		}
 	}
 	return result, nil
+}
+
+// applyViewSettings writes the workspace-scope nav preset, preserving the rest
+// of the board configuration when one already exists.
+func (s *WorkspaceBundleImportService) applyViewSettings(workspaceID int, preset *WorkspaceBundleViewSettings) error {
+	if s.boards == nil {
+		return errors.New("workspace bundle import: board configuration repository is not configured")
+	}
+	if len(preset.EnabledViews) == 0 {
+		return errors.New("workspace bundle import: view_settings.enabled_views must contain at least one view")
+	}
+	seen := make(map[string]bool, len(preset.EnabledViews))
+	for _, id := range preset.EnabledViews {
+		if !models.IsWorkspaceNavID(id) {
+			return fmt.Errorf("workspace bundle import: unknown view %q in view_settings.enabled_views", id)
+		}
+		if seen[id] {
+			return fmt.Errorf("workspace bundle import: duplicate view %q in view_settings.enabled_views", id)
+		}
+		seen[id] = true
+	}
+	settings := &models.ViewSettings{EnabledViews: &preset.EnabledViews}
+	existing, err := s.boards.GetByWorkspaceID(workspaceID)
+	switch {
+	case errors.Is(err, repository.ErrNotFound):
+		if _, err := s.boards.Create(nil, &workspaceID, &models.BoardConfigurationRequest{ViewSettings: settings}); err != nil {
+			return fmt.Errorf("create workspace view settings: %w", err)
+		}
+		return nil
+	case err != nil:
+		return fmt.Errorf("load workspace view settings: %w", err)
+	}
+	merged := mergeViewSettings(existing.ViewSettings, settings)
+	if err := s.boards.SetViewSettings(existing.ID, merged); err != nil {
+		return fmt.Errorf("update workspace view settings: %w", err)
+	}
+	return nil
+}
+
+// applySLAs seeds the bundle's working calendars and SLA metrics. It is
+// idempotent: calendars and metrics already present under the same name are
+// reused or skipped, so re-applying a pack converges.
+func (s *WorkspaceBundleImportService) applySLAs(ctx context.Context, workspaceID int, slas *WorkspaceBundleSLAs) (calendarsImported, metricsImported int, err error) {
+	if s.slaCalendars == nil || s.slaMetrics == nil {
+		return 0, 0, errors.New("workspace bundle import: SLA services are not configured")
+	}
+
+	existingCalendars, err := s.slaCalendars.ListWorkspace(ctx, workspaceID)
+	if err != nil {
+		return 0, 0, fmt.Errorf("list workspace calendars: %w", err)
+	}
+	calendarIDByName := make(map[string]int, len(existingCalendars))
+	for _, calendar := range existingCalendars {
+		calendarIDByName[lowerStr(calendar.Name)] = calendar.ID
+	}
+	calendarIDByRef := make(map[string]int, len(slas.Calendars))
+	for i := range slas.Calendars {
+		cal := &slas.Calendars[i]
+		if id, ok := calendarIDByName[lowerStr(cal.Name)]; ok {
+			calendarIDByRef[cal.Ref] = id
+			continue
+		}
+		created, err := s.slaCalendars.CreateWorkspace(ctx, workspaceID, SLACalendarInput{
+			Name:            cal.Name,
+			Description:     cal.Description,
+			Timezone:        cal.Timezone,
+			WeeklyIntervals: cal.WeeklyIntervals,
+			Holidays:        cal.Holidays,
+			IsDefault:       cal.IsDefault,
+		})
+		if err != nil {
+			return calendarsImported, metricsImported, fmt.Errorf("create calendar %q: %w", cal.Name, err)
+		}
+		calendarIDByRef[cal.Ref] = created.ID
+		calendarIDByName[lowerStr(cal.Name)] = created.ID
+		calendarsImported++
+	}
+
+	existingMetrics, err := s.slaMetrics.List(ctx, workspaceID)
+	if err != nil {
+		return calendarsImported, metricsImported, fmt.Errorf("list workspace SLA metrics: %w", err)
+	}
+	metricByName := make(map[string]bool, len(existingMetrics))
+	for _, metric := range existingMetrics {
+		metricByName[lowerStr(metric.Name)] = true
+	}
+	for i := range slas.Metrics {
+		metric := &slas.Metrics[i]
+		if metricByName[lowerStr(metric.Name)] {
+			continue
+		}
+		input, err := s.buildSLAMetricInput(ctx, metric, calendarIDByRef)
+		if err != nil {
+			return calendarsImported, metricsImported, err
+		}
+		if _, err := s.slaMetrics.Create(ctx, workspaceID, input); err != nil {
+			return calendarsImported, metricsImported, fmt.Errorf("create SLA metric %q: %w", metric.Name, err)
+		}
+		metricByName[lowerStr(metric.Name)] = true
+		metricsImported++
+	}
+	return calendarsImported, metricsImported, nil
+}
+
+// buildSLAMetricInput resolves the bundle's name-based metric into the
+// transport-neutral service input. Calendar refs must resolve to a bundled
+// calendar; priorities resolve against the instance registry.
+func (s *WorkspaceBundleImportService) buildSLAMetricInput(ctx context.Context, metric *WorkspaceBundleSLAMetric, calendarIDByRef map[string]int) (SLAMetricInput, error) {
+	input := SLAMetricInput{
+		Name:          metric.Name,
+		DisplayFormat: metric.DisplayFormat,
+		IsActive:      metric.IsActive,
+	}
+	for i := range metric.Conditions {
+		condition := &metric.Conditions[i]
+		config, err := s.conditionConfig(ctx, condition)
+		if err != nil {
+			return SLAMetricInput{}, fmt.Errorf("SLA metric %q condition %d: %w", metric.Name, i, err)
+		}
+		input.Conditions = append(input.Conditions, models.SLACondition{
+			Phase:         condition.Phase,
+			Position:      i,
+			ConditionType: condition.ConditionType,
+			Config:        config,
+		})
+	}
+	for i := range metric.Goals {
+		goal := &metric.Goals[i]
+		baseQL := strings.TrimSpace(goal.QLQuery)
+		if baseQL == "" {
+			baseQL = "1 = 1"
+		}
+		newGoal := func(query string) models.SLAGoal {
+			return models.SLAGoal{QLQuery: query, ImportStatus: "native"}
+		}
+		resolveTarget := func(target *WorkspaceBundleSLATarget) (models.SLAGoalTarget, error) {
+			calendarID, ok := calendarIDByRef[target.CalendarRef]
+			if !ok {
+				return models.SLAGoalTarget{}, fmt.Errorf("calendar_ref %q is not a bundled calendar", target.CalendarRef)
+			}
+			return models.SLAGoalTarget{TargetMs: target.TargetMs, CalendarID: calendarID}, nil
+		}
+
+		// One goal per target: priority targets get their own goal with the
+		// priority appended to the base query, and the fallback keeps the base
+		// query so first-match-wins preserves priority precedence.
+		var fallback *WorkspaceBundleSLATarget
+		for j := range goal.Targets {
+			target := &goal.Targets[j]
+			priorityName := strings.TrimSpace(target.PriorityName)
+			if target.IsFallback || priorityName == "" {
+				if fallback == nil {
+					fallback = &goal.Targets[j]
+				}
+				continue
+			}
+			if _, err := s.priorityIDByName(ctx, priorityName); err != nil {
+				return SLAMetricInput{}, fmt.Errorf("SLA metric %q goal %d target %d: %w", metric.Name, i, j, err)
+			}
+			resolvedTarget, err := resolveTarget(target)
+			if err != nil {
+				return SLAMetricInput{}, fmt.Errorf("SLA metric %q goal %d target %d: %w", metric.Name, i, j, err)
+			}
+			resolved := newGoal(combineGoalQuery(baseQL, priorityName))
+			resolved.Targets = []models.SLAGoalTarget{resolvedTarget}
+			input.Goals = append(input.Goals, resolved)
+		}
+		if fallback != nil {
+			resolvedTarget, err := resolveTarget(fallback)
+			if err != nil {
+				return SLAMetricInput{}, fmt.Errorf("SLA metric %q goal %d fallback: %w", metric.Name, i, err)
+			}
+			resolved := newGoal(baseQL)
+			resolved.Targets = []models.SLAGoalTarget{resolvedTarget}
+			input.Goals = append(input.Goals, resolved)
+		}
+	}
+	for i := range input.Goals {
+		input.Goals[i].Position = i
+	}
+	return input, nil
+}
+
+// conditionConfig encodes the condition's name lists into the engine's
+// status_ids/category_ids shape. Conditions with no target get an empty object.
+func (s *WorkspaceBundleImportService) conditionConfig(ctx context.Context, condition *WorkspaceBundleSLACondition) (json.RawMessage, error) {
+	if len(condition.StatusNames) == 0 && len(condition.CategoryNames) == 0 {
+		return json.RawMessage(`{}`), nil
+	}
+	config := struct {
+		StatusIDs   []int `json:"status_ids,omitempty"`
+		CategoryIDs []int `json:"category_ids,omitempty"`
+	}{}
+	for _, name := range condition.StatusNames {
+		id, err := s.statusIDByName(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		config.StatusIDs = append(config.StatusIDs, id)
+	}
+	for _, name := range condition.CategoryNames {
+		id, err := s.categoryIDByName(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		config.CategoryIDs = append(config.CategoryIDs, id)
+	}
+	return json.Marshal(config)
+}
+
+func (s *WorkspaceBundleImportService) statusIDByName(ctx context.Context, name string) (int, error) {
+	return s.lookupIDByName(ctx, "statuses", "status", name)
+}
+
+func (s *WorkspaceBundleImportService) categoryIDByName(ctx context.Context, name string) (int, error) {
+	return s.lookupIDByName(ctx, "status_categories", "status category", name)
+}
+
+func (s *WorkspaceBundleImportService) priorityIDByName(ctx context.Context, name string) (int, error) {
+	return s.lookupIDByName(ctx, "priorities", "priority", name)
+}
+
+func (s *WorkspaceBundleImportService) lookupIDByName(ctx context.Context, table, kind, name string) (int, error) {
+	var id int
+	err := s.db.QueryRowContext(ctx, "SELECT id FROM "+table+" WHERE LOWER(name) = LOWER(?)", strings.TrimSpace(name)).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, fmt.Errorf("%s %q was not found", kind, name)
+	}
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
 }
 
 // validateReferences refuses bundles referencing identities the target
@@ -321,9 +586,11 @@ func (s *WorkspaceBundleImportService) validateReferences(ctx context.Context, w
 			continue
 		}
 		seenEmails[strings.ToLower(email)] = true
-		if id, _ := s.lookupUserID(ctx, email); id == 0 {
+		if id, _ := s.lookupWorkspaceUserID(ctx, workspaceID, email); id == 0 {
+			// Report by path only: echoing the email would let an editor probe
+			// which addresses belong to accounts.
 			missing = append(missing, UnresolvedRef{
-				Kind: UnresolvedKindUser, Email: email,
+				Kind: UnresolvedKindUser,
 				Path: fmt.Sprintf("items/%s", item.Ref),
 			})
 		}
@@ -362,13 +629,29 @@ func (s *WorkspaceBundleImportService) lookupLinkTypeID(ctx context.Context, nam
 	return id, err
 }
 
-func (s *WorkspaceBundleImportService) lookupUserID(ctx context.Context, email string) (int, error) {
+// lookupWorkspaceUserID resolves an assignee email to a user who can view the
+// target workspace. Restricting the lookup to workspace members stops an editor
+// from assigning an arbitrary instance user as an imported item's assignee.
+func (s *WorkspaceBundleImportService) lookupWorkspaceUserID(ctx context.Context, workspaceID int, email string) (int, error) {
 	var id int
 	err := s.db.QueryRowContext(ctx, `SELECT id FROM users WHERE LOWER(email) = LOWER(?)`, email).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}
-	return id, err
+	if err != nil {
+		return 0, err
+	}
+	if s.permissions == nil {
+		return 0, nil
+	}
+	actionable, err := NewWorkspaceUserResolver(s.db, s.permissions).CanActInWorkspace(id, workspaceID)
+	if err != nil {
+		return 0, err
+	}
+	if !actionable {
+		return 0, nil
+	}
+	return id, nil
 }
 
 // ---- application ------------------------------------------------------------
@@ -585,8 +868,7 @@ func (s *WorkspaceBundleImportService) importItems(ctx context.Context, imp *wor
 			input.PriorityID = &priorityID
 		}
 		if item.AssigneeEmail != "" {
-			var userID int
-			if err := s.db.QueryRowContext(ctx, `SELECT id FROM users WHERE LOWER(email) = LOWER(?)`, item.AssigneeEmail).Scan(&userID); err == nil {
+			if userID, err := s.lookupWorkspaceUserID(ctx, imp.workspaceID, item.AssigneeEmail); err == nil && userID != 0 {
 				input.AssigneeID = &userID
 			}
 		}

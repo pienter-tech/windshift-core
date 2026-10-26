@@ -59,7 +59,18 @@ func (h *PortalHandler) resolvePortalRequest(w http.ResponseWriter, r *http.Requ
 			return 0, models.ChannelConfig{}, nil, nil, false, nil, nil, false
 		}
 		if isApprover {
-			return itemID, config, internalUserID, portalCustomerID, false, ctx, cancel, true
+			// Approver access must not outlive the portal's served-workspace
+			// configuration. Without this the fallback grants access to an item
+			// whose workspace was removed from the portal.
+			served, serr := h.portalService.PortalServesRequestWorkspace(ctx, itemID, channel.ID)
+			if serr != nil {
+				cancel()
+				respondInternalError(w, r, serr)
+				return 0, models.ChannelConfig{}, nil, nil, false, nil, nil, false
+			}
+			if served {
+				return itemID, config, internalUserID, portalCustomerID, false, ctx, cancel, true
+			}
 		}
 	}
 
@@ -349,7 +360,7 @@ func (h *PortalHandler) DownloadRequestAttachment(w http.ResponseWriter, r *http
 	w.Header().Set("Content-Length", strconv.FormatInt(binary.FileSize, 10))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
-	if isInlineSafeMimeType(binary.MimeType) {
+	if fileserve.IsInlineSafeMimeType(binary.MimeType) {
 		w.Header().Set("Content-Disposition", fileserve.ContentDisposition("inline", binary.OriginalFilename))
 	} else {
 		w.Header().Set("Content-Disposition", fileserve.ContentDisposition("attachment", binary.OriginalFilename))

@@ -1,5 +1,6 @@
 <script>
-  import { api } from '../api.js';
+  import { workspaces } from '../api/workspaces.js';
+  import { requestTypes } from '../api/channels.js';
   import { workspacesStore } from '../stores/workspaces.svelte.js';
   import Button from '../components/Button.svelte';
   import Input from '../components/Input.svelte';
@@ -44,6 +45,12 @@
   let isFormInitialized = $state(false);
   let lastOpenState = $state(false);
 
+  // workspace_id and item_type_id are fixed once a request type exists: the
+  // configured fields are resolved from both. The system Email intake type is
+  // the exception — it carries no fields and its item type stays editable.
+  const isSystemEmail = $derived(requestType?.kind === 'email');
+  const bindingLocked = $derived(mode === 'edit');
+
   // Load workspaces filtered to channel's configured IDs. The directory
   // store caches only the first server page, so a restricted channel
   // resolves each configured id it names explicitly — the allowed set is the
@@ -58,7 +65,7 @@
       const byId = new Map(cached.map(ws => [ws.id, ws]));
       const configured = channelWorkspaceIds || [];
       const missing = configured.filter(id => !byId.has(id));
-      const fetched = await Promise.allSettled(missing.map(id => api.workspaces.get(id)));
+      const fetched = await Promise.allSettled(missing.map(id => workspaces.get(id)));
       for (const result of fetched) {
         if (result.status === 'fulfilled' && result.value?.id) {
           byId.set(result.value.id, result.value);
@@ -112,7 +119,7 @@
             // the request_type row, so this modal still has to round-trip
             // it through the basic Update payload. Refetch here so we
             // don't silently clobber a value the FieldsModal just saved.
-            api.requestTypes.get(requestType.id)
+            requestTypes.get(requestType.id)
               .then(fresh => { formData.title_template = fresh?.title_template || ''; })
               .catch(err => console.error('Failed to refresh request type:', err));
           } else if (mode === 'create') {
@@ -160,11 +167,16 @@
         return;
       }
 
+      if (mode === 'create' && !formData.workspace_id) {
+        error = t('channel.targetWorkspaceRequired');
+        return;
+      }
+
       submitting = true;
       error = null;
 
       if (mode === 'create') {
-        await api.requestTypes.create(channelId, {
+        await requestTypes.create(channelId, {
           name: formData.name.trim(),
           description: formData.description.trim(),
           icon: formData.icon,
@@ -175,15 +187,16 @@
           is_active: true
         });
       } else {
-        await api.requestTypes.update(channelId, requestType.id, {
+        // is_active is omitted on edit so saving the form does not reactivate
+        // a request type that was deliberately disabled.
+        await requestTypes.update(channelId, requestType.id, {
           name: formData.name.trim(),
           description: formData.description.trim(),
           icon: formData.icon,
           color: formData.color,
           item_type_id: formData.item_type_id,
           workspace_id: formData.workspace_id || null,
-          title_template: formData.title_template.trim(),
-          is_active: true
+          title_template: formData.title_template.trim()
         });
       }
 
@@ -267,15 +280,20 @@
             placeholder={t('portal.selectItemType')}
             getValue={(item) => item.id}
             getLabel={(item) => item.name}
+            disabled={bindingLocked && !isSystemEmail}
           />
           <p class="text-xs mt-1" style="color: {isDarkMode ? '#94a3b8' : '#6b7280'};">
-            {t('portal.submissionsCreateItemType')}
+            {#if bindingLocked && !isSystemEmail}
+              {t('portal.bindingLocked', 'Fixed after creation. Delete and recreate the request type to change it.')}
+            {:else}
+              {t('portal.submissionsCreateItemType')}
+            {/if}
           </p>
         </div>
 
         <div>
           <label for="rt-workspace" class="block text-sm font-medium mb-2" style="color: {isDarkMode ? '#9ca3af' : '#374151'};">
-            {t('common.workspace')}
+            {t('common.workspace')} {#if mode === 'create'}<span class="text-ds-text-danger">*</span>{/if}
           </label>
           <BasePicker
             bind:value={formData.workspace_id}
@@ -286,10 +304,15 @@
             placeholder={t('portal.selectWorkspace', 'Select workspace')}
             getValue={(item) => item.id}
             getLabel={(item) => item.name}
-            allowClear={true}
+            allowClear={mode === 'create'}
+            disabled={bindingLocked}
           />
           <p class="text-xs mt-1" style="color: {isDarkMode ? '#94a3b8' : '#6b7280'};">
-            {t('portal.workspaceFieldResolution', 'Used to resolve available custom fields from the workspace configuration.')}
+            {#if bindingLocked}
+              {t('portal.bindingLocked', 'Fixed after creation. Delete and recreate the request type to change it.')}
+            {:else}
+              {t('portal.workspaceFieldResolution', 'Used to resolve available custom fields from the workspace configuration.')}
+            {/if}
           </p>
         </div>
       </div>

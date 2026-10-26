@@ -1,7 +1,7 @@
 // Jira Import Store - State management for the import wizard
 // Uses Svelte 5 runes for reactivity
 
-import { api } from '../api.js';
+import { jiraImport as jiraImportApi } from '../api/misc.js';
 import { createWizardNavigation } from '../utils/wizardNavigation.js';
 
 function defaultJiraWizardSteps(includeXray = false) {
@@ -138,6 +138,11 @@ let wizardState = $state({
   steps: defaultJiraWizardSteps(),
 });
 
+// Bumped whenever polling starts or resets. A poll loop captures the value it
+// started with and stops rescheduling once it no longer matches, so closing or
+// resetting the wizard cannot leave a stale loop polling a cleared job id.
+let importPollGeneration = 0;
+
 // Export reactive getters
 export const jiraImport = {
   // Getters for reactive access
@@ -162,6 +167,18 @@ export const jiraImport = {
   get mappings() {
     return mappingsState;
   },
+  // Existing Windshift entities the operator may map onto. Empty lists mean
+  // only "create new" is available.
+  get mappingTargets() {
+    return (
+      analysisState.result?.mapping_targets || {
+        workspaces: [],
+        item_types: [],
+        statuses: [],
+        custom_fields: [],
+      }
+    );
+  },
   get import() {
     return importState;
   },
@@ -175,7 +192,7 @@ export const jiraImport = {
     savedConnectionsState.error = null;
 
     try {
-      const connections = await api.jiraImport.getConnections();
+      const connections = await jiraImportApi.getConnections();
       savedConnectionsState.items = connections;
     } catch (err) {
       savedConnectionsState.error = err.message || 'Failed to load connections';
@@ -190,7 +207,7 @@ export const jiraImport = {
     importJobsState.error = null;
 
     try {
-      const jobs = await api.jiraImport.getImportJobs();
+      const jobs = await jiraImportApi.getImportJobs();
       importJobsState.items = jobs;
     } catch (err) {
       importJobsState.error = err.message || 'Failed to load import jobs';
@@ -202,7 +219,7 @@ export const jiraImport = {
   // Delete a saved connection
   async deleteSavedConnection(connectionId) {
     try {
-      await api.jiraImport.deleteConnection(connectionId);
+      await jiraImportApi.deleteConnection(connectionId);
       savedConnectionsState.items = savedConnectionsState.items.filter(
         (c) => c.id !== connectionId
       );
@@ -212,9 +229,21 @@ export const jiraImport = {
     }
   },
 
+  // Replace the stored credentials of a saved connection. Reloads the list so
+  // the row reflects the instance name returned by the re-verification.
+  async updateSavedConnection(connectionId, credentials) {
+    try {
+      const connection = await jiraImportApi.updateConnection(connectionId, credentials);
+      await this.loadSavedConnections();
+      return { success: true, connection };
+    } catch (err) {
+      return { success: false, error: err.message || 'Failed to update connection' };
+    }
+  },
+
   async deleteImportedData(jobId, confirmation) {
     try {
-      await api.jiraImport.deleteImportedData(jobId, confirmation);
+      await jiraImportApi.deleteImportedData(jobId, confirmation);
       await this.loadImportJobs();
       return { success: true };
     } catch (err) {
@@ -241,7 +270,7 @@ export const jiraImport = {
     const connectionEmail = deploymentType === 'datacenter' ? '' : email;
 
     try {
-      const response = await api.jiraImport.testConnection({
+      const response = await jiraImportApi.testConnection({
         instance_url: url,
         email: connectionEmail,
         api_token: token,
@@ -281,7 +310,7 @@ export const jiraImport = {
     projectsState.available = [];
 
     try {
-      const projects = await api.jiraImport.getProjects(connectionState.connectionId);
+      const projects = await jiraImportApi.getProjects(connectionState.connectionId);
       projectsState.available = projects;
     } catch (err) {
       projectsState.error = toProjectError(err);
@@ -304,7 +333,7 @@ export const jiraImport = {
     const requestedOpenOnly = projectsState.openIssuesOnly;
     projectsState.isLoadingCounts = true;
     try {
-      const counts = await api.jiraImport.getProjectCounts(
+      const counts = await jiraImportApi.getProjectCounts(
         connectionState.connectionId,
         keys,
         requestedOpenOnly
@@ -368,7 +397,7 @@ export const jiraImport = {
     analysisState.result = null;
 
     try {
-      const result = await api.jiraImport.analyzeProjects(
+      const result = await jiraImportApi.analyzeProjects(
         connectionState.connectionId,
         projectsState.selected,
         projectsState.openIssuesOnly
@@ -567,10 +596,13 @@ export const jiraImport = {
       case 'mapping':
         return (
           analysisState.result !== null &&
-          mappingsState.workspaces.every(
-            (mapping) =>
-              !mapping.workspaceKeyCollisionFound || mapping.keyAliasAcknowledged === true
-          )
+          mappingsState.workspaces.every((mapping) => {
+            if (!mapping.createNew) return mapping.windshiftId != null;
+            return (
+              Boolean(mapping.newWorkspaceName?.trim() && mapping.newWorkspaceKey?.trim()) &&
+              (!mapping.workspaceKeyCollisionFound || mapping.keyAliasAcknowledged === true)
+            );
+          })
         );
       case 'preview':
         return true;
@@ -641,7 +673,7 @@ export const jiraImport = {
     goToWizardStep('import');
 
     try {
-      const response = await api.jiraImport.startImport({
+      const response = await jiraImportApi.startImport({
         connection_id: connectionState.connectionId,
         project_keys: projectsState.selected,
         open_issues_only: projectsState.openIssuesOnly,
@@ -679,9 +711,15 @@ export const jiraImport = {
   async pollJobStatus() {
     if (!importState.jobId) return;
 
+    const generation = ++importPollGeneration;
+    const jobId = importState.jobId;
+
     const poll = async () => {
+      if (generation !== importPollGeneration) return;
+
       try {
-        const status = await api.jiraImport.getJobStatus(importState.jobId);
+        const status = await jiraImportApi.getJobStatus(jobId);
+        if (generation !== importPollGeneration) return;
         importState.phase = status.phase || 'running';
         importState.progress = status.progress;
 
@@ -697,6 +735,7 @@ export const jiraImport = {
         // Continue polling every 2 seconds
         setTimeout(poll, 2000);
       } catch (err) {
+        if (generation !== importPollGeneration) return;
         console.error('Failed to poll job status:', err);
         // Continue polling even on error
         setTimeout(poll, 5000);
@@ -708,6 +747,8 @@ export const jiraImport = {
 
   // Reset everything
   reset() {
+    importPollGeneration++;
+
     connectionState = {
       jiraUrl: '',
       email: '',

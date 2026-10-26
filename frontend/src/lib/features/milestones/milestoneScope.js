@@ -1,4 +1,4 @@
-// Scope and edit rights of a milestone on its detail page (WCORE-29).
+// Scope and edit rights of a milestone on its detail page.
 // Both come from the milestone record (`GET /milestones/{id}`): the progress
 // response (`GET /milestones/{id}/progress`) carries neither `is_global` nor
 // `workspace_id`.
@@ -31,7 +31,7 @@ export function canManageMilestone(milestone, access) {
 }
 
 /**
- * Whether a milestone list row shows the drag grip (WCORE-28): global rows
+ * Whether a milestone list row shows the drag grip: global rows
  * need the global reorder right, workspace rows the local one. The caller
  * computes both rights for the page; on the global page `canReorderLocal` is
  * false, because workspace milestones are reordered on their own workspace page.

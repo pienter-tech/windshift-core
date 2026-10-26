@@ -451,6 +451,9 @@ type commentApplication interface {
 	Create(services.CreateCommentParams) (*services.CreateCommentResult, error)
 	UpdateWithEffects(services.UpdateCommentParams) (*models.Comment, error)
 	DeleteWithEffects(services.DeleteCommentParams) error
+	AttachReactions([]models.Comment) error
+	AddReaction(commentID, userID int, reaction string) ([]models.CommentReaction, error)
+	RemoveReaction(commentID, userID int, reaction string) error
 }
 
 type commentAccess interface {
@@ -513,7 +516,8 @@ type planningApplication interface {
 }
 
 type milestoneCommentApplication interface {
-	List(userID, milestoneID int, params services.MilestoneCommentListParams) ([]models.MilestoneComment, int, error)
+	GetFeed(userID, milestoneID int, options services.CommentFeedOptions) (*services.MilestoneCommentFeedPage, error)
+	CountFeed(milestoneID int) (int, error)
 	Create(userID, milestoneID int, content string) (*models.MilestoneComment, error)
 	Update(userID, milestoneID, commentID int, content string) (*models.MilestoneComment, error)
 	Delete(userID, milestoneID, commentID int) error
@@ -526,7 +530,7 @@ type milestonePageLinkApplication interface {
 }
 
 type milestoneActivityApplication interface {
-	List(userID, milestoneID int, params services.MilestoneActivityListParams) ([]models.MilestoneActivity, int, error)
+	List(userID, milestoneID int, params services.MilestoneActivityListParams) ([]models.MilestoneActivity, bool, error)
 }
 
 type linkApplication interface {
@@ -1038,7 +1042,7 @@ func applyParameterCorrections(route *Route) {
 		upsertParameter(route, ParameterMetadata{Name: "since", In: "query", Description: "Exclusive change cursor. Omit to obtain a stable watermark before a full load.", Schema: map[string]any{"type": "integer", "format": "int64", "minimum": 0}})
 		upsertParameter(route, ParameterMetadata{Name: "through", In: "query", Description: "Inclusive fixed watermark from the first page. Must be greater than or equal to since.", Schema: map[string]any{"type": "integer", "format": "int64", "minimum": 0}})
 		upsertParameter(route, integerQuery("limit", "Maximum log events per page. Supply explicitly to enable incremental pagination; omitted limits preserve the full-reload fallback on overflow.", 500, 500))
-	case "GET /items/{item_id}/comments", "GET /workspaces/{workspace_id}/agent-runs", "GET /items/{item_id}/agent-runs", "GET /agent-runs/{run_id}/events":
+	case "GET /items/{item_id}/comments", "GET /milestones/{milestone_id}/comments", "GET /workspaces/{workspace_id}/agent-runs", "GET /items/{item_id}/agent-runs", "GET /agent-runs/{run_id}/events":
 		filtered := route.Parameters[:0]
 		for _, parameter := range route.Parameters {
 			if parameter.In != "query" || (parameter.Name != "before" && parameter.Name != "before_id" && parameter.Name != "since" && parameter.Name != "since_id" && parameter.Name != "after_id") {
@@ -1052,6 +1056,11 @@ func applyParameterCorrections(route *Route) {
 			defaultSize = 200
 		}
 		upsertParameter(route, integerQuery("page_size", "Maximum number of resources to return.", 200, defaultSize))
+		if route.Path == "/items/{item_id}/comments" {
+			upsertParameter(route, booleanQuery("include_reactions", "Attach grouped emoji reactions to each comment. Values true and 1 enable; omitted or other values leave reactions out.", false))
+		}
+	case "GET /comments/{comment_id}", "PATCH /comments/{comment_id}":
+		upsertParameter(route, booleanQuery("include_reactions", "Attach grouped emoji reactions to the returned comment. Values true and 1 enable; omitted or other values leave reactions out.", false))
 	case "POST /items/batch", "POST /assets/summaries", "POST /milestones/test-statistics", "POST /iterations/progress":
 		removeQueryParameter(route, "ids")
 	}
@@ -1096,8 +1105,6 @@ func applyParameterCorrections(route *Route) {
 		} else {
 			upsertParameter(route, booleanQuery("include_global", "Includes global milestones alongside the workspace's own.", false))
 		}
-	case "GET /milestones/{milestone_id}/comments":
-		upsertParameter(route, enumQuery("sort", "Sort field; prefix with '-' for descending order. ID is the stable final tie-breaker.", "created_at", "-created_at"))
 	case "GET /iterations", "GET /workspaces/{workspace_id}/iterations":
 		upsertParameter(route, positiveIDQuery("type_id", "Restricts results to one iteration type."))
 		upsertParameter(route, stringQuery("status", "Restricts results to an iteration status."))
@@ -1233,8 +1240,10 @@ func applyParameterCorrections(route *Route) {
 		}
 	case "GET /links/batch":
 		route.Description = "Returns one-hop links for at most 100 explicit item IDs, or for one paged query-language selection. Explicit IDs retain first-occurrence order. Each item is capped independently and exposes an operation-bound next_cursor when more links exist; inaccessible links are omitted."
+	case "GET /milestones/{milestone_id}/comments":
+		route.Description = "Returns the milestone's comment feed, newest first, with at most 200 entries. Opaque next_cursor and refresh_cursor values preserve the exclusive timestamp-and-ID boundary without exposing its representation; total is returned on the first page only."
 	case "GET /items/{item_id}/comments":
-		route.Description = "Returns an authorization-filtered comment feed with at most 200 entries. Opaque next_cursor and refresh_cursor values preserve the exclusive timestamp-and-ID boundary without exposing its representation; partial comment pages are never returned on failure."
+		route.Description = "Returns an authorization-filtered comment feed with at most 200 entries. Opaque next_cursor and refresh_cursor values preserve the exclusive timestamp-and-ID boundary without exposing its representation; partial comment pages are never returned on failure. Grouped reactions are attached only when include_reactions is true."
 	case "GET /agent-runs/{run_id}/events":
 		route.Description = "Returns up to 200 visible run events after an operation-bound opaque cursor. Events use stable ascending ID order, next_cursor resumes exclusively after the final returned event, and partial pages are never returned on failure."
 	case "GET /workspaces/{workspace_id}/agent-runs", "GET /items/{item_id}/agent-runs":

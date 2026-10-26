@@ -9,7 +9,7 @@
   } from './dashboard/taskWidgetState.js';
   import DropdownMenu from '../layout/DropdownMenu.svelte';
   import { useEventListener } from 'runed';
-  import { MoreHorizontal } from '@lucide/svelte';
+  import MoreHorizontal from '@lucide/svelte/icons/more-horizontal';
 
   let {
     title = '',
@@ -25,6 +25,7 @@
     onremove = null,
     onwidthchange = null,
     onconfigchange = null,
+    extraMenuItems = [],
     children,
   } = $props();
 
@@ -117,6 +118,8 @@
   ]);
 
   const menuItems = $derived([
+    ...extraMenuItems,
+    ...(extraMenuItems.length > 0 ? [{ type: 'divider' }] : []),
     ...presetItems,
     ...(supportsRowCount ? [{ type: 'divider' }] : []),
     ...(supportsRowCount ? rowCountItems : []),
@@ -201,6 +204,7 @@
   data-widget-id={widgetId}
   data-widget-wrapper
   data-widget-width={displayColumns}
+  data-testid={`widget-${widgetId}`}
 >
   <!-- Header with drag handle -->
   <div class="widget-header flex items-center justify-between px-4 py-3 border-b border-ds-border">
@@ -235,7 +239,6 @@
       <!-- Width presets menu (available outside edit mode too) -->
       <DropdownMenu
         triggerIcon={MoreHorizontal}
-        triggerIconBgColor="transparent"
         iconOnly={true}
         showChevron={false}
         triggerLabel={t('widgets.resizeAriaLabel')}
@@ -276,25 +279,26 @@
     {@render children?.()}
   </div>
 
-  <!-- Resize handle (right edge) — exposed only in edit mode -->
-  {#if isEditing}
-    <button
-      class="widget-resize-handle"
-      data-testid="widget-resize-handle"
-      role="slider"
-      tabindex="0"
-      aria-label={t('widgets.resizeAriaLabel')}
-      aria-valuemin={minWidth}
-      aria-valuemax={maxWidth}
-      aria-valuenow={displayColumns}
-      aria-valuetext={t('widgets.resizeColumnsValue', { count: displayColumns })}
-      onmousedown={onResizeStart}
-      ondblclick={onResizeHandleDblClick}
-      onkeydown={handleSliderKeydown}
-    >
-      <span class="widget-resize-grip" aria-hidden="true"></span>
-    </button>
-  {/if}
+  <!-- Resize handle (right edge). Available in every mode; the grip is
+       revealed on widget hover and stays visible while editing. -->
+  <button
+    class="widget-resize-handle"
+    class:widget-resize-handle--editing={isEditing}
+    class:widget-resize-handle--active={isResizing}
+    data-testid="widget-resize-handle"
+    role="slider"
+    tabindex={isEditing ? 0 : -1}
+    aria-label={t('widgets.resizeAriaLabel')}
+    aria-valuemin={minWidth}
+    aria-valuemax={maxWidth}
+    aria-valuenow={displayColumns}
+    aria-valuetext={t('widgets.resizeColumnsValue', { count: displayColumns, total: totalColumns })}
+    onmousedown={onResizeStart}
+    ondblclick={onResizeHandleDblClick}
+    onkeydown={handleSliderKeydown}
+  >
+    <span class="widget-resize-grip" data-testid="widget-resize-grip" aria-hidden="true"></span>
+  </button>
 
   {#if isResizing}
     <div class="widget-resize-guide" data-testid="widget-resize-guide">
@@ -326,22 +330,50 @@
   .widget-resize-handle {
     position: absolute;
     top: 0;
-    right: -3px;
+    right: -6px;
     bottom: 0;
-    width: 6px;
+    width: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     cursor: col-resize;
     background-color: transparent;
     border: none;
     padding: 0;
-    z-index: 1;
-    border-radius: 2px;
-    transition: background-color 140ms ease-in-out;
+    z-index: 2;
+    touch-action: none;
   }
 
-  .widget-resize-handle:hover,
-  .widget-resize-handle:focus-visible {
+  /* Revealed on widget hover and kept visible while editing, so the resize
+     affordance is discoverable without cluttering the resting page. */
+  .widget-resize-grip {
+    width: 3px;
+    height: 2.5rem;
+    border-radius: 9999px;
+    background-color: var(--ds-text-subtlest);
+    opacity: 0;
+    transition: background-color 140ms ease-in-out, opacity 140ms ease-in-out,
+      transform 140ms ease-in-out;
+  }
+
+  .widget-container:hover .widget-resize-grip,
+  .widget-resize-handle:focus-visible .widget-resize-grip,
+  .widget-resize-handle--active .widget-resize-grip,
+  .widget-resize-handle--editing .widget-resize-grip {
+    opacity: 1;
+  }
+
+  .widget-resize-handle:hover .widget-resize-grip,
+  .widget-resize-handle:focus-visible .widget-resize-grip,
+  .widget-resize-handle--active .widget-resize-grip {
     background-color: var(--ds-border-focused, #3b82f6);
-    outline: none;
+    transform: scaleY(1.4);
+  }
+
+  .widget-resize-handle:focus-visible {
+    outline: 2px solid var(--ds-border-focused, #3b82f6);
+    outline-offset: -2px;
+    border-radius: 4px;
   }
 
   .widget-resize-guide {

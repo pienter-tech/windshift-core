@@ -1,25 +1,26 @@
 import { describe, expect, it } from 'vitest';
 import {
-  DEFAULT_MILESTONE_SORT,
   milestoneLastUpdated,
   milestoneStatusSortValue,
   milestoneTimelineSortValue,
   timestampSortValue,
 } from './milestoneListSort.js';
 
-describe('milestone list sorting (WCORE-33)', () => {
-  it('opens sorted by Updated, newest first', () => {
-    expect(DEFAULT_MILESTONE_SORT).toEqual({ key: 'last_updated_at', direction: 'desc' });
-  });
-
-  it('prefers the list last-updated time over the milestone updated_at', () => {
+describe('milestone list sorting', () => {
+  it('takes the later of the last activity and the milestone updated_at', () => {
     expect(
       milestoneLastUpdated({
         updated_at: '2026-01-01T00:00:00Z',
-        last_updated_at: '2026-02-01T00:00:00Z',
+        last_activity_at: '2026-02-01T00:00:00Z',
       })
     ).toBe('2026-02-01T00:00:00Z');
-    // A milestone saved on the page has only the save's updated_at.
+    expect(
+      milestoneLastUpdated({
+        updated_at: '2026-03-01T00:00:00Z',
+        last_activity_at: '2026-02-01T00:00:00Z',
+      })
+    ).toBe('2026-03-01T00:00:00Z');
+    // No activity yet: the milestone's own updated_at.
     expect(milestoneLastUpdated({ updated_at: '2026-03-01T00:00:00Z' })).toBe(
       '2026-03-01T00:00:00Z'
     );

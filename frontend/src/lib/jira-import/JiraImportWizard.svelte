@@ -9,11 +9,26 @@
   import AlertBox from '../components/AlertBox.svelte';
   import Input from '../components/Input.svelte';
   import FormField from '../components/FormField.svelte';
-  import {
-    Cloud, Server, ChevronRight, ChevronLeft, ArrowRight,
-    Briefcase, FileText, Activity, Hash, Box, AlertCircle,
-    ExternalLink, Eye, EyeOff, Plus, Users, Paperclip, Flag, Check, X
-  } from '@lucide/svelte';
+  import Cloud from '@lucide/svelte/icons/cloud';
+  import Server from '@lucide/svelte/icons/server';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import ChevronLeft from '@lucide/svelte/icons/chevron-left';
+  import ArrowRight from '@lucide/svelte/icons/arrow-right';
+  import Briefcase from '@lucide/svelte/icons/briefcase';
+  import FileText from '@lucide/svelte/icons/file-text';
+  import Activity from '@lucide/svelte/icons/activity';
+  import Hash from '@lucide/svelte/icons/hash';
+  import Box from '@lucide/svelte/icons/box';
+  import AlertCircle from '@lucide/svelte/icons/alert-circle';
+  import ExternalLink from '@lucide/svelte/icons/external-link';
+  import Eye from '@lucide/svelte/icons/eye';
+  import EyeOff from '@lucide/svelte/icons/eye-off';
+  import Plus from '@lucide/svelte/icons/plus';
+  import Users from '@lucide/svelte/icons/users';
+  import Paperclip from '@lucide/svelte/icons/paperclip';
+  import Flag from '@lucide/svelte/icons/flag';
+  import Check from '@lucide/svelte/icons/check';
+  import X from '@lucide/svelte/icons/x';
   import Stepper from '../components/Stepper.svelte';
   import { addToast } from '../stores/toasts.svelte.js';
   import { attachmentStatus } from '../stores/attachmentStatus.svelte.js';
@@ -58,6 +73,7 @@
   let mappings = $derived(jiraImport.mappings);
   let wizard = $derived(jiraImport.wizard);
   let importData = $derived(jiraImport.import);
+  let mappingTargets = $derived(jiraImport.mappingTargets);
 
   let currentStep = $derived(wizard.currentStep);
   let steps = $derived(wizard.steps);
@@ -219,6 +235,93 @@
       return false;
     }
     return true;
+  }
+
+  // Each mapping row exposes one select whose value encodes the choice:
+  // "create", "skip", or "existing:<id>" / "map:<id>".
+  function existingValue(id) {
+    return `existing:${id}`;
+  }
+
+  function createOrExistingOptions(createLabel, targets, labelFor = (target) => target.name) {
+    return [
+      { value: 'create', label: createLabel },
+      ...targets.map((target) => ({ value: existingValue(target.id), label: labelFor(target) })),
+    ];
+  }
+
+  function mappingChoiceValue(mapping) {
+    if (mapping.createNew || mapping.windshiftId == null) return 'create';
+    return existingValue(mapping.windshiftId);
+  }
+
+  function applyMappingChoice(setter, value) {
+    if (value === 'create') {
+      setter(null, true);
+      return;
+    }
+    setter(Number(value.slice('existing:'.length)), false);
+  }
+
+  function workspaceTargetOptions() {
+    return createOrExistingOptions(
+      t('jiraImport.mapping.createNewWorkspace'),
+      mappingTargets.workspaces,
+      (workspace) => `${workspace.name} (${workspace.key})`
+    );
+  }
+
+  function handleWorkspaceTargetChange(mapping, value) {
+    if (value === 'create') {
+      jiraImport.setWorkspaceMapping(mapping.jiraKey, { createNew: true, windshiftId: null });
+      return;
+    }
+    jiraImport.setWorkspaceMapping(mapping.jiraKey, {
+      createNew: false,
+      windshiftId: Number(value.slice('existing:'.length)),
+    });
+  }
+
+  function workspaceTargetName(id) {
+    return mappingTargets.workspaces.find((workspace) => workspace.id === id)?.name || '';
+  }
+
+  function customFieldChoiceValue(mapping) {
+    if (mapping.action === 'map' && mapping.windshiftId != null) return `map:${mapping.windshiftId}`;
+    return mapping.action;
+  }
+
+  // Mirrors the backend's compatibility rule: text/textarea are
+  // interchangeable, every other type must match so the stored value keeps the
+  // shape the target field expects.
+  function customFieldTypesCompatible(targetType, sourceType) {
+    const canonical = (type) => (type === 'checkbox' ? 'boolean' : type);
+    const target = canonical(targetType);
+    const source = canonical(sourceType);
+    if (target === source) return true;
+    const textish = (type) => type === 'text' || type === 'textarea';
+    return textish(target) && textish(source);
+  }
+
+  function customFieldOptions(mapping) {
+    return [
+      { value: 'create', label: t('jiraImport.mapping.create') },
+      { value: 'skip', label: t('jiraImport.mapping.skip') },
+      ...mappingTargets.custom_fields
+        .filter((field) => customFieldTypesCompatible(field.field_type, mapping.windshiftType))
+        .map((field) => ({
+          value: `map:${field.id}`,
+          label: `${field.name} (${field.field_type})`,
+        })),
+    ];
+  }
+
+  function handleCustomFieldChoice(mapping, value) {
+    if (value.startsWith('map:')) {
+      jiraImport.setFieldAction(mapping.jiraId, 'map', Number(value.slice('map:'.length)));
+      return;
+    }
+    jiraImport.setFieldAction(mapping.jiraId, value, null);
   }
 </script>
 
@@ -727,16 +830,31 @@
                       </div>
                     </div>
                     <ArrowRight size={14} style="color: var(--ds-text-subtle);" />
-                    <div class="w-48 flex-shrink-0">
-                      <Input
-                        bind:value={mapping.newWorkspaceName}
-                        dataTestid={`jira-import-workspace-name-${mapping.jiraKey}`}
-                        placeholder="Workspace name"
+                    <div class="w-64 flex-shrink-0 space-y-2">
+                      <Select
+                        id={`jira-import-workspace-target-${mapping.jiraKey}`}
+                        value={mapping.createNew ? 'create' : existingValue(mapping.windshiftId)}
+                        options={workspaceTargetOptions()}
+                        onchange={(value) => handleWorkspaceTargetChange(mapping, value)}
                         size="small"
                       />
+                      {#if mapping.createNew}
+                        <Input
+                          bind:value={mapping.newWorkspaceName}
+                          dataTestid={`jira-import-workspace-name-${mapping.jiraKey}`}
+                          placeholder="Workspace name"
+                          size="small"
+                        />
+                      {/if}
                     </div>
                   </div>
-                  {#if mapping.workspaceKeyCollisionFound}
+                  {#if !mapping.createNew}
+                    <p class="mt-2 text-xs" style="color: var(--ds-text-subtle);">
+                      Importing into the existing workspace
+                      <strong>{workspaceTargetName(mapping.windshiftId)}</strong>.
+                      Its workflows, screens, and fields are reused where possible.
+                    </p>
+                  {:else if mapping.workspaceKeyCollisionFound}
                     <div
                       class="mt-3 space-y-3"
                       data-testid={`jira-import-workspace-key-collision-${mapping.jiraKey}`}
@@ -796,18 +914,31 @@
             <p class="text-xs" style="color: var(--ds-text-subtle);">
               {t('jiraImport.mapping.issueTypesDesc')}
             </p>
-            <div class="flex flex-wrap gap-2">
+            <div class="space-y-2 max-h-72 overflow-y-auto">
               {#each mappings.issueTypes as mapping}
                 <div data-testid="jira-import-issue-type-mapping"
-                     class="px-3 py-1.5 rounded-lg border inline-flex items-center gap-2"
+                     data-jira-ids={mapping.jiraIds.join(',')}
+                     data-mapping-action={mappingChoiceValue(mapping) === 'create' ? 'create' : 'map'}
+                     class="p-2 rounded-lg border flex items-center gap-3"
                      style="border-color: var(--ds-border); background: var(--ds-surface);">
-                  <span class="text-sm" style="color: var(--ds-text);">{mapping.jiraName}</span>
-                  {#if mapping.isSubtask}
-                    <span class="text-xs px-1 py-0.5 rounded"
-                          style="background: var(--ds-background-neutral); color: var(--ds-text-subtle);">
-                      {t('jiraImport.mapping.subtask')}
-                    </span>
-                  {/if}
+                  <div class="flex-1 min-w-0 flex items-center gap-2">
+                    <span class="text-sm truncate" style="color: var(--ds-text);">{mapping.jiraName}</span>
+                    {#if mapping.isSubtask}
+                      <span class="text-xs px-1 py-0.5 rounded flex-shrink-0"
+                            style="background: var(--ds-background-neutral); color: var(--ds-text-subtle);">
+                        {t('jiraImport.mapping.subtask')}
+                      </span>
+                    {/if}
+                  </div>
+                  <div class="w-64 flex-shrink-0">
+                    <Select
+                      id={`jira-import-issue-type-target-${mapping.jiraIds[0] ?? mapping.jiraName}`}
+                      value={mappingChoiceValue(mapping)}
+                      options={createOrExistingOptions(t('jiraImport.mapping.createNewItemType'), mappingTargets.item_types)}
+                      onchange={(value) => applyMappingChoice((id, createNew) => jiraImport.setIssueTypeMapping(mapping.jiraName, id, createNew), value)}
+                      size="small"
+                    />
+                  </div>
                 </div>
               {/each}
             </div>
@@ -825,19 +956,32 @@
             <p class="text-xs" style="color: var(--ds-text-subtle);">
               {t('jiraImport.mapping.statusesDesc')}
             </p>
-            <div class="flex flex-wrap gap-2">
+            <div class="space-y-2 max-h-72 overflow-y-auto">
               {#each mappings.statuses as mapping}
                 <div data-testid="jira-import-status-mapping"
-                     class="px-3 py-1.5 rounded-lg border inline-flex items-center gap-2"
+                     data-jira-ids={mapping.jiraIds.join(',')}
+                     data-mapping-action={mappingChoiceValue(mapping) === 'create' ? 'create' : 'map'}
+                     class="p-2 rounded-lg border flex items-center gap-3"
                      style="border-color: var(--ds-border); background: var(--ds-surface);">
-                  {#if mapping.color}
-                    <ColorDot size="md" color={mapping.color} class="flex-shrink-0" />
-                  {/if}
-                  <span class="text-sm" style="color: var(--ds-text);">{mapping.jiraName}</span>
-                  <span class="text-xs px-1 py-0.5 rounded"
-                        style="background: var(--ds-background-neutral); color: var(--ds-text-subtle);">
-                    {mapping.categoryName}
-                  </span>
+                  <div class="flex-1 min-w-0 flex items-center gap-2">
+                    {#if mapping.color}
+                      <ColorDot size="md" color={mapping.color} class="flex-shrink-0" />
+                    {/if}
+                    <span class="text-sm truncate" style="color: var(--ds-text);">{mapping.jiraName}</span>
+                    <span class="text-xs px-1 py-0.5 rounded flex-shrink-0"
+                          style="background: var(--ds-background-neutral); color: var(--ds-text-subtle);">
+                      {mapping.categoryName}
+                    </span>
+                  </div>
+                  <div class="w-64 flex-shrink-0">
+                    <Select
+                      id={`jira-import-status-target-${mapping.jiraIds[0] ?? mapping.jiraName}`}
+                      value={mappingChoiceValue(mapping)}
+                      options={createOrExistingOptions(t('jiraImport.mapping.createNewStatus'), mappingTargets.statuses)}
+                      onchange={(value) => applyMappingChoice((id, createNew) => jiraImport.setStatusMapping(mapping.jiraName, id, createNew), value)}
+                      size="small"
+                    />
+                  </div>
                 </div>
               {/each}
             </div>
@@ -885,7 +1029,7 @@
                 <Hash size={18} style="color: var(--ds-text-accent-orange);" />
                 <h3 class="font-medium" style="color: var(--ds-text);">{t('jiraImport.mapping.customFields')}</h3>
                 <span class="text-xs px-1.5 py-0.5 rounded ml-auto" style="background: var(--ds-background-neutral); color: var(--ds-text-subtle);">
-                  {mappings.customFields.filter(f => f.canMap).length} / {mappings.customFields.length}
+                  {mappings.customFields.filter(f => f.action !== 'skip').length} / {mappings.customFields.length}
                 </span>
               </div>
               <p class="text-xs" style="color: var(--ds-text-subtle);">
@@ -894,7 +1038,7 @@
               <div class="space-y-2 max-h-48 overflow-y-auto">
                 {#each mappings.customFields as mapping}
                   <div data-testid="jira-import-custom-field-mapping"
-                       data-mapping-action={mapping.canMap ? 'create' : 'skip'}
+                       data-mapping-action={mapping.canMap ? mapping.action : 'skip'}
                        class="p-2 rounded-lg border flex items-center gap-3"
                        style="border-color: var(--ds-border); background: var(--ds-surface);">
                     <div class="flex-1 min-w-0">
@@ -911,8 +1055,8 @@
                         </p>
                       {/if}
                     </div>
-                    <div class="flex-shrink-0">
-                      {#if mapping.canMap && mapping.windshiftType === 'asset'}
+                    <div class="flex-shrink-0 flex items-center gap-2">
+                      {#if mapping.canMap && mapping.windshiftType === 'asset' && mapping.action !== 'map'}
                         <div class="w-64" data-testid="jira-import-asset-field-mapping" data-jira-field-id={mapping.jiraId}>
                           <Select
                             id={`jira-import-asset-field-schema-${mapping.jiraId}`}
@@ -929,11 +1073,17 @@
                             size="small"
                           />
                         </div>
-                      {:else if mapping.canMap}
-                        <span class="text-xs px-2 py-1 rounded"
-                              style="background: var(--ds-background-success-bold); color: white;">
-                          {t('jiraImport.mapping.create')}
-                        </span>
+                      {/if}
+                      {#if mapping.canMap}
+                        <div class="w-64" data-testid={`jira-import-field-target-${mapping.jiraId}`}>
+                          <Select
+                            id={`jira-import-field-target-select-${mapping.jiraId}`}
+                            value={customFieldChoiceValue(mapping)}
+                            options={customFieldOptions(mapping)}
+                            onchange={(value) => handleCustomFieldChoice(mapping, value)}
+                            size="small"
+                          />
+                        </div>
                       {:else}
                         <span class="text-xs px-2 py-1 rounded"
                               style="background: var(--ds-background-neutral); color: var(--ds-text-subtle);">
@@ -1181,7 +1331,7 @@
                 </div>
                 <div>
                   <p class="text-2xl font-semibold" style="color: var(--ds-text);">
-                    {mappings.customFields.filter(f => f.canMap).length}
+                    {mappings.customFields.filter(f => f.action !== 'skip').length}
                   </p>
                   <p class="text-sm" style="color: var(--ds-text-subtle);">{t('jiraImport.preview.customFields')}</p>
                 </div>

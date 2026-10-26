@@ -545,13 +545,13 @@ func (s *WorkflowService) PerformTransition(
 
 	// Live-update publish (WI-483): the status transition committed. Reached only
 	// on a real transition (the no-op case short-circuits earlier).
-	PublishItemChange(req.ItemID, ItemChangeStatus)
+	PublishItemChange(req.ItemID)
 
 	updated, err := itemRepo.FindByIDWithDetails(req.ItemID)
 	if err != nil {
 		return nil, fmt.Errorf("reload item: %w", err)
 	}
-	PublishWorkspaceChange(updated.WorkspaceID, WorkspaceChangeItems)
+	PublishWorkspaceChange(updated.WorkspaceID)
 
 	newStatusID := req.ToStatusID
 	result := &PerformTransitionResult{

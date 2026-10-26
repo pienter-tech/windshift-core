@@ -360,6 +360,15 @@ func ValidateGoalQuery(query string) error {
 	return err
 }
 
+// ValidateConditionConfig parses a condition's configuration with the same
+// decoder the engine uses at evaluation time. The metric service calls it
+// before persisting so one malformed condition shape cannot abort
+// workspace-wide configuration compilation later.
+func ValidateConditionConfig(condition models.SLACondition) error {
+	_, err := compileCondition(condition)
+	return err
+}
+
 // extractQLInputFields walks a goal AST and returns the canonical item change
 // fields the goal can depend on. The second result is true when the extractor
 // met a construct it does not understand and the metric must widen to every

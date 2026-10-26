@@ -55,16 +55,6 @@
       { "name": "Medium", "description": "Normal priority items", "icon": "Minus", "color": "#ca8a04", "sort_order": 3 },
       { "name": "Low", "description": "Low priority items", "icon": "ArrowDown", "color": "#16a34a", "sort_order": 4 }
     ],
-    "custom_fields": [
-      {
-        "name": "Requester Reference",
-        "field_type": "text",
-        "description": "External reference for the requesting customer",
-        "required": false,
-        "display_order": 1,
-        "applies_to_portal_customers": true
-      }
-    ],
     "screens": [
       {
         "name": "Support Ticket Screen",
@@ -75,7 +65,7 @@
           { "field_kind": "system", "field_identifier": "status", "display_order": 3, "is_required": true, "field_width": "half" },
           { "field_kind": "system", "field_identifier": "priority", "display_order": 4, "field_width": "half" },
           { "field_kind": "system", "field_identifier": "assignee", "display_order": 5, "field_width": "half" },
-          { "field_kind": "custom", "custom_field_name": "Requester Reference", "display_order": 6, "field_width": "half" }
+          { "field_kind": "system", "field_identifier": "due_date", "display_order": 6, "field_width": "half" }
         ]
       }
     ],

@@ -31,7 +31,10 @@ func RegisterIntegrationRoutes(deps *Deps) {
 
 	// OAuth flow
 	api.HandleH("GET /integrations/oauth/{slug}/start", auth(http.HandlerFunc(deps.Integrations.OAuth.StartOAuth)))
-	api.Handle("GET /integrations/oauth/{slug}/callback", http.HandlerFunc(deps.Integrations.OAuth.OAuthCallback))
+	// OptionalAuth so the callback can bind the completing browser to the
+	// account that started the flow; the handler rejects unauthenticated or
+	// mismatched callers instead of returning a bare 401.
+	api.HandleH("GET /integrations/oauth/{slug}/callback", deps.AuthMiddleware.OptionalAuth(http.HandlerFunc(deps.Integrations.OAuth.OAuthCallback)))
 	api.Handle("GET /integrations/oauth/system/{providerType}/callback", http.HandlerFunc(deps.Integrations.OAuth.SystemOAuthCallback))
 
 	// User connections

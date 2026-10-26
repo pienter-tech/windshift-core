@@ -1,6 +1,8 @@
 <script>
-  import { Trash2 } from '@lucide/svelte';
-  import { api } from '../api.js';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
+  import { assetSets } from '../api/assets.js';
+  import { itemTypes as itemTypesApi } from '../api/configuration.js';
+  import { assetReports, requestTypes as requestTypesApi } from '../api/channels.js';
   import { workspacesStore } from '../stores/workspaces.svelte.js';
   import BasePicker from '../pickers/BasePicker.svelte';
   import IconSelector from '../pickers/IconSelector.svelte';
@@ -55,12 +57,17 @@
   let isFormInitialized = $state(false);
   let lastOpenState = $state(false);
 
+  // A persisted form-mode report has fixed workspace and item type, and cannot
+  // be switched back to direct mode. A direct report may be upgraded to form
+  // once, which establishes the binding.
+  const bindingLocked = $derived(mode === 'edit' && assetReport?.run_mode === 'form');
+
   async function loadPickers() {
     try {
       const [sets, itemTypes, requestTypes] = await Promise.all([
-        api.assetSets.getAll(),
-        api.itemTypes.getAll(),
-        channelId ? api.requestTypes.getForChannel(channelId) : Promise.resolve([])
+        assetSets.getAll(),
+        itemTypesApi.getAll(),
+        channelId ? requestTypesApi.getForChannel(channelId) : Promise.resolve([])
       ]);
       availableAssetSets = sets || [];
       availableItemTypes = itemTypes || [];
@@ -88,7 +95,7 @@
   async function loadRequestTypeFields(requestTypeId) {
     if (!requestTypeId || requestTypeFields[requestTypeId]) return;
     try {
-      const fields = await api.requestTypes.getFields(requestTypeId);
+      const fields = await requestTypesApi.getFields(requestTypeId);
       requestTypeFields = { ...requestTypeFields, [requestTypeId]: fields || [] };
     } catch (err) {
       console.error('Failed to load request type fields:', err);
@@ -228,6 +235,10 @@
       error = t('portal.itemTypeRequired');
       return;
     }
+    if (formData.run_mode === 'form' && !formData.workspace_id) {
+      error = t('channel.targetWorkspaceRequired');
+      return;
+    }
     if (formData.run_mode === 'form' && !/\$\{[a-zA-Z0-9_-]+\}/.test(formData.cql_query)) {
       error = t('portal.qlQueryTokenRequired');
       return;
@@ -272,9 +283,9 @@
       };
 
       if (mode === 'create') {
-        await api.assetReports.create(channelId, payload);
+        await assetReports.create(channelId, payload);
       } else {
-        await api.assetReports.update(channelId, assetReport.id, {
+        await assetReports.update(channelId, assetReport.id, {
           ...payload,
           column_config: assetReport.column_config,
           visibility_group_ids: assetReport.visibility_group_ids,
@@ -330,6 +341,7 @@
               class="px-3 py-2 rounded border text-sm text-left transition-all"
               style="border-color: {formData.run_mode === 'direct' ? '#3b82f6' : (isDarkMode ? '#475569' : '#d1d5db')}; background-color: {formData.run_mode === 'direct' ? (isDarkMode ? 'rgba(59,130,246,0.15)' : '#eff6ff') : 'transparent'}; color: {isDarkMode ? '#e2e8f0' : '#111827'};"
               onclick={() => formData.run_mode = 'direct'}
+              disabled={bindingLocked}
             >
               <div class="font-medium">{t('portal.runModeDirect')}</div>
               <div class="text-xs opacity-75">{t('portal.runModeDirectHint')}</div>
@@ -339,6 +351,7 @@
               class="px-3 py-2 rounded border text-sm text-left transition-all"
               style="border-color: {formData.run_mode === 'form' ? '#3b82f6' : (isDarkMode ? '#475569' : '#d1d5db')}; background-color: {formData.run_mode === 'form' ? (isDarkMode ? 'rgba(59,130,246,0.15)' : '#eff6ff') : 'transparent'}; color: {isDarkMode ? '#e2e8f0' : '#111827'};"
               onclick={() => formData.run_mode = 'form'}
+              disabled={bindingLocked}
             >
               <div class="font-medium">{t('portal.runModeForm')}</div>
               <div class="text-xs opacity-75">{t('portal.runModeFormHint')}</div>
@@ -438,15 +451,20 @@
                   placeholder={t('portal.selectItemType')}
                   getValue={(item) => item.id}
                   getLabel={(item) => item.name}
+                  disabled={bindingLocked}
                 />
                 <p class="text-xs mt-1" style="color: {isDarkMode ? '#94a3b8' : '#6b7280'};">
-                  {t('portal.assetReportItemTypeHint')}
+                  {#if bindingLocked}
+                    {t('portal.bindingLocked', 'Fixed after creation. Delete and recreate the asset report to change it.')}
+                  {:else}
+                    {t('portal.assetReportItemTypeHint')}
+                  {/if}
                 </p>
               </div>
 
               <div>
                 <label for="ar-workspace" class="block text-sm font-medium mb-2" style="color: {isDarkMode ? '#9ca3af' : '#374151'};">
-                  {t('common.workspace')}
+                  {t('common.workspace')} <span class="text-ds-text-danger">*</span>
                 </label>
                 <BasePicker
                   bind:value={formData.workspace_id}
@@ -454,10 +472,15 @@
                   placeholder={t('portal.selectWorkspace', 'Select workspace')}
                   getValue={(item) => item.id}
                   getLabel={(item) => item.name}
-                  allowClear={true}
+                  allowClear={!bindingLocked}
+                  disabled={bindingLocked}
                 />
                 <p class="text-xs mt-1" style="color: {isDarkMode ? '#94a3b8' : '#6b7280'};">
-                  {t('portal.workspaceFieldResolution', 'Used to resolve available custom fields from the workspace configuration.')}
+                  {#if bindingLocked}
+                    {t('portal.bindingLocked', 'Fixed after creation. Delete and recreate the asset report to change it.')}
+                  {:else}
+                    {t('portal.workspaceFieldResolution', 'Used to resolve available custom fields from the workspace configuration.')}
+                  {/if}
                 </p>
               </div>
 

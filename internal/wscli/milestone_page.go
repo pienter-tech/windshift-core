@@ -6,7 +6,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Milestone page links (WCORE-19 API). Only workspace milestones have page
+// Milestone page links. Only workspace milestones have page
 // links, and only to pages in the milestone's workspace. Anyone who can view
 // the milestone lists the pages they may view; linking and unlinking need edit
 // rights on the milestone, which the server enforces.
@@ -27,7 +27,7 @@ Examples:
   ws milestone page list 5 -o table`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		milestoneID, err := parseMilestoneCommentID("milestone", args[0])
+		milestoneID, err := parseMilestoneArgID("milestone", args[0])
 		if err != nil {
 			return err
 		}
@@ -130,10 +130,10 @@ Examples:
 }
 
 func parseMilestonePageTarget(args []string) (milestoneID, pageID int, err error) {
-	if milestoneID, err = parseMilestoneCommentID("milestone", args[0]); err != nil {
+	if milestoneID, err = parseMilestoneArgID("milestone", args[0]); err != nil {
 		return 0, 0, err
 	}
-	if pageID, err = parseMilestoneCommentID("page", args[1]); err != nil {
+	if pageID, err = parseMilestoneArgID("page", args[1]); err != nil {
 		return 0, 0, err
 	}
 	return milestoneID, pageID, nil

@@ -4,14 +4,35 @@ package emailutil
 import (
 	"bytes"
 	"fmt"
+	stdhtml "html"
 	htmltemplate "html/template"
 	texttemplate "text/template"
+
+	"windshift/internal/markdown"
 )
+
+// templateFuncs are available to every email template. `markdown` renders a
+// Markdown field to sanitized HTML so formatting, links, and tables survive
+// into the HTML part of the email.
+var templateFuncs = htmltemplate.FuncMap{
+	"markdown": renderMarkdown,
+}
+
+// renderMarkdown converts stored Markdown to sanitized HTML for the HTML email
+// part. It is not used by the plain-text part, which keeps the raw Markdown.
+func renderMarkdown(source string) htmltemplate.HTML {
+	rendered, err := markdown.Render(source)
+	if err != nil {
+		// Never let a render error drop the customer's words.
+		return htmltemplate.HTML(stdhtml.EscapeString(source)) //nolint:gosec // escaped fallback
+	}
+	return htmltemplate.HTML(rendered) //nolint:gosec // markdown.Render sanitizes
+}
 
 // RenderTemplates parses and executes an HTML and a plain-text Go template
 // with the given data, returning the rendered strings.
 func RenderTemplates(htmlTemplateSrc, textTemplateSrc string, data any) (html, text string, err error) {
-	htmlTmpl, err := htmltemplate.New("html").Parse(htmlTemplateSrc)
+	htmlTmpl, err := htmltemplate.New("html").Funcs(templateFuncs).Parse(htmlTemplateSrc)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to parse HTML template: %w", err)
 	}
@@ -21,7 +42,7 @@ func RenderTemplates(htmlTemplateSrc, textTemplateSrc string, data any) (html, t
 		return "", "", fmt.Errorf("failed to execute HTML template: %w", err)
 	}
 
-	textTmpl, err := texttemplate.New("text").Parse(textTemplateSrc)
+	textTmpl, err := texttemplate.New("text").Funcs(templateFuncs).Parse(textTemplateSrc)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to parse text template: %w", err)
 	}

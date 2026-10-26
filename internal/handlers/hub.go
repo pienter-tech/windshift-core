@@ -462,7 +462,7 @@ func (h *HubHandler) getRequestTypesForPortals(ctx context.Context, portalIDs []
 		SELECT id, channel_id, name, COALESCE(description, ''), COALESCE(icon, ''), COALESCE(color, ''),
 		       visibility_group_ids, visibility_org_ids
 		FROM request_types
-		WHERE channel_id IN (%s) AND is_active = true
+		WHERE channel_id IN (%s) AND is_active = true AND kind != 'email'
 		ORDER BY display_order ASC
 	`, strings.Join(placeholders, ","))
 

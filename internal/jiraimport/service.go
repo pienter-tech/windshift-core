@@ -4,13 +4,21 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"windshift/internal/database"
 	"windshift/internal/repository"
 	"windshift/internal/services"
 )
+
+// JiraImportLeaseDuration bounds how long a queued/running job is considered
+// owned by a live worker without a renewal. executeImport renews the lease on
+// a heartbeat while it runs, so startup reconciliation only fails jobs whose
+// worker died.
+const JiraImportLeaseDuration = 2 * time.Minute
 
 type Service struct {
 	db           database.Database
@@ -103,9 +111,29 @@ func (s *Service) JobConfigJSON(jobID string) (string, error) {
 	return configJSON, err
 }
 
-func (s *Service) UpdateJobResult(jobID string, resultJSON []byte) error {
-	_, err := s.db.ExecWrite(`UPDATE jira_import_jobs SET result_json = ? WHERE id = ?`, string(resultJSON), jobID)
-	return err
+func (s *Service) UpdateJobResult(jobID, token string, resultJSON []byte) error {
+	result, err := s.db.ExecWrite(`
+		UPDATE jira_import_jobs SET result_json = ?
+		WHERE id = ? AND status = 'running' AND lease_token = ?
+	`, string(resultJSON), jobID, token)
+	if err != nil {
+		return err
+	}
+	return requireOneAffected(result, ErrLeaseLost)
+}
+
+// requireOneAffected turns a fenced write's row count into an ownership check:
+// a write that matched no row means the worker lost the job to recovery or
+// cleanup.
+func requireOneAffected(result sql.Result, sentinel error) error {
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		return sentinel
+	}
+	return nil
 }
 
 func (s *Service) ListJobs() ([]JobInfo, error) {
@@ -245,14 +273,6 @@ func (s *Service) PreviousImports(projectKeys []string) ([]PreviousImport, error
 	return imports, rows.Err()
 }
 
-func (s *Service) HasImportHistory(connectionID string) (bool, error) {
-	var count int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM jira_import_jobs WHERE connection_id = ?`, connectionID).Scan(&count); err != nil {
-		return false, err
-	}
-	return count > 0, nil
-}
-
 func (s *Service) Creator(jobID string) (int, error) {
 	var createdBy sql.NullInt64
 	if err := s.db.QueryRow(`SELECT created_by FROM jira_import_jobs WHERE id = ?`, jobID).Scan(&createdBy); err != nil {
@@ -264,7 +284,26 @@ func (s *Service) Creator(jobID string) (int, error) {
 	return int(createdBy.Int64), nil
 }
 
-func (s *Service) UpdateStatus(jobID, status, phase string, progress *Progress, errorMessage string) error {
+// ClaimJob assigns the job to this worker and moves it to running. A job that
+// is no longer queued (recovered, already claimed, or cleaned up) cannot be
+// claimed, so a stale worker never starts.
+func (s *Service) ClaimJob(jobID, token string) error {
+	result, err := s.db.ExecWrite(`
+		UPDATE jira_import_jobs
+		SET status = 'running', phase = 'initializing', progress_json = '{}',
+		    started_at = CURRENT_TIMESTAMP, lease_token = ?, lease_expires_at = ?
+		WHERE id = ? AND status = 'queued'
+	`, token, leaseExpiry(), jobID)
+	if err != nil {
+		return fmt.Errorf("claim Jira import job: %w", err)
+	}
+	return requireOneAffected(result, ErrLeaseLost)
+}
+
+// UpdateStatus applies a fenced status write. Only the worker that still holds
+// the running job's token may change its state, so a recovered worker cannot
+// overwrite a failure or a completed cleanup with a terminal status.
+func (s *Service) UpdateStatus(jobID, token, status, phase string, progress *Progress, errorMessage string) error {
 	progressJSON := "{}"
 	if progress != nil {
 		data, err := json.Marshal(progress)
@@ -273,32 +312,105 @@ func (s *Service) UpdateStatus(jobID, status, phase string, progress *Progress, 
 		}
 		progressJSON = string(data)
 	}
-	var query string
-	var args []any
+	var result sql.Result
+	var err error
 	switch status {
-	case "running":
-		query = `UPDATE jira_import_jobs SET status = ?, phase = ?, progress_json = ?, started_at = CURRENT_TIMESTAMP WHERE id = ?`
-		args = []any{status, phase, progressJSON, jobID}
 	case "completed", "completed_with_errors", "failed":
-		query = `UPDATE jira_import_jobs SET status = ?, phase = ?, progress_json = ?, error_message = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?`
-		args = []any{status, phase, progressJSON, errorMessage, jobID}
+		result, err = s.db.ExecWrite(`
+			UPDATE jira_import_jobs
+			SET status = ?, phase = ?, progress_json = ?, error_message = ?,
+			    completed_at = CURRENT_TIMESTAMP, lease_expires_at = NULL, lease_token = NULL
+			WHERE id = ? AND status = 'running' AND lease_token = ?
+		`, status, phase, progressJSON, errorMessage, jobID, token)
 	default:
-		query = `UPDATE jira_import_jobs SET status = ?, phase = ?, progress_json = ? WHERE id = ?`
-		args = []any{status, phase, progressJSON, jobID}
+		result, err = s.db.ExecWrite(`
+			UPDATE jira_import_jobs SET status = ?, phase = ?, progress_json = ?
+			WHERE id = ? AND status = 'running' AND lease_token = ?
+		`, status, phase, progressJSON, jobID, token)
 	}
-	_, err := s.db.ExecWrite(query, args...)
-	return err
+	if err != nil {
+		return err
+	}
+	return requireOneAffected(result, ErrLeaseLost)
 }
 
-func (s *Service) UpdateProgress(jobID string, progress *Progress) error {
+func leaseExpiry() int64 {
+	return time.Now().UTC().Add(JiraImportLeaseDuration).Unix()
+}
+
+// RenewLease extends the job's lease while its worker is alive. It only renews
+// a running job still owned by the token and reports whether the lease was
+// retained; a recovered or superseded worker cannot revive it.
+func (s *Service) RenewLease(jobID, token string) (bool, error) {
+	result, err := s.db.ExecWrite(`
+		UPDATE jira_import_jobs SET lease_expires_at = ?
+		WHERE id = ? AND status = 'running' AND lease_token = ? AND lease_expires_at > ?
+	`, leaseExpiry(), jobID, token, time.Now().UTC().Unix())
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected == 1, nil
+}
+
+// CheckJobOwnership reports whether the token still owns a running job. It is
+// the pre-write gate for a long import: a recovered or cleaned-up job no longer
+// matches and the worker must stop persisting.
+func (s *Service) CheckJobOwnership(jobID, token string) error {
+	var owned bool
+	err := s.db.QueryRow(`
+		SELECT EXISTS(
+			SELECT 1 FROM jira_import_jobs
+			WHERE id = ? AND status = 'running' AND lease_token = ?
+		)
+	`, jobID, token).Scan(&owned)
+	if err != nil {
+		return err
+	}
+	if !owned {
+		return ErrLeaseLost
+	}
+	return nil
+}
+
+// ReconcileInterrupted fails queued/running jobs whose worker lease expired
+// (for example after a server restart) so they no longer block retry or
+// cleanup. A live worker that keeps renewing its lease is left untouched.
+func (s *Service) ReconcileInterrupted(now time.Time) (int, error) {
+	result, err := s.db.ExecWrite(`
+		UPDATE jira_import_jobs
+		SET status = 'failed', phase = 'failed',
+		    error_message = 'Import interrupted by server restart',
+		    completed_at = CURRENT_TIMESTAMP, lease_expires_at = NULL, lease_token = NULL
+		WHERE status IN ('queued', 'running')
+		  AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+	`, now.UTC().Unix())
+	if err != nil {
+		return 0, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return int(affected), nil
+}
+
+func (s *Service) UpdateProgress(jobID, token string, progress *Progress) error {
 	data, err := json.Marshal(progress)
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecWrite(`
-		UPDATE jira_import_jobs SET phase = ?, progress_json = ? WHERE id = ?
-	`, progress.Phase, string(data), jobID)
-	return err
+	result, err := s.db.ExecWrite(`
+		UPDATE jira_import_jobs SET phase = ?, progress_json = ?, lease_expires_at = ?
+		WHERE id = ? AND status = 'running' AND lease_token = ?
+	`, progress.Phase, string(data), leaseExpiry(), jobID, token)
+	if err != nil {
+		return err
+	}
+	return requireOneAffected(result, ErrLeaseLost)
 }
 
 func ProjectKeys(configJSON string) []string {

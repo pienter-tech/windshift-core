@@ -166,8 +166,10 @@ func (s *EmailTrackingRetentionSweeper) collectInboundEmailChannels(ctx context.
 // sweepChannel deletes tracking rows older than retentionDays except for
 // thread anchors: rows whose message_id is referenced by a more recent
 // in_reply_to, and synthetic portal anchors (outbound rows with no comment —
-// they are the thread root for the ticket's whole lifetime). Returns the
-// number of rows deleted.
+// they are the thread root for the ticket's whole lifetime). It also keeps
+// completed rows whose item/comment was deleted (completed_at set, refs NULL):
+// those are the only thing preventing the message from being recreated if the
+// mailbox is refetched. Returns the number of rows deleted.
 func (s *EmailTrackingRetentionSweeper) sweepChannel(ctx context.Context, channelID, retentionDays int) (int64, error) {
 	const maxDays = int64(1<<63-1) / int64(24*time.Hour)
 	if int64(retentionDays) > maxDays || int64(retentionDays) < -maxDays {
@@ -179,6 +181,7 @@ func (s *EmailTrackingRetentionSweeper) sweepChannel(ctx context.Context, channe
 		WHERE channel_id = ?
 		  AND processed_at < ?
 		  AND (direction <> 'outbound' OR comment_id IS NOT NULL)
+		  AND NOT (completed_at IS NOT NULL AND item_id IS NULL AND comment_id IS NULL)
 		  AND (message_id = '' OR message_id NOT IN (
 		      SELECT in_reply_to FROM email_message_tracking
 		      WHERE channel_id = ? AND in_reply_to IS NOT NULL AND in_reply_to <> ''

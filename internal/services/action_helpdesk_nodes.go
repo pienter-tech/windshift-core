@@ -70,6 +70,13 @@ func (e *InsertCannedResponseExecutor) Execute(node *models.ActionNode, ctx *mod
 	}
 
 	actor := ctx.EffectiveActorID
+	// Only an override actor can lose rights after the rule was written. A
+	// system-triggered execution has no actor to re-check and keeps running.
+	if actor > 0 {
+		if err := e.api.AuthorizeWorkspaceMutation(actor, workspaceID, models.PermissionItemComment); err != nil {
+			return err
+		}
+	}
 	rendered, isPrivate, err := e.canned.RenderForItem(workspaceID, config.CannedResponseID, itemID, true, AuditActor{UserID: actor})
 	if err != nil {
 		return fmt.Errorf("insert_canned_response: %w", err)
@@ -84,12 +91,13 @@ func (e *InsertCannedResponseExecutor) Execute(node *models.ActionNode, ctx *mod
 	}
 
 	result, err := e.comments.Create(CreateCommentParams{
-		ItemID:        itemID,
-		AuthorID:      actor,
-		Content:       rendered,
-		IsPrivate:     isPrivate,
-		ActorUserID:   actor,
-		EventMetadata: itemEventMetadata(actor, "automation", actionContextFromExecution(ctx)),
+		ItemID:               itemID,
+		AuthorID:             actor,
+		Content:              rendered,
+		IsPrivate:            isPrivate,
+		ActorUserID:          actor,
+		SuppressActionEvents: true,
+		EventMetadata:        itemEventMetadata(actor, "automation", actionContextFromExecution(ctx)),
 	})
 	if err != nil {
 		return fmt.Errorf("insert_canned_response: failed to create comment: %w", err)
@@ -133,8 +141,14 @@ func (e *NotifyCustomerExecutor) Execute(node *models.ActionNode, ctx *models.Ex
 		return fmt.Errorf("notify_customer executor missing deps (customer notifier / NodeAPI)")
 	}
 	itemID := currentActionItemID(ctx)
-	if itemID <= 0 {
+	workspaceID := currentActionWorkspaceID(ctx)
+	if itemID <= 0 || workspaceID <= 0 {
 		return fmt.Errorf("notify_customer requires an item context")
+	}
+	if actor := ctx.EffectiveActorID; actor > 0 {
+		if err := e.api.AuthorizeWorkspaceMutation(actor, workspaceID, models.PermissionItemComment); err != nil {
+			return err
+		}
 	}
 
 	var config models.NotifyCustomerNodeConfig

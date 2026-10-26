@@ -11,7 +11,7 @@
 		IconCircleMinus,
 		IconHistory
 	} from '@tabler/icons-svelte-runes';
-	import { api } from '../../api.js';
+	import { milestones as milestonesApi } from '../../api/milestones.js';
 	import AlertBox from '../../components/AlertBox.svelte';
 	import Button from '../../components/Button.svelte';
 	import StateDisplay from '../../components/StateDisplay.svelte';
@@ -20,7 +20,7 @@
 	import { t } from '../../stores/i18n.svelte.js';
 	import { describeMilestoneActivity } from './milestoneActivity.js';
 
-	// Milestone Activity feed (WCORE-21): one shared, newest-first feed of
+	// Milestone Activity feed: one shared, newest-first feed of
 	// milestone events and member-item events. The server limits item events
 	// to items the viewer can access. reloadToken changes when the milestone
 	// itself is edited so the feed picks up the new entries.
@@ -42,12 +42,13 @@
 
 	let entries = $state([]);
 	let page = $state(0);
-	let totalPages = $state(0);
+	let hasMore = $state(false);
 	let loading = $state(true);
 	let loadingMore = $state(false);
 	let error = $state('');
-
-	const hasMore = $derived(page < totalPages);
+	// Each first-page load starts a new feed. Responses that arrive after a
+	// newer load started belong to the old feed and are dropped.
+	let feedVersion = 0;
 
 	$effect(() => {
 		// Track the inputs that require a fresh first page.
@@ -57,36 +58,44 @@
 	});
 
 	async function loadFirstPage() {
+		const version = ++feedVersion;
 		loading = true;
+		loadingMore = false;
 		error = '';
 		try {
-			const result = await api.milestones.getActivity(milestoneId, { page: 1, pageSize: PAGE_SIZE });
+			const result = await milestonesApi.getActivity(milestoneId, { page: 1, pageSize: PAGE_SIZE });
+			if (version !== feedVersion) return;
 			entries = result.entries;
 			page = 1;
-			totalPages = result.totalPages;
+			hasMore = result.hasMore;
 		} catch (err) {
+			if (version !== feedVersion) return;
 			console.error('Failed to load milestone activity:', err);
 			error = t('dialogs.alerts.failedToLoad', { error: t('milestones.activity.tabActivity') });
 			entries = [];
 		} finally {
-			loading = false;
+			if (version === feedVersion) loading = false;
 		}
 	}
 
 	async function loadMore() {
 		if (loadingMore || !hasMore) return;
+		const version = feedVersion;
 		loadingMore = true;
+		error = '';
 		try {
-			const result = await api.milestones.getActivity(milestoneId, { page: page + 1, pageSize: PAGE_SIZE });
+			const result = await milestonesApi.getActivity(milestoneId, { page: page + 1, pageSize: PAGE_SIZE });
+			if (version !== feedVersion) return;
 			const seen = new Set(entries.map((entry) => entry.id));
 			entries = [...entries, ...result.entries.filter((entry) => !seen.has(entry.id))];
-			page = result.page;
-			totalPages = result.totalPages;
+			page += 1;
+			hasMore = result.hasMore;
 		} catch (err) {
+			if (version !== feedVersion) return;
 			console.error('Failed to load more milestone activity:', err);
 			error = t('dialogs.alerts.failedToLoad', { error: t('milestones.activity.tabActivity') });
 		} finally {
-			loadingMore = false;
+			if (version === feedVersion) loadingMore = false;
 		}
 	}
 </script>

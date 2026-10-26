@@ -1,6 +1,7 @@
 <script>
-  import { Download, LifeBuoy } from '@lucide/svelte';
-  import { api } from '../api.js';
+  import Download from '@lucide/svelte/icons/download';
+  import LifeBuoy from '@lucide/svelte/icons/life-buoy';
+  import { support } from '../api/support.js';
   import { t } from '../stores/i18n.svelte.js';
   import { workspacesStore } from '../stores/workspaces.svelte.js';
   import { downloadSupportMetricsCSV } from '../features/support/metricColumns.js';
@@ -16,6 +17,7 @@
   );
 
   let availableWorkspaces = $state([]);
+  let editingWorkspaces = $state(false);
   let doc = $state(/** @type {any} */ (null));
   let loading = $state(false);
   let errored = $state(false);
@@ -79,7 +81,7 @@
       const to = new Date();
       const from = new Date(to);
       from.setDate(from.getDate() - (windowDays - 1));
-      const response = await api.support.getMetricsAggregate({
+      const response = await support.getMetricsAggregate({
         workspace_ids: configuredIds,
         from: toISOStringDate(from),
         to: toISOStringDate(to),
@@ -126,6 +128,26 @@
 </script>
 
 <div class="px-3 py-2" data-testid="support-overview-widget">
+  {#snippet workspaceChips()}
+    <div class="flex flex-wrap gap-2" data-testid="support-overview-workspace-picker">
+      {#each availableWorkspaces as workspace (workspace.id)}
+        {@const id = Number(workspace.id)}
+        {@const selected = configuredIds.includes(id)}
+        <button
+          type="button"
+          class="rounded-full border px-3 py-1 text-xs"
+          style="border-color: {selected ? 'var(--ds-accent, #6366f1)' : 'var(--ds-border)'}; background: {selected
+            ? 'var(--ds-surface-sunken)'
+            : 'transparent'}; color: var(--ds-text);"
+          aria-pressed={selected}
+          data-testid={`support-overview-workspace-${id}`}
+          onclick={() => toggleWorkspace(id)}
+        >
+          {workspace.name || workspace.key}
+        </button>
+      {/each}
+    </div>
+  {/snippet}
   {#if configuredIds.length === 0}
     <div
       class="flex flex-col items-center gap-3 rounded-xl border border-dashed px-4 py-6 text-center"
@@ -140,17 +162,8 @@
         <p class="mt-1 text-xs">{t('dashboard.states.supportOverviewSetupSubtitle')}</p>
       </div>
       {#if availableWorkspaces.length > 0}
-        <div class="flex max-h-40 flex-wrap justify-center gap-2 overflow-y-auto">
-          {#each availableWorkspaces as workspace (workspace.id)}
-            <button
-              type="button"
-              class="rounded-full border px-3 py-1 text-xs"
-              style="border-color: var(--ds-border); color: var(--ds-text);"
-              onclick={() => toggleWorkspace(Number(workspace.id))}
-            >
-              {workspace.name || workspace.key}
-            </button>
-          {/each}
+        <div class="max-h-40 overflow-y-auto">
+          {@render workspaceChips()}
         </div>
       {/if}
     </div>
@@ -161,6 +174,11 @@
       {t('dashboard.states.supportMetricsLoadError')}
     </p>
   {:else if doc}
+    {#if editingWorkspaces}
+      <div class="mb-3">
+        {@render workspaceChips()}
+      </div>
+    {/if}
     {#if unavailableCount > 0}
       <p class="mb-2 text-xs" style="color: var(--ds-status-warning-text);">
         {t('dashboard.states.supportSourcesUnavailable', { count: unavailableCount })}
@@ -198,18 +216,29 @@
       />
     {/if}
 
-    <div class="mt-2 flex items-center justify-between text-xs" style="color: var(--ds-text-subtle);">
+    <div class="mt-2 flex items-center justify-between gap-2 text-xs" style="color: var(--ds-text-subtle);">
       <span class="truncate">{configuredIds.map((id) => workspaceNameById.get(id) ?? `#${id}`).join(', ')}</span>
-      <button
-        type="button"
-        class="inline-flex items-center gap-1 rounded px-1.5 py-1 text-xs"
-        style="color: var(--ds-text-subtle);"
-        onclick={exportCSV}
-        data-testid="support-overview-export"
-      >
-        <Download class="h-3.5 w-3.5" />
-        {t('dashboard.states.supportExportCSV')}
-      </button>
+      <div class="flex shrink-0 items-center gap-2">
+        <button
+          type="button"
+          class="rounded px-1.5 py-1 text-xs"
+          style="color: var(--ds-text-subtle);"
+          onclick={() => (editingWorkspaces = !editingWorkspaces)}
+          data-testid="support-overview-edit-workspaces"
+        >
+          {editingWorkspaces ? t('common.done') || 'Done' : t('common.edit') || 'Edit'}
+        </button>
+        <button
+          type="button"
+          class="inline-flex items-center gap-1 rounded px-1.5 py-1 text-xs"
+          style="color: var(--ds-text-subtle);"
+          onclick={exportCSV}
+          data-testid="support-overview-export"
+        >
+          <Download class="h-3.5 w-3.5" />
+          {t('dashboard.states.supportExportCSV')}
+        </button>
+      </div>
     </div>
   {/if}
 </div>

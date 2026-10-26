@@ -1,6 +1,6 @@
 <script>
   import { tick } from 'svelte';
-  import { Calendar } from '@lucide/svelte';
+  import Calendar from '@lucide/svelte/icons/calendar';
   import { t } from '../stores/i18n.svelte.js';
   import { dateOnlyKey, formatDateOnly } from '../utils/dateFormatter.js';
   import BaseInlineEditor from './BaseInlineEditor.svelte';
@@ -76,11 +76,12 @@
   {/snippet}
   {#snippet displayContent()}
     <span
-      class="block text-left w-full px-2 py-1 text-sm rounded transition-colors flex items-center gap-2 {displayClass} {className}"
+      class="flex items-center gap-2 text-left w-full px-2 py-1 text-sm rounded whitespace-nowrap transition-colors {displayClass} {className}"
       style={!value ? 'color: var(--ds-text-subtle);' : ''}
+      data-testid="inline-date-display"
     >
-      <Calendar class="w-4 h-4" style="color: var(--ds-text-subtle);" />
-      {displayValue || effectivePlaceholder}
+      <Calendar class="w-4 h-4 flex-shrink-0" style="color: var(--ds-text-subtle);" />
+      <span data-testid="inline-date-value">{displayValue || effectivePlaceholder}</span>
     </span>
   {/snippet}
 </BaseInlineEditor>
