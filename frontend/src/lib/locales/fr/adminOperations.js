@@ -398,6 +398,8 @@ export default {
     branches: 'branches',
     patternsHelp: 'Ces motifs glob pilotent l’automatisation des jalons. Les étiquettes correspondantes promeuvent un jalon ; les branches correspondantes créent un jalon de planification.',
     repoSettingsSaved: 'Paramètres du dépôt enregistrés',
+    giteaWebhook: 'Webhook Forgejo / Gitea',
+    giteaWebhookHelp: 'Ajoutez un webhook Forgejo ou Gitea avec cette URL cible et ce secret, le type de contenu POST application/json, et les événements push, create (branche ou étiquette créée), release, pull request et commentaire de pull request. Ces événements synchronisent le dépôt en quelques secondes au lieu d’attendre la prochaine interrogation. Pour mettre à jour le statut CI des pull requests en quelques secondes, sélectionnez aussi les événements d’exécution Actions (Forgejo) ou de statut de commit (Gitea). Pour synchroniser les tickets en quelques secondes, sélectionnez aussi les événements de ticket, y compris assigned, labeled et milestoned, ainsi que les événements de commentaire de ticket.',
     repoSettingsSaveFailed: 'Échec de l’enregistrement des paramètres du dépôt',
     loadFailed: 'Échec du chargement des paramètres SCM',
     oauthFailed: 'Échec du démarrage de la reconnexion OAuth',
