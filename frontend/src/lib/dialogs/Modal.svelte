@@ -155,7 +155,7 @@
   // by navigating to another page.
   $effect.pre(() => {
     if (!isOpen || inline) return;
-    const opener = document.activeElement;
+    const opener = /** @type {HTMLElement | null} */ (document.activeElement);
     const path = location.pathname;
     return () => {
       queueMicrotask(() => {
