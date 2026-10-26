@@ -201,6 +201,9 @@ export default {
     notConnected: 'Non connecté',
     saveAndConnect: 'Enregistrer les paramètres, puis connecter votre boîte aux lettres',
     connectMailbox: 'Connecter la boîte aux lettres',
+    oauthMailbox: 'Adresse de la boîte aux lettres',
+    oauthMailboxRequired: 'Saisissez l’adresse de la boîte aux lettres à connecter',
+    oauthMailboxHelp: 'La boîte aux lettres surveillée avec laquelle IMAP se connecte.',
     redirectUri: 'URI de redirection (pour Azure AD / Console Google)',
     imapConnection: 'Connexion IMAP',
     imapHost: 'Hôte IMAP',
@@ -228,6 +231,13 @@ export default {
     deleteAfterProcess: 'Supprimer après traitement',
     deleteAfterProcessHelp:
       'Supprimer les e-mails de la boîte aux lettres après la création des éléments (à utiliser avec précaution)',
+    intakesMailboxAddress: 'Surveillance de {address}',
+    intakeLastUID: 'Dernier UID {uid}',
+    intakeRateLimited: '{count} retenus',
+    intakeSendConfirmation: 'Envoyer un accusé de réception',
+    intakeSendConfirmationHint:
+      "Envoyer à l'expéditeur une confirmation que sa demande a bien été reçue. L'accusé inclut un lien vers le portail lorsque cet accueil est lié à un portail.",
+    intakeConfirmationOn: 'Accusé actif',
     // Form Channel Configuration
     openForm: 'Ouvrir le formulaire',
     formConfiguration: 'Page publique',
@@ -286,6 +296,10 @@ export default {
     smtpNoEncryptionWarning: 'Le contenu des e-mails et les métadonnées de livraison seront envoyés sans chiffrement. N’utilisez cette option qu’avec un relais SMTP local de confiance.',
     noEncryption: 'Aucun (non recommandé)',
     authentication: 'Authentification',
+    smtpAuthMethod: 'Méthode d’authentification',
+    smtpAuthMethodDescription: 'Mécanisme SASL utilisé pour SMTP AUTH. Automatique choisit le premier mécanisme proposé par le serveur parmi PLAIN, LOGIN, CRAM-MD5.',
+    smtpAuthAuto: 'Automatique (recommandé)',
+    smtpAuthNone: 'Aucune (sans authentification)',
     senderSettings: 'Paramètres de l’expéditeur',
     smtpHostAndFromRequired: 'L’hôte SMTP et l’e-mail de l’expéditeur sont requis',
     testSmtp: 'Tester le SMTP',
@@ -303,6 +317,8 @@ export default {
       syncStatus: 'Statut de synchronisation',
       lastChecked: 'Dernière vérification',
       never: 'Jamais',
+      intakeLastUID: 'Dernier UID {uid}',
+      intakeLastPolled: 'Vérifié {time}',
       errors: 'Erreurs',
       noErrors: 'Aucune erreur',
       from: 'De',
@@ -325,6 +341,7 @@ export default {
     portalTitle: 'Titre du portail',
     selectWorkspace: 'Sélectionner un espace de travail',
     workspaceFieldResolution: 'Résolution des champs de l’espace de travail',
+    bindingLocked: 'Fixe après la création. Supprimez et recréez le type de demande pour le modifier.',
 
     // Magic link authentication
     signInTitle: 'Connectez-vous à votre compte',

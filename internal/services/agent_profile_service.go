@@ -67,6 +67,8 @@ type ProfileValidationError struct {
 	Code       string `json:"code"`
 	Message    string `json:"message"`
 	Dependency string `json:"dependency,omitempty"`
+	// Hint points administrators at the surface that resolves the error.
+	Hint string `json:"hint,omitempty"`
 }
 
 type ProfileValidationResult struct {
@@ -618,19 +620,13 @@ func (s *BindingService) validateProfilePermissions(binding *models.WorkspaceAge
 	for _, permission := range required {
 		if !grants[permission] {
 			message := fmt.Sprintf("Grant the acting identity the %s permission.", permission)
+			hint := fmt.Sprintf("Assign this agent a workspace role that includes %s in Workspace settings → Members.", permission)
 			if permission == models.PermissionItemEdit {
 				message = "Grant the acting identity Editor access."
+				hint = "Assign this agent the Editor role in Workspace settings → Members."
 			}
 			result.Errors = append(result.Errors, ProfileValidationError{
-				Code: "permission_missing", Message: message, Dependency: permission,
-			})
-		}
-	}
-	if binding.ProfileType == models.AgentProfileStandard && slices.Contains(binding.CapabilityGroups, string(agentstudio.CapabilityUsersApprovals)) {
-		allowed, err := s.permissions.HasGlobalPermission(binding.ActingUserID, models.PermissionUserList)
-		if err != nil || !allowed {
-			result.Errors = append(result.Errors, ProfileValidationError{
-				Code: "permission_missing", Message: "Grant the acting identity the user.list permission.", Dependency: models.PermissionUserList,
+				Code: "permission_missing", Message: message, Dependency: permission, Hint: hint,
 			})
 		}
 	}

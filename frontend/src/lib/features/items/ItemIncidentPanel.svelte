@@ -1,9 +1,12 @@
 <script>
-  import { Siren, Check, BellOff, RotateCcw } from '@lucide/svelte';
+  import Siren from '@lucide/svelte/icons/siren';
+  import Check from '@lucide/svelte/icons/check';
+  import BellOff from '@lucide/svelte/icons/bell-off';
+  import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
   import Button from '../../components/Button.svelte';
   import Lozenge from '../../components/Lozenge.svelte';
   import Text from '../../components/Text.svelte';
-  import { api } from '../../api.js';
+  import { itemIncidents } from '../../api/incidents.js';
   import { errorToast, successToast } from '../../stores/toasts.svelte.js';
   import { t } from '../../stores/i18n.svelte.js';
 
@@ -18,7 +21,7 @@
     const token = ++loadToken;
     loading = true;
     try {
-      const result = await api.itemIncidents.get(id);
+      const result = await itemIncidents.get(id);
       if (token === loadToken) incident = result;
     } catch (error) {
       if (token !== loadToken) return;
@@ -35,6 +38,12 @@
   $effect(() => {
     const id = itemId;
     if (id == null) return;
+    // The item carries its current incident pointer. Items without one have no
+    // pager state to read, and the endpoint answers 404 for them.
+    if (!item?.incident_id) {
+      loading = false;
+      return;
+    }
     load(id);
   });
 
@@ -57,16 +66,16 @@
   }
 
   function declareIncident() {
-    return run(() => api.itemIncidents.trigger(itemId), t('items.incidentDeclared'));
+    return run(() => itemIncidents.trigger(itemId), t('items.incidentDeclared'));
   }
   function acknowledge() {
-    return run(() => api.itemIncidents.acknowledge(itemId), t('items.incidentAcknowledged'));
+    return run(() => itemIncidents.acknowledge(itemId), t('items.incidentAcknowledged'));
   }
   function unacknowledge() {
-    return run(() => api.itemIncidents.unacknowledge(itemId), t('items.incidentUnacknowledged'));
+    return run(() => itemIncidents.unacknowledge(itemId), t('items.incidentUnacknowledged'));
   }
   function resolve() {
-    return run(() => api.itemIncidents.resolve(itemId), t('items.incidentResolved'));
+    return run(() => itemIncidents.resolve(itemId), t('items.incidentResolved'));
   }
 
   const statusAppearance = $derived(

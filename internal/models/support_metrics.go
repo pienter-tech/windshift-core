@@ -39,13 +39,16 @@ type SupportMetricsDistribution struct {
 	Count int64   `json:"count"`
 }
 
-// SupportMetricsSLA counts completed SLA cycles in the window. The numbers
-// are calendar-aware by construction because cycles store elapsed time
-// through their business calendars.
+// SupportMetricsSLA counts SLA cycles in the window. The numbers are
+// calendar-aware by construction because cycles store elapsed time through
+// their business calendars. Completed/Breached cover finished cycles;
+// OngoingBreached counts cycles still open that are already past their
+// deadline (the live "breached now" view operators see on tickets).
 type SupportMetricsSLA struct {
-	Completed    int64   `json:"completed"`
-	Breached     int64   `json:"breached"`
-	CompliantPct float64 `json:"compliant_pct"`
+	Completed       int64   `json:"completed"`
+	Breached        int64   `json:"breached"`
+	OngoingBreached int64   `json:"ongoing_breached"`
+	CompliantPct    float64 `json:"compliant_pct"`
 }
 
 // SupportMetricsBucket is one point of the trend series. BacklogEnd is the

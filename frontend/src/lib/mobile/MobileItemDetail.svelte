@@ -1,19 +1,28 @@
 <script>
-  import { Star, Play, Loader, ChevronDown, ChevronRight, GitPullRequest, Bot, RefreshCw, Plus, Check, Pencil } from '@lucide/svelte';
-  import { api } from '../api.js';
+  import Star from '@lucide/svelte/icons/star';
+  import Play from '@lucide/svelte/icons/play';
+  import Loader from '@lucide/svelte/icons/loader';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import GitPullRequest from '@lucide/svelte/icons/git-pull-request';
+  import Bot from '@lucide/svelte/icons/bot';
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import Plus from '@lucide/svelte/icons/plus';
+  import Check from '@lucide/svelte/icons/check';
+  import Pencil from '@lucide/svelte/icons/pencil';
+  import { getAssignableUsers } from '../api/users.js';
+  import { items } from '../api/items.js';
   import { loadMobileItemDetailSummary } from './mobileItemDetailData.js';
   import { agentRuns as agentRunBus } from '../stores/agentRuns.svelte.js';
   import { navigate } from '../router.js';
   import { notificationActions } from '../stores/notifications.js';
   import { errorToast, infoToast } from '../stores/toasts.svelte.js';
   import { timerStore } from '../stores/timerStore.svelte.js';
-  import { useWorkItemPoller } from '../composables/useWorkItemPoller.svelte.js';
   import { useItemEventStream } from '../composables/useItemEventStream.svelte.js';
-  import { itemLiveUpdates } from '../stores/itemLiveUpdates.svelte.js';
   import { usePullToRefresh } from '../composables/usePullToRefresh.svelte.js';
   import { formatDateOnly } from '../utils/dateFormatter.js';
   import { formatItemKey } from '../utils/itemKey.js';
-  import { workspacesStore } from '../stores';
+  import { workspacesStore } from '../stores/workspaces.svelte.js';
   import MobileHeader from './MobileHeader.svelte';
   import MobileItemRow from './MobileItemRow.svelte';
   import MobileOptionSheet from './MobileOptionSheet.svelte';
@@ -33,6 +42,7 @@
   let transitions = $state([]);
   let transitioning = $state(false);
   let isWatching = $state(false);
+  let watcherCount = $state(0);
   let watchBusy = $state(false);
 
   // Workflow-less personal tasks use the permitted transition endpoint to toggle
@@ -65,7 +75,7 @@
     if (assigneeOptions) return;
     assigneeLoading = true;
     try {
-      assigneeOptions = (await api.getAssignableUsers(item.workspace_id)) ?? [];
+      assigneeOptions = (await getAssignableUsers(item.workspace_id)) ?? [];
     } catch (err) {
       console.error('Failed to load assignable users:', err);
       errorToast(t('mobile.item.assigneesFailed'));
@@ -116,6 +126,7 @@
       item = summary?.item ?? null;
       transitions = summary?.transitions?.available_transitions ?? [];
       isWatching = summary?.watching || false;
+      watcherCount = summary?.watcher_count ?? 0;
       personalTaskCount = summary?.personal_task_count ?? 0;
       const childItems = Array.isArray(summary?.children) ? summary.children : [];
       children = childItems.filter((child) => child?.id).map(normalizeChild);
@@ -147,7 +158,7 @@
 
   async function refreshTransitionState(id, token) {
     try {
-      const res = await api.items.getAvailableStatusTransitions(id);
+      const res = await items.getAvailableStatusTransitions(id);
       if (token === loadToken) transitions = res?.available_transitions ?? [];
     } catch (err) {
       console.error('Failed to load transitions:', err);
@@ -158,7 +169,7 @@
     if (transitioning) return;
     transitioning = true;
     try {
-      const updated = await api.items.transition(itemId, statusId);
+      const updated = await items.transition(itemId, statusId);
       item = { ...item, ...updated };
       await refreshTransitionState(itemId, loadToken);
     } catch (err) {
@@ -181,7 +192,7 @@
     const target = personalIsDone ? PERSONAL_STATUS_OPEN : PERSONAL_STATUS_DONE;
     transitioning = true;
     try {
-      const updated = await api.items.transition(itemId, target);
+      const updated = await items.transition(itemId, target);
       item = { ...item, ...updated };
     } catch (err) {
       console.error('Failed to toggle personal task:', err);
@@ -194,7 +205,7 @@
     const assigneeId = user?.id ?? null;
     if (assigneeId === (item.assignee_id ?? null)) return;
     try {
-      const updated = await api.items.update(itemId, { assignee_id: assigneeId });
+      const updated = await items.update(itemId, { assignee_id: assigneeId });
       const name = user
         ? `${user.first_name || ''} ${user.last_name || ''}`.trim() || user.email || user.username || ''
         : null;
@@ -208,13 +219,11 @@
     if (watchBusy) return;
     watchBusy = true;
     try {
-      if (isWatching) {
-        await api.items.removeWatch(itemId);
-        isWatching = false;
-      } else {
-        await api.items.addWatch(itemId);
-        isWatching = true;
-      }
+      const status = isWatching
+        ? await items.removeWatch(itemId)
+        : await items.addWatch(itemId);
+      isWatching = status?.watching ?? !isWatching;
+      watcherCount = status?.watcher_count ?? watcherCount;
     } catch (err) {
       console.error('Failed to toggle watch:', err);
     } finally {
@@ -247,6 +256,19 @@
     navigate(`/m/new?parent=${itemId}`);
   }
 
+  // Live updates (WI-484). The stream is coarse: any change runs refresh()
+  // (item record, transitions, children, watch) and dispatches the comment
+  // event the embedded Comments listens for. The stream opens before the
+  // initial snapshot so a first-connect reconcile is unnecessary.
+  useItemEventStream(() => itemId, {
+    onReconcile: () => {
+      refresh();
+      window.dispatchEvent(new CustomEvent('item-comments-changed', { detail: { itemId } }));
+      window.dispatchEvent(new CustomEvent('item-scm-links-changed', { detail: { itemId } }));
+    },
+    onDeleted: () => handleDeleted(),
+  });
+
   // Reload whenever the item id changes — the component is not remounted when
   // navigating item → item (e.g. tapping a sub-item), so onMount wouldn't fire.
   $effect(() => {
@@ -257,6 +279,7 @@
     item = null;
     transitions = [];
     isWatching = false;
+    watcherCount = 0;
     personalTaskCount = 0;
     children = [];
     ancestors = [];
@@ -291,7 +314,7 @@
     const token = loadToken;
     if (itemId == null || !item || transitioning) return;
     try {
-      const fresh = await api.items.get(itemId);
+      const fresh = await items.get(itemId);
       if (token !== loadToken) return;
       item = { ...item, ...fresh };
     } catch (err) {
@@ -301,49 +324,26 @@
       return;
     }
     try {
-      const res = await api.items.getAvailableStatusTransitions(itemId);
+      const res = await items.getAvailableStatusTransitions(itemId);
       if (token === loadToken) transitions = res?.available_transitions ?? [];
     } catch { /* keep prior */ }
     try {
-      const res = await api.items.getChildren(itemId);
+      const res = await items.getChildren(itemId);
       const list = Array.isArray(res) ? res : (res?.items ?? []);
       if (token === loadToken) children = list.filter((c) => c?.id).map(normalizeChild);
     } catch { /* keep prior */ }
     try {
-      const res = await api.items.getWatchStatus(itemId);
-      if (token === loadToken) isWatching = res?.watching || false;
+      const res = await items.getWatchStatus(itemId);
+      if (token === loadToken) {
+        isWatching = res?.watching || false;
+        watcherCount = res?.watcher_count ?? watcherCount;
+      }
     } catch { /* keep prior */ }
   }
 
-  // Match desktop freshness: adaptive background poll (30s active / 5m idle) for
-  // changes made elsewhere (other users, automations, workflow side effects),
-  // plus an instant refresh when an AI run completes (chatStore emits on the bus).
-  // While the SSE stream is healthy the poll is demoted (WI-484); it resumes if
-  // the stream drops or is unsupported.
-  useWorkItemPoller(() => refresh(), { enabled: () => !itemLiveUpdates.isLive(itemId) });
+  // Refresh when an AI run completes (chatStore emits on the bus); live SSE
+  // changes drive the rest.
   $effect(() => agentRunBus.subscribe(() => refresh()));
-
-  // Live updates (WI-484). Mobile reloads via refresh() (item record,
-  // transitions, children, watch) for every granular kind — the same work the
-  // poll did — and dispatches the comment event the embedded Comments listens
-  // for. connect/reconnect/stale also run refresh() to reconcile.
-  useItemEventStream(() => itemId, {
-    // Full reconcile also refreshes the embedded Comments (separate component),
-    // so a comment that arrived before the stream connected isn't missed.
-    onReconcile: () => {
-      refresh();
-      window.dispatchEvent(new CustomEvent('item-comments-changed', { detail: { itemId } }));
-      window.dispatchEvent(new CustomEvent('item-scm-links-changed', { detail: { itemId } }));
-    },
-    onItem: () => refresh(),
-    onChildren: () => refresh(),
-    onLinks: () => {
-      refresh();
-      window.dispatchEvent(new CustomEvent('item-scm-links-changed', { detail: { itemId } }));
-    },
-    onDeleted: () => handleDeleted(),
-    onComment: () => window.dispatchEvent(new CustomEvent('item-comments-changed', { detail: { itemId } })),
-  });
 
   // The viewed item was deleted elsewhere: toast and leave the now-stale detail.
   function handleDeleted() {
@@ -501,7 +501,7 @@
 
     {#if item.description}
       <div class="html-content desc" data-testid="detail-description">
-        <LazyMilkdownEditor content={item.description} readonly={true} showToolbar={false} />
+        <LazyMilkdownEditor content={item.description} readonly={true} showToolbar={false} workspaceId={item.workspace_id} />
       </div>
     {/if}
 
@@ -522,6 +522,9 @@
       <button class="act" class:on={isWatching} onclick={toggleWatch} disabled={watchBusy} data-testid="detail-watch" type="button">
         <Star size={16} fill={isWatching ? 'currentColor' : 'none'} />
         {isWatching ? t('mobile.item.watching') : t('mobile.item.watch')}
+        {#if watcherCount > 0}
+          <span class="watch-count" data-testid="detail-watcher-count">{watcherCount}</span>
+        {/if}
       </button>
       {#if canStartTimer}
         <button class="act" onclick={startTimer} disabled={startingTimer} data-testid="detail-start-timer" type="button">
@@ -639,6 +642,9 @@
       <span class="opt">
         <Avatar src={user.avatar_url} name={userLabel(user)} size="xs" variant="teal" />
         <span class="assignee-option-label">{userLabel(user)}</span>
+        {#if user.username}
+          <span class="assignee-option-handle">@{user.username}</span>
+        {/if}
       </span>
     {/snippet}
   </MobileOptionSheet>
@@ -769,7 +775,8 @@
   .done-check.done { background-color: var(--ds-success, #4cb782); border-color: var(--ds-success, #4cb782); }
   .opt { display: inline-flex; align-items: center; gap: 0.5rem; min-width: 0; }
   .opt-dot { width: 8px; height: 8px; border-radius: var(--radius-full, 9999px); background-color: var(--ds-icon-subtle, var(--ds-text-subtle)); flex-shrink: 0; }
-  .assignee-option-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .assignee-option-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  .assignee-option-handle { color: var(--ds-text-subtle); font-size: 0.8125rem; flex-shrink: 0; }
 
   .desc {
     padding: 0.5rem 0 1rem; border-bottom: 1px solid var(--ds-border); margin-bottom: 1rem;
@@ -789,6 +796,7 @@
   }
   .act.on { color: var(--ds-interactive); border-color: var(--ds-interactive); }
   .act:disabled { opacity: 0.6; }
+  .watch-count { font-size: 0.75rem; color: var(--ds-text-subtle); }
 
   .panel { border: 1px solid var(--ds-border); border-radius: var(--radius-lg, 8px); margin-bottom: 0.75rem; overflow: hidden; }
   .panel-head {

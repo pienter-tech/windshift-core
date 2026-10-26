@@ -161,6 +161,7 @@ type PortalRequestSummary struct {
 	CreatedAt           string  `json:"created_at"`
 	UpdatedAt           string  `json:"updated_at"`
 	ChannelID           *int    `json:"channel_id"`
+	IntakeID            *int    `json:"intake_id,omitempty"`
 	RequestTypeID       *int    `json:"request_type_id"`
 	RequestTypeName     *string `json:"request_type_name"`
 	RequestTypeIcon     *string `json:"request_type_icon"`
@@ -215,6 +216,7 @@ func portalRequestSummaryFromRow(row repository.PortalRequestRow) PortalRequestS
 		CreatedAt:           row.CreatedAt,
 		UpdatedAt:           row.UpdatedAt,
 		ChannelID:           row.ChannelID,
+		IntakeID:            row.IntakeID,
 		RequestTypeID:       row.RequestTypeID,
 		RequestTypeName:     row.RequestTypeName,
 		RequestTypeIcon:     row.RequestTypeIcon,
@@ -234,14 +236,14 @@ func portalRequestSummariesFromRows(rows []repository.PortalRequestRow) []Portal
 	return requests
 }
 
-// PortalRequestVisibility resolves the WI-1547 visibility rules for one
-// portal: enabled intake email channels whose email_connected_portal_id
-// points at it (so email-originated tickets surface in "My Requests" and
-// pass ownership checks), plus the workspaces the portal serves
-// (defense-in-depth against an intake channel routed at an unrelated
-// workspace). Configs are parsed in Go — no JSON-in-SQL dialect concerns.
-// A missing portal channel yields an empty visibility: nothing extra is
-// exposed and the caller's own-channel query degrades to the portal itself.
+// portalRequestVisibility resolves the WI-1547 visibility rules for one portal:
+// the enabled intakes linked to it (so their email-originated tickets surface
+// in "My Requests" and pass ownership checks), plus the workspaces the portal
+// serves (defense-in-depth against an intake routed at an unrelated workspace).
+// Intake-scoped linking keeps a sibling internal intake on the same mailbox out
+// of the portal. A missing portal channel yields an empty visibility: nothing
+// extra is exposed and the caller's own-channel query degrades to the portal
+// itself.
 func (s *PortalService) portalRequestVisibility(ctx context.Context, portalChannelID int) (repository.PortalRequestVisibility, error) {
 	vis := repository.PortalRequestVisibility{PortalChannelID: portalChannelID}
 
@@ -258,29 +260,21 @@ func (s *PortalService) portalRequestVisibility(ctx context.Context, portalChann
 		vis.ServedWorkspaceIDs = portalCfg.PortalWorkspaceIDs
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, COALESCE(config, '{}') FROM channels
-		WHERE type = 'email' AND direction = 'inbound' AND status = 'enabled'
-	`)
+	// Intakes linked to this portal own the visibility since WI-1644: an item is
+	// visible when it came from one of those intakes, so a sibling internal
+	// intake on the same mailbox stays private.
+	intakes, err := repository.NewIntakeRepository(s.db).ListByPortal(ctx, portalChannelID)
 	if err != nil {
-		return vis, fmt.Errorf("list intake email channels: %w", err)
+		return vis, fmt.Errorf("list portal intakes: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var id int
-		var configJSON string
-		if err := rows.Scan(&id, &configJSON); err != nil {
+	for _, intake := range intakes {
+		if intake.Status != models.IntakeStatusEnabled {
 			continue
 		}
-		var cfg models.ChannelConfig
-		if json.Unmarshal([]byte(configJSON), &cfg) != nil {
-			continue
-		}
-		if cfg.EmailConnectedPortalID != nil && *cfg.EmailConnectedPortalID == portalChannelID {
-			vis.LinkedEmailChannelIDs = append(vis.LinkedEmailChannelIDs, id)
-		}
+		vis.LinkedIntakeIDs = append(vis.LinkedIntakeIDs, intake.ID)
 	}
-	return vis, rows.Err()
+
+	return vis, nil
 }
 
 // portalServesWorkspace reports whether the visibility's served-workspace
@@ -468,13 +462,54 @@ func (s *PortalService) GetRequestDetail(_ context.Context, itemID int) (*Portal
 	}, nil
 }
 
+// PortalServesRequestWorkspace reports whether the portal channel currently
+// serves the item's workspace. VerifyRequestOwnership applies the same check
+// for owners; approver-derived access must apply it too, otherwise removing a
+// workspace from a portal leaves active approvers able to read its requests.
+func (s *PortalService) PortalServesRequestWorkspace(ctx context.Context, itemID, portalChannelID int) (bool, error) {
+	detail, err := s.GetRequestDetail(ctx, itemID)
+	if err != nil {
+		return false, err
+	}
+	if detail == nil {
+		return false, nil
+	}
+	vis, err := s.portalRequestVisibility(ctx, portalChannelID)
+	if err != nil {
+		return false, err
+	}
+	return portalServesWorkspace(vis, detail.WorkspaceID), nil
+}
+
+// PortalServedWorkspaceIDs returns the workspace IDs the portal channel
+// serves. An empty slice means the restriction is disabled (legacy config).
+// Portal callers that check many items should resolve the scope once.
+func (s *PortalService) PortalServedWorkspaceIDs(ctx context.Context, portalChannelID int) ([]int, error) {
+	vis, err := s.portalRequestVisibility(ctx, portalChannelID)
+	if err != nil {
+		return nil, err
+	}
+	return vis.ServedWorkspaceIDs, nil
+}
+
+// PortalServesWorkspace reports whether the portal channel's served-workspace
+// scope admits workspaceID. It is the workspace-level counterpart to
+// PortalServesRequestWorkspace and lets approval reads apply the same
+// restriction without re-resolving the item.
+func (s *PortalService) PortalServesWorkspace(ctx context.Context, portalChannelID, workspaceID int) (bool, error) {
+	vis, err := s.portalRequestVisibility(ctx, portalChannelID)
+	if err != nil {
+		return false, err
+	}
+	return portalServesWorkspace(vis, workspaceID), nil
+}
+
 // VerifyRequestOwnership verifies that a user owns a request
 // Returns true if the user owns the request within the specified channel.
-// Since WI-1547 the check also admits items created through enabled intake
-// email channels linked to this portal (email_connected_portal_id), so a
-// customer who opened a ticket by email can read and continue it in the
-// connected portal. Since WI-1136 it also admits external request
-// participants. Since WI-1139 it also admits organisation-shared requests
+// Since WI-1547 the check also admits items created through enabled intakes
+// linked to this portal, so a customer who opened a ticket by email can read
+// and continue it in the connected portal. Since WI-1136 it also admits
+// external request participants. Since WI-1139 it also admits organisation-shared requests
 // (automatic mode, or requester_choice with the item flag set) when the
 // viewer qualifies for the configured audience. Items outside the portal's
 // served workspaces never pass, regardless of channel linkage or participation.
@@ -497,10 +532,12 @@ func (s *PortalService) VerifyRequestOwnership(ctx context.Context, itemID, chan
 	}
 	if *detail.ChannelID != channelID {
 		linked := false
-		for _, id := range vis.LinkedEmailChannelIDs {
-			if id == *detail.ChannelID {
-				linked = true
-				break
+		if detail.IntakeID != nil {
+			for _, id := range vis.LinkedIntakeIDs {
+				if id == *detail.IntakeID {
+					linked = true
+					break
+				}
 			}
 		}
 		if !linked {
@@ -713,7 +750,7 @@ func (s *PortalService) GetRequestTypeFields(ctx context.Context, requestTypeID 
 func (s *PortalService) ValidateRequestTypeBelongsToChannel(ctx context.Context, requestTypeID, channelID int) (bool, error) {
 	var exists bool
 	err := s.db.QueryRowContext(ctx,
-		"SELECT EXISTS(SELECT 1 FROM request_types WHERE id = ? AND channel_id = ? AND is_active = true)",
+		"SELECT EXISTS(SELECT 1 FROM request_types WHERE id = ? AND channel_id = ? AND is_active = true AND kind != 'email')",
 		requestTypeID, channelID).Scan(&exists)
 	return exists, err
 }
@@ -844,7 +881,7 @@ func (s *PortalService) collectVisibleChannelCustomFieldIDs(ctx context.Context,
 	rtRows, err := s.db.QueryContext(ctx, `
 		SELECT rt.id, rt.item_type_id, rt.workspace_id, rt.visibility_group_ids, rt.visibility_org_ids
 		FROM request_types rt
-		WHERE rt.channel_id = ? AND rt.is_active = true
+		WHERE rt.channel_id = ? AND rt.is_active = true AND rt.kind != 'email'
 	`, channelID)
 	if err != nil {
 		return nil, fmt.Errorf("list channel request types: %w", err)
@@ -867,15 +904,12 @@ func (s *PortalService) collectVisibleChannelCustomFieldIDs(ctx context.Context,
 			if !isAdmin && !portalRowVisible(groups, orgs, userGroupIDs, customerOrgID) {
 				continue
 			}
-			resolvedWorkspaceID := 0
-			if workspaceID != nil {
-				resolvedWorkspaceID = *workspaceID
-			} else if len(servedWorkspaceIDs) > 0 {
-				resolvedWorkspaceID = servedWorkspaceIDs[0]
+			// Request types pin their workspace at creation; an unpinned row is
+			// not routable and contributes no fields.
+			if workspaceID == nil || !containsInt(servedWorkspaceIDs, *workspaceID) {
+				continue
 			}
-			if resolvedWorkspaceID > 0 && containsInt(servedWorkspaceIDs, resolvedWorkspaceID) {
-				visibleRTRoutes = append(visibleRTRoutes, visibleRoute{id: id, itemTypeID: itemTypeID, workspaceID: resolvedWorkspaceID})
-			}
+			visibleRTRoutes = append(visibleRTRoutes, visibleRoute{id: id, itemTypeID: itemTypeID, workspaceID: *workspaceID})
 		}
 	}()
 	if err := rtRows.Err(); err != nil {

@@ -479,7 +479,7 @@ type Comment struct {
 }
 
 // MilestoneComment is one Markdown comment on a milestone, as returned by
-// /rest/api/v2/milestones/{milestone_id}/comments (WCORE-20).
+// /rest/api/v2/milestones/{milestone_id}/comments.
 type MilestoneComment struct {
 	ID          int       `json:"id"`
 	MilestoneID int       `json:"milestone_id"`
@@ -492,7 +492,7 @@ type MilestoneComment struct {
 }
 
 // MilestonePageLink links a workspace milestone to a page in its workspace,
-// as returned by /rest/api/v2/milestones/{milestone_id}/page-links (WCORE-19).
+// as returned by /rest/api/v2/milestones/{milestone_id}/page-links.
 type MilestonePageLink struct {
 	ID            int       `json:"id"`
 	MilestoneID   int       `json:"milestone_id"`

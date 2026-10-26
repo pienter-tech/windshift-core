@@ -8,9 +8,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Milestone comments (WCORE-20 API). Anyone who can view a milestone can list
-// and add comments; only the author can edit or delete one, which the server
-// enforces.
+// Milestone comments. Anyone who can view a milestone can list its
+// comments; the server enforces who may add, edit, or delete them.
 
 var milestoneCommentCmd = &cobra.Command{
 	Use:   "comment",
@@ -21,14 +20,14 @@ var milestoneCommentCmd = &cobra.Command{
 var milestoneCommentListCmd = &cobra.Command{
 	Use:   "list <milestone-id>",
 	Short: "List comments on a milestone",
-	Long: `List all comments on a milestone, oldest first.
+	Long: `List all comments on a milestone, newest first.
 
 Examples:
   ws milestone comment list 5
   ws milestone comment list 5 -o table`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		milestoneID, err := parseMilestoneCommentID("milestone", args[0])
+		milestoneID, err := parseMilestoneArgID("milestone", args[0])
 		if err != nil {
 			return err
 		}
@@ -51,20 +50,17 @@ Examples:
 var milestoneCommentAddCmd = &cobra.Command{
 	Use:   "add <milestone-id>",
 	Short: "Add a comment to a milestone",
-	Long: `Add a Markdown comment to a milestone. Pass the body with -m, or read it
-verbatim from a file with --file (use - for stdin) for long Markdown.
+	Long: `Add a Markdown comment to a milestone.
 
 Examples:
-  ws milestone comment add 5 -m "Scope agreed; see WCORE-24"
-  ws milestone comment add 5 --file update.md
-  cat update.md | ws milestone comment add 5 --file -`,
+  ws milestone comment add 5 -m "Scope agreed; see the spec page"`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		milestoneID, err := parseMilestoneCommentID("milestone", args[0])
+		milestoneID, err := parseMilestoneArgID("milestone", args[0])
 		if err != nil {
 			return err
 		}
-		body, err := milestoneCommentBody(cmd)
+		body, err := milestoneCommentBody()
 		if err != nil {
 			return err
 		}
@@ -87,19 +83,17 @@ Examples:
 var milestoneCommentEditCmd = &cobra.Command{
 	Use:   "edit <milestone-id> <comment-id>",
 	Short: "Edit a milestone comment",
-	Long: `Replace the body of a milestone comment you wrote. Pass the new body with
--m, or read it verbatim from a file with --file (use - for stdin).
+	Long: `Replace the body of a milestone comment. Supports Markdown content.
 
 Examples:
-  ws milestone comment edit 5 12 -m "Updated comment"
-  ws milestone comment edit 5 12 --file update.md`,
+  ws milestone comment edit 5 12 -m "Updated comment"`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		milestoneID, commentID, err := parseMilestoneCommentTarget(args)
 		if err != nil {
 			return err
 		}
-		body, err := milestoneCommentBody(cmd)
+		body, err := milestoneCommentBody()
 		if err != nil {
 			return err
 		}
@@ -122,7 +116,7 @@ Examples:
 var milestoneCommentDeleteCmd = &cobra.Command{
 	Use:   "delete <milestone-id> <comment-id>",
 	Short: "Delete a milestone comment",
-	Long: `Delete a milestone comment you wrote.
+	Long: `Delete a milestone comment.
 
 Examples:
   ws milestone comment delete 5 12`,
@@ -155,7 +149,7 @@ Examples:
 	},
 }
 
-func parseMilestoneCommentID(kind, raw string) (int, error) {
+func parseMilestoneArgID(kind, raw string) (int, error) {
 	id, err := strconv.Atoi(raw)
 	if err != nil || id < 1 {
 		return 0, fmt.Errorf("invalid %s ID: %s", kind, raw)
@@ -164,39 +158,26 @@ func parseMilestoneCommentID(kind, raw string) (int, error) {
 }
 
 func parseMilestoneCommentTarget(args []string) (milestoneID, commentID int, err error) {
-	if milestoneID, err = parseMilestoneCommentID("milestone", args[0]); err != nil {
+	if milestoneID, err = parseMilestoneArgID("milestone", args[0]); err != nil {
 		return 0, 0, err
 	}
-	if commentID, err = parseMilestoneCommentID("comment", args[1]); err != nil {
+	if commentID, err = parseMilestoneArgID("comment", args[1]); err != nil {
 		return 0, 0, err
 	}
 	return milestoneID, commentID, nil
 }
 
-// milestoneCommentBody reads the comment body from --file (verbatim) or -m
-// (with \n / \t / \\ escapes, like `ws comment add`).
-func milestoneCommentBody(cmd *cobra.Command) (string, error) {
-	var body string
-	if cmd.Flags().Changed("file") {
-		content, _, err := readMarkdownFile(milestoneCommentFile)
-		if err != nil {
-			return "", err
-		}
-		body = content
-	} else {
-		body = ParseCLIEscapes(milestoneCommentMessage)
+// milestoneCommentBody reads the comment body from -m, with \n / \t / \\
+// escapes like `ws comment add`.
+func milestoneCommentBody() (string, error) {
+	if strings.TrimSpace(milestoneCommentMessage) == "" {
+		return "", fmt.Errorf("message is required: use -m or --message")
 	}
-	if strings.TrimSpace(body) == "" {
-		return "", fmt.Errorf("comment body is required: use -m/--message or -f/--file")
-	}
-	return body, nil
+	return ParseCLIEscapes(milestoneCommentMessage), nil
 }
 
 // Flags for milestone comment commands
-var (
-	milestoneCommentMessage string
-	milestoneCommentFile    string
-)
+var milestoneCommentMessage string
 
 func init() {
 	milestoneCmd.AddCommand(milestoneCommentCmd)
@@ -207,7 +188,5 @@ func init() {
 
 	for _, c := range []*cobra.Command{milestoneCommentAddCmd, milestoneCommentEditCmd} {
 		c.Flags().StringVarP(&milestoneCommentMessage, "message", "m", "", "comment content (Markdown; supports \\n / \\t / \\\\)")
-		c.Flags().StringVarP(&milestoneCommentFile, "file", "f", "", "path to a Markdown file with the comment body (use - for stdin)")
-		c.MarkFlagsMutuallyExclusive("message", "file")
 	}
 }

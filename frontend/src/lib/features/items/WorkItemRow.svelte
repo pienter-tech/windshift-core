@@ -1,9 +1,9 @@
 <script>
   import ItemTypeIcon from '../../components/ItemTypeIcon.svelte';
+  import ItemKey from '../../components/ItemKey.svelte';
   import { formatDateSimple } from '../../utils/dateFormatter.js';
   import ItemCard from './ItemCard.svelte';
   import Lozenge from '../../components/Lozenge.svelte';
-  import SLABadge from '../sla/SLABadge.svelte';
   import { getStatusCategory } from '../../utils/statusColors.js';
   import { t } from '../../stores/i18n.svelte.js';
 
@@ -40,12 +40,6 @@
   let editingStoryPoints = $state(false);
   let storyPointsEditValue = $state('');
   let storyPointsError = $state(false);
-
-  // Compute the display key - prefer item.workspace_key, fallback to workspace.key
-  const displayKey = $derived.by(() => {
-    const key = item.workspace_key || workspace?.key;
-    return key ? `${key}-${item.workspace_item_number}` : `ITEM-${item.workspace_item_number}`;
-  });
 
   // Look up the item type for icon and color
   const itemType = $derived(item.item_type_id ? itemTypes.find(t => t.id === item.item_type_id) : null);
@@ -154,14 +148,18 @@
 
       <!-- Item Type Icon -->
       {#if showIcon}
-        <ItemTypeIcon itemType={itemType} />
+        <ItemTypeIcon
+          itemType={itemType}
+          icon={item.item_type_icon}
+          color={item.item_type_color}
+          title={item.item_type_name || undefined}
+          testId={`work-item-type-icon-${item.id}`}
+        />
       {/if}
 
       <!-- Item Key -->
       {#if showKey}
-        <span class="font-mono text-xs px-2 py-0.5 rounded flex-shrink-0" style="background-color: rgba(59, 130, 246, 0.1); color: var(--ds-text);">
-          {displayKey}
-        </span>
+        <ItemKey {item} {workspace} variant="badge" clickable={false} />
       {/if}
 
       <!-- Priority Badge -->
@@ -174,13 +172,6 @@
 
       <!-- Title -->
       <h4 class="text-sm flex-1 min-w-0 truncate" style="color: var(--ds-text);">{item.title}</h4>
-
-      <!-- SLA badge (breached / paused / warning / remaining) -->
-      {#if item.id}
-        <span class="flex-shrink-0" data-testid="work-item-sla-{item.id}">
-          <SLABadge itemId={item.id} workspaceId={item.workspace_id} />
-        </span>
-      {/if}
 
       <!-- Optional Workspace Name -->
       {#if showWorkspace && item.workspace_name}

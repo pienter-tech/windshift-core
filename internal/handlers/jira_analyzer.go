@@ -466,6 +466,16 @@ func (h *JiraImportHandler) Analyze(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Existing Windshift entities the operator may map onto instead of
+	// creating Jira-derived parallels. A failure here only removes the
+	// reuse option, so log and continue with empty target lists.
+	targets, targetsErr := h.imports.ListMappingTargets()
+	if targetsErr != nil {
+		slog.Warn("Failed to load Jira import mapping targets", slog.String("component", "jira"), slog.Any("error", targetsErr))
+	} else {
+		result.MappingTargets = targets
+	}
+
 	respondJSONOK(w, result)
 }
 

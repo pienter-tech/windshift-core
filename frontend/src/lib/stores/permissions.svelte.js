@@ -1,5 +1,5 @@
 import { derived, get, writable } from 'svelte/store';
-import { api } from '../api.js';
+import { permissions as permissionsApi } from '../api/permissions.js';
 import { authStore } from './auth.svelte.js';
 import { clearPermissionProfiles, loadPermissionProfile } from './permissionProfile.js';
 
@@ -21,6 +21,7 @@ function createPermissionStore() {
   // hide the management surface.
   const hasPortals = writable(false);
   const managesChannels = writable(false);
+  const managesAssetSets = writable(false);
   const logbookAvailable = writable(false);
   let allPermissionsLoaded = false;
   let allPermissionsLoadPromise = null;
@@ -72,11 +73,14 @@ function createPermissionStore() {
     }
   );
 
-  const canManageAssets = derived([authStore, userPermissionKeys], ([$authStore, $keys]) => {
-    if (!$authStore.currentUser) return false;
-    if ($authStore.currentUser.is_system_admin) return true;
-    return $keys.has('asset.manage');
-  });
+  const canManageAssets = derived(
+    [authStore, userPermissionKeys, managesAssetSets],
+    ([$authStore, $keys, $managesAssetSets]) => {
+      if (!$authStore.currentUser) return false;
+      if ($authStore.currentUser.is_system_admin) return true;
+      return $keys.has('asset.manage') || $managesAssetSets;
+    }
+  );
 
   const canManageChannels = derived(
     [authStore, managesChannels],
@@ -102,6 +106,7 @@ function createPermissionStore() {
       canAccessLogbook,
       canManageAssets,
       canManageChannels,
+      managesAssetSets,
     ],
     ([
       $permissions,
@@ -117,6 +122,7 @@ function createPermissionStore() {
       $canAccessLogbook,
       $canManageAssets,
       $canManageChannels,
+      $managesAssetSets,
     ]) => ({
       permissions: $permissions,
       userPermissions: $userPermissions,
@@ -131,6 +137,7 @@ function createPermissionStore() {
       canAccessLogbook: $canAccessLogbook,
       canManageAssets: $canManageAssets,
       canManageChannels: $canManageChannels,
+      managesAssetSets: $managesAssetSets,
     })
   );
 
@@ -187,6 +194,12 @@ function createPermissionStore() {
       return value;
     },
 
+    get managesAssetSets() {
+      let value;
+      managesAssetSets.subscribe((v) => (value = v))();
+      return value;
+    },
+
     // Set whether asset sets exist
     setHasAssetSets(value) {
       hasAssetSets.set(value);
@@ -205,6 +218,11 @@ function createPermissionStore() {
     // Set whether the current user manages at least one channel
     setManagesChannels(value) {
       managesChannels.set(value);
+    },
+
+    // Set whether the current user administers at least one asset set
+    setManagesAssetSets(value) {
+      managesAssetSets.set(value);
     },
 
     // Set whether logbook service is available
@@ -263,7 +281,7 @@ function createPermissionStore() {
 
       const generation = ++allPermissionsLoadGeneration;
       loading.set(true);
-      const request = api.permissions
+      const request = permissionsApi
         .getAll()
         .then((allPermissions) => {
           if (generation !== allPermissionsLoadGeneration) return [];
@@ -300,6 +318,7 @@ function createPermissionStore() {
       userPermissions.set(new Set());
       userPermissionKeys.set(new Set());
       managesChannels.set(false);
+      managesAssetSets.set(false);
       loading.set(false);
       error.set(null);
     },

@@ -112,6 +112,7 @@ type CommentService struct {
 	emailReplyService   EmailReplyHandler
 	agentMentionTrigger AgentMentionTrigger
 	issueSync           CommentIssueSync
+	reactionCache       commentReactionCache
 }
 
 type CaptureComment struct {
@@ -168,6 +169,7 @@ type CreateCommentParams struct {
 	CreatedAt             *time.Time // Optional: override created_at (e.g. for imports preserving original timestamps)
 	UpdatedAt             *time.Time // Optional: override updated_at (imports preserving original timestamps); defaults to created_at
 	SuppressNotifications bool       // Skip notifications, mentions, webhooks, and email replies (e.g. plugin-created comments)
+	SuppressActionEvents  bool       // Skip the comment_created automation trigger (WI-1142 loop guard for automation-authored comments)
 	EventMetadata         itemevents.Metadata
 }
 
@@ -393,7 +395,7 @@ func (s *CommentService) UpdateImported(params UpdateImportedCommentParams) erro
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit imported comment update: %w", err)
 	}
-	PublishItemChange(params.ItemID, ItemChangeUpdated)
+	PublishItemChange(params.ItemID)
 	return nil
 }
 
@@ -413,6 +415,9 @@ func (s *CommentService) CreateInTx(ctx context.Context, tx database.Tx, itemID,
 	var id int64
 	err := tx.QueryRowContext(ctx, insertCommentAuthorSQL, itemID, author, content, false, createdAt, createdAt).Scan(&id)
 	if err != nil {
+		return 0, err
+	}
+	if err := repository.TouchItemMilestoneActivity(tx, itemID, createdAt); err != nil {
 		return 0, err
 	}
 	var workspaceID int
@@ -524,6 +529,9 @@ func (s *CommentService) create(params CreateCommentParams) (*CreateCommentResul
 	if err := repository.NewItemRepository(s.db).TouchActivity(tx, params.ItemID, now); err != nil {
 		return nil, fmt.Errorf("failed to record comment activity: %w", err)
 	}
+	if err := repository.TouchItemMilestoneActivity(tx, params.ItemID, now); err != nil {
+		return nil, fmt.Errorf("failed to record comment activity: %w", err)
+	}
 	fallback := itemevents.System("application")
 	var authorID *int
 	switch {
@@ -553,6 +561,19 @@ func (s *CommentService) create(params CreateCommentParams) (*CreateCommentResul
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("failed to commit comment: %w", err)
+	}
+
+	// Agent replies on customer-facing tickets are the helpdesk communication
+	// history (WI-1142); internal notes, internal items, and portal replies
+	// are not audited here.
+	if isPublicAgentComment(params.IsPrivate, params.AuthorID, params.PortalCustomerID) &&
+		(item.ChannelID != nil || item.CreatorPortalCustomerID != nil) {
+		commentID := int(commentID)
+		emitServiceAudit(s.db, AuditActor{UserID: params.ActorUserID, Username: ""},
+			logger.ActionCommentCreate, logger.ResourceComment, &commentID, "", map[string]any{
+				"item_id": params.ItemID,
+				"kind":    "customer_reply",
+			})
 	}
 
 	// 4. Track activity (if activityTracker != nil)
@@ -680,7 +701,10 @@ func (s *CommentService) create(params CreateCommentParams) (*CreateCommentResul
 
 		// 7b. Dispatch the comment_created automation trigger (WI-1132).
 		// Admission outlives the request; failures never block comments.
-		if s.actionEvents != nil {
+		// Automation-authored comments never re-enter the trigger: a rule
+		// that posts an agent comment must not be able to trigger itself or
+		// its siblings, which is the one unbounded helpdesk loop (WI-1142).
+		if s.actionEvents != nil && !params.SuppressActionEvents {
 			fromCustomer := params.PortalCustomerID != nil
 			s.actionEvents.EmitActionEvent(&models.ActionEvent{
 				EventType:   models.ActionTriggerCommentCreated,
@@ -727,7 +751,7 @@ func (s *CommentService) create(params CreateCommentParams) (*CreateCommentResul
 
 	// Live-update publish (WI-483): the comment row is committed. Refresh the
 	// item's comment list for anyone viewing it.
-	PublishItemChange(params.ItemID, ItemChangeComment)
+	PublishItemChange(params.ItemID)
 
 	if s.issueSync != nil && !params.IsPrivate && !params.SuppressNotifications && params.AuthorID > 0 {
 		go func() {
@@ -1155,7 +1179,7 @@ func (s *CommentService) Update(commentID int, content string, userID int) (*mod
 	}
 
 	// Live-update publish (WI-483): the comment edit committed.
-	PublishItemChange(comment.ItemID, ItemChangeComment)
+	PublishItemChange(comment.ItemID)
 
 	return &comment, nil
 }
@@ -1235,8 +1259,11 @@ func (s *CommentService) Delete(commentID int) error {
 		return fmt.Errorf("failed to commit comment deletion: %w", err)
 	}
 
+	// The comment and its reactions are gone; drop any memoized groups.
+	s.reactionCache.invalidate(commentID)
+
 	// Live-update publish (WI-483): the delete committed.
-	PublishItemChange(itemID, ItemChangeComment)
+	PublishItemChange(itemID)
 
 	return nil
 }

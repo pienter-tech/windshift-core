@@ -295,7 +295,7 @@ func (h *PortalHandler) getRequestTypeWithVisibility(ctx context.Context, reques
 	err := h.db.QueryRowContext(ctx, `
 		SELECT id, channel_id, name, description, item_type_id, icon, color, display_order, is_active,
 		       visibility_group_ids, visibility_org_ids, title_template, created_at, updated_at
-		FROM request_types WHERE id = ? AND is_active = true
+		FROM request_types WHERE id = ? AND is_active = true AND kind != 'email'
 	`, requestTypeID).Scan(
 		&rt.ID, &rt.ChannelID, &rt.Name, &rt.Description, &rt.ItemTypeID, &rt.Icon, &rt.Color,
 		&rt.DisplayOrder, &rt.IsActive, &visibilityGroupIDs, &visibilityOrgIDs, &rt.TitleTemplate,
@@ -665,7 +665,7 @@ func (h *PortalHandler) loadPortalRequestTypes(ctx context.Context, channelID in
 		FROM request_types rt
 		LEFT JOIN item_types it ON rt.item_type_id = it.id
 		LEFT JOIN workspaces ws ON rt.workspace_id = ws.id
-		WHERE rt.channel_id = ? AND rt.is_active = true
+		WHERE rt.channel_id = ? AND rt.is_active = true AND rt.kind != 'email'
 		ORDER BY rt.display_order, rt.name`
 
 	rows, err := h.db.QueryContext(ctx, query, channelID)
@@ -788,22 +788,20 @@ func (h *PortalHandler) SubmitToPortal(w http.ResponseWriter, r *http.Request) {
 		submission.Title = sanitize.PlainTextField.Sanitize(rendered)
 	}
 
-	// Resolve the target workspace. The request type's own workspace_id is the
-	// source of truth for routing; fall back to the channel's first configured
-	// workspace only when the request type doesn't pin one (legacy/NULL). A
-	// generic submission (no request type) on a portal serving multiple
-	// workspaces is ambiguous — reject rather than silently routing to the
-	// first workspace.
+	// Resolve the target workspace. A request type pins its workspace at
+	// creation and that binding is the source of truth. A generic submission
+	// (no request type) on a portal serving multiple workspaces is ambiguous —
+	// reject rather than silently routing to the first workspace.
 	if len(config.PortalWorkspaceIDs) == 0 {
 		respondInternalError(w, r, fmt.Errorf("portal has no configured workspaces"))
 		return
 	}
-	if submission.RequestTypeID == nil && len(config.PortalWorkspaceIDs) > 1 {
-		respondValidationError(w, r, "this portal serves multiple workspaces; select a request type so the submission can be routed")
-		return
-	}
-	targetWorkspaceID := config.PortalWorkspaceIDs[0]
-	if validationResult.WorkspaceID != nil {
+	var targetWorkspaceID int
+	if submission.RequestTypeID != nil {
+		if validationResult.WorkspaceID == nil {
+			respondValidationError(w, r, "request type is misconfigured: no target workspace")
+			return
+		}
 		targetWorkspaceID = *validationResult.WorkspaceID
 		// The request type's workspace must be one the portal actually serves.
 		// A mismatch means the channel's workspace list drifted away from the
@@ -813,6 +811,12 @@ func (h *PortalHandler) SubmitToPortal(w http.ResponseWriter, r *http.Request) {
 			respondValidationError(w, r, "request type is misconfigured: its workspace is not served by this portal")
 			return
 		}
+	} else {
+		if len(config.PortalWorkspaceIDs) > 1 {
+			respondValidationError(w, r, "this portal serves multiple workspaces; select a request type so the submission can be routed")
+			return
+		}
+		targetWorkspaceID = config.PortalWorkspaceIDs[0]
 	}
 
 	initialStatus := defaultItemStatus // Default fallback status

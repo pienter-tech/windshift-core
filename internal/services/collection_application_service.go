@@ -53,13 +53,19 @@ type CollectionUpdate struct {
 	CategoryID     *int
 	IsPublicSet    bool
 	IsPublic       bool
+	IsPrivateSet   bool
+	IsPrivate      bool
 	PublicSlugSet  bool
 	PublicSlug     *string
+	// PublicMilestoneSwimlanesSet distinguishes an omitted patch field from false.
+	PublicMilestoneSwimlanesSet bool
+	PublicMilestoneSwimlanes    bool
 }
 
 type CollectionSharingUpdate struct {
-	IsPublic   bool
-	PublicSlug *string
+	IsPublic                 bool
+	PublicSlug               *string
+	PublicMilestoneSwimlanes *bool
 }
 
 type CollectionCategoryPatch struct {
@@ -98,6 +104,11 @@ type CollectionApplicationService struct {
 	boards      *repository.BoardConfigurationRepository
 	items       *ItemCRUDService
 	workspaces  *WorkspaceService
+
+	// beforePublicSharingWrite runs between scope authorization and the
+	// conditional write. Tests use it to reproduce a concurrent query edit
+	// deterministically; it is nil in production.
+	beforePublicSharingWrite func()
 }
 
 func NewCollectionApplicationService(db database.Database, permissions *PermissionService) *CollectionApplicationService {
@@ -310,8 +321,20 @@ func (s *CollectionApplicationService) Update(actor AuditActor, id int, update C
 	if update.IsPublicSet {
 		collection.IsPublic = update.IsPublic
 	}
+	if update.IsPrivateSet {
+		collection.IsPrivate = update.IsPrivate
+	}
 	if update.PublicSlugSet {
 		collection.PublicSlug = update.PublicSlug
+	}
+	if update.PublicMilestoneSwimlanesSet {
+		collection.PublicMilestoneSwimlanes = update.PublicMilestoneSwimlanes
+	}
+	// Private overrides public sharing: a collection marked private must never
+	// stay anonymously readable at its public slug.
+	if collection.IsPrivate {
+		collection.IsPublic = false
+		collection.PublicSlug = nil
 	}
 	if err := sanitizeCollectionModel(collection); err != nil {
 		return nil, err
@@ -355,6 +378,15 @@ func (s *CollectionApplicationService) UpdateSharing(actor AuditActor, id int, u
 	if err := s.requireWorkspaceAccess(actor.UserID, collection); err != nil {
 		return nil, err
 	}
+	// Private always overrides public sharing, so a private collection cannot be
+	// published. Reject the contradictory request instead of storing an is_public
+	// flag the public board will never honor, and clear any slug left behind.
+	if collection.IsPrivate {
+		if update.IsPublic {
+			return nil, collectionValidation("make the collection shared before publishing its board")
+		}
+		update.PublicSlug = nil
+	}
 	if update.PublicSlug != nil {
 		value := sanitize.ShortIdentifier.Sanitize(*update.PublicSlug)
 		update.PublicSlug = &value
@@ -370,11 +402,25 @@ func (s *CollectionApplicationService) UpdateSharing(actor AuditActor, id int, u
 			return nil, err
 		}
 	}
-	if err := s.repository.UpdatePublicSharing(id, update.IsPublic, update.PublicSlug); err != nil {
+	if s.beforePublicSharingWrite != nil {
+		s.beforePublicSharingWrite()
+	}
+	publicMilestoneSwimlanes := collection.PublicMilestoneSwimlanes
+	if update.PublicMilestoneSwimlanes != nil {
+		publicMilestoneSwimlanes = *update.PublicMilestoneSwimlanes
+	}
+	// Publishing is conditional on the authorized scope still being current, so
+	// a query edit between authorization and this write cannot make an
+	// unauthorized scope anonymously readable.
+	updated, err := s.repository.UpdatePublicSharing(id, update.IsPublic, update.PublicSlug, publicMilestoneSwimlanes, collection.QLQuery, collection.WorkspaceID)
+	if err != nil {
 		if database.IsUniqueConstraintError(err) {
 			return nil, ErrCollectionConflict
 		}
 		return nil, err
+	}
+	if !updated {
+		return nil, fmt.Errorf("%w: collection query changed before it could be published", ErrCollectionConflict)
 	}
 	emitServiceAudit(s.db, actor, logger.ActionCollectionUpdate, logger.ResourceCollection, &id, collection.Name, nil)
 	return s.repository.GetModel(id)
@@ -751,7 +797,16 @@ func (s *CollectionApplicationService) authorizeBoardRead(userID int, scope Boar
 	if err != nil {
 		return boardRepositoryError(err)
 	}
-	if !collection.IsPublic && (collection.CreatedBy == nil || *collection.CreatedBy != userID) {
+	if collection.WorkspaceID != nil {
+		allowed, err := s.permissions.HasWorkspacePermission(userID, *collection.WorkspaceID, models.PermissionItemView)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return ErrCollectionNotFound
+		}
+	}
+	if collection.IsPrivate && (collection.CreatedBy == nil || *collection.CreatedBy != userID) {
 		return ErrCollectionNotFound
 	}
 	return nil
@@ -774,6 +829,15 @@ func (s *CollectionApplicationService) authorizeBoardWrite(userID int, scope Boa
 	collection, err := s.repository.GetByID(*scope.CollectionID)
 	if err != nil {
 		return boardRepositoryError(err)
+	}
+	if collection.WorkspaceID != nil {
+		allowed, err := s.permissions.HasWorkspacePermission(userID, *collection.WorkspaceID, models.PermissionItemView)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return ErrCollectionNotFound
+		}
 	}
 	if collection.CreatedBy == nil || *collection.CreatedBy != userID {
 		return ErrCollectionNotFound
@@ -894,6 +958,9 @@ func mergeViewSettings(current, update *models.ViewSettings) *models.ViewSetting
 	if update.EnabledViews != nil {
 		merged.EnabledViews = update.EnabledViews
 	}
+	if update.MilestoneSwimlanes != nil {
+		merged.MilestoneSwimlanes = update.MilestoneSwimlanes
+	}
 	return &merged
 }
 
@@ -905,9 +972,12 @@ func mergeViewSettings(current, update *models.ViewSettings) *models.ViewSetting
 // needed.
 func (s *CollectionApplicationService) applyEffectiveViewSettings(config *models.BoardConfiguration) error {
 	normalizeStoredViewSettings(config.ViewSettings)
-	allViews := func() *models.ViewSettings {
-		views := slices.Clone(models.BoardViewIDs)
-		return &models.ViewSettings{EnabledViews: &views}
+	// Milestone-swimlane preferences share the board-options JSON but are
+	// independent of the enabled-views inherit/reset state: a collection's own
+	// value wins, otherwise the workspace default is inherited.
+	var ownMilestones *models.MilestoneSwimlaneConfig
+	if config.ViewSettings != nil {
+		ownMilestones = config.ViewSettings.MilestoneSwimlanes
 	}
 	workspaceID := config.WorkspaceID
 	if workspaceID == nil && config.CollectionID != nil {
@@ -928,6 +998,17 @@ func (s *CollectionApplicationService) applyEffectiveViewSettings(config *models
 		normalizeStoredViewSettings(row.ViewSettings)
 		return row, nil
 	}()
+	resolvedMilestones := ownMilestones
+	if resolvedMilestones == nil && wsErr == nil && wsConfig.ViewSettings != nil {
+		resolvedMilestones = wsConfig.ViewSettings.MilestoneSwimlanes
+	}
+	settingsWith := func(views *[]string) *models.ViewSettings {
+		return &models.ViewSettings{EnabledViews: views, MilestoneSwimlanes: resolvedMilestones}
+	}
+	allViews := func() *models.ViewSettings {
+		views := slices.Clone(models.BoardViewIDs)
+		return settingsWith(&views)
+	}
 	if config.CollectionID != nil && config.ViewSettings.HasEnabledViewsOverride() {
 		// The collection override speaks only for the collection-scoped
 		// views; workspace-only nav ids always inherit from the workspace
@@ -936,10 +1017,11 @@ func (s *CollectionApplicationService) applyEffectiveViewSettings(config *models
 		if wsErr == nil && wsConfig.ViewSettings.HasEnabledViewsOverride() {
 			views = mergeNavIDs(views, *wsConfig.ViewSettings.EnabledViews)
 		}
-		config.ViewSettings = &models.ViewSettings{EnabledViews: &views}
+		config.ViewSettings = settingsWith(&views)
 		return nil
 	}
 	if config.ViewSettings.HasEnabledViewsOverride() {
+		config.ViewSettings.MilestoneSwimlanes = resolvedMilestones
 		return nil
 	}
 	config.ViewSettingsInherited = true
@@ -952,7 +1034,7 @@ func (s *CollectionApplicationService) applyEffectiveViewSettings(config *models
 	}
 	if wsConfig.ViewSettings.HasEnabledViewsOverride() {
 		views := slices.Clone(*wsConfig.ViewSettings.EnabledViews)
-		config.ViewSettings = &models.ViewSettings{EnabledViews: &views}
+		config.ViewSettings = settingsWith(&views)
 		return nil
 	}
 	config.ViewSettings = allViews()

@@ -372,7 +372,7 @@ func (s *ItemApplicationService) authorizeQueueRead(userID int, scope QueueScope
 	if err != nil {
 		return err
 	}
-	if !collection.IsPublic && (collection.CreatedBy == nil || *collection.CreatedBy != userID) {
+	if collection.IsPrivate && (collection.CreatedBy == nil || *collection.CreatedBy != userID) {
 		return repository.ErrNotFound
 	}
 	return nil

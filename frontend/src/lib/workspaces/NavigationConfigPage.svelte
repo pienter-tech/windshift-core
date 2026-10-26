@@ -1,11 +1,9 @@
 <script>
   import { onMount } from 'svelte';
-  import {
-    IconHome as Home,
-    IconPalette as Palette,
-    IconRotate as Rotate,
-    IconSettings as Settings,
-  } from '@tabler/icons-svelte-runes';
+  import Home from '@tabler/icons-svelte-runes/icons/home';
+  import Palette from '@tabler/icons-svelte-runes/icons/palette';
+  import Rotate from '@tabler/icons-svelte-runes/icons/rotate';
+  import Settings from '@tabler/icons-svelte-runes/icons/settings';
   import Toggle from '../components/Toggle.svelte';
   import Tooltip from '../components/Tooltip.svelte';
   import {
@@ -15,9 +13,11 @@
     workspaceViewItems,
   } from '../navigation/workspaceNavigation.js';
   import { viewSettingsStore } from '../stores/viewSettings.svelte.js';
-  import { workspacePermissions, currentWorkspace } from '../stores';
+  import { workspacePermissions } from '../stores/workspacePermissions.svelte.js';
+  import { currentWorkspace } from '../stores/workspaces.svelte.js';
   import { moduleSettings } from '../stores/moduleSettings.js';
-  import { api } from '../api.js';
+  import { collections } from '../api/collections.js';
+  import { workspaces } from '../api/workspaces.js';
   import { t } from '../stores/i18n.svelte.js';
   import { errorToast } from '../stores/toasts.svelte.js';
 
@@ -28,6 +28,10 @@
   let config = $state(null);
   // Enabled nav ids for the scope being configured.
   let enabled = $state([]);
+  // Last set the server acknowledged. Failures roll back to this, not to a
+  // snapshot that may already be older than a later toggle.
+  let persisted = [];
+  let toggleGeneration = 0;
   let inherited = $state(true);
   let saving = $state(false);
   let collectionName = $state('');
@@ -98,12 +102,12 @@
     loadError = null;
     try {
       const requests = [
-        api.collections.getBoardConfiguration(collectionId ?? null, workspaceId ?? null),
+        collections.getBoardConfiguration(collectionId ?? null, workspaceId ?? null),
       ];
       if (isCollectionScope) {
-        requests.push(api.collections.get(collectionId));
+        requests.push(collections.get(collectionId));
       } else {
-        requests.push(api.workspaces.get(workspaceId));
+        requests.push(workspaces.get(workspaceId));
       }
       const [data, scope] = await Promise.all(requests);
       config = data;
@@ -134,6 +138,7 @@
       // never round-trip into its payload.
       enabled = enabled.filter((id) => COLLECTION_VIEW_IDS.has(id));
     }
+    persisted = [...enabled];
     inherited = Boolean(data?.view_settings_inherited) || !data?.view_settings;
   }
 
@@ -157,13 +162,17 @@
   let writeChain = Promise.resolve();
 
   function toggleRow(row) {
-    const before = enabled.slice();
+    const generation = ++toggleGeneration;
     enabled = isEnabled(row.id) ? enabled.filter((x) => x !== row.id) : [...enabled, row.id];
     writeChain = writeChain.then(async () => {
       try {
         await persistCurrent();
       } catch (error) {
-        enabled = before;
+        // Roll back to the last saved set only when no newer toggle arrived;
+        // otherwise the later toggle's queued save owns the current state.
+        if (generation === toggleGeneration) {
+          enabled = [...persisted];
+        }
         errorToast(t('navConfig.saveError', { error: error?.message || error }));
       }
     });
@@ -171,6 +180,9 @@
 
   async function persistCurrent() {
     saving = true;
+    // Capture the exact set being written so a later toggle during the await
+    // does not get marked as persisted.
+    const sent = [...enabled];
     try {
       // Round-trip the stored configuration fields: a PUT rewrites them, so
       // an omitted columns array would wipe the board's saved columns.
@@ -187,19 +199,25 @@
         })),
         show_rightmost_column_last_50: Boolean(config?.show_rightmost_column_last_50),
         completed_item_retention_days: config?.completed_item_retention_days ?? null,
-        view_settings: { enabled_views: [...enabled] },
+        view_settings: { enabled_views: sent },
       };
       // The PUT response carries the saved config with its effective view
       // settings; adopt it without touching the local toggle state so rows
       // do not re-render from a refetch.
       config = config?.id
-        ? await api.collections.updateBoardConfiguration(collectionId, config.id, payload, workspaceId)
-        : await api.collections.createBoardConfiguration(collectionId, workspaceId, payload);
+        ? await collections.updateBoardConfiguration(collectionId, config.id, payload, workspaceId)
+        : await collections.createBoardConfiguration(collectionId, workspaceId, payload);
+      persisted = sent;
       inherited = Boolean(config?.view_settings_inherited) || !config?.view_settings;
+      // Reflect the saved set immediately: navigation reads this store, and
+      // dropping the entry would fall back to the everything-enabled default
+      // until some later refetch. A workspace-scope save also changes every
+      // inheriting collection, so drop those caches and let them refetch.
       if (collectionId) {
-        viewSettingsStore.invalidate(workspaceId, collectionId);
+        viewSettingsStore.applyEnabledViews(workspaceId, collectionId, sent, inherited);
       } else {
         viewSettingsStore.invalidateWorkspace(workspaceId);
+        viewSettingsStore.applyEnabledViews(workspaceId, null, sent, inherited);
       }
     } finally {
       saving = false;
@@ -213,13 +231,13 @@
       try {
         saving = true;
         try {
-          await api.collections.updateBoardConfiguration(collectionId, config?.id, {
+          await collections.updateBoardConfiguration(collectionId, config?.id, {
             view_settings: { enabled_views: null },
           }, workspaceId);
-          viewSettingsStore.invalidate(workspaceId, collectionId);
           applyEffectiveViews(
-            await api.collections.getBoardConfiguration(collectionId ?? null, workspaceId ?? null)
+            await collections.getBoardConfiguration(collectionId ?? null, workspaceId ?? null)
           );
+          viewSettingsStore.applyEnabledViews(workspaceId, collectionId, enabled, inherited);
         } finally {
           saving = false;
         }

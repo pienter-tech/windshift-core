@@ -3,14 +3,14 @@
 import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { api } from '../api.js';
+import { pages } from '../api/pages.js';
 import LinkItemModal from './LinkItemModal.svelte';
 
-vi.mock('../api.js', () => ({
-  api: {
-    links: { search: vi.fn().mockResolvedValue([]) },
-    pages: { searchPages: vi.fn().mockResolvedValue({ results: [] }) },
-  },
+vi.mock('../api/configuration.js', () => ({
+  links: { search: vi.fn().mockResolvedValue([]) },
+}));
+vi.mock('../api/pages.js', () => ({
+  pages: { searchPages: vi.fn().mockResolvedValue({ results: [] }) },
 }));
 
 vi.mock('../stores/i18n.svelte.js', () => ({ t: (key) => key }));
@@ -129,7 +129,7 @@ describe('LinkItemModal in Page mode', () => {
     ['mouse', pickWithMouse],
   ])('after a %s pick', (_, pick) => {
     beforeEach(() => {
-      api.pages.searchPages.mockResolvedValue({ results: [page] });
+      pages.searchPages.mockResolvedValue({ results: [page] });
     });
 
     it('keeps focus in the dialog on the Clear button', async () => {

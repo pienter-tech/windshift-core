@@ -61,7 +61,8 @@ func (h *PortalHandler) GetMyApprovals(w http.ResponseWriter, r *http.Request) {
 
 // resolvePortalApprovalRequest loads an approval request scoped to the
 // portal's channel and visible to the actor. Writes a 404 when the request
-// does not exist in this channel or the actor cannot view it.
+// does not exist in this channel, the actor cannot view it, or its workspace
+// was removed from the portal's served scope.
 func (h *PortalHandler) resolvePortalApprovalRequest(ctx context.Context, w http.ResponseWriter, r *http.Request, channelID int, actor portalApprovalActor) (*models.ApprovalRequest, int, bool) {
 	requestID, ok := requireIDParam(w, r, "id")
 	if !ok {
@@ -69,6 +70,15 @@ func (h *PortalHandler) resolvePortalApprovalRequest(ctx context.Context, w http
 	}
 	req, err := h.approvalService.GetRequestInChannel(ctx, requestID, channelID)
 	if err != nil || !portalActorCanViewRequest(actor, req) {
+		respondNotFound(w, r, "Approval request")
+		return nil, 0, false
+	}
+	served, err := h.portalService.PortalServesWorkspace(ctx, channelID, req.WorkspaceID)
+	if err != nil {
+		respondInternalError(w, r, err)
+		return nil, 0, false
+	}
+	if !served {
 		respondNotFound(w, r, "Approval request")
 		return nil, 0, false
 	}
@@ -191,24 +201,34 @@ func (h *PortalHandler) portalApprovalActorFromRequest(r *http.Request) (portalA
 }
 
 func (h *PortalHandler) getApprovalsForPortalActor(ctx context.Context, actor portalApprovalActor, status string, channelID int) ([]*models.ApprovalRequest, error) {
+	// Resolve the portal's served-workspace scope once and drop requests whose
+	// workspace was removed. The approval list is an alternate read path to the
+	// same items, so it must honor the same restriction as request access.
+	served, err := h.portalService.PortalServedWorkspaceIDs(ctx, channelID)
+	if err != nil {
+		return nil, err
+	}
 	byID := map[int]*models.ApprovalRequest{}
+	add := func(requests []*models.ApprovalRequest) {
+		for _, req := range requests {
+			if portalServedWorkspace(served, req.WorkspaceID) {
+				byID[req.ID] = req
+			}
+		}
+	}
 	if actor.customerID != nil {
 		requests, err := h.approvalService.GetForPortalCustomerInChannel(ctx, *actor.customerID, status, channelID)
 		if err != nil {
 			return nil, err
 		}
-		for _, req := range requests {
-			byID[req.ID] = req
-		}
+		add(requests)
 	}
 	if actor.userID != nil {
 		requests, err := h.approvalService.GetForUserInChannel(ctx, *actor.userID, status, channelID)
 		if err != nil {
 			return nil, err
 		}
-		for _, req := range requests {
-			byID[req.ID] = req
-		}
+		add(requests)
 	}
 	out := make([]*models.ApprovalRequest, 0, len(byID))
 	for _, req := range byID {
@@ -220,11 +240,31 @@ func (h *PortalHandler) getApprovalsForPortalActor(ctx context.Context, actor po
 	return out, nil
 }
 
-// portalActorCanViewRequest checks the active approver pool.
+// portalServedWorkspace applies the portal's served-workspace scope. An empty
+// list means the restriction is disabled (legacy config).
+func portalServedWorkspace(served []int, workspaceID int) bool {
+	if len(served) == 0 {
+		return true
+	}
+	for _, id := range served {
+		if id == workspaceID {
+			return true
+		}
+	}
+	return false
+}
+
+// portalActorCanViewRequest checks the approver pool. While a request is
+// pending only the active pool may read it; after it resolves, prior approvers
+// retain read access to the history.
 func portalActorCanViewRequest(actor portalApprovalActor, req *models.ApprovalRequest) bool {
+	requireActive := req.Status == models.ApprovalRequestStatusPending
 	for _, si := range req.StepInstances {
 		for _, app := range si.Approvers {
-			if portalActorMatchesApprover(actor, app) {
+			if !portalActorMatchesApprover(actor, app) {
+				continue
+			}
+			if !requireActive || app.IsActive {
 				return true
 			}
 		}

@@ -13,23 +13,26 @@ describe('milestones comments client', () => {
     vi.unstubAllGlobals();
   });
 
-  it('lists every page of a milestone thread', async () => {
+  it('reads one page of the comment feed, passing page size and cursor', async () => {
+    const feed = {
+      comments: [{ id: 2, content: 'second' }],
+      next_cursor: 'older-than-2',
+      has_more: true,
+      total: 3,
+    };
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(
-        jsonResponse({ data: [{ id: 1, content: 'first' }], pagination: { total_pages: 2 } })
-      )
-      .mockResolvedValueOnce(
-        jsonResponse({ data: [{ id: 2, content: 'second' }], pagination: { total_pages: 2 } })
-      );
+      .mockResolvedValueOnce(jsonResponse({ data: feed }))
+      .mockResolvedValueOnce(jsonResponse({ data: { comments: [], has_more: false } }));
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(milestones.getComments(7)).resolves.toEqual([
-      { id: 1, content: 'first' },
-      { id: 2, content: 'second' },
-    ]);
-    expect(fetchMock.mock.calls[0][0]).toBe('/api/v2/milestones/7/comments?page_size=100&page=1');
-    expect(fetchMock.mock.calls[1][0]).toBe('/api/v2/milestones/7/comments?page_size=100&page=2');
+    await expect(milestones.getComments(7, { limit: 25 })).resolves.toEqual(feed);
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v2/milestones/7/comments?page_size=25');
+
+    await milestones.getComments(7, { limit: 25, cursor: 'older-than-2' });
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      '/api/v2/milestones/7/comments?page_size=25&cursor=older-than-2'
+    );
   });
 
   it('creates a comment with only its Markdown content', async () => {
@@ -102,22 +105,38 @@ describe('milestones activity client', () => {
     vi.unstubAllGlobals();
   });
 
-  it('reads one page of the activity feed with its pagination', async () => {
+  it('reads one page of the activity feed and whether more follow', async () => {
     const entry = { id: 'item_comment:3', type: 'item_comment_added' };
-    const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse({
-        data: [entry],
-        pagination: { page: 2, page_size: 20, total_items: 21, total_pages: 2 },
-      })
-    );
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ data: { entries: [entry], has_more: true } }));
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(milestones.getActivity(7, { page: 2, pageSize: 20 })).resolves.toEqual({
       entries: [entry],
-      page: 2,
-      totalPages: 2,
-      totalItems: 21,
+      hasMore: true,
     });
     expect(fetchMock.mock.calls[0][0]).toBe('/api/v2/milestones/7/activity?page=2&page_size=20');
+  });
+
+  it('reports no more entries when has_more is false or missing', async () => {
+    const entry = { id: 'milestone_comment:5', type: 'milestone_comment_added' };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ data: { entries: [entry], has_more: false } }))
+      .mockResolvedValueOnce(jsonResponse({ data: { entries: [] } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(milestones.getActivity(7)).resolves.toEqual({
+      entries: [entry],
+      hasMore: false,
+    });
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v2/milestones/7/activity?page=1&page_size=50');
+
+    await expect(milestones.getActivity(7, { page: 3 })).resolves.toEqual({
+      entries: [],
+      hasMore: false,
+    });
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/v2/milestones/7/activity?page=3&page_size=50');
   });
 });

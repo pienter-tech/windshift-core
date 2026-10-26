@@ -455,6 +455,9 @@ func (e *Engine) completeCycle(ctx context.Context, tx database.Tx, config *comp
 }
 
 func (e *Engine) pauseCycle(ctx context.Context, tx database.Tx, workspaceID int, cycle *models.ItemSLACycle, effective time.Time) error {
+	if err := e.recordOverdueBreach(ctx, tx, workspaceID, cycle, effective); err != nil {
+		return err
+	}
 	cycle.Paused = true
 	pausedAt := effective
 	cycle.PauseStartedAt = &pausedAt
@@ -467,6 +470,42 @@ func (e *Engine) pauseCycle(ctx context.Context, tx database.Tx, workspaceID int
 		return err
 	}
 	return e.appendLifecycle(ctx, tx, workspaceID, cycle, eventPaused, effective)
+}
+
+// recordOverdueBreach records an armed deadline that has already passed before
+// a pause or target change can clear it. It mirrors the breach job's
+// first-breach bookkeeping and side effects, so the original breach survives
+// whether the worker or the mutation wins the race. Both paths lock the cycle
+// row, and only a nil BreachedAt emits, so the side effects fire exactly once.
+func (e *Engine) recordOverdueBreach(ctx context.Context, tx database.Tx, workspaceID int, cycle *models.ItemSLACycle, effective time.Time) error {
+	if cycle.Status != models.SLACycleOngoing || cycle.Paused || cycle.GoalID == nil || cycle.GoalDurationMs <= 0 {
+		return nil
+	}
+	if cycle.BreachedAt != nil || cycle.NextDeadlineAt == nil {
+		return nil
+	}
+	deadline := *cycle.NextDeadlineAt
+	if deadline.After(effective) {
+		return nil
+	}
+	cycle.BreachedAt = &deadline
+	cycle.NextDeadlineAt = nil
+	cycle.RemainingMs = cycle.GoalDurationMs - cycle.ElapsedMs
+	if err := e.repo.UpdateCycle(ctx, tx, cycle); err != nil {
+		return err
+	}
+	if err := e.repo.DeleteJobsForCycleKind(ctx, tx, cycle.ID, models.SLAJobWarning); err != nil {
+		return err
+	}
+	if err := e.appendLifecycle(ctx, tx, workspaceID, cycle, eventBreached, deadline); err != nil {
+		return err
+	}
+	if e.sideEffects != nil {
+		if err := e.sideEffects.EmitBreach(ctx, tx, cycle); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (e *Engine) resumeCycle(ctx context.Context, tx database.Tx, config *compiledConfig, metric *compiledMetric, workspaceID int, cycle *models.ItemSLACycle, target goalTarget, effective time.Time) error {
@@ -489,6 +528,9 @@ func (e *Engine) resumeCycle(ctx context.Context, tx database.Tx, config *compil
 // reGoalCycle carries elapsed time into a newly matched goal and recomputes the
 // deadline ("freeze and forward"). Completed cycles are never regoaled.
 func (e *Engine) reGoalCycle(ctx context.Context, tx database.Tx, config *compiledConfig, metric *compiledMetric, workspaceID int, cycle *models.ItemSLACycle, target goalTarget, effective time.Time) error {
+	if err := e.recordOverdueBreach(ctx, tx, workspaceID, cycle, effective); err != nil {
+		return err
+	}
 	newGoalID := (*int)(nil)
 	newDurationMs := int64(0)
 	newCalendarID := (*int)(nil)
@@ -596,6 +638,13 @@ func (e *Engine) advanceCycle(config *compiledConfig, cycle *models.ItemSLACycle
 		return nil
 	}
 	if !effective.After(cycle.LastCalculatedAt) {
+		return nil
+	}
+	// A cycle without a matched goal carries the synthetic 24/7 snapshot. It has
+	// no target to measure against, so it must not accrue wall-clock time that a
+	// goal matched later would inherit and immediately breach.
+	if cycle.GoalDurationMs <= 0 {
+		cycle.LastCalculatedAt = effective
 		return nil
 	}
 	calendar, err := calendarForCycle(config, cycle)
@@ -773,7 +822,7 @@ func calendarForCycle(config *compiledConfig, cycle *models.ItemSLACycle) (*busi
 		}
 		return nil, err
 	}
-	if cycle.CalendarID != nil {
+	if cycle.CalendarID != nil && config != nil {
 		if compiled, ok := config.calendars[*cycle.CalendarID]; ok {
 			return compiled.compiled, nil
 		}

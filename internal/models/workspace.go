@@ -169,6 +169,9 @@ type Milestone struct {
 	Position    int       `json:"position"`               // Manual sort order (drag-and-drop), scoped per (is_global, workspace_id, category_id)
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+	// LastActivityAt is the time of the newest milestone Activity entry; nil
+	// until the first activity.
+	LastActivityAt *time.Time `json:"last_activity_at,omitempty"`
 	// Joined fields for API responses
 	CategoryName  string             `json:"category_name,omitempty"`
 	CategoryColor string             `json:"category_color,omitempty"`
@@ -335,6 +338,14 @@ var WorkspaceNavItemIDs = append(slices.Clone(BoardViewIDs),
 	"queue", "agents", "iterations", "milestones", "analytics", "actions", "pages",
 )
 
+// DefaultWorkspaceNavItemIDs is the workspace-scope nav set a workspace gets
+// when it has no explicit enabled-views override. It is WorkspaceNavItemIDs
+// without the support queue: the queue is opt-in and enabled by the helpdesk
+// pack. A workspace admin can still toggle any id, queue included.
+var DefaultWorkspaceNavItemIDs = slices.DeleteFunc(slices.Clone(WorkspaceNavItemIDs), func(id string) bool {
+	return id == "queue"
+})
+
 // IsWorkspaceNavID reports whether id is a workspace-scope nav item.
 func IsWorkspaceNavID(id string) bool {
 	return slices.Contains(WorkspaceNavItemIDs, id)
@@ -356,6 +367,10 @@ type ViewSettings struct {
 	// effective set for a collection scope. A pointer to a nil slice resets
 	// an override to the inherited default.
 	EnabledViews *[]string `json:"enabled_views,omitempty"`
+	// MilestoneSwimlanes stores the board's milestone-swimlane preferences in
+	// the same board-options JSON. It is independent of the enabled-views
+	// override/inherit state.
+	MilestoneSwimlanes *MilestoneSwimlaneConfig `json:"milestone_swimlanes,omitempty"`
 }
 
 // UnmarshalJSON rejects unknown keys and distinguishes an omitted
@@ -368,7 +383,7 @@ func (v *ViewSettings) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	for key := range fields {
-		if key != "enabled_views" {
+		if key != "enabled_views" && key != "milestone_swimlanes" {
 			return fmt.Errorf("view_settings: unknown key %q", key)
 		}
 	}
@@ -382,21 +397,41 @@ func (v *ViewSettings) UnmarshalJSON(data []byte) error {
 		}
 		v.EnabledViews = &views
 	}
+	v.MilestoneSwimlanes = nil
+	if raw, ok := fields["milestone_swimlanes"]; ok && string(raw) != "null" {
+		var milestoneSwimlanes MilestoneSwimlaneConfig
+		if err := json.Unmarshal(raw, &milestoneSwimlanes); err != nil {
+			return err
+		}
+		v.MilestoneSwimlanes = &milestoneSwimlanes
+	}
 	return nil
 }
 
 // MarshalJSON writes the inherit state as {} and the reset state as an
-// explicit null so both round-trip without ambiguity.
+// explicit null so both round-trip without ambiguity. Milestone-swimlane
+// preferences ride along in either state.
 func (v ViewSettings) MarshalJSON() ([]byte, error) {
-	if v.EnabledViews == nil {
-		return []byte(`{}`), nil
+	fields := map[string]json.RawMessage{}
+	if v.EnabledViews != nil {
+		if len(*v.EnabledViews) == 0 {
+			fields["enabled_views"] = json.RawMessage("null")
+		} else {
+			encoded, err := json.Marshal(*v.EnabledViews)
+			if err != nil {
+				return nil, err
+			}
+			fields["enabled_views"] = encoded
+		}
 	}
-	if len(*v.EnabledViews) == 0 {
-		return []byte(`{"enabled_views":null}`), nil
+	if v.MilestoneSwimlanes != nil {
+		encoded, err := json.Marshal(v.MilestoneSwimlanes)
+		if err != nil {
+			return nil, err
+		}
+		fields["milestone_swimlanes"] = encoded
 	}
-	return json.Marshal(struct {
-		EnabledViews []string `json:"enabled_views"`
-	}{EnabledViews: *v.EnabledViews})
+	return json.Marshal(fields)
 }
 
 // HasEnabledViewsOverride reports whether the settings carry an explicit
@@ -438,6 +473,17 @@ type BoardConfiguration struct {
 	// workspace default rather than this collection's own row. Only set on
 	// collection-scoped reads.
 	ViewSettingsInherited bool `json:"view_settings_inherited,omitempty"`
+}
+
+// MilestoneSwimlaneConfig controls which milestone lanes a board renders.
+// GlobalMilestoneIDs pins specific global milestones so their (possibly empty)
+// lanes stay available as drop targets; ShowCompleted keeps completed milestone
+// lanes visible; ShowOpenFromCompleted collects open items still assigned to a
+// completed or canceled milestone into a dedicated rescue lane.
+type MilestoneSwimlaneConfig struct {
+	GlobalMilestoneIDs    []int `json:"global_milestone_ids,omitempty"`
+	ShowCompleted         bool  `json:"show_completed"`
+	ShowOpenFromCompleted bool  `json:"show_open_from_completed"`
 }
 
 // RoadmapConfig represents the configuration for a roadmap view

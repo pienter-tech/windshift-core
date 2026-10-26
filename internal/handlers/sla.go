@@ -115,7 +115,7 @@ func (h *SLAHandler) GetWorkspaceItemsSLA(w http.ResponseWriter, r *http.Request
 		respondError(w, r, slaInternal(err))
 		return
 	}
-	states, err := h.engine.ItemsSLA(r.Context(), workspaceID, scoped)
+	states, err := h.engine.ItemsSLABadges(r.Context(), workspaceID, scoped)
 	if err != nil {
 		respondError(w, r, slaInternal(err))
 		return

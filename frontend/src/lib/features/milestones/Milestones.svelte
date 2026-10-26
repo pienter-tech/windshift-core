@@ -5,10 +5,20 @@
   import { t } from '../../stores/i18n.svelte.js';
   import { confirm } from '../../composables/useConfirm.js';
   import { errorToast } from '../../stores/toasts.svelte.js';
-  import {
-    IconFlag as Milestone, IconCalendar as Calendar, IconCircleCheck as CheckCircle, IconClock as Clock, IconPlus as Plus, IconEdit as Edit, IconTrash as Trash2,
-    IconDots as MoreHorizontal, IconTag as Tag, IconMessage as MessageSquare, IconWorld as Globe, IconBuilding as Building2, IconGitBranch as GitBranch, IconGripVertical as GripVertical
-  } from '@tabler/icons-svelte-runes';
+  import Milestone from '@tabler/icons-svelte-runes/icons/flag';
+  import Calendar from '@tabler/icons-svelte-runes/icons/calendar';
+  import CheckCircle from '@tabler/icons-svelte-runes/icons/circle-check';
+  import Clock from '@tabler/icons-svelte-runes/icons/clock';
+  import Plus from '@tabler/icons-svelte-runes/icons/plus';
+  import Edit from '@tabler/icons-svelte-runes/icons/edit';
+  import Trash2 from '@tabler/icons-svelte-runes/icons/trash';
+  import MoreHorizontal from '@tabler/icons-svelte-runes/icons/dots';
+  import Tag from '@tabler/icons-svelte-runes/icons/tag';
+  import MessageSquare from '@tabler/icons-svelte-runes/icons/message';
+  import Globe from '@tabler/icons-svelte-runes/icons/world';
+  import Building2 from '@tabler/icons-svelte-runes/icons/building';
+  import GitBranch from '@tabler/icons-svelte-runes/icons/git-branch';
+  import GripVertical from '@tabler/icons-svelte-runes/icons/grip-vertical';
   import DataTable from '../../components/DataTable.svelte';
   import Button from '../../components/Button.svelte';
   import Toggle from '../../components/Toggle.svelte';
@@ -22,7 +32,7 @@
   import { moduleSettings } from '../../stores/moduleSettings.js';
   import { currentRoute } from '../../router.js';
   import { formatDateShort, formatRelativeTime } from '../../utils/dateFormatter.js';
-  import { api } from '../../api.js';
+  import { milestones as milestonesApi } from '../../api/milestones.js';
   import { workspacesStore } from '../../stores/workspaces.svelte.js';
   import { permissionStore, isSystemAdmin } from '../../stores/permissions.svelte.js';
   import { workspacePermissions } from '../../stores/workspacePermissions.svelte.js';
@@ -38,7 +48,6 @@
   import { loadMilestoneTestStatistics } from './milestoneStatisticsData.js';
   import { canReorderMilestoneRow } from './milestoneScope.js';
   import {
-    DEFAULT_MILESTONE_SORT,
     milestoneLastUpdated,
     milestoneStatusSortValue,
     milestoneTimelineSortValue,
@@ -99,7 +108,7 @@
     }
   }
 
-  // Global view filters (WCORE-18). The status selection is persisted like
+  // Global view filters. The status selection is persisted like
   // the workspace view's "hide completed" toggle; a missing or invalid value
   // hides completed and cancelled milestones. Empty selections show all.
   const STATUS_FILTER_KEY = 'milestones.statusFilter';
@@ -136,7 +145,7 @@
       : selectedWorkspaceKeys.filter((k) => k !== key);
   }
 
-  // "Clear filters" restores the defaults (WCORE-47), including the saved
+  // "Clear filters" restores the defaults, including the saved
   // status selection.
   function clearListFilters() {
     const defaults = defaultMilestoneListFilters();
@@ -145,10 +154,11 @@
     searchQuery = defaults.search;
   }
 
-  // Column sort of the global view's table (WCORE-33), bound to its DataTable.
-  // A column sort replaces the manual order, so rows only drag (and show the
-  // grip column) once the user clears the sort.
-  let globalSort = $state({ ...DEFAULT_MILESTONE_SORT });
+  // Column sort of the global view's table, bound to its DataTable. The page
+  // opens in the manual order, like the workspace view. A column sort
+  // replaces that order, so rows only drag (and show the grip column) while
+  // no sort is active.
+  let globalSort = $state(null);
   const columnSortActive = $derived(isGlobalView && globalSort != null);
 
   // Drag-and-drop reorder state. One set of cleanups per render; the
@@ -194,7 +204,7 @@
     try {
       const [_, milestones] = await Promise.all([
         categoriesStore.init(),
-        api.milestones.getAll(listFilters())
+        milestonesApi.getAll(listFilters())
       ]);
       // Update the store with filtered milestones
       milestonesStore.set(milestones || []);
@@ -213,7 +223,7 @@
 
   async function loadTestStatistics() {
     try {
-      testStatistics = await loadMilestoneTestStatistics(api, $milestonesStore);
+      testStatistics = await loadMilestoneTestStatistics($milestonesStore);
     } catch (error) {
       console.error('Failed to load test statistics:', error);
       testStatistics = {};
@@ -352,7 +362,7 @@
     releasingMilestone = null;
     // Refresh milestones to show updated status
     try {
-      const milestones = await api.milestones.getAll(listFilters());
+      const milestones = await milestonesApi.getAll(listFilters());
       milestonesStore.set(milestones || []);
     } catch (err) {
       console.error('Failed to refresh milestones:', err);
@@ -419,7 +429,7 @@
 
   // Global view: milestones exist (in the active category) but the filters
   // hide every one of them, so the empty state says so and offers to clear
-  // the filters instead of inviting a first milestone (WCORE-47).
+  // the filters instead of inviting a first milestone.
   let allFilteredOut = $derived(
     isGlobalView && filteredMilestones.length > 0 && visibleMilestones.length === 0
   );
@@ -691,7 +701,7 @@
       render: (milestone) => formatDateShort(milestone.created_at),
       textColor: 'var(--ds-text-subtle)'
     }, {
-      key: 'last_updated_at',
+      key: 'last_updated',
       label: t('milestones.columnUpdated'),
       width: 'w-36',
       sortable: true,

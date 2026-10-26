@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 
 	"windshift/internal/emailutil"
@@ -13,7 +14,8 @@ import (
 )
 
 // EmailTemplateHandler exposes admin CRUD for built-in transactional email
-// templates (magic_link, email_verification, invitation, notification_batch).
+// templates (magic_link, email_verification, invitation, mention,
+// notification_batch, portal_reply, approval_requested, intake_confirmation).
 // Only update + read + preview are exposed — the rows are seeded by the
 // system and admins are not allowed to add or remove them.
 type EmailTemplateHandler struct {
@@ -93,6 +95,24 @@ func (h *EmailTemplateHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	existing, err := h.repo.GetByID(id)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			respondNotFound(w, r, "email template")
+			return
+		}
+		respondInternalError(w, r, err)
+		return
+	}
+	// Reject a save that would break the email family: a template that cannot
+	// render against its own sample data would fail every send of that type.
+	if emailutil.HasSampleData(existing.Name) {
+		if _, _, _, err := renderEmailTemplate(existing.Name, req.Subject, req.HTMLBody, req.TextBody); err != nil {
+			respondValidationError(w, r, err.Error())
+			return
+		}
+	}
+
 	updated, err := h.repo.Update(id, req.Subject, req.HTMLBody, req.TextBody, req.Description, req.IsActive)
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
@@ -147,20 +167,29 @@ func (h *EmailTemplateHandler) Preview(w http.ResponseWriter, r *http.Request) {
 		sanitize.Pair{Target: &req.Name, Policy: sanitize.PlainTextField},
 	)
 
-	data := emailutil.SampleData(req.Name)
-
-	subjectOut, _, err := emailutil.RenderTemplates(req.Subject, req.Subject, data)
+	subjectOut, htmlOut, textOut, err := renderEmailTemplate(req.Name, req.Subject, req.HTMLBody, req.TextBody)
 	if err != nil {
-		respondValidationError(w, r, "subject render error: "+err.Error())
-		return
-	}
-	enriched := emailutil.EnrichWithSubject(data, subjectOut)
-	htmlOut, textOut, err := emailutil.RenderTemplates(req.HTMLBody, req.TextBody, enriched)
-	if err != nil {
-		respondValidationError(w, r, "template render error: "+err.Error())
+		respondValidationError(w, r, err.Error())
 		return
 	}
 
 	resp := previewResponse{Subject: subjectOut, HTMLBody: htmlOut, TextBody: textOut}
 	respondJSONOK(w, resp)
+}
+
+// renderEmailTemplate renders the supplied sources against the sample data for
+// the named template. It is the single validation path shared by admin saves
+// and previews so both agree on what a valid template is.
+func renderEmailTemplate(name, subject, htmlBody, textBody string) (subjectOut, htmlOut, textOut string, err error) {
+	data := emailutil.SampleData(name)
+	subjectOut, _, err = emailutil.RenderTemplates(subject, subject, data)
+	if err != nil {
+		return "", "", "", fmt.Errorf("subject render error: %w", err)
+	}
+	enriched := emailutil.EnrichWithSubject(data, subjectOut)
+	htmlOut, textOut, err = emailutil.RenderTemplates(htmlBody, textBody, enriched)
+	if err != nil {
+		return "", "", "", fmt.Errorf("template render error: %w", err)
+	}
+	return subjectOut, htmlOut, textOut, nil
 }

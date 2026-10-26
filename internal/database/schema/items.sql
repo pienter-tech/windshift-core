@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS items (
 	-- Portal/channel fields
 	channel_id INTEGER REFERENCES channels(id) ON DELETE SET NULL,
 	request_type_id INTEGER REFERENCES request_types(id) ON DELETE SET NULL,
+	-- intake_id records which email intake created this item (WI-1644). NULL for
+	-- non-intake items. FK is added in email.sql once intakes exists.
+	intake_id INTEGER,
 	-- Set at creation when the portal requester shares the request with their
 	-- organisation (WI-1139). Immutable afterwards.
 	portal_org_shared BOOLEAN NOT NULL DEFAULT false,
@@ -154,6 +157,7 @@ VALUES (1, '0.8.5');
 -- Portal/channel indexes
 CREATE INDEX IF NOT EXISTS idx_items_channel_id ON items(channel_id);
 CREATE INDEX IF NOT EXISTS idx_items_request_type_id ON items(request_type_id);
+CREATE INDEX IF NOT EXISTS idx_items_intake_id ON items(intake_id);
 
 -- Personal task relationship index
 CREATE INDEX IF NOT EXISTS idx_items_related_work_item_id ON items(related_work_item_id);
@@ -189,7 +193,7 @@ CREATE INDEX IF NOT EXISTS idx_item_history_current_status_latest
 	ON item_history(item_id, new_value, changed_at DESC)
 	WHERE field_name = 'status_id';
 
--- Milestone membership changes for the milestone Activity tab (WCORE-21).
+-- Milestone membership changes for the milestone Activity tab.
 -- The partial predicate keeps the index to 'milestones' rows only.
 CREATE INDEX IF NOT EXISTS idx_item_history_milestones
 	ON item_history(changed_at DESC, id DESC)

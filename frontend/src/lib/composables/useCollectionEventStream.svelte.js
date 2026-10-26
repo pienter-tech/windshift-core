@@ -1,4 +1,5 @@
 import { toExternal } from '../runtime/contextPath.js';
+import { createConnectionReconcileTracker } from './useItemEventStream.svelte.js';
 
 const DEBOUNCE_MS = 250;
 
@@ -33,6 +34,7 @@ export function useCollectionEventStream(getScope, handlers = {}) {
 
     let pending = false;
     let timer = null;
+    const connectionTracker = createConnectionReconcileTracker();
     const schedule = () => {
       pending = true;
       if (timer) return;
@@ -47,14 +49,16 @@ export function useCollectionEventStream(getScope, handlers = {}) {
     const es = new EventSource(url);
     es.addEventListener('connected', () => {
       connected = true;
-      // The stream may have missed changes before it connected.
-      schedule();
+      // Callers subscribe before their initial snapshot, so the first healthy
+      // connection is already covered. Reconnect (or an error before the first
+      // connect) still reconciles.
+      if (connectionTracker.markConnected()) schedule();
     });
-    es.addEventListener('items', schedule);
-    es.addEventListener('reload', schedule);
+    es.addEventListener('changed', schedule);
     // The browser auto-reconnects; until it does, mark disconnected so the
     // poller resumes as the fallback.
     es.onerror = () => {
+      connectionTracker.markDisconnected();
       connected = false;
     };
 

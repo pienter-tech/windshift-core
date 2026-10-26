@@ -1,5 +1,6 @@
 <script>
   import { cn } from '../utils/cn.js';
+  import { controlSizeClasses } from '../utils/controlSizes.js';
 
   let {
     value = $bindable(''),
@@ -16,12 +17,7 @@
     onchange = undefined,
   } = $props();
 
-  const sizeClasses = $derived(
-    {
-      small: 'px-3 py-1.5 text-sm',
-      medium: 'px-3 py-2 text-sm',
-    }[size] || 'px-3 py-2 text-sm',
-  );
+  const sizeClasses = $derived(controlSizeClasses(size));
 
   const classes = $derived(
     cn(

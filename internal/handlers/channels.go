@@ -13,6 +13,7 @@ import (
 	"net/mail"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -1016,8 +1017,10 @@ func (h *ChannelHandler) UpdateChannelConfig(w http.ResponseWriter, r *http.Requ
 	}
 
 	resourceName := ""
+	var previousSources []models.KnowledgeBasePageSource
 	if channel, lookupErr := h.service.GetByID(ctx, id); lookupErr == nil && channel != nil {
 		resourceName = channel.Name
+		previousSources = decodeKBSources(channel.Config)
 	}
 	h.auditor.LogWithDetails(r, user,
 		logger.ActionChannelUpdate, logger.ResourceChannel,
@@ -1025,10 +1028,37 @@ func (h *ChannelHandler) UpdateChannelConfig(w http.ResponseWriter, r *http.Requ
 		map[string]any{"change_type": "configuration"},
 	)
 
+	// Publishing a pages tree through a portal knowledge base exposes
+	// workspace content to customers (WI-1142): the publish scope change is
+	// its own audit event, not just a config edit.
+	if updatedChannel, lookupErr := h.service.GetByID(ctx, id); lookupErr == nil && updatedChannel != nil {
+		updatedSources := decodeKBSources(updatedChannel.Config)
+		if !slices.EqualFunc(previousSources, updatedSources, func(a, b models.KnowledgeBasePageSource) bool {
+			return a.WorkspaceID == b.WorkspaceID &&
+				(a.RootPageID == b.RootPageID || (a.RootPageID != nil && b.RootPageID != nil && *a.RootPageID == *b.RootPageID))
+		}) {
+			h.auditor.LogWithDetails(r, user,
+				logger.ActionChannelKBPublish, logger.ResourceChannel,
+				&id, resourceName,
+				map[string]any{"sources": updatedSources},
+			)
+		}
+	}
+
 	respondJSONOK(w, map[string]any{
 		"success": updated,
 		"message": "Channel configuration updated successfully",
 	})
+}
+
+// decodeKBSources extracts the portal knowledge base publish scope from a
+// channel config JSON document.
+func decodeKBSources(configJSON string) []models.KnowledgeBasePageSource {
+	var config models.ChannelConfig
+	if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
+		return nil
+	}
+	return config.KnowledgeBasePageSources
 }
 
 // GetChannelManagers returns all managers for a channel. Gated by manage
@@ -1334,6 +1364,43 @@ func (h *ChannelHandler) RequeueRateLimitedEmails(w http.ResponseWriter, r *http
 		return
 	}
 
+	requeuedCount := 0
+	earliestUID := 0
+	foundAny := false
+
+	// Since WI-1644 the poll cursor is per intake, so requeue must rewind each
+	// intake's own watermark. Tracking rows carry the intake that ingested them.
+	intakes, err := repository.NewIntakeRepository(h.channelRepo.DB()).ListEnabledForMailbox(ctx, id)
+	if err != nil {
+		respondInternalError(w, r, err)
+		return
+	}
+	for _, intake := range intakes {
+		uid, found, err := h.channelRepo.GetEarliestRateLimitedUIDForIntake(ctx, intake.ID, intake.UIDValidity)
+		if err != nil {
+			respondInternalError(w, r, err)
+			return
+		}
+		if !found {
+			continue
+		}
+		if err := h.channelRepo.ResetIntakeWatermarkToUID(ctx, intake.ID, uid-1); err != nil {
+			respondInternalError(w, r, err)
+			return
+		}
+		n, err := h.channelRepo.RequeueRateLimitedClaimsForIntake(ctx, intake.ID, intake.UIDValidity)
+		if err != nil {
+			respondInternalError(w, r, err)
+			return
+		}
+		requeuedCount += n
+		if !foundAny || uid < earliestUID {
+			earliestUID = uid
+		}
+		foundAny = true
+	}
+
+	// Pre-split tracking rows (intake_id NULL) still use the channel watermark.
 	state, err := h.channelRepo.GetEmailChannelState(ctx, id)
 	if err != nil && !errors.Is(err, repository.ErrNotFound) {
 		respondInternalError(w, r, err)
@@ -1343,29 +1410,34 @@ func (h *ChannelHandler) RequeueRateLimitedEmails(w http.ResponseWriter, r *http
 	if state != nil {
 		uidValidity = state.UIDValidity
 	}
-
-	earliestUID, found, err := h.channelRepo.GetEarliestRateLimitedUID(ctx, id, uidValidity)
+	legacyUID, legacyFound, err := h.channelRepo.GetEarliestRateLimitedUID(ctx, id, uidValidity)
 	if err != nil {
 		respondInternalError(w, r, err)
 		return
 	}
-	if !found {
+	if legacyFound {
+		if err := h.channelRepo.ResetEmailWatermarkToUID(ctx, id, legacyUID-1); err != nil {
+			respondInternalError(w, r, err)
+			return
+		}
+		n, err := h.channelRepo.RequeueRateLimitedClaims(ctx, id, uidValidity)
+		if err != nil {
+			respondInternalError(w, r, err)
+			return
+		}
+		requeuedCount += n
+		if !foundAny || legacyUID < earliestUID {
+			earliestUID = legacyUID
+		}
+		foundAny = true
+	}
+
+	if !foundAny {
 		respondJSONOK(w, map[string]any{
 			"requeued":   false,
 			"channel_id": id,
 			"message":    "No rate-limited messages to requeue",
 		})
-		return
-	}
-
-	if err := h.channelRepo.ResetEmailWatermarkToUID(ctx, id, earliestUID-1); err != nil {
-		respondInternalError(w, r, err)
-		return
-	}
-
-	requeuedCount, err := h.channelRepo.RequeueRateLimitedClaims(ctx, id, uidValidity)
-	if err != nil {
-		respondInternalError(w, r, err)
 		return
 	}
 
@@ -1501,7 +1573,8 @@ func (h *ChannelHandler) ListEmailReplies(w http.ResponseWriter, r *http.Request
 	}
 
 	type emailReply struct {
-		CommentID     int        `json:"comment_id"`
+		ID            int        `json:"id"`
+		CommentID     *int       `json:"comment_id,omitempty"`
 		ItemID        int        `json:"item_id"`
 		ToEmail       string     `json:"to_email"`
 		ToName        string     `json:"to_name"`
@@ -1519,7 +1592,7 @@ func (h *ChannelHandler) ListEmailReplies(w http.ResponseWriter, r *http.Request
 	replies := make([]emailReply, 0, len(rows))
 	for _, row := range rows {
 		reply := emailReply{
-			CommentID:    row.CommentID,
+			ID:           row.ID,
 			ItemID:       row.ItemID,
 			ToEmail:      row.ToEmail,
 			ToName:       row.ToName,
@@ -1528,6 +1601,10 @@ func (h *ChannelHandler) ListEmailReplies(w http.ResponseWriter, r *http.Request
 			LastError:    row.LastError.String,
 			CreatedAt:    row.CreatedAt,
 			WorkspaceKey: row.WorkspaceKey,
+		}
+		if row.CommentID.Valid {
+			commentID := int(row.CommentID.Int64)
+			reply.CommentID = &commentID
 		}
 		if row.NextAttemptAt.Valid {
 			t := row.NextAttemptAt.Time
@@ -1739,6 +1816,20 @@ func (h *ChannelHandler) GetEmailLog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get channel state. ErrNotFound just means "fresh channel, no state yet".
+	// emailIntakeState is the per-folder cursor and health the log renders for
+	// each intake. The channel-level last_uid is only meaningful for a legacy
+	// mailbox with no intake rows.
+	type emailIntakeState struct {
+		IntakeID         int        `json:"intake_id"`
+		Folder           string     `json:"folder"`
+		WorkspaceID      int        `json:"workspace_id"`
+		PortalChannelID  *int       `json:"portal_channel_id,omitempty"`
+		Status           string     `json:"status"`
+		LastUID          int        `json:"last_uid"`
+		UIDValidity      uint32     `json:"uid_validity"`
+		LastPolledAt     *time.Time `json:"last_polled_at,omitempty"`
+		RateLimitedCount int        `json:"rate_limited_count"`
+	}
 	type emailChannelState struct {
 		LastCheckedAt *time.Time `json:"last_checked_at"`
 		LastUID       int        `json:"last_uid"`
@@ -1750,8 +1841,11 @@ func (h *ChannelHandler) GetEmailLog(w http.ResponseWriter, r *http.Request) {
 		// RateLimitedCount is how many messages flood protection declined and
 		// are waiting for operator requeue.
 		RateLimitedCount int `json:"rate_limited_count"`
+		// Intakes carries each folder's cursor so operators can see per-intake
+		// progress; the channel-level cursor above is legacy-only.
+		Intakes []emailIntakeState `json:"intakes"`
 	}
-	state := emailChannelState{Healthy: true}
+	state := emailChannelState{Healthy: true, Intakes: []emailIntakeState{}}
 	if got, err := h.channelRepo.GetEmailChannelState(ctx, id); err == nil {
 		state.LastUID = got.LastUID
 		state.LastCheckedAt = got.LastCheckedAt
@@ -1768,6 +1862,25 @@ func (h *ChannelHandler) GetEmailLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state.RateLimitedCount = rateLimitedCount
+
+	intakes, err := repository.NewIntakeRepository(h.channelRepo.DB()).ListByMailbox(ctx, id)
+	if err != nil {
+		respondInternalError(w, r, err)
+		return
+	}
+	for _, intake := range intakes {
+		state.Intakes = append(state.Intakes, emailIntakeState{
+			IntakeID:         intake.ID,
+			Folder:           intake.Folder,
+			WorkspaceID:      intake.WorkspaceID,
+			PortalChannelID:  intake.PortalChannelID,
+			Status:           intake.Status,
+			LastUID:          intake.LastUID,
+			UIDValidity:      intake.UIDValidity,
+			LastPolledAt:     intake.LastPolledAt,
+			RateLimitedCount: intake.RateLimitedCount,
+		})
+	}
 
 	total, err := h.channelRepo.CountEmailMessages(ctx, id, search)
 	if err != nil {
@@ -1851,21 +1964,16 @@ func (h *ChannelHandler) GetEmailLog(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Default OAuth scopes for email providers
+// Default OAuth scopes for email providers. The monitored mailbox address is
+// entered by the admin (EmailOAuthMailbox), so no identity/userinfo scopes are
+// requested and no separate Graph/Google resource token is needed.
 var defaultEmailOAuthScopes = map[string][]string{
 	"microsoft": {
 		"https://outlook.office365.com/IMAP.AccessAsUser.All",
-		"https://outlook.office365.com/SMTP.Send",
-		"openid",
-		"profile",
-		"email",
 		"offline_access",
 	},
 	"google": {
 		"https://mail.google.com/",
-		"openid",
-		"email",
-		"profile",
 	},
 }
 
@@ -1933,6 +2041,13 @@ func (h *ChannelHandler) StartChannelEmailOAuth(w http.ResponseWriter, r *http.R
 	}
 	if config.EmailOAuthClientSecret == "" {
 		respondValidationError(w, r, "OAuth client secret not configured")
+		return
+	}
+	// The monitored mailbox is entered by the admin and is what IMAP XOAUTH2
+	// authenticates as. Require it before starting so the callback never has to
+	// guess an identity from the token.
+	if _, ok := bareEmailAddress(config.EmailOAuthMailbox); !ok {
+		respondValidationError(w, r, "Enter the mailbox address to connect before starting OAuth")
 		return
 	}
 
@@ -2041,6 +2156,16 @@ func (h *ChannelHandler) ChannelEmailOAuthCallback(w http.ResponseWriter, r *htt
 	defer func() {
 		h.restoreEmailChannelAfterOAuth(context.Background(), channelID, restoreEnabled, state, savedConfigJSON)
 	}()
+	// Bind the callback to the account that started the flow. The state carries
+	// the initiating user; the browser completing the redirect must be signed in
+	// as that same user, otherwise a forwarded authorization URL could attach the
+	// victim's mailbox credentials to another identity.
+	currentUser := utils.GetCurrentUser(r)
+	if currentUser == nil || currentUser.ID != stateUserID {
+		slog.Warn("email channel OAuth state/account mismatch", "channel_id", channelID)
+		http.Redirect(w, r, "/admin/channels?oauth_error=authorization_failed", http.StatusFound)
+		return
+	}
 	canManage, err := h.canCompleteEmailOAuth(ctx, stateUserID, channelID)
 	if err != nil {
 		respondInternalError(w, r, err)
@@ -2083,9 +2208,15 @@ func (h *ChannelHandler) ChannelEmailOAuthCallback(w http.ResponseWriter, r *htt
 	// Build redirect URI (must match the one used in StartOAuth)
 	redirectURI := fmt.Sprintf("%s/api/channels/inline-oauth/callback", h.baseURL)
 
-	// Exchange code for tokens
+	// Exchange code for tokens. The mailbox address is configuration the admin
+	// already saved, not a value discovered from the token.
 	var tokens *email.OAuthTokens
-	var userEmail string
+	userEmail, ok := bareEmailAddress(config.EmailOAuthMailbox)
+	if !ok {
+		slog.Error("email channel OAuth callback has no usable mailbox address", "channel_id", channelID)
+		http.Redirect(w, r, "/admin/channels?oauth_error=identity_failed", http.StatusFound)
+		return
+	}
 	scopes := defaultEmailOAuthScopes[config.EmailOAuthProviderType]
 
 	switch config.EmailOAuthProviderType {
@@ -2101,12 +2232,6 @@ func (h *ChannelHandler) ChannelEmailOAuthCallback(w http.ResponseWriter, r *htt
 			http.Redirect(w, r, "/admin/channels?oauth_error=exchange_failed", http.StatusFound)
 			return
 		}
-		userEmail, err = p.GetUserEmail(ctx, tokens.AccessToken)
-		if err != nil || strings.TrimSpace(userEmail) == "" {
-			slog.Error("failed to get Microsoft mailbox identity", "error", err)
-			http.Redirect(w, r, "/admin/channels?oauth_error=identity_failed", http.StatusFound)
-			return
-		}
 
 	case "google":
 		p := email.NewGoogleProvider(config.EmailOAuthClientID, clientSecret, scopes)
@@ -2114,12 +2239,6 @@ func (h *ChannelHandler) ChannelEmailOAuthCallback(w http.ResponseWriter, r *htt
 		if err != nil {
 			slog.Error("failed to exchange code", "error", err)
 			http.Redirect(w, r, "/admin/channels?oauth_error=exchange_failed", http.StatusFound)
-			return
-		}
-		userEmail, err = p.GetUserEmail(ctx, tokens.AccessToken)
-		if err != nil || strings.TrimSpace(userEmail) == "" {
-			slog.Error("failed to get Google mailbox identity", "error", err)
-			http.Redirect(w, r, "/admin/channels?oauth_error=identity_failed", http.StatusFound)
 			return
 		}
 

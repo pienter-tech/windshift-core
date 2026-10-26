@@ -80,15 +80,6 @@ func (s *PlanningApplicationService) ListMilestones(userID int, params Milestone
 		}
 		params.WorkspaceIDs = workspaceIDs
 	}
-	if params.IncludeLastUpdated {
-		// Item changes count only for items the viewer can access, the rule
-		// the milestone Activity tab and progress view use.
-		workspaceIDs, err := s.permission.AccessibleWorkspaceIDs(userID)
-		if err != nil {
-			return nil, 0, err
-		}
-		params.ViewerWorkspaceIDs = workspaceIDs
-	}
 	return s.planning.ListMilestones(params)
 }
 
@@ -140,7 +131,7 @@ func (s *PlanningApplicationService) CreateMilestone(userID int, actor AuditActo
 		return nil, err
 	}
 	params.Name = sanitize.PlainTextField.Sanitize(params.Name)
-	params.Description = sanitize.RichText.Sanitize(params.Description)
+	params.Description = sanitize.Comment.Sanitize(params.Description)
 	params.AuditActor = &actor
 	return s.planning.CreateMilestone(params)
 }
@@ -155,7 +146,7 @@ func (s *PlanningApplicationService) UpdateMilestone(userID int, actor AuditActo
 	}
 	params.WorkspaceID = existing.WorkspaceID
 	params.Name = sanitize.PlainTextField.Sanitize(params.Name)
-	params.Description = sanitize.RichText.Sanitize(params.Description)
+	params.Description = sanitize.Comment.Sanitize(params.Description)
 	params.AuditActor = &actor
 	return s.planning.UpdateMilestone(params)
 }

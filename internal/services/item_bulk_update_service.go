@@ -230,17 +230,17 @@ func (s *ItemUpdateService) BulkPatchItems(ctx context.Context, req BulkPatchIte
 		pending[i].Item = updated
 		pending[i].StatusChanged = s.hasStatusChanged(pending[i].OriginalItem, updated)
 		maybeTriggerAssigneeRun(updated.WorkspaceID, updated.ID, pending[i].OriginalItem.AssigneeID, updated.AssigneeID, req.UserID)
-		PublishItemChange(updated.ID, ItemChangeUpdated)
-		PublishWorkspaceChange(updated.WorkspaceID, WorkspaceChangeItems)
+		PublishItemChange(updated.ID)
+		PublishWorkspaceChange(updated.WorkspaceID)
 		oldParent, newParent := pending[i].OriginalItem.ParentID, updated.ParentID
 		reparented := (oldParent == nil) != (newParent == nil) ||
 			(oldParent != nil && newParent != nil && *oldParent != *newParent)
 		if reparented {
 			if oldParent != nil {
-				PublishItemChange(*oldParent, ItemChangeUpdated)
+				PublishItemChange(*oldParent)
 			}
 			if newParent != nil {
-				PublishItemChange(*newParent, ItemChangeUpdated)
+				PublishItemChange(*newParent)
 			}
 		}
 	}

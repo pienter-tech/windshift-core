@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"windshift/internal/jiraimport"
 	"windshift/internal/logger"
@@ -21,6 +22,13 @@ import (
 
 	"uuid"
 )
+
+// ReconcileInterruptedImports fails Jira import jobs whose worker lease
+// expired, so a server restart cannot leave a queued/running job blocking
+// retry or cleanup forever. Safe to call at startup and on demand.
+func (h *JiraImportHandler) ReconcileInterruptedImports() (int, error) {
+	return h.imports.ReconcileInterrupted(time.Now().UTC())
+}
 
 // GetJobStatus handles GET /api/admin/jira-import/jobs/{jobId}
 func (h *JiraImportHandler) GetJobStatus(w http.ResponseWriter, r *http.Request) {
@@ -125,14 +133,34 @@ func (h *JiraImportHandler) validateJiraWorkspaceMappings(req StartImportRequest
 	}
 
 	targetKeys := make(map[string]string, len(req.ProjectKeys))
+	targetWorkspaceIDs := make(map[int]string, len(req.ProjectKeys))
 	for _, requestedKey := range req.ProjectKeys {
 		jiraKey := normalizeJiraProjectKey(requestedKey)
 		mapping, ok := mappingsByJiraKey[jiraKey]
 		if !ok {
 			return fmt.Errorf("jira project %s is missing a workspace mapping", jiraKey)
 		}
-		if !mapping.CreateNew || mapping.WindshiftID != nil {
-			return fmt.Errorf("jira project %s must create a new workspace; existing workspaces cannot be reused", jiraKey)
+
+		if !mapping.CreateNew {
+			if mapping.WindshiftID == nil {
+				return fmt.Errorf("jira project %s must choose a target workspace", jiraKey)
+			}
+			target, err := h.imports.WorkspaceImportTarget(*mapping.WindshiftID)
+			if errors.Is(err, repository.ErrNotFound) || (err == nil && target == nil) {
+				return fmt.Errorf("jira project %s references a workspace that cannot be imported into", jiraKey)
+			}
+			if err != nil {
+				return fmt.Errorf("load workspace target for %s: %w", jiraKey, err)
+			}
+			if otherJiraKey, duplicate := targetWorkspaceIDs[target.ID]; duplicate {
+				return fmt.Errorf("jira projects %s and %s cannot import into the same workspace", otherJiraKey, jiraKey)
+			}
+			targetWorkspaceIDs[target.ID] = jiraKey
+			continue
+		}
+
+		if mapping.WindshiftID != nil {
+			return fmt.Errorf("jira project %s cannot both create a new workspace and reuse an existing one", jiraKey)
 		}
 		if strings.TrimSpace(mapping.NewWorkspaceName) == "" {
 			return fmt.Errorf("jira project %s requires a workspace name", jiraKey)
@@ -159,6 +187,51 @@ func (h *JiraImportHandler) validateJiraWorkspaceMappings(req StartImportRequest
 	return nil
 }
 
+// validateJiraEntityMappings rejects stale reuse targets so a deleted status,
+// item type, or custom field cannot silently degrade into a new entity.
+func (h *JiraImportHandler) validateJiraEntityMappings(req StartImportRequest) error {
+	for _, mapping := range req.Mappings.Statuses {
+		if mapping.CreateNew || mapping.WindshiftID == nil {
+			continue
+		}
+		exists, err := h.imports.StatusExists(*mapping.WindshiftID)
+		if err != nil {
+			return fmt.Errorf("load mapped status for %s: %w", mapping.JiraName, err)
+		}
+		if !exists {
+			return fmt.Errorf("jira status %s references a status that does not exist", mapping.JiraName)
+		}
+	}
+	for _, mapping := range req.Mappings.IssueTypes {
+		if mapping.CreateNew || mapping.WindshiftID == nil {
+			continue
+		}
+		exists, err := h.imports.ItemTypeExists(*mapping.WindshiftID)
+		if err != nil {
+			return fmt.Errorf("load mapped item type for %s: %w", mapping.JiraName, err)
+		}
+		if !exists {
+			return fmt.Errorf("jira issue type %s references an item type that does not exist", mapping.JiraName)
+		}
+	}
+	for _, mapping := range req.Mappings.CustomFields {
+		if mapping.Action != "map" || mapping.WindshiftID == nil {
+			continue
+		}
+		existingType, err := h.imports.CustomFieldTargetType(*mapping.WindshiftID)
+		if err != nil {
+			return fmt.Errorf("load mapped custom field for %s: %w", mapping.JiraName, err)
+		}
+		if existingType == "" {
+			return fmt.Errorf("jira field %s references a custom field that does not exist", mapping.JiraName)
+		}
+		if !jiraimport.CustomFieldTypesCompatible(existingType, mapping.WindshiftType) {
+			return fmt.Errorf("jira field %s (%s) cannot map to a %s custom field", mapping.JiraName, mapping.WindshiftType, existingType)
+		}
+	}
+	return nil
+}
+
 // StartImport handles POST /api/admin/jira-import/start
 // Starts a background import job and returns immediately with the job ID
 func (h *JiraImportHandler) StartImport(w http.ResponseWriter, r *http.Request) {
@@ -173,6 +246,10 @@ func (h *JiraImportHandler) StartImport(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err := h.validateJiraWorkspaceMappings(req); err != nil {
+		respondValidationError(w, r, err.Error())
+		return
+	}
+	if err := h.validateJiraEntityMappings(req); err != nil {
 		respondValidationError(w, r, err.Error())
 		return
 	}
@@ -293,6 +370,12 @@ func (h *JiraImportHandler) enqueueJiraImport(
 	planFingerprint string,
 	userID *int,
 ) (*jiraImportEnqueueResult, error) {
+	// Recover jobs whose worker lease expired before checking conflicts so a
+	// server crash cannot permanently block a retry.
+	if _, err := h.imports.ReconcileInterrupted(time.Now().UTC()); err != nil {
+		return nil, fmt.Errorf("reconcile interrupted Jira imports: %w", err)
+	}
+
 	jobID := uuid.New().String()
 	jobRepository := repository.NewJiraImportJobRepository(h.db)
 	var result *jiraImportEnqueueResult
@@ -327,10 +410,11 @@ func (h *JiraImportHandler) enqueueJiraImport(
 			return err
 		}
 		if err := jobs.Insert(repository.JiraImportJobInsert{
-			ID:           jobID,
-			ConnectionID: req.ConnectionID,
-			ConfigJSON:   string(configJSON),
-			CreatedBy:    userID,
+			ID:             jobID,
+			ConnectionID:   req.ConnectionID,
+			ConfigJSON:     string(configJSON),
+			CreatedBy:      userID,
+			LeaseExpiresAt: time.Now().UTC().Add(jiraimport.JiraImportLeaseDuration).Unix(),
 		}); err != nil {
 			return err
 		}
@@ -684,6 +768,27 @@ func (h *JiraImportHandler) clearMappingFailure(jobID string) {
 	delete(h.mappingFailures, jobID)
 }
 
+func (h *JiraImportHandler) setJobToken(jobID, token string) {
+	h.mappingFailuresMu.Lock()
+	defer h.mappingFailuresMu.Unlock()
+	if h.jobTokens == nil {
+		h.jobTokens = make(map[string]string)
+	}
+	h.jobTokens[jobID] = token
+}
+
+func (h *JiraImportHandler) jobToken(jobID string) string {
+	h.mappingFailuresMu.Lock()
+	defer h.mappingFailuresMu.Unlock()
+	return h.jobTokens[jobID]
+}
+
+func (h *JiraImportHandler) clearJobToken(jobID string) {
+	h.mappingFailuresMu.Lock()
+	defer h.mappingFailuresMu.Unlock()
+	delete(h.jobTokens, jobID)
+}
+
 func (h *JiraImportHandler) failOnMappingFailure(jobID string, progress *ImportProgress) bool {
 	err := h.mappingFailure(jobID)
 	if err == nil {
@@ -718,16 +823,18 @@ func (h *JiraImportHandler) recordMappingAndTransferOwnership(
 	return h.rememberMappingFailure(jobID, err)
 }
 
-// updateJobStatus updates the status of an import job.
+// updateJobStatus updates the status of an import job. The write is fenced by
+// the worker's ownership token so a recovered worker cannot change job state.
 func (h *JiraImportHandler) updateJobStatus(jobID, status, phase string, progress *ImportProgress, errorMessage string) {
-	if err := h.imports.UpdateStatus(jobID, status, phase, progress, errorMessage); err != nil {
+	if err := h.imports.UpdateStatus(jobID, h.jobToken(jobID), status, phase, progress, errorMessage); err != nil {
 		slog.Error("Failed to update job status", slog.String("component", "jira"), slog.Any("error", err))
 	}
 }
 
-// updateJobProgress updates just the progress of a running job.
+// updateJobProgress updates just the progress of a running job, fenced by the
+// worker's ownership token.
 func (h *JiraImportHandler) updateJobProgress(jobID string, progress *ImportProgress) {
-	if err := h.imports.UpdateProgress(jobID, progress); err != nil {
+	if err := h.imports.UpdateProgress(jobID, h.jobToken(jobID), progress); err != nil {
 		slog.Error("Failed to update job progress", slog.String("component", "jira"), slog.Any("error", err))
 	}
 }

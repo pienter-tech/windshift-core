@@ -71,6 +71,26 @@ export const channels = {
     }),
 };
 
+// Mailbox intakes (WI-1644): routing for an email channel (mailbox). The
+// mailbox owns the connection; each intake owns one folder and its target.
+export const channelIntakes = {
+  list: (channelId) => fetchAPI(`/channels/${channelId}/intakes`),
+  create: (channelId, data) =>
+    fetchAPI(`/channels/${channelId}/intakes`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  update: (channelId, intakeId, data) =>
+    fetchAPI(`/channels/${channelId}/intakes/${intakeId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  delete: (channelId, intakeId) =>
+    fetchAPI(`/channels/${channelId}/intakes/${intakeId}`, {
+      method: 'DELETE',
+    }),
+};
+
 export const channelCategories = createCrudClient('/channel-categories');
 
 // Create a channel-scoped CRUD client for sub-resources like request-types

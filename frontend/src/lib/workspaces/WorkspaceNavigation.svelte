@@ -1,29 +1,30 @@
 <script>
   import { onMount } from 'svelte';
-  import {
-    IconPlus as Plus,
-    IconArrowLeft as ArrowLeft,
-    IconSquareCheck as CheckSquare,
-    IconCalendar as Calendar,
-    IconHome as Home,
-    IconSettings as Settings,
-    IconBook as BookOpen,
-    IconChevronDown as ChevronDown,
-    IconChevronRight,
-    IconPalette as Palette,
-    IconSparkles as Sparkles,
-    IconPencil as Pencil,
-  } from '@tabler/icons-svelte-runes';
-  import { workspaceViewItems, workspaceOnlyViews, testNavigationItems, visibleWorkspaceSettingsItems, workspaceSettingsViews, workspaceSettingsRoute } from '../navigation/workspaceNavigation.js';
+  import Plus from '@tabler/icons-svelte-runes/icons/plus';
+  import ArrowLeft from '@tabler/icons-svelte-runes/icons/arrow-left';
+  import CheckSquare from '@tabler/icons-svelte-runes/icons/square-check';
+  import Calendar from '@tabler/icons-svelte-runes/icons/calendar';
+  import Home from '@tabler/icons-svelte-runes/icons/home';
+  import Settings from '@tabler/icons-svelte-runes/icons/settings';
+  import BookOpen from '@tabler/icons-svelte-runes/icons/book';
+  import ChevronDown from '@tabler/icons-svelte-runes/icons/chevron-down';
+  import IconChevronRight from '@tabler/icons-svelte-runes/icons/chevron-right';
+  import Palette from '@tabler/icons-svelte-runes/icons/palette';
+  import Sparkles from '@tabler/icons-svelte-runes/icons/sparkles';
+  import Pencil from '@tabler/icons-svelte-runes/icons/pencil';
+  import { workspaceViewItems, workspaceOnlyViews, testNavigationItems, visibleWorkspaceSettingsItems, workspaceSettingsViews, workspaceSettingsRoute, collectionSwitchUrl } from '../navigation/workspaceNavigation.js';
   import { viewSettingsStore } from '../stores/viewSettings.svelte.js';
   import { navigate, currentRoute } from '../router.js';
-  import { authStore, currentWorkspace, workspacePermissions } from '../stores';
+  import { authStore } from '../stores/auth.svelte.js';
+  import { currentWorkspace } from '../stores/workspaces.svelte.js';
+  import { workspacePermissions } from '../stores/workspacePermissions.svelte.js';
   import { moduleSettings } from '../stores/moduleSettings.js';
-  import { api } from '../api.js';
+  import { collections as collectionsApi } from '../api/collections.js';
   import DropdownMenu from '../layout/DropdownMenu.svelte';
   import ScrollableSidebar from '../layout/ScrollableSidebar.svelte';
   import SidebarResizeHandle from '../layout/SidebarResizeHandle.svelte';
   import Tooltip from '../components/Tooltip.svelte';
+  import BackButton from '../components/BackButton.svelte';
   import PagesNavSidebar from '../features/pages/PagesNavSidebar.svelte';
   import WorkspaceAdminNav from './WorkspaceAdminNav.svelte';
   import { i18n, t } from '../stores/i18n.svelte.js';
@@ -69,19 +70,6 @@
   const workspaceOnlyViewIds = new Set(
     workspaceOnlyViews.map(view => view.id)
   );
-  const workspaceTestViewIds = new Set([
-    'test-cases',
-    'test-case-detail',
-    'test-steps',
-    'test-sets',
-    'test-set-detail',
-    'test-templates',
-    'test-template-detail',
-    'test-runs',
-    'test-run-detail',
-    'test-execution',
-    'test-reports'
-  ]);
   const activeTestNavId = $derived.by(() => getActiveTestNavId($currentRoute));
   const isSettingsView = $derived(SETTINGS_VIEWS.includes($currentRoute.view));
   // Collection-scoped views filtered by the scope's enabled-views setting.
@@ -201,7 +189,7 @@
 
   async function loadCollections() {
     try {
-      const result = await api.collections.getAll();
+      const result = await collectionsApi.getAll();
       allCollections = result || [];
 
       // Filter collections for this workspace
@@ -327,43 +315,11 @@
     }
     buildCollectionDropdownItems();
 
-    // Navigate to the new URL with the selected collection
-    // Determine current view from the route
-    let currentView = $currentRoute.view;
-    if (currentView === 'workspace-detail') {
-      // If on overview, navigate to overview with/without collection
-      const url = currentCollectionId
-        ? `/workspaces/${workspaceId}/collections/${currentCollectionId}`
-        : `/workspaces/${workspaceId}`;
-      navigate(url);
-    } else if (currentView && currentView.startsWith('workspace-')) {
-      // For other workspace views (board, list, etc.), extract the view name
-      let viewName = currentView.replace('workspace-', '');
-
-      // Workspace-only views cannot be scoped by collection, fallback to default collection view
-      if (currentCollectionId !== null && workspaceOnlyViewIds.has(viewName)) {
-        viewName = defaultCollectionView;
-      }
-
-      const url = getNavigationUrl(viewName);
-      navigate(url);
-    } else if (currentView === 'item-detail') {
-      const currentItemId = $currentRoute.params.itemId;
-      if (currentItemId) {
-        const url = currentCollectionId
-          ? `/workspaces/${workspaceId}/collections/${currentCollectionId}/items/${currentItemId}`
-          : `/workspaces/${workspaceId}/items/${currentItemId}`;
-        navigate(url);
-      }
-    } else if (currentView && workspaceTestViewIds.has(currentView)) {
-      // Test views are not collection-sensitive, redirect to default collection view
-      if (currentCollectionId !== null) {
-        navigate(getNavigationUrl(defaultCollectionView));
-      } else {
-        const url = getTestNavigationUrl(getTestNavIdFromView(currentView));
-        navigate(url);
-      }
-    }
+    // Re-scope the current view from the route path so compound paths
+    // (board/configure, settings/general, …) and detail params survive the
+    // switch. Views without a collection-scoped route fall back to the
+    // collection's default view; "All items" drops the collection segment.
+    navigate(collectionSwitchUrl($currentRoute, workspaceId, currentCollectionId, defaultCollectionView));
   }
 
   function getNavigationUrl(view) {
@@ -388,15 +344,6 @@
       default:
         return `/workspaces/${workspaceId}/tests`;
     }
-  }
-
-  function getTestNavIdFromView(view) {
-    if (view === 'test-case-detail' || view === 'test-steps') return 'test-cases';
-    if (view === 'test-set-detail') return 'test-sets';
-    if (view === 'test-template-detail') return 'test-templates';
-    if (view === 'test-run-detail' || view === 'test-execution') return 'test-runs';
-    if (view === 'test-reports') return 'test-reports';
-    return 'test-cases';
   }
 
   function getActiveTestNavId(route) {
@@ -501,10 +448,13 @@
 
 {#snippet drilldownSidebarHeader()}
   <div class="px-4 pb-3">
-    <a class="workspace-header-back-link" href={`/workspaces/${workspaceId}`} data-testid="workspace-back-link">
-      <ArrowLeft size={13} />
-      <span>{t('workspaceSettings.backToWorkspace')}</span>
-    </a>
+    <BackButton
+      href={`/workspaces/${workspaceId}`}
+      label={t('workspaceSettings.backToWorkspace')}
+      size="small"
+      testid="workspace-back-link"
+      class="mt-0.5"
+    />
   </div>
 {/snippet}
 
@@ -732,23 +682,6 @@
       opacity: 1;
       transform: translateX(0);
     }
-  }
-
-  .workspace-header-back-link {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    margin-top: 0.125rem;
-    color: var(--ds-text-subtle);
-    font-size: 0.75rem;
-    line-height: 1rem;
-    text-decoration: none;
-    transition: color 120ms ease;
-  }
-
-  .workspace-header-back-link:hover {
-    color: var(--ds-text);
-    text-decoration: underline;
   }
 
   /* Keep the shared handle's outer half clickable. */

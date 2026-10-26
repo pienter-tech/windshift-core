@@ -74,18 +74,19 @@ var packListCmd = &cobra.Command{
 
 var packApplyCmd = &cobra.Command{
 	Use:   "apply [pack.tar.gz]",
-	Short: "Apply a framework pack to a workspace",
+	Short: "Provision a new workspace from a framework pack",
 	Args:  cobra.MaximumNArgs(1),
-	Long: `Install a framework pack into a workspace. Target an existing workspace with
---workspace-id, or create/reuse one by name with --workspace-name. Apply is
-idempotent: re-running converges without duplicating entities.
+	Long: `Provision a new workspace from a framework pack. The pack's schema,
+content, and conformance are applied to the workspace created by
+--workspace-name. Framework packs only apply to new workspaces; an existing
+workspace name is refused.
 
 Use --builtin <name> to apply a pack that ships with the server; otherwise pass
 an archive path.
 
 Examples:
   ws pack apply --builtin helpdesk --workspace-name "Helpdesk"
-  ws pack apply iso-27001-1.0.0.tar.gz --workspace-id 12`,
+  ws pack apply iso-27001-1.0.0.tar.gz --workspace-name "ISO"`,
 	RunE: func(_ *cobra.Command, args []string) error {
 		if packBuiltinName != "" {
 			if len(args) != 0 {
@@ -128,7 +129,7 @@ an archive path.
 
 Examples:
   ws pack verify --builtin helpdesk --workspace-name "Helpdesk"
-  ws pack verify iso-27001-1.0.0.tar.gz --workspace-id 12`,
+  ws pack verify iso-27001-1.0.0.tar.gz --workspace-name "ISO"`,
 	RunE: func(_ *cobra.Command, args []string) error {
 		if packBuiltinName != "" {
 			if len(args) != 0 {
@@ -159,22 +160,17 @@ Examples:
 }
 
 // runBuiltinPack applies or verifies a server-embedded pack by name against the
-// workspace selected by --workspace-id/--workspace-name.
+// new workspace named by --workspace-name.
 func runBuiltinPack(action, name string) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return fmt.Errorf("--builtin requires a pack name")
 	}
-	if packWorkspaceID == 0 && strings.TrimSpace(packWorkspaceName) == "" {
-		return fmt.Errorf("one of --workspace-id or --workspace-name is required")
+	workspaceName := strings.TrimSpace(packWorkspaceName)
+	if workspaceName == "" {
+		return fmt.Errorf("--workspace-name is required")
 	}
-	body := map[string]any{}
-	if packWorkspaceID > 0 {
-		body["workspace_id"] = packWorkspaceID
-	}
-	if packWorkspaceName != "" {
-		body["workspace_name"] = packWorkspaceName
-	}
+	body := map[string]any{"workspace_name": workspaceName}
 	client, err := NewClient()
 	if err != nil {
 		return err
@@ -193,17 +189,13 @@ func runBuiltinPack(action, name string) error {
 // endpoints as multipart fields.
 func packTargetFields() map[string]string {
 	fields := map[string]string{}
-	if packWorkspaceID > 0 {
-		fields["workspace_id"] = fmt.Sprint(packWorkspaceID)
-	}
-	if packWorkspaceName != "" {
-		fields["workspace_name"] = packWorkspaceName
+	if name := strings.TrimSpace(packWorkspaceName); name != "" {
+		fields["workspace_name"] = name
 	}
 	return fields
 }
 
 var (
-	packWorkspaceID   int
 	packWorkspaceName string
 	packBuiltinName   string
 )
@@ -215,11 +207,9 @@ func init() {
 	packCmd.AddCommand(packVerifyCmd)
 
 	packApplyCmd.Flags().StringVar(&packBuiltinName, "builtin", "", "apply a server-built-in pack by name instead of an archive")
-	packApplyCmd.Flags().IntVar(&packWorkspaceID, "workspace-id", 0, "apply into this existing workspace (by ID)")
-	packApplyCmd.Flags().StringVar(&packWorkspaceName, "workspace-name", "", "apply into a workspace with this name, creating it when missing")
-	packApplyCmd.MarkFlagsOneRequired("workspace-id", "workspace-name")
+	packApplyCmd.Flags().StringVar(&packWorkspaceName, "workspace-name", "", "name of the new workspace to provision")
+	_ = packApplyCmd.MarkFlagRequired("workspace-name")
 	packVerifyCmd.Flags().StringVar(&packBuiltinName, "builtin", "", "verify a server-built-in pack by name instead of an archive")
-	packVerifyCmd.Flags().IntVar(&packWorkspaceID, "workspace-id", 0, "resolve plugins and target against this workspace")
-	packVerifyCmd.Flags().StringVar(&packWorkspaceName, "workspace-name", "", "resolve the target workspace by name")
-	packVerifyCmd.MarkFlagsOneRequired("workspace-id", "workspace-name")
+	packVerifyCmd.Flags().StringVar(&packWorkspaceName, "workspace-name", "", "name of the new workspace to verify against")
+	_ = packVerifyCmd.MarkFlagRequired("workspace-name")
 }

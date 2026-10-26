@@ -402,6 +402,7 @@ func (h *SCIMHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 				"old_username": existingUser.Username,
 			}, true, "")
 
+		w.Header().Set("Location", h.baseURL+"/scim/v2/Users/"+strconv.Itoa(existingUser.ID))
 		respondSCIMJSON(w, http.StatusOK, h.userToSCIM(user))
 		return
 	}
@@ -443,6 +444,7 @@ func (h *SCIMHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	h.logSCIMAuditEvent(r, logger.ActionSCIMUserCreate, logger.ResourceUser, &userID, email,
 		map[string]any{"username": scimUser.UserName, "email": email}, true, "")
 
+	w.Header().Set("Location", h.baseURL+"/scim/v2/Users/"+strconv.Itoa(userID))
 	respondSCIMJSON(w, http.StatusCreated, h.userToSCIM(user))
 }
 
@@ -612,6 +614,16 @@ func (h *SCIMHandler) PatchUser(w http.ResponseWriter, r *http.Request) {
 		changes = append(changes, opChanges...)
 	}
 
+	// Surface an email collision as a SCIM uniqueness error rather than the
+	// generic 500 a raw UNIQUE-constraint failure would produce. The DB
+	// constraint remains the authority against a concurrent writer.
+	if acc.patch.SetEmail != nil {
+		if existing, lookupErr := h.repo.GetUserByEmail(*acc.patch.SetEmail); lookupErr == nil && existing.ID != id {
+			respondSCIMErrorMsg(w, http.StatusConflict, "User with this email already exists", "uniqueness")
+			return
+		}
+	}
+
 	// Everything validated — apply the resolved columns in one transaction.
 	// The owned-agent/token cascade commits with the write when the patch
 	// deactivates the user, so no partial state can survive a failure.
@@ -765,6 +777,7 @@ func (h *SCIMHandler) CreateGroup(w http.ResponseWriter, r *http.Request) {
 	h.logSCIMAuditEvent(r, logger.ActionSCIMGroupCreate, logger.ResourceGroup, &groupIDInt, scimGroup.DisplayName,
 		map[string]any{"member_count": len(scimGroup.Members)}, true, "")
 
+	w.Header().Set("Location", h.baseURL+"/scim/v2/Groups/"+strconv.Itoa(groupIDInt))
 	respondSCIMJSON(w, http.StatusCreated, h.groupToSCIM(group, members))
 }
 
@@ -951,13 +964,7 @@ func (h *SCIMHandler) PatchGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hasMemberOps := false
-	for _, op := range patchReq.Operations {
-		if strings.EqualFold(op.Path, "members") || strings.HasPrefix(strings.ToLower(op.Path), "members[") {
-			hasMemberOps = true
-			break
-		}
-	}
+	hasMemberOps := patchRequestHasMemberOps(patchReq.Operations)
 	var invalidation services.AuthorizationInvalidation
 	if hasMemberOps {
 		invalidation, err = h.cacheInvalidator.GroupPlan(id)
@@ -966,21 +973,34 @@ func (h *SCIMHandler) PatchGroup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
+	// Resolve every operation first, then commit the whole set in one
+	// transaction. A failure anywhere leaves the group and its memberships
+	// untouched (RFC 7644 §3.5.2 all-or-none).
+	acc := &groupPatchAccumulator{}
 	var changes []attrChange
 	for _, op := range patchReq.Operations {
-		opChanges, opErr := h.applyGroupPatchOp(r, snapshot, op)
+		opChanges, opErr := h.applyGroupPatchOp(r, acc, snapshot, op)
 		if opErr != nil {
 			h.logPatchOpError(r, "group", id, op, opErr)
-			if hasMemberOps {
-				if err := h.applyGroupInvalidationAfterMutation(id, invalidation); err != nil {
-					respondSCIMErrorMsg(w, http.StatusInternalServerError, "Failed to invalidate authorization cache", "")
-					return
-				}
-			}
 			respondSCIMErrorMsg(w, http.StatusBadRequest, "Patch operation failed", "invalidValue")
 			return
 		}
 		changes = append(changes, opChanges...)
+	}
+
+	if err := h.repo.ApplyGroupPatch(r.Context(), id, acc.patch); err != nil {
+		slog.Error("scim: failed to apply group patch",
+			slog.Int("group_id", id), slog.Any("error", err))
+		for _, member := range acc.memberAudits {
+			h.logGroupMemberChange(r, member.actionType(), snapshot, member.userID, err)
+		}
+		respondSCIMErrorMsg(w, http.StatusInternalServerError, "Failed to update group", "")
+		return
+	}
+
+	for _, member := range acc.memberAudits {
+		h.logGroupMemberChange(r, member.actionType(), snapshot, member.userID, nil)
 	}
 
 	if hasMemberOps {
@@ -1106,8 +1126,8 @@ func (h *SCIMHandler) SearchRequest(w http.ResponseWriter, r *http.Request) {
 
 	resourceType, remainingFilter := ExtractResourceTypeFilter(searchReq.Filter)
 
-	switch resourceType {
-	case "User":
+	switch strings.ToLower(resourceType) {
+	case "user":
 		response, err := h.listUsersFiltered(remainingFilter, startIndex, count)
 		if err != nil {
 			respondSCIMListError(w, err)
@@ -1115,7 +1135,7 @@ func (h *SCIMHandler) SearchRequest(w http.ResponseWriter, r *http.Request) {
 		}
 		respondSCIMJSON(w, http.StatusOK, response)
 
-	case "Group":
+	case "group":
 		response, err := h.listGroupsFiltered(remainingFilter, startIndex, count)
 		if err != nil {
 			respondSCIMListError(w, err)
@@ -1499,21 +1519,22 @@ type userPatchAccumulator struct {
 	deactivating bool // an active true→false transition occurred in the op sequence
 }
 
-// Unsupported attributes succeed as audited no-ops rather than failing the complete PATCH.
+// Attribute paths are case-insensitive (RFC 7643 §2.1). A path-less replace
+// or add carries a value object whose keys are applied as if each key were
+// the path (RFC 7644 §3.5.2.1/.3), including nested complex attributes such
+// as name. Unsupported attributes succeed as audited no-ops rather than
+// failing the complete PATCH.
 func (a *userPatchAccumulator) apply(snapshot *models.User, op models.SCIMPatchOp) ([]attrChange, error) {
 	opLower := strings.ToLower(op.Op)
+	path := normalizeSCIMPath(strings.ToLower(strings.TrimSpace(op.Path)))
 
 	switch opLower {
 	case "replace", "add":
-		path := strings.ToLower(op.Path)
-
 		switch path {
 		case "active":
-			active, ok := op.Value.(bool)
-			if !ok {
-				if strVal, ok := op.Value.(string); ok {
-					active = strings.EqualFold(strVal, "true")
-				}
+			active, err := parseSCIMPatchBool(op.Value)
+			if err != nil {
+				return nil, err
 			}
 			change := attrChange{Op: opLower, Path: "active", OldValue: snapshot.IsActive, NewValue: active}
 			if snapshot.IsActive && !active {
@@ -1529,6 +1550,15 @@ func (a *userPatchAccumulator) apply(snapshot *models.User, op models.SCIMPatchO
 				change := attrChange{Op: opLower, Path: "userName", OldValue: snapshot.Username, NewValue: strVal}
 				a.patch.SetUsername = &strVal
 				snapshot.Username = strVal
+				return []attrChange{change}, nil
+			}
+
+		case "emails", "emails.value":
+			if email, ok := scimEmailFromPatchValue(path, op.Value); ok {
+				sanitize.Apply(&email, sanitize.ShortIdentifier)
+				change := attrChange{Op: opLower, Path: "emails.value", OldValue: snapshot.Email, NewValue: email}
+				a.patch.SetEmail = &email
+				snapshot.Email = email
 				return []attrChange{change}, nil
 			}
 
@@ -1550,6 +1580,28 @@ func (a *userPatchAccumulator) apply(snapshot *models.User, op models.SCIMPatchO
 				return []attrChange{change}, nil
 			}
 
+		case "displayname", "name.formatted":
+			if strVal, ok := op.Value.(string); ok {
+				return a.applyDisplayName(snapshot, opLower, strVal), nil
+			}
+
+		case "name":
+			switch value := op.Value.(type) {
+			case map[string]any:
+				var changes []attrChange
+				for key, val := range value {
+					subChanges, err := a.apply(snapshot, models.SCIMPatchOp{Op: op.Op, Path: "name." + key, Value: val})
+					if err != nil {
+						return changes, err
+					}
+					changes = append(changes, subChanges...)
+				}
+				return changes, nil
+			case string:
+				// Lenient fallback: some clients send name as a formatted string.
+				return a.applyDisplayName(snapshot, opLower, value), nil
+			}
+
 		case "externalid":
 			if strVal, ok := op.Value.(string); ok {
 				sanitize.Apply(&strVal, sanitize.ShortIdentifier)
@@ -1560,12 +1612,11 @@ func (a *userPatchAccumulator) apply(snapshot *models.User, op models.SCIMPatchO
 			}
 
 		case "":
-			// No path - value should be an object with attributes
+			// No path - value is an object whose keys are the attributes to write.
 			if valueMap, ok := op.Value.(map[string]any); ok {
 				var changes []attrChange
 				for key, val := range valueMap {
-					subOp := models.SCIMPatchOp{Op: op.Op, Path: key, Value: val}
-					subChanges, err := a.apply(snapshot, subOp)
+					subChanges, err := a.apply(snapshot, models.SCIMPatchOp{Op: op.Op, Path: key, Value: val})
 					if err != nil {
 						return changes, err
 					}
@@ -1576,15 +1627,143 @@ func (a *userPatchAccumulator) apply(snapshot *models.User, op models.SCIMPatchO
 		}
 
 	case "remove":
-		if strings.EqualFold(op.Path, "externalId") {
+		switch path {
+		case "externalid":
 			change := attrChange{Op: opLower, Path: "externalId", OldValue: snapshot.SCIMExternalID, NewValue: nil}
 			a.patch.ClearExternalID = true
 			snapshot.SCIMExternalID = ""
 			return []attrChange{change}, nil
+
+		case "name.givenname":
+			empty := ""
+			change := attrChange{Op: opLower, Path: "name.givenName", OldValue: snapshot.FirstName, NewValue: nil}
+			a.patch.SetFirstName = &empty
+			snapshot.FirstName = ""
+			return []attrChange{change}, nil
+
+		case "name.familyname":
+			empty := ""
+			change := attrChange{Op: opLower, Path: "name.familyName", OldValue: snapshot.LastName, NewValue: nil}
+			a.patch.SetLastName = &empty
+			snapshot.LastName = ""
+			return []attrChange{change}, nil
+
+		case "name":
+			empty := ""
+			changes := []attrChange{
+				{Op: opLower, Path: "name.givenName", OldValue: snapshot.FirstName, NewValue: nil},
+				{Op: opLower, Path: "name.familyName", OldValue: snapshot.LastName, NewValue: nil},
+			}
+			a.patch.SetFirstName = &empty
+			a.patch.SetLastName = &empty
+			snapshot.FirstName = ""
+			snapshot.LastName = ""
+			return changes, nil
+
+		case "":
+			return nil, fmt.Errorf("remove operation requires a path")
 		}
 	}
 
 	return []attrChange{{Op: opLower, Path: op.Path, NewValue: "<unsupported>"}}, nil
+}
+
+// applyDisplayName derives first and last name from a displayName value. A
+// component that resolves to empty leaves the existing value in place, so an
+// IdP sending only "Cher" cannot silently erase an existing family name.
+func (a *userPatchAccumulator) applyDisplayName(snapshot *models.User, opLower, displayName string) []attrChange {
+	sanitize.Apply(&displayName, sanitize.PlainTextField)
+	displayName = strings.TrimSpace(displayName)
+
+	first, last := displayName, ""
+	if idx := strings.IndexByte(displayName, ' '); idx >= 0 {
+		first = strings.TrimSpace(displayName[:idx])
+		last = strings.TrimSpace(displayName[idx+1:])
+	}
+
+	var changes []attrChange
+	if first != "" {
+		change := attrChange{Op: opLower, Path: "name.givenName", OldValue: snapshot.FirstName, NewValue: first}
+		a.patch.SetFirstName = &first
+		snapshot.FirstName = first
+		changes = append(changes, change)
+	}
+	if last != "" {
+		change := attrChange{Op: opLower, Path: "name.familyName", OldValue: snapshot.LastName, NewValue: last}
+		a.patch.SetLastName = &last
+		snapshot.LastName = last
+		changes = append(changes, change)
+	}
+	if len(changes) == 0 {
+		changes = append(changes, attrChange{Op: opLower, Path: "displayName", NewValue: displayName})
+	}
+	return changes
+}
+
+// normalizeSCIMPath folds multi-valued filter selectors such as
+// emails[type eq "work"].value onto the plain attribute path Windshift can
+// persist. Only the email selector is recognized today.
+func normalizeSCIMPath(path string) string {
+	if strings.HasPrefix(path, "emails[") {
+		if strings.HasSuffix(path, ".value") {
+			return "emails.value"
+		}
+		return "emails"
+	}
+	return path
+}
+
+// scimEmailFromPatchValue extracts the email to persist from a PATCH value.
+// "emails" carries an array (the primary entry wins, first non-empty is the
+// fallback); "emails.value" carries a scalar.
+func scimEmailFromPatchValue(path string, value any) (string, bool) {
+	if path == "emails.value" {
+		strVal, ok := value.(string)
+		return strVal, ok && strVal != ""
+	}
+
+	emails, ok := value.([]any)
+	if !ok {
+		return "", false
+	}
+	fallback := ""
+	for _, e := range emails {
+		m, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		v, _ := m["value"].(string)
+		if v == "" {
+			continue
+		}
+		if primary, _ := m["primary"].(bool); primary {
+			return v, true
+		}
+		if fallback == "" {
+			fallback = v
+		}
+	}
+	if fallback != "" {
+		return fallback, true
+	}
+	return "", false
+}
+
+// parseSCIMPatchBool accepts a JSON boolean or the strings "true"/"false".
+// Anything else is rejected rather than silently coerced to false.
+func parseSCIMPatchBool(value any) (bool, error) {
+	switch v := value.(type) {
+	case bool:
+		return v, nil
+	case string:
+		switch strings.ToLower(v) {
+		case "true":
+			return true, nil
+		case "false":
+			return false, nil
+		}
+	}
+	return false, fmt.Errorf("invalid boolean value: %v", value)
 }
 
 // applyGroupPatchOp applies a single SCIM PATCH operation to the group identified
@@ -1593,22 +1772,105 @@ func (a *userPatchAccumulator) apply(snapshot *models.User, op models.SCIMPatchO
 // set of attribute changes (member ops are audited individually, not returned here).
 // Unknown paths emit an "<unsupported>" breadcrumb rather than a SCIM error — see
 // applyUserPatchOp for the rationale.
-func (h *SCIMHandler) applyGroupPatchOp(r *http.Request, snapshot *models.TeamGroup, op models.SCIMPatchOp) ([]attrChange, error) {
+// groupPatchAccumulator resolves group PATCH operations into a single
+// transactional write set. Membership writes are applied by the repository in
+// one transaction; memberAudits carries the per-member audit entries to emit
+// after the commit succeeds (or against every attempted member when it fails).
+type groupPatchAccumulator struct {
+	patch        repository.SCIMGroupPatch
+	memberAudits []groupMemberAudit
+}
+
+type groupMemberAudit struct {
+	add    bool
+	userID int
+}
+
+func (m groupMemberAudit) actionType() string {
+	if m.add {
+		return logger.ActionSCIMGroupAddMember
+	}
+	return logger.ActionSCIMGroupRemoveMember
+}
+
+// patchRequestHasMemberOps reports whether any operation targets members,
+// including the path-less value-object form. Member writes need authorization
+// cache invalidation, so this must catch every shape.
+func patchRequestHasMemberOps(ops []models.SCIMPatchOp) bool {
+	for _, op := range ops {
+		path := strings.ToLower(strings.TrimSpace(op.Path))
+		if path == "members" || strings.HasPrefix(path, "members[") {
+			return true
+		}
+		if path == "" {
+			if valueMap, ok := op.Value.(map[string]any); ok {
+				if _, ok := valueMap["members"]; ok {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// groupMemberIDs extracts user IDs from a SCIM members value (an array of
+// member objects each carrying a string "value"). Malformed entries are
+// skipped; a non-array value yields ok=false.
+func groupMemberIDs(value any) ([]int, bool) {
+	members, ok := value.([]any)
+	if !ok {
+		return nil, false
+	}
+	ids := make([]int, 0, len(members))
+	for _, m := range members {
+		memberMap, ok := m.(map[string]any)
+		if !ok {
+			continue
+		}
+		valueStr, ok := memberMap["value"].(string)
+		if !ok {
+			continue
+		}
+		memberID, err := strconv.Atoi(valueStr)
+		if err != nil {
+			continue
+		}
+		ids = append(ids, memberID)
+	}
+	return ids, true
+}
+
+// applyGroupPatchOp resolves one group PATCH operation into acc without
+// touching the database. Attribute paths are case-insensitive and the
+// path-less value-object form is expanded (RFC 7644 §3.5.2.1/.3). Unknown
+// paths emit an "<unsupported>" breadcrumb rather than failing the request.
+func (h *SCIMHandler) applyGroupPatchOp(r *http.Request, acc *groupPatchAccumulator, snapshot *models.TeamGroup, op models.SCIMPatchOp) ([]attrChange, error) {
 	opLower := strings.ToLower(op.Op)
-	path := strings.ToLower(op.Path)
-	groupID := snapshot.ID
+	path := strings.ToLower(strings.TrimSpace(op.Path))
 
 	switch opLower {
 	case "replace", "add":
+		// Path-less replace/add: the value object's keys are the attributes
+		// to write (RFC 7644 §3.5.2.1/.3).
+		if path == "" {
+			if valueMap, ok := op.Value.(map[string]any); ok {
+				var changes []attrChange
+				for key, val := range valueMap {
+					subChanges, err := h.applyGroupPatchOp(r, acc, snapshot, models.SCIMPatchOp{Op: op.Op, Path: key, Value: val})
+					if err != nil {
+						return changes, err
+					}
+					changes = append(changes, subChanges...)
+				}
+				return changes, nil
+			}
+		}
 		switch path {
 		case "displayname":
 			if strVal, ok := op.Value.(string); ok {
 				sanitize.Apply(&strVal, sanitize.PlainTextField)
-				err := h.repo.UpdateGroupName(groupID, strVal)
-				if err != nil {
-					return nil, err
-				}
 				change := attrChange{Op: opLower, Path: "displayName", OldValue: snapshot.Name, NewValue: strVal}
+				acc.patch.SetName = &strVal
 				snapshot.Name = strVal
 				return []attrChange{change}, nil
 			}
@@ -1616,77 +1878,71 @@ func (h *SCIMHandler) applyGroupPatchOp(r *http.Request, snapshot *models.TeamGr
 		case "externalid":
 			if strVal, ok := op.Value.(string); ok {
 				sanitize.Apply(&strVal, sanitize.ShortIdentifier)
-				err := h.repo.UpdateGroupExternalID(groupID, strVal)
-				if err != nil {
-					return nil, err
-				}
 				change := attrChange{Op: opLower, Path: "externalId", OldValue: snapshot.SCIMExternalID, NewValue: strVal}
+				acc.patch.SetExternalID = &strVal
 				snapshot.SCIMExternalID = strVal
 				return []attrChange{change}, nil
 			}
 
 		case "members":
-			if members, ok := op.Value.([]any); ok {
-				for _, m := range members {
-					memberMap, ok := m.(map[string]any)
-					if !ok {
-						continue
-					}
-					valueStr, ok := memberMap["value"].(string)
-					if !ok {
-						continue
-					}
-					memberID, err := strconv.Atoi(valueStr)
-					if err != nil {
-						continue
-					}
-					// Reject members that aren't SCIM-visible — same rationale
-					// as the CreateGroup/ReplaceGroup member loops.
-					if !h.repo.IsUserSCIMVisible(memberID) {
-						h.logGroupMemberChange(r, logger.ActionSCIMGroupAddMember, snapshot, memberID,
-							fmt.Errorf("user not SCIM-managed"))
-						continue
-					}
-					execErr := h.repo.UpsertGroupMember(groupID, memberID)
-					h.logGroupMemberChange(r, logger.ActionSCIMGroupAddMember, snapshot, memberID, execErr)
+			ids, ok := groupMemberIDs(op.Value)
+			if !ok {
+				return nil, nil
+			}
+			accepted := h.visibleGroupMemberIDs(r, snapshot, ids)
+			if opLower == "replace" {
+				// RFC 7644 §3.5.2.3: replace rewrites the whole member set.
+				acc.patch.MemberOps = append(acc.patch.MemberOps,
+					repository.SCIMGroupMemberOp{Kind: repository.SCIMGroupMemberReplace, UserIDs: accepted})
+			} else {
+				for _, memberID := range accepted {
+					acc.patch.MemberOps = append(acc.patch.MemberOps,
+						repository.SCIMGroupMemberOp{Kind: repository.SCIMGroupMemberAdd, UserID: memberID})
 				}
+			}
+			for _, memberID := range accepted {
+				acc.memberAudits = append(acc.memberAudits, groupMemberAudit{add: true, userID: memberID})
 			}
 			return nil, nil
 		}
 
 	case "remove":
+		if path == "" {
+			return nil, fmt.Errorf("remove operation requires a path")
+		}
 		if path == "members" || strings.HasPrefix(path, "members[") {
-			if op.Value == nil {
-				return nil, nil
-			}
-			members, ok := op.Value.([]any)
+			ids, ok := groupMemberIDs(op.Value)
 			if !ok {
 				return nil, nil
 			}
-			for _, m := range members {
-				memberMap, ok := m.(map[string]any)
-				if !ok {
-					continue
-				}
-				valueStr, ok := memberMap["value"].(string)
-				if !ok {
-					continue
-				}
-				memberID, err := strconv.Atoi(valueStr)
-				if err != nil {
-					continue
-				}
+			for _, memberID := range ids {
 				// The repository scopes the delete to SCIM-managed memberships
-				// so a SCIM PATCH can't wipe a locally-added row. Matches the
-				// bulk DELETE in ReplaceGroup.
-				execErr := h.repo.RemoveGroupMember(groupID, memberID)
-				h.logGroupMemberChange(r, logger.ActionSCIMGroupRemoveMember, snapshot, memberID, execErr)
+				// so a SCIM PATCH can't wipe a locally-added row.
+				acc.patch.MemberOps = append(acc.patch.MemberOps,
+					repository.SCIMGroupMemberOp{Kind: repository.SCIMGroupMemberRemove, UserID: memberID})
+				acc.memberAudits = append(acc.memberAudits, groupMemberAudit{add: false, userID: memberID})
 			}
 			return nil, nil
 		}
 	}
 
 	return []attrChange{{Op: opLower, Path: op.Path, NewValue: "<unsupported>"}}, nil
+}
+
+// visibleGroupMemberIDs filters out users SCIM must not attach (locals,
+// agents, service users) and audits each rejection. Without this guard a SCIM
+// token could attach arbitrary users by guessing IDs.
+func (h *SCIMHandler) visibleGroupMemberIDs(r *http.Request, snapshot *models.TeamGroup, ids []int) []int {
+	accepted := make([]int, 0, len(ids))
+	for _, memberID := range ids {
+		if !h.repo.IsUserSCIMVisible(memberID) {
+			h.logGroupMemberChange(r, logger.ActionSCIMGroupAddMember, snapshot, memberID,
+				fmt.Errorf("user not SCIM-managed"))
+			continue
+		}
+		accepted = append(accepted, memberID)
+	}
+	return accepted
 }
 
 // finalizeUserDeprovisioning records the audit trail for a committed

@@ -4,7 +4,7 @@
 </script>
 
 <script>
-  import { setContext, untrack } from 'svelte';
+  import { onDestroy, setContext, untrack } from 'svelte';
   import { getShortcut, matchesShortcut, getDisplayString } from '../utils/keyboardShortcuts.js';
   import { portal } from '../actions/portal.js';
 
@@ -185,11 +185,37 @@
     };
   });
 
+  // Auto-focus runs once per open. The effect below re-runs whenever the modal
+  // content is (re)mounted, so a timer scheduled inside it would keep resetting
+  // and could fire late — after the user has opened a dropdown — stealing focus
+  // back to the first field and scrolling the modal away from the control.
+  let autoFocusTimer = null;
+
+  onDestroy(() => {
+    if (autoFocusTimer !== null) clearTimeout(autoFocusTimer);
+  });
+
   $effect(() => {
-    if (isOpen && modalContentElement && backdropElement) {
-      const timer = setTimeout(() => {
+    if (!isOpen) {
+      if (autoFocusTimer !== null) {
+        clearTimeout(autoFocusTimer);
+        autoFocusTimer = null;
+      }
+      return;
+    }
+    if (!modalContentElement || !backdropElement) return;
+
+    if (autoFocusTimer === null) {
+      autoFocusTimer = setTimeout(() => {
+        autoFocusTimer = null;
+        if (!modalContentElement || !backdropElement) return;
         detectTextarea();
         if (modalContentElement.contains(document.activeElement)) return;
+        // Never steal focus from an open portaled overlay (select listbox,
+        // menu, nested dialog). Those render outside the modal content, so the
+        // containment check above cannot see them.
+        const active = document.activeElement;
+        if (active && active !== document.body && active.closest?.('[data-escapee]')) return;
         backdropElement.focus();
         if (autoFocus) {
           const focusable = modalContentElement.querySelector(
@@ -200,15 +226,13 @@
           }
         }
       }, 100);
-      // A lazily-mounted editor may appear after the initial detect — keep the
-      // submit hint in sync as the modal's subtree changes.
-      const observer = new MutationObserver(detectTextarea);
-      observer.observe(modalContentElement, { childList: true, subtree: true });
-      return () => {
-        clearTimeout(timer);
-        observer.disconnect();
-      };
     }
+
+    // A lazily-mounted editor may appear after the initial detect — keep the
+    // submit hint in sync as the modal's subtree changes.
+    const observer = new MutationObserver(detectTextarea);
+    observer.observe(modalContentElement, { childList: true, subtree: true });
+    return () => observer.disconnect();
   });
 </script>
 

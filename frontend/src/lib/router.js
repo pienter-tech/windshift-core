@@ -96,7 +96,8 @@ const routes = {
   '/collections/:id': 'collections-edit',
   '/notifications': 'notifications',
   '/search': 'search',
-  '/manage/channels': 'channel-manager',
+  '/manage': 'delegated-admin',
+  '/manage/:tab': 'delegated-admin',
   '/channels': 'hub',
   '/channels/inbox': 'hub-inbox',
   '/admin/channels': 'admin',
@@ -221,7 +222,12 @@ function parseQuery(search) {
 export function navigate(path, { replace = false } = {}) {
   const logicalPath = toLogical(path);
   const externalPath = toExternal(logicalPath);
-  if (externalPath === window.location.pathname + window.location.search) {
+  const currentURL = window.location.pathname + window.location.search;
+  if (externalPath === currentURL) {
+    // The URL already matches, but the route store can drift (for example after
+    // a direct history write). Republish so the view catches up, without
+    // adding a duplicate history entry.
+    if (currentLocationKey !== currentURL) updateRoute();
     return;
   }
   withMobileViewTransition('push', () => {
@@ -281,6 +287,22 @@ export function updateQueryParams(updates, { push = false } = {}) {
 }
 
 // Update current route from URL
+/** Resolves a logical path against the route table. Returns null when no
+ * route matches (callers decide on their own 404 fallback). */
+export function matchRoute(path) {
+  const exact = routes[path];
+  if (exact) return { view: exact, params: {} };
+
+  for (const [route, view] of Object.entries(routes)) {
+    if (!route.includes(':')) continue;
+    const routeRegex = new RegExp(`^${route.replace(/:[^/]+/g, '([^/]+)')}$`);
+    if (routeRegex.test(path)) {
+      return { view, params: parseParams(path, route) };
+    }
+  }
+  return null;
+}
+
 function updateRoute() {
   let path = toLogical(window.location.pathname);
   const search = window.location.search;
@@ -294,22 +316,9 @@ function updateRoute() {
   }
 
   // Find matching route
-  let matchedRoute = routes[path];
-  let params = {};
-
-  if (!matchedRoute) {
-    // Try to find a parameterized route match
-    for (const [route, view] of Object.entries(routes)) {
-      if (route.includes(':')) {
-        const routeRegex = new RegExp(`^${route.replace(/:[^/]+/g, '([^/]+)')}$`);
-        if (routeRegex.test(path)) {
-          matchedRoute = view;
-          params = parseParams(path, route);
-          break;
-        }
-      }
-    }
-  }
+  const match = matchRoute(path);
+  let matchedRoute = match?.view ?? null;
+  let params = match?.params ?? {};
 
   // If no route matches, show 404
   if (!matchedRoute) {

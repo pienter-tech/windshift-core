@@ -79,6 +79,13 @@ func (h *ItemHandler) CollectionEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ItemHandler) streamWorkspaceEvents(w http.ResponseWriter, r *http.Request, user *models.User, workspaceIDs []int, seed int) {
+	release, ok := h.sseHub.AcquireUserStream(user.ID)
+	if !ok {
+		respondTooManyRequests(w, r, "Too many live update streams are already open for this account")
+		return
+	}
+	defer release()
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		respondServiceUnavailable(w, r, "streaming is unsupported on this connection")
@@ -111,14 +118,12 @@ func (h *ItemHandler) streamWorkspaceEvents(w http.ResponseWriter, r *http.Reque
 			if err != nil || !allowed {
 				continue
 			}
-			writeWorkspaceSSEEvent(w, string(ev.Kind), ev.WorkspaceID)
-			if sub.TakeStale() {
-				writeWorkspaceSSEEvent(w, "reload", ev.WorkspaceID)
-			}
+			writeWorkspaceSSEEvent(w, "changed", ev.WorkspaceID)
 			flusher.Flush()
 		case <-heartbeat.C:
 			if sub.TakeStale() {
-				writeWorkspaceSSEEvent(w, "reload", 0)
+				// A frame was dropped; force the client to reconcile.
+				writeWorkspaceSSEEvent(w, "changed", 0)
 			}
 			_, _ = fmt.Fprint(w, ": ping\n\n")
 			flusher.Flush()
@@ -128,8 +133,8 @@ func (h *ItemHandler) streamWorkspaceEvents(w http.ResponseWriter, r *http.Reque
 	}
 }
 
-// writeWorkspaceSSEEvent writes one SSE frame: an `event:` line naming the kind
-// and a `data:` line carrying the workspace id and kind as JSON.
-func writeWorkspaceSSEEvent(w http.ResponseWriter, kind string, workspaceID int) {
-	_, _ = fmt.Fprintf(w, "event: %s\ndata: {\"workspace_id\":%d,\"kind\":%q}\n\n", kind, workspaceID, kind) //nolint:gosec // G705: kind is a controlled enum and workspaceID an int; response is text/event-stream, not HTML
+// writeWorkspaceSSEEvent writes one SSE frame: an `event:` line naming the
+// coarse event and a `data:` line carrying the workspace id and event name.
+func writeWorkspaceSSEEvent(w http.ResponseWriter, event string, workspaceID int) {
+	_, _ = fmt.Fprintf(w, "event: %s\ndata: {\"workspace_id\":%d,\"kind\":%q}\n\n", event, workspaceID, event) //nolint:gosec // G705: event is a controlled constant and workspaceID an int; response is text/event-stream, not HTML
 }

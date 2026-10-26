@@ -8,8 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -83,19 +81,21 @@ func milestoneCommentJSON(id int, content string) map[string]any {
 	}
 }
 
-func TestMilestoneCommentListReadsEveryPageOldestFirst(t *testing.T) {
+func TestMilestoneCommentListFollowsCursorNewestFirst(t *testing.T) {
 	server, requests := milestoneCommentServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("page") == "1" {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"data":       []any{milestoneCommentJSON(1, "first"), milestoneCommentJSON(2, "second")},
-				"pagination": map[string]int{"page": 1, "page_size": 2, "total_items": 3, "total_pages": 2},
-			})
+		if r.URL.Query().Get("cursor") == "" {
+			writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+				"comments":    []any{milestoneCommentJSON(3, "third"), milestoneCommentJSON(2, "second")},
+				"next_cursor": "older-than-2",
+				"has_more":    true,
+				"total":       3,
+			}})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"data":       []any{milestoneCommentJSON(3, "third")},
-			"pagination": map[string]int{"page": 2, "page_size": 2, "total_items": 3, "total_pages": 2},
-		})
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+			"comments": []any{milestoneCommentJSON(1, "first")},
+			"has_more": false,
+		}})
 	})
 
 	code, out, errOut := runWS(t, server.URL, "", "milestone", "comment", "list", "5")
@@ -106,7 +106,7 @@ func TestMilestoneCommentListReadsEveryPageOldestFirst(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &comments); err != nil {
 		t.Fatalf("output is not a JSON comment list: %v\n%s", err, out)
 	}
-	if len(comments) != 3 || comments[0].ID != 1 || comments[2].ID != 3 || comments[2].Content != "third" {
+	if len(comments) != 3 || comments[0].ID != 3 || comments[2].ID != 1 || comments[2].Content != "first" {
 		t.Fatalf("unexpected comments: %+v", comments)
 	}
 
@@ -121,18 +121,21 @@ func TestMilestoneCommentListReadsEveryPageOldestFirst(t *testing.T) {
 		if req.Auth != "Bearer test-token" {
 			t.Fatalf("request %d: missing bearer token", i)
 		}
-		if !strings.Contains(req.Query, "sort=created_at") || !strings.Contains(req.Query, fmt.Sprintf("page=%d", i+1)) {
+		if !strings.Contains(req.Query, "page_size=100") {
 			t.Fatalf("request %d: unexpected query %q", i, req.Query)
 		}
+	}
+	if strings.Contains(got[0].Query, "cursor=") || !strings.Contains(got[1].Query, "cursor=older-than-2") {
+		t.Fatalf("expected the second request to pass next_cursor, got %q then %q", got[0].Query, got[1].Query)
 	}
 }
 
 func TestMilestoneCommentListTableOutput(t *testing.T) {
 	server, _ := milestoneCommentServer(t, func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"data":       []any{milestoneCommentJSON(1, "line one\nline two")},
-			"pagination": map[string]int{"page": 1, "page_size": 100, "total_items": 1, "total_pages": 1},
-		})
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+			"comments": []any{milestoneCommentJSON(1, "line one\nline two")},
+			"has_more": false,
+		}})
 	})
 
 	code, out, errOut := runWS(t, server.URL, "", "milestone", "comment", "list", "5", "-o", "table")
@@ -167,50 +170,16 @@ func TestMilestoneCommentAddSendsMessage(t *testing.T) {
 	}
 }
 
-func TestMilestoneCommentAddReadsFileVerbatim(t *testing.T) {
-	server, requests := milestoneCommentServer(t, func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusCreated, map[string]any{"data": milestoneCommentJSON(8, "from file")})
-	})
-	markdown := "# Update\n\n- literal \\n stays\n"
-	path := filepath.Join(t.TempDir(), "update.md")
-	if err := os.WriteFile(path, []byte(markdown), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	code, _, errOut := runWS(t, server.URL, "", "milestone", "comment", "add", "5", "--file", path)
-	if code != 0 {
-		t.Fatalf("exit code %d, stderr: %s", code, errOut)
-	}
-	code, _, errOut = runWS(t, server.URL, markdown, "milestone", "comment", "add", "5", "-f", "-")
-	if code != 0 {
-		t.Fatalf("stdin: exit code %d, stderr: %s", code, errOut)
-	}
-
-	got := requests()
-	if len(got) != 2 {
-		t.Fatalf("expected 2 requests, got %d", len(got))
-	}
-	for i, req := range got {
-		var body map[string]string
-		if err := json.Unmarshal([]byte(req.Body), &body); err != nil || body["content"] != markdown {
-			t.Fatalf("request %d: unexpected body %q", i, req.Body)
-		}
-	}
-}
-
-func TestMilestoneCommentAddRejectsMissingOrConflictingBody(t *testing.T) {
+func TestMilestoneCommentAddRejectsMissingBody(t *testing.T) {
 	server, requests := milestoneCommentServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 
-	if code, _, errOut := runWS(t, server.URL, "", "milestone", "comment", "add", "5"); code == 0 || !strings.Contains(errOut, "comment body is required") {
+	if code, _, errOut := runWS(t, server.URL, "", "milestone", "comment", "add", "5"); code == 0 || !strings.Contains(errOut, "message is required") {
 		t.Fatalf("missing body: exit %d, stderr %q", code, errOut)
 	}
-	if code, _, errOut := runWS(t, server.URL, "", "milestone", "comment", "add", "5", "-m", "   "); code == 0 || !strings.Contains(errOut, "comment body is required") {
+	if code, _, errOut := runWS(t, server.URL, "", "milestone", "comment", "add", "5", "-m", "   "); code == 0 || !strings.Contains(errOut, "message is required") {
 		t.Fatalf("blank body: exit %d, stderr %q", code, errOut)
-	}
-	if code, _, _ := runWS(t, server.URL, "", "milestone", "comment", "add", "5", "-m", "x", "--file", "notes.md"); code == 0 {
-		t.Fatal("expected -m and --file together to fail")
 	}
 	if code, _, errOut := runWS(t, server.URL, "", "milestone", "comment", "add", "PROJ", "-m", "x"); code == 0 || !strings.Contains(errOut, "invalid milestone ID") {
 		t.Fatalf("non-numeric milestone: exit %d, stderr %q", code, errOut)
@@ -241,15 +210,15 @@ func TestMilestoneCommentEditUsesMergePatch(t *testing.T) {
 	}
 }
 
-func TestMilestoneCommentEditReportsAuthorOnlyError(t *testing.T) {
+func TestMilestoneCommentEditReportsServerError(t *testing.T) {
 	server, _ := milestoneCommentServer(t, func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": map[string]string{
-			"code": "insufficient_permission", "message": "Only the author can change this comment",
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": map[string]string{
+			"code": "not_found", "message": "Planning object was not found",
 		}})
 	})
 
 	code, _, errOut := runWS(t, server.URL, "", "milestone", "comment", "edit", "5", "9", "-m", "edited")
-	if code == 0 || !strings.Contains(errOut, "Only the author can change this comment") {
+	if code == 0 || !strings.Contains(errOut, "Planning object was not found") {
 		t.Fatalf("exit %d, stderr %q", code, errOut)
 	}
 }

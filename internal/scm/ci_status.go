@@ -146,7 +146,7 @@ func (s *SyncService) storePullRequestCI(ctx context.Context, repoID int, extern
 		}
 	}
 	for itemID := range changedItems {
-		services.PublishItemChange(itemID, services.ItemChangeLink)
+		services.PublishItemChange(itemID)
 	}
 	return nil
 }

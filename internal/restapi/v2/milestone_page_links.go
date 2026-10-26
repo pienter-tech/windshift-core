@@ -10,7 +10,7 @@ import (
 )
 
 // registerMilestonePageLinkRoutes publishes page links on workspace (local)
-// milestones (WCORE-19). Anyone who can view the milestone lists the linked
+// milestones. Anyone who can view the milestone lists the linked
 // pages they may view; users with edit rights on the milestone link pages
 // from its workspace and unlink them. Global milestones have no page links.
 func registerMilestonePageLinkRoutes(builder *routeBuilder, deps Deps) {
@@ -70,16 +70,15 @@ func deleteMilestonePageLink(links milestonePageLinkApplication) commandOperatio
 	}
 }
 
-// milestonePageLinkError maps service errors. Unreadable milestones and links
-// on other milestones read as not found (planningError).
+// milestonePageLinkError maps service errors. Unreadable milestones, missing
+// edit rights, and links on other milestones read as not found
+// (planningError), like the generic link routes.
 func milestonePageLinkError(err error) error {
 	switch {
 	case err == nil:
 		return nil
 	case errors.Is(err, services.ErrMilestonePageLinksGlobal):
 		return newError(http.StatusBadRequest, "invalid_request", "Page links are only available on workspace milestones")
-	case errors.Is(err, services.ErrMilestonePageLinksForbidden):
-		return newError(http.StatusForbidden, "insufficient_permission", "Changing page links requires edit rights on the milestone")
 	case errors.Is(err, services.ErrMilestonePageNotFound):
 		return newError(http.StatusNotFound, "not_found", "Page was not found in the milestone's workspace")
 	case errors.Is(err, repository.ErrDuplicateEntry):

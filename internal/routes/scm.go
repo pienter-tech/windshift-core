@@ -33,7 +33,10 @@ func RegisterSCMRoutes(deps *Deps) {
 
 	// SCM OAuth endpoints
 	api.HandleH("GET /scm/oauth/{slug}/start", auth(http.HandlerFunc(deps.SCM.Provider.StartOAuth)))
-	api.Handle("GET /scm/oauth/{slug}/callback", deps.SCM.Provider.OAuthCallback)
+	// OptionalAuth so the callback can bind the completing browser to the
+	// account that started the flow; the handler rejects unauthenticated or
+	// mismatched callers.
+	api.HandleH("GET /scm/oauth/{slug}/callback", deps.AuthMiddleware.OptionalAuth(http.HandlerFunc(deps.SCM.Provider.OAuthCallback)))
 
 	// Email Provider endpoints
 	api.HandleH("GET /admin/email-providers", admin(http.HandlerFunc(deps.SCM.EmailProvider.GetEmailProviders)))
@@ -42,7 +45,10 @@ func RegisterSCMRoutes(deps *Deps) {
 	api.HandleH("PUT /admin/email-providers/{id}", admin(http.HandlerFunc(deps.SCM.EmailProvider.UpdateEmailProvider)))
 	api.HandleH("DELETE /admin/email-providers/{id}", admin(http.HandlerFunc(deps.SCM.EmailProvider.DeleteEmailProvider)))
 	api.HandleH("POST /channels/{channel_id}/email-providers/{slug}/oauth/start", channelMgmt(http.HandlerFunc(deps.SCM.EmailProvider.StartEmailOAuth)))
-	api.Handle("GET /email/oauth/{slug}/callback", http.HandlerFunc(deps.SCM.EmailProvider.EmailOAuthCallback))
+	// OptionalAuth so the callback can bind the completing browser to the
+	// account that started the flow; the handler rejects unauthenticated or
+	// mismatched callers.
+	api.HandleH("GET /email/oauth/{slug}/callback", deps.AuthMiddleware.OptionalAuth(http.HandlerFunc(deps.SCM.EmailProvider.EmailOAuthCallback)))
 	api.HandleH("POST /channels/{id}/test-email", channelMgmt(http.HandlerFunc(deps.SCM.EmailProvider.TestEmailChannel)))
 
 	// Workspace SCM connection endpoints

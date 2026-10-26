@@ -1,4 +1,6 @@
 <script>
+  import { controlSizeClasses } from '../utils/controlSizes.js';
+
   let {
     value = $bindable(''),
     placeholder = '',
@@ -25,10 +27,7 @@
   export { className as class };
 
   // Size variants
-  const sizeClasses = $derived({
-    small: 'px-3 py-2.5 text-sm',
-    medium: 'px-4 py-3'
-  }[size] || 'px-4 py-3');
+  const sizeClasses = $derived(controlSizeClasses(size));
 
   // Combine all classes
   const allClasses = $derived([

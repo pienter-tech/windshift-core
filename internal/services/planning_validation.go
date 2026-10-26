@@ -43,6 +43,17 @@ func planningValidationErrorWithCause(field, message string, cause error) error 
 
 const cancelledPlanningStatus = "cancelled" //nolint:misspell // Persisted API status.
 
+// normalizePlanningStatus maps the US spelling "canceled" onto the canonical
+// persisted planning status. Clients send either spelling; validation,
+// filters, and storage all use the canonical one. Any other value passes
+// through so validation can reject it.
+func normalizePlanningStatus(status string) string {
+	if strings.EqualFold(strings.TrimSpace(status), "canceled") {
+		return cancelledPlanningStatus
+	}
+	return status
+}
+
 func validMilestoneStatus(status string) bool {
 	switch status {
 	case "planning", "in-progress", "completed", cancelledPlanningStatus:

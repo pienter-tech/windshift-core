@@ -1,10 +1,15 @@
 <script>
-  import { MoreHorizontal, ChevronLeft, ChevronRight, ArrowUp, ArrowDown, ArrowUpDown } from '@lucide/svelte';
+  import MoreHorizontal from '@lucide/svelte/icons/more-horizontal';
+  import ChevronLeft from '@lucide/svelte/icons/chevron-left';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import ArrowUp from '@lucide/svelte/icons/arrow-up';
+  import ArrowDown from '@lucide/svelte/icons/arrow-down';
+  import ArrowUpDown from '@lucide/svelte/icons/arrow-up-down';
   import DropdownMenu from '../layout/DropdownMenu.svelte';
   import EmptyState from './EmptyState.svelte';
   import { t } from '../stores/i18n.svelte.js';
   import { sanitizeHtml } from '../utils/sanitize.ts';
-  import { nextColumnSort } from './dataTableSort.js';
+  import { activeColumnSort, nextColumnSort } from './dataTableSort.js';
 
   let {
     columns = [],
@@ -31,9 +36,10 @@
     ...slotProps
   } = $props();
 
-  // Sort state
-  let sortKey = $derived(sort?.key ?? null);
-  let sortDirection = $derived(sort?.key ? sort.direction : null); // 'asc' | 'desc' | null
+  // Sort state. A sort without a key or a valid direction counts as none.
+  let activeSort = $derived(activeColumnSort(sort));
+  let sortKey = $derived(activeSort?.key ?? null);
+  let sortDirection = $derived(activeSort?.direction ?? null); // 'asc' | 'desc' | null
 
   function getRawSortValue(item, column) {
     if (column.sortValue) return column.sortValue(item);
@@ -45,7 +51,7 @@
 
   function toggleSort(column) {
     if (!column.sortable) return;
-    sort = nextColumnSort(sort, column);
+    sort = nextColumnSort(activeSort, column);
   }
 
   let sortedData = $derived.by(() => {
@@ -182,7 +188,7 @@
                     {:else if sortKey === column.key && sortDirection === 'desc'}
                       <ArrowDown class="w-3.5 h-3.5" style="color: var(--ds-text-subtle);" />
                     {:else}
-                      <ArrowUpDown class="w-3.5 h-3.5 opacity-0 group-hover:opacity-100" style="color: var(--ds-text-subtlest);" />
+                      <ArrowUpDown class="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100" style="color: var(--ds-text-subtlest);" />
                     {/if}
                   {/if}
                 </span>
