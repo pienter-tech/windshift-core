@@ -6,7 +6,7 @@ import {
 } from './milestoneScope.js';
 
 // Shapes match the real v2 responses: the milestone record carries the scope,
-// the progress report does not (WCORE-29).
+// the progress report does not.
 const workspaceMilestone = {
   id: 50,
   name: 'Beta',

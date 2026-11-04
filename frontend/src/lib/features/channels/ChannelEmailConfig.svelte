@@ -1,12 +1,12 @@
 <script>
-  import { IconCheck } from '@tabler/icons-svelte-runes';
+  import IconCheck from '@tabler/icons-svelte-runes/icons/check';
   import { t } from '../../stores/i18n.svelte.js';
-  import { api } from '../../api.js';
+  import { errorToast } from '../../stores/toasts.svelte.js';
+  import { channels } from '../../api/channels.js';
   import Button from '../../components/Button.svelte';
   import Label from '../../components/Label.svelte';
-  import Checkbox from '../../components/Checkbox.svelte';
-  import WorkspaceSelector from '../../workspaces/WorkspaceSelector.svelte';
   import DescriptionText from '../../components/DescriptionText.svelte';
+  import ChannelIntakesSection from './ChannelIntakesSection.svelte';
   import Toggle from '../../components/Toggle.svelte';
   import { publicBaseURL } from '../../runtime/contextPath.js';
   import { isSystemAdmin } from '../../stores/permissions.svelte.js';
@@ -23,6 +23,7 @@
       oauth_tenant_id: 'common',
       oauth_connected: false,
       oauth_email: '',
+      oauth_mailbox: '',
       connected_oauth_provider_type: '',
       connected_oauth_client_id: '',
       connected_oauth_tenant_id: '',
@@ -33,65 +34,49 @@
       imap_password: '',
       workspace_id: null,
       item_type_id: null,
-      connected_portal_id: null,
       mailbox: 'INBOX',
-      mark_as_read: true,
-      delete_after_process: false,
+      processing_disposition: 'mark_read',
       rate_limit_per_hour: null,
-      auto_append_open_tickets: false,
       enabled: false
     }),
     workspaces = [],
-    itemTypes = [],
     portals = [],
     loading = $bindable(false),
-    onLoadItemTypes = () => {},
     onSaveBeforeOAuth = async () => {},
-    onOAuthStartFailed = async () => {},
-    onToast = () => {}
+    onOAuthStartFailed = async () => {}
   } = $props();
 
-  // A missing key would crash the select's bind:value (undefined + fallback);
-  // normalize once at init so older callers without the field keep working.
-  if (formData.connected_portal_id === undefined) {
-    formData.connected_portal_id = null;
-  }
-  if (formData.auto_append_open_tickets === undefined) {
-    formData.auto_append_open_tickets = false;
+  // Older callers (and stored configs) carry the two legacy booleans instead of
+  // the single disposition. Derive it once so the select always has a value.
+  if (formData.processing_disposition === undefined) {
+    formData.processing_disposition = formData.delete_after_process
+      ? 'delete'
+      : formData.mark_as_read === false
+        ? 'leave'
+        : 'mark_read';
   }
 
   let oauthIdentityChanged = $derived(
     formData.oauth_connected && (
       formData.oauth_provider_type !== formData.connected_oauth_provider_type ||
       formData.oauth_client_id.trim() !== formData.connected_oauth_client_id.trim() ||
+      formData.oauth_mailbox.trim() !== formData.connected_oauth_mailbox.trim() ||
       (formData.oauth_provider_type === 'microsoft' &&
         formData.oauth_tenant_id.trim() !== formData.connected_oauth_tenant_id.trim())
     )
   );
   let oauthIsConnected = $derived(formData.oauth_connected && !oauthIdentityChanged);
 
-  // Keep a configured-but-unlisted portal selectable so a save never silently
-  // clears the link (e.g. the manager cannot list the portal channel).
-  let portalOptions = $derived.by(() => {
-    const options = [{ value: null, label: t('channel.connectedPortalNotConnected') }];
-    for (const portal of portals) {
-      options.push({ value: portal.id, label: portal.name });
-    }
-    const known = portals.some((portal) => portal.id === formData.connected_portal_id);
-    if (formData.connected_portal_id != null && !known) {
-      options.push({
-        value: formData.connected_portal_id,
-        label: t('channel.connectedPortalUnknown', { id: formData.connected_portal_id })
-      });
-    }
-    return options;
-  });
-
   async function startOAuthFlow() {
     if (!$isSystemAdmin || !channelId) return;
 
     if (!formData.oauth_client_id) {
-      onToast('Please enter OAuth client ID');
+      errorToast('Please enter OAuth client ID');
+      return;
+    }
+
+    if (!formData.oauth_mailbox?.trim()) {
+      errorToast(t('channel.oauthMailboxRequired'));
       return;
     }
 
@@ -99,7 +84,7 @@
     try {
       loading = true;
       restoreEnabled = await onSaveBeforeOAuth();
-      const result = await api.channels.startEmailOAuth(channelId, restoreEnabled);
+      const result = await channels.startEmailOAuth(channelId, restoreEnabled);
       if (result.auth_url) {
         window.location.href = result.auth_url;
       } else {
@@ -112,7 +97,7 @@
         console.error('Failed to restore email channel after OAuth start failure:', restoreError);
       }
       console.error('Failed to start OAuth:', error);
-      onToast('Failed to start OAuth: ' + (error.message || error));
+      errorToast('Failed to start OAuth: ' + (error.message || error));
     } finally {
       loading = false;
     }
@@ -130,41 +115,24 @@
       if (!formData.oauth_client_id?.trim()) {
         return { valid: false, message: t('channel.clientIdRequired') };
       }
+      if (!formData.oauth_mailbox?.trim()) {
+        return { valid: false, message: t('channel.oauthMailboxRequired') };
+      }
       if (!oauthIsConnected && !formData.oauth_client_secret?.trim()) {
         return { valid: false, message: t('channel.clientSecretRequired') };
       }
-    }
-
-    if (!formData.workspace_id) {
-      return { valid: false, message: t('channel.targetWorkspaceRequired') };
-    }
-    if (!formData.item_type_id) {
-      return { valid: false, message: t('channel.itemTypeRequired') };
-    }
-    if (formData.rate_limit_per_hour !== null && formData.rate_limit_per_hour !== '' && Number(formData.rate_limit_per_hour) < 0) {
-      return { valid: false, message: t('channel.rateLimitInvalid') };
     }
 
     return { valid: true };
   }
 
   export function getConfig() {
+    // The channel config carries the connection plus the mailbox-level
+    // post-processing default. Routing (folder, target, request/item type, rate
+    // limit) and per-intake disposition overrides live on intakes.
     const baseConfig = {
       email_auth_method: formData.auth_method,
-      email_workspace_id: formData.workspace_id,
-      email_item_type_id: formData.item_type_id,
-      // null explicitly disconnects the portal; the config merge overwrites
-      // the stored key with null rather than leaving a stale link behind.
-      email_connected_portal_id: formData.connected_portal_id ?? null,
-      email_mailbox: formData.mailbox,
-      email_mark_as_read: formData.mark_as_read,
-      email_delete_after_process: formData.delete_after_process,
-      // null = default cap, 0 = unlimited, n = n per sender per hour
-      email_rate_limit_per_hour:
-        formData.rate_limit_per_hour === null || formData.rate_limit_per_hour === ''
-          ? null
-          : Number(formData.rate_limit_per_hour),
-      email_auto_append_open_tickets: formData.auto_append_open_tickets
+      email_processing_disposition: formData.processing_disposition || 'mark_read'
     };
 
     if (formData.auth_method === 'oauth') {
@@ -173,6 +141,7 @@
         email_oauth_provider_type: formData.oauth_provider_type,
         email_oauth_client_id: formData.oauth_client_id.trim(),
         email_oauth_client_secret: formData.oauth_client_secret || undefined,
+        email_oauth_mailbox: formData.oauth_mailbox.trim(),
         email_oauth_tenant_id: formData.oauth_provider_type === 'microsoft' ? formData.oauth_tenant_id.trim() : undefined
       };
     } else {
@@ -299,6 +268,20 @@
           </div>
         {/if}
 
+        <div>
+          <TextField
+            label={t('channel.oauthMailbox')}
+            required
+            labelColor="default"
+            placeholder="support@example.com"
+            dataTestid="channel-oauth-mailbox"
+            bind:value={formData.oauth_mailbox}
+          />
+          <DescriptionText>
+            {t('channel.oauthMailboxHelp')}
+          </DescriptionText>
+        </div>
+
         <!-- Connection Status -->
         {#if oauthIsConnected}
           <div class="p-4 rounded-lg border" style="background: var(--ds-background-success-subtle); border-color: var(--ds-border-success);">
@@ -326,7 +309,7 @@
                   {t('channel.saveAndConnect')}
                 </div>
               </div>
-              <Button variant="primary" onclick={startOAuthFlow} disabled={loading}>
+              <Button variant="primary" onclick={startOAuthFlow} disabled={loading} dataTestid="channel-oauth-connect">
                 {t('channel.connectMailbox')}
               </Button>
             </div>
@@ -402,111 +385,25 @@
       </div>
     {/if}
 
-    <!-- Item Creation -->
-    <div class="pt-4 border-t space-y-4" style="border-color: var(--ds-border);">
-      <h5 class="text-sm font-medium" style="color: var(--ds-text);">{t('channel.itemCreation')}</h5>
-
-      <div class="grid grid-cols-2 gap-4">
-        <div>
-          <Label color="default" required class="mb-2">{t('channel.targetWorkspace')}</Label>
-          <WorkspaceSelector
-            bind:value={formData.workspace_id}
-            {workspaces}
-            placeholder={t('channel.selectWorkspace')}
-            onSelect={(workspace) => {
-              formData.item_type_id = null;
-              onLoadItemTypes(formData.workspace_id);
-            }}
-          />
-        </div>
-        <div>
-          <SelectField
-            label={t('channel.itemType')}
-            required
-            labelColor="default"
-            disabled={!formData.workspace_id}
-            options={[{ value: null, label: t('channel.selectItemType') }, ...itemTypes.map(type => ({ value: type.id, label: type.name }))]}
-            bind:value={formData.item_type_id}
-          />
-          {#if !formData.workspace_id}
-            <DescriptionText>{t('channel.selectWorkspaceFirst')}</DescriptionText>
-          {/if}
-        </div>
-      </div>
+    <!-- Mailbox-level post-processing default; an intake may override it. -->
+    <div class="pt-4 border-t" style="border-color: var(--ds-border);">
+      <SelectField
+        label={t('channel.processingDisposition')}
+        labelColor="default"
+        id="email-processing-disposition"
+        options={[
+          { value: 'leave', label: t('channel.dispositionLeave') },
+          { value: 'mark_read', label: t('channel.dispositionMarkRead') },
+          { value: 'delete', label: t('channel.dispositionDelete') }
+        ]}
+        bind:value={formData.processing_disposition}
+      />
+      <DescriptionText>{t('channel.dispositionHelp')}</DescriptionText>
     </div>
 
-    <!-- Customer Portal -->
-    <div class="pt-4 border-t space-y-4" style="border-color: var(--ds-border);">
-      <h5 class="text-sm font-medium" style="color: var(--ds-text);">{t('channel.connectedPortalSection')}</h5>
-
-      <div>
-        <SelectField
-          label={t('channel.connectedPortal')}
-          labelColor="default"
-          id="email-connected-portal"
-          options={portalOptions}
-          bind:value={formData.connected_portal_id}
-        />
-        <DescriptionText>{t('channel.connectedPortalHelp')}</DescriptionText>
-      </div>
-    </div>
-
-    <!-- Processing Options -->
-    <div class="pt-4 border-t space-y-4" style="border-color: var(--ds-border);">
-      <h5 class="text-sm font-medium" style="color: var(--ds-text);">{t('channel.processingOptions')}</h5>
-
-      <div>
-        <TextField
-          label={t('channel.mailbox')}
-          labelColor="default"
-          placeholder="INBOX"
-          bind:value={formData.mailbox}
-        />
-        <DescriptionText>{t('channel.mailboxHelp')}</DescriptionText>
-      </div>
-
-      <div>
-        <TextField
-          label={t('channel.rateLimitPerHour')}
-          labelColor="default"
-          type="number"
-          min="0"
-          placeholder="100"
-          bind:value={formData.rate_limit_per_hour}
-        />
-        <DescriptionText>{t('channel.rateLimitHelp')}</DescriptionText>
-      </div>
-
-      <div class="p-3 rounded" style="background-color: var(--ds-surface-raised);">
-        <Checkbox
-          bind:checked={formData.auto_append_open_tickets}
-          label={t('channel.autoAppendOpenTickets')}
-          hint={t('channel.autoAppendOpenTicketsHelp')}
-          size="small"
-          dataTestid="email-auto-append-open-tickets"
-        />
-      </div>
-
-      <div class="space-y-3">
-        <div class="p-3 rounded" style="background-color: var(--ds-surface-raised);">
-          <Checkbox
-            bind:checked={formData.mark_as_read}
-            label={t('channel.markAsRead')}
-            hint={t('channel.markAsReadHelp')}
-            size="small"
-          />
-        </div>
-
-        <div class="p-3 rounded" style="background-color: var(--ds-surface-raised);">
-          <Checkbox
-            bind:checked={formData.delete_after_process}
-            label={t('channel.deleteAfterProcess')}
-            hint={t('channel.deleteAfterProcessHelp')}
-            size="small"
-          />
-        </div>
-      </div>
-    </div>
+    <!-- Intakes: routing is separate from the connection. One mailbox can feed
+         several intakes via distinct folders. -->
+    <ChannelIntakesSection {channelId} {workspaces} {portals} />
 
     <div class="flex items-center justify-between">
       <div>
@@ -519,7 +416,7 @@
             : t('channel.emailIsInactive', 'Email channel is currently disabled')}
         </div>
       </div>
-      <Toggle bind:checked={formData.enabled} />
+      <Toggle bind:checked={formData.enabled} dataTestid="channel-email-enable" />
     </div>
   </div>
 </div>

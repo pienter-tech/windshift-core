@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/lib/pq"
 	"modernc.org/sqlite"
@@ -97,6 +98,9 @@ var recurringTasksSchema string
 
 //go:embed schema/jira_import.sql
 var jiraImportSchema string
+
+//go:embed schema/custom_widgets.sql
+var customWidgetsSchema string
 
 //go:embed schema/actions.sql
 var actionsSchema string
@@ -259,6 +263,10 @@ func NewDB(dataSourceName string, readConns, writeConns int) (*DB, error) {
 	}
 	db.SetMaxOpenConns(readConns)
 	db.SetMaxIdleConns(readIdle)
+	// Match the Postgres pool: retire idle and long-lived connections so a
+	// connection that outlives a file swap or schema change is not reused.
+	db.SetConnMaxLifetime(30 * time.Minute)
+	db.SetConnMaxIdleTime(5 * time.Minute)
 
 	// Create dedicated write connection with only 1 max connection to serialize writes
 	writeConn, err := sql.Open("sqlite", connectionString)
@@ -271,6 +279,8 @@ func NewDB(dataSourceName string, readConns, writeConns int) (*DB, error) {
 	// raising it lets WAL handle a small amount of write concurrency.
 	writeConn.SetMaxOpenConns(writeConns)
 	writeConn.SetMaxIdleConns(writeConns)
+	writeConn.SetConnMaxLifetime(30 * time.Minute)
+	writeConn.SetConnMaxIdleTime(5 * time.Minute)
 
 	if err := writeConn.Ping(); err != nil {
 		_ = db.Close()

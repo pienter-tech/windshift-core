@@ -15,6 +15,7 @@ type channelManagementCapability interface {
 
 type assetSetCapability interface {
 	HasAccessibleAssetSets(int) (bool, error)
+	ManagesAssetSets(int) (bool, error)
 }
 
 // ShellBootstrapHandler composes the capability snapshots needed by the
@@ -37,6 +38,7 @@ type ShellBootstrapResponse struct {
 	AttachmentStatus  *services.AttachmentStatus         `json:"attachment_status"`
 	AI                AIStatusResponse                   `json:"ai"`
 	HasAssetSets      bool                               `json:"has_asset_sets"`
+	ManagesAssetSets  bool                               `json:"manages_asset_sets"`
 	HasPortals        bool                               `json:"has_portals"`
 	HasActivePortals  bool                               `json:"has_active_portals"`
 	ManagesChannels   bool                               `json:"manages_channels"`
@@ -97,6 +99,12 @@ func (h *ShellBootstrapHandler) Get(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("shell bootstrap: asset availability unavailable", "user_id", user.ID, "error", err)
 		} else {
 			response.HasAssetSets = hasSets
+		}
+		managesSets, err := h.assets.ManagesAssetSets(user.ID)
+		if err != nil {
+			slog.Warn("shell bootstrap: asset management capability unavailable", "user_id", user.ID, "error", err)
+		} else {
+			response.ManagesAssetSets = managesSets
 		}
 	}
 	if h.hub != nil {

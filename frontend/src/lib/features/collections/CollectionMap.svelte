@@ -1,14 +1,26 @@
 <script>
   import { onMount, untrack } from 'svelte';
   import { useEventListener } from 'runed';
-  import { api } from '../../api.js';
-  import { navigate } from '../../router.js';
+  import { items } from '../../api/items.js';
   import { t } from '../../stores/i18n.svelte.js';
   import { getCollection, checkItemVisibility } from '../collections/collectionService.js';
-  import { collectionStore, reloadCollection } from '../../stores/collectionContext.js';
-  import { workspaceDataStore, workspacesStore, capabilitiesStore } from '../../stores/index.js';
+  import {
+    collectionStore,
+    reloadCollection,
+    scheduleCollectionReconciliation,
+  } from '../../stores/collectionContext.js';
+  import { workspaceDataStore } from '../../stores/workspaceDataStore.svelte.js';
+  import { collectionPreferences } from '../../stores/collectionPreferences.svelte.js';
+  import { workspacesStore } from '../../stores/workspaces.svelte.js';
+  import { capabilitiesStore } from '../../stores/capabilities.svelte.js';
+  import { itemModalStore } from '../../stores/itemModalStore.svelte.js';
   import { useGradientStyles, loadWorkspaceGradient } from '../../stores/workspaceGradient.svelte.js';
-  import { Plus, ChevronDown, ChevronRight, Home, MapPin, Settings } from '@lucide/svelte';
+  import Plus from '@lucide/svelte/icons/plus';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import Home from '@lucide/svelte/icons/home';
+  import MapPin from '@lucide/svelte/icons/map-pin';
+  import Settings from '@lucide/svelte/icons/settings';
   import ItemTypeIcon from '../../components/ItemTypeIcon.svelte';
   import EmptyState from '../../components/EmptyState.svelte';
   import Textarea from '../../components/Textarea.svelte';
@@ -19,34 +31,45 @@
   import Select from '../../components/Select.svelte';
   import StaticViewBackground from '../../layout/StaticViewBackground.svelte';
   import SubFilterBar from './SubFilterBar.svelte';
-  import ItemDetail from '../items/ItemDetail.svelte';
-  import { infoToast, errorToast } from '../../stores/toasts.svelte.js';
-  import ItemKey from '../items/ItemKey.svelte';
+  import { useCollectionEventStream } from '../../composables/useCollectionEventStream.svelte.js';
+  import { errorToast } from '../../stores/toasts.svelte.js';
+  import ItemKey from '../../components/ItemKey.svelte';
   import ItemCard from '../items/ItemCard.svelte';
   import Lozenge from '../../components/Lozenge.svelte';
   import { getStatusCategory } from '../../utils/statusColors.js';
   import CollectionViewSwitcher from './CollectionViewSwitcher.svelte';
+  import CollectionLevelFilter from './CollectionLevelFilter.svelte';
+  import CollectionHierarchyLoadMore from './CollectionHierarchyLoadMore.svelte';
   import QuickAddForm from './QuickAddForm.svelte';
   import { childItemTypesForParent } from '../../utils/hierarchy.js';
-  import { indexCollectionHierarchy } from './collectionHierarchy.js';
+  import { showCreatedItemOutsideViewToast } from '../../utils/createdItemToast.js';
+  import { useCollectionHierarchy } from '../../composables/useCollectionHierarchy.svelte.js';
   import {
     buildSwimlanes,
     childrenForLane,
     laneDropUpdate,
     mapSwimlaneStorageKey,
     SWIMLANE_DIMENSIONS,
-  } from './mapSwimlanes.js';
+  } from './swimlanes.js';
 
   let { workspaceId, collectionId = null } = $props();
 
   let workspace = $derived(workspaceDataStore.workspace);
   let loading = $state(true);
+  // Level-scoped base page plus lazily loaded subtrees.
+  const hierarchy = useCollectionHierarchy({
+    getWorkspaceId: () => workspaceId ?? null,
+    getCollectionId: () => collectionId ?? null,
+    getMaxDepth: () => 0,
+    getSubFilterQL: () => collectionStore.effectiveSubFilterQL,
+  });
   let backboneItems = $state([]); // Current backbone items (horizontal)
   let childItemsByParent = $state({}); // Child items grouped by parent ID
   let itemTypes = $derived(workspaceDataStore.itemTypes);
   let statuses = $derived(workspaceDataStore.statuses);
   let statusCategories = $derived(workspaceDataStore.statusCategories);
   let workspaces = $derived($workspacesStore.regularWorkspaces || []);
+  let directoryReady = $derived($workspacesStore.loaded);
   let currentParentId = $state(null); // null = root level, otherwise parent ID for current backbone
   let hierarchyBreadcrumbs = $state([]); // Navigation breadcrumbs for hierarchy levels
 
@@ -59,9 +82,6 @@
   let editingItemId = $state(null);
   let editingTitle = $state('');
 
-  // Item detail modal state
-  let selectedItemId = $state(null);
-  let showItemModal = $state(false);
   let mapScrollElement = $state(null);
 
   // Swimlane mode (Pro capability: map.swimlanes)
@@ -78,6 +98,16 @@
   }
 
   function loadSwimlanePreference() {
+    const stored = collectionPreferences.viewStateValue(
+      workspaceId,
+      collectionId,
+      'map',
+      'swimlane_dimension'
+    );
+    if (stored !== undefined) {
+      if (stored && SWIMLANE_DIMENSIONS.includes(stored)) swimlaneDimension = stored;
+      return;
+    }
     const saved = localStorage.getItem(mapSwimlaneStorageKey(mapPreferenceScope()));
     if (saved && SWIMLANE_DIMENSIONS.includes(saved)) {
       swimlaneDimension = saved;
@@ -87,12 +117,9 @@
   function setSwimlaneDimension(value) {
     swimlaneDimension = SWIMLANE_DIMENSIONS.includes(value) ? value : null;
     swimlaneCollapsed = {};
-    const storageKey = mapSwimlaneStorageKey(mapPreferenceScope());
-    if (swimlaneDimension) {
-      localStorage.setItem(storageKey, swimlaneDimension);
-    } else {
-      localStorage.removeItem(storageKey);
-    }
+    collectionPreferences.patchViewState(workspaceId, collectionId, 'map', {
+      swimlane_dimension: swimlaneDimension,
+    });
   }
 
   function toggleSwimlaneCollapsed(laneKey) {
@@ -181,22 +208,30 @@
     await loadAllData();
   });
 
-  // Sync items from central store
+  // Sync the backbone and child row from the shared hierarchy loader.
   $effect(() => {
     if (!collectionStore.loading) {
       currentCollectionName = collectionStore.collectionName;
-      const currentItems = collectionStore.items;
-      untrack(() => processMapItems(currentItems));
+      hierarchy.allItems;
+      untrack(() => processMapItems());
     }
   });
 
+  // Scoped SSE invalidations (WI-1624): any frame runs the existing delta fetch.
+  useCollectionEventStream(
+    () => (collectionId ? { kind: 'collection', id: collectionId } : { kind: 'workspace', id: workspaceId }),
+    { onInvalidate: () => scheduleCollectionReconciliation() }
+  );
+
   async function loadAllData() {
     loading = true;
+    // The directory only feeds quick-add workspace choices, so it warms
+    // independently instead of gating the map paint.
+    void workspacesStore.load();
     await Promise.all([
       workspaceId
         ? workspaceDataStore.initialize(workspaceId)
         : workspaceDataStore.initializeGlobal(),
-      workspacesStore.load(),
     ]);
     loadStoryMapDataFromURL();
     loadSwimlanePreference();
@@ -230,8 +265,8 @@
         // request; append the current parent to complete the path. Two requests
         // total instead of one GET /items/{id} per ancestor level.
         const [ancestors, currentItem] = await Promise.all([
-          api.items.getAncestors(currentParentId),
-          api.items.get(currentParentId),
+          items.getAncestors(currentParentId),
+          items.get(currentParentId),
         ]);
         const pathItems = [...(ancestors || []), currentItem];
 
@@ -282,26 +317,19 @@
     hierarchyBreadcrumbs = newBreadcrumbs;
   }
 
-  function processMapItems(items) {
+  function processMapItems() {
     const parentId = currentParentId;
-
-    // Compute into local variables to avoid read-after-write on $state
-    const hierarchyIndex = indexCollectionHierarchy(items);
+    const index = hierarchy.hierarchyIndex;
     const newBackbone = parentId === null
-      ? [...hierarchyIndex.roots].sort((a, b) => a.id - b.id)
-      : [...(hierarchyIndex.childrenByParent.get(parentId) || [])].sort((a, b) => a.id - b.id);
+      ? [...index.roots]
+      : [...hierarchy.getChildren(parentId)];
 
     // Group child items by their parent ID (children of current backbone items)
     const newChildren = {};
     for (const backbone of newBackbone) {
-      const children = hierarchyIndex.childrenByParent.get(backbone.id);
+      const children = hierarchy.getChildren(backbone.id);
       if (children?.length) newChildren[backbone.id] = [...children];
     }
-
-    // Sort child items within each parent group
-    Object.keys(newChildren).forEach(pid => {
-      newChildren[pid].sort((a, b) => a.id - b.id);
-    });
 
     // Batch-assign to $state at the end
     backboneItems = newBackbone;
@@ -313,7 +341,7 @@
 
   function loadStoryMapData(parentId = null) {
     currentParentId = parentId;
-    processMapItems(collectionStore.items);
+    processMapItems();
   }
 
   function updateURL(parentId) {
@@ -399,12 +427,12 @@
       const item = collectionStore.items.find((i) => i.id === itemId);
       const currentStatusId = item?.status_id ?? null;
       if (currentStatusId !== update.transitionToStatusId) {
-        await api.items.transition(itemId, update.transitionToStatusId);
+        await items.transition(itemId, update.transitionToStatusId);
       }
       return;
     }
     if (Object.keys(update).length > 0) {
-      await api.items.update(itemId, update);
+      await items.update(itemId, update);
     }
   }
 
@@ -412,7 +440,7 @@
     try {
 
       // Update the item's parent_id
-      const result = await api.items.update(itemId, { parent_id: newParentId });
+      const result = await items.update(itemId, { parent_id: newParentId });
 
       if (laneKey) {
         try {
@@ -437,12 +465,8 @@
     return itemTypes.find(type => type.id === itemTypeId);
   }
 
-  function navigateToItem(item) {
-    const wsId = workspaceId || item.workspace_id;
-    const url = collectionId && workspaceId
-      ? `/workspaces/${workspaceId}/collections/${collectionId}/items/${item.id}`
-      : `/workspaces/${wsId}/items/${item.id}`;
-    navigate(url);
+  function openItem(item) {
+    itemModalStore.open(item.id, item.workspace_id ?? workspaceId);
   }
 
   function getPriorityColor(priority) {
@@ -557,7 +581,7 @@
     }
 
     try {
-      const newItem = await api.items.create({
+      const newItem = await items.create({
         workspace_id: state.workspaceId,
         item_type_id: state.itemTypeId,
         title: state.title.trim(),
@@ -570,12 +594,12 @@
       if (lane) {
         const laneUpdate = laneDropUpdate(lane, swimlaneDimension, statuses);
         if (laneUpdate.transitionToStatusId != null) {
-          await api.items.transition(newItem.id, laneUpdate.transitionToStatusId);
+          await items.transition(newItem.id, laneUpdate.transitionToStatusId);
         }
         const fields = { ...laneUpdate };
         delete fields.transitionToStatusId;
         if (Object.keys(fields).length > 0) {
-          await api.items.update(newItem.id, fields);
+          await items.update(newItem.id, fields);
         }
       }
 
@@ -589,13 +613,22 @@
         }
       }
 
-      const isVisible = await checkItemVisibility(newItem.id, filters);
+      const membership = await checkItemVisibility(newItem.id, filters);
 
-      // Show toast notification if item won't be visible
-      if (!isVisible) {
+      if (membership === 'unknown') {
+        // Never guess membership after a failed verification; reconcile instead.
+        scheduleCollectionReconciliation();
+      } else if (membership === 'nonmember') {
+        // Show toast notification if item won't be visible
         const selectedWorkspace = workspaces.find(w => w.id === state.workspaceId);
-        const workspaceName = selectedWorkspace?.name || 'another workspace';
-        infoToast(`Card created in ${workspaceName} but won't appear here due to collection filters`, 'Card created successfully');
+        const workspaceName = selectedWorkspace?.name || t('collections.anotherWorkspace');
+        const reason = collectionId
+          ? t('collections.collectionFiltersReason')
+          : t('collections.workspaceFilterReason');
+        showCreatedItemOutsideViewToast(newItem, {
+          message: t('collections.cardCreatedOutsideView', { workspace: workspaceName, reason }),
+          onOpen: () => openItem(newItem),
+        });
       }
 
       // Reset state and reload
@@ -649,7 +682,7 @@
     }
 
     try {
-      await api.items.update(item.id, { title: editingTitle.trim() });
+      await items.update(item.id, { title: editingTitle.trim() });
 
       // Update the local item
       item.title = editingTitle.trim();
@@ -665,28 +698,6 @@
     }
   }
 
-  function handleKeyClick(item, event) {
-    event.stopPropagation();
-    openItemModal(item.id, event);
-  }
-
-  function openItemModal(itemId, event) {
-    if (event) {
-      event.stopPropagation();
-    }
-    selectedItemId = itemId;
-    showItemModal = true;
-  }
-
-  async function closeItemModal(event) {
-    showItemModal = false;
-    selectedItemId = null;
-
-    // If changes were made in the modal, reload data
-    if (event?.hasChanges) {
-      reloadCollection();
-    }
-  }
 </script>
 
 {#if loading}
@@ -748,8 +759,9 @@
       </ViewHeader>
 
       <!-- Controls Bar -->
-      <div class="flex items-center mt-4">
-        <SubFilterBar {workspaceId} />
+      <div class="flex items-center gap-4 mt-4">
+        <SubFilterBar {workspaceId} {collectionId} />
+        <CollectionLevelFilter {workspaceId} {collectionId} view="map" />
       </div>
 
       <!-- Hierarchy Breadcrumbs -->
@@ -821,7 +833,7 @@
             <!-- Title -->
             <button
               data-testid="map-backbone-item-{backboneItem.id}"
-              onclick={() => navigateToItem(backboneItem)}
+              onclick={() => openItem(backboneItem)}
               class="text-sm mb-2 leading-snug text-left w-full line-clamp-2 transition-colors"
               style="{styles.glassTextStyle}"
             >
@@ -831,11 +843,16 @@
             <!-- Bottom row: Key, Icon, Status, Drill Down -->
             <div class="flex items-center justify-between">
               <div class="flex items-center gap-2">
-                {#if itemType}
-                  <ItemTypeIcon {itemType} />
+                {#if backboneItem.item_type_icon || itemType}
+                  <ItemTypeIcon
+                    {itemType}
+                    icon={backboneItem.item_type_icon}
+                    color={backboneItem.item_type_color}
+                    title={backboneItem.item_type_name || undefined}
+                    testId={`map-item-type-icon-${backboneItem.id}`}
+                  />
                 {/if}
                 <ItemKey item={backboneItem} {workspace}
-                  onClick={(e) => handleKeyClick(backboneItem, e)}
                   style={styles.glassSubtleTextStyle}
                 />
               </div>
@@ -913,7 +930,6 @@
                   <ItemTypeIcon itemType={childItemType} />
                 {/if}
                 <ItemKey item={childItem} {workspace}
-                  onClick={(e) => handleKeyClick(childItem, e)}
                   style={styles.glassSubtleTextStyle}
                 />
               </div>
@@ -982,6 +998,7 @@
                   parentId={quickAddKey(parentId, laneKey)}
                   formState={quickAddState[quickAddKey(parentId, laneKey)]}
                   {workspaces}
+                  directoryLoading={!directoryReady}
                   compact={true}
                   cardBgStyle={styles.cardStyle(8)}
                   onUpdateField={updateQuickAddField}
@@ -1064,6 +1081,7 @@
       </div>
     </div>
 
+    <CollectionHierarchyLoadMore testid="map-load-more" />
   </StaticViewBackground>
 {:else}
   <div class="p-6">
@@ -1104,13 +1122,3 @@
     color: var(--ds-interactive);
   }
 </style>
-
-<!-- Item Detail Modal -->
-{#if showItemModal && selectedItemId}
-  <ItemDetail
-    isModal={true}
-    itemId={selectedItemId}
-    {workspaceId}
-    onclose={closeItemModal}
-  />
-{/if}

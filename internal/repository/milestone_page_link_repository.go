@@ -14,13 +14,13 @@ import (
 // (builtin_key "page") is missing or inactive, so no page link can be stored.
 var ErrPageLinkTypeUnavailable = errors.New("the built-in Page link type is missing or inactive")
 
-// MilestonePageLinkRepository persists links from milestones to pages
-// (WCORE-19). They reuse the polymorphic item_links table: source_type
+// MilestonePageLinkRepository persists links from milestones to pages.
+// They reuse the polymorphic item_links table: source_type
 // "milestone", target_type "page", the built-in Page link type, and the
 // table's created_by/created_at for who linked the page and when. The generic
 // link endpoints ignore these rows; only the milestone page-link routes
 // manage them. Linking and unlinking also write a milestone_history page_link
-// row (WCORE-26), so the Activity tab keeps both after the link is gone.
+// row, so the Activity tab keeps both after the link is gone.
 type MilestonePageLinkRepository struct {
 	db database.Database
 }
@@ -72,7 +72,7 @@ func (r *MilestonePageLinkRepository) GetByID(id int) (*models.MilestonePageLink
 }
 
 // Create links a page to a milestone and returns the link ID. It records the
-// link in the milestone history (WCORE-26) in the same transaction, with
+// link in the milestone history in the same transaction, with
 // createdBy as the actor. It returns ErrDuplicateEntry when the page is
 // already linked and ErrPageLinkTypeUnavailable when the built-in Page link
 // type is unusable.
@@ -112,7 +112,7 @@ func (r *MilestonePageLinkRepository) Create(milestoneID, pageID, createdBy int)
 }
 
 // Delete removes one milestone page link and records the unlink in the
-// milestone history (WCORE-26) in the same transaction, with deletedBy as the
+// milestone history in the same transaction, with deletedBy as the
 // actor.
 func (r *MilestonePageLinkRepository) Delete(id, deletedBy int) error {
 	return database.WithTx(r.db, func(tx database.Tx) error {
@@ -136,8 +136,8 @@ func (r *MilestonePageLinkRepository) Delete(id, deletedBy int) error {
 	})
 }
 
-// ListHistory returns a milestone's recorded page links and unlinks
-// (WCORE-26), oldest first, with each page's current title and workspace.
+// ListHistory returns a milestone's recorded page links and unlinks,
+// oldest first, with each page's current title and workspace.
 // Events for pages that no longer exist are dropped. Links made before the
 // history was recorded have no event.
 func (r *MilestonePageLinkRepository) ListHistory(milestoneID int) ([]models.MilestonePageLinkEvent, error) {
