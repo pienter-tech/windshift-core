@@ -59,7 +59,18 @@ func (h *PortalHandler) resolvePortalRequest(w http.ResponseWriter, r *http.Requ
 			return 0, models.ChannelConfig{}, nil, nil, false, nil, nil, false
 		}
 		if isApprover {
-			return itemID, config, internalUserID, portalCustomerID, false, ctx, cancel, true
+			// Approver access must not outlive the portal's served-workspace
+			// configuration. Without this the fallback grants access to an item
+			// whose workspace was removed from the portal.
+			served, serr := h.portalService.PortalServesRequestWorkspace(ctx, itemID, channel.ID)
+			if serr != nil {
+				cancel()
+				respondInternalError(w, r, serr)
+				return 0, models.ChannelConfig{}, nil, nil, false, nil, nil, false
+			}
+			if served {
+				return itemID, config, internalUserID, portalCustomerID, false, ctx, cancel, true
+			}
 		}
 	}
 
@@ -310,7 +321,7 @@ func (h *PortalHandler) AddRequestAttachment(w http.ResponseWriter, r *http.Requ
 	if portalCustomerID != nil {
 		input.UploaderPortalCustomerID = portalCustomerID
 	}
-	response, err := svc.UploadPublicFormAttachment(input)
+	response, err := svc.UploadPublicFormAttachment(r.Context(), input)
 	if err != nil {
 		h.respondPortalUploadError(w, r, err)
 		return
@@ -334,7 +345,7 @@ func (h *PortalHandler) DownloadRequestAttachment(w http.ResponseWriter, r *http
 		return
 	}
 
-	binary, err := h.requestAttachmentService().OpenPortalRequestAttachment(attachmentID, itemID)
+	binary, err := h.requestAttachmentService().OpenPortalRequestAttachment(r.Context(), attachmentID, itemID)
 	if err != nil {
 		if errors.Is(err, services.ErrItemAttachmentDisabled) {
 			respondServiceUnavailable(w, r, "Attachments are not enabled on this server")
@@ -346,10 +357,10 @@ func (h *PortalHandler) DownloadRequestAttachment(w http.ResponseWriter, r *http
 	defer func() { _ = binary.File.Close() }()
 
 	w.Header().Set("Content-Type", binary.MimeType)
-	w.Header().Set("Content-Length", strconv.FormatInt(binary.FileSize, 10))
+	w.Header().Set("Content-Length", strconv.FormatInt(binary.File.Size(), 10))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
-	if isInlineSafeMimeType(binary.MimeType) {
+	if fileserve.IsInlineSafeMimeType(binary.MimeType) {
 		w.Header().Set("Content-Disposition", fileserve.ContentDisposition("inline", binary.OriginalFilename))
 	} else {
 		w.Header().Set("Content-Disposition", fileserve.ContentDisposition("attachment", binary.OriginalFilename))

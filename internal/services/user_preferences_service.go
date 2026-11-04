@@ -14,11 +14,49 @@ import (
 // ErrInvalidColorMode is returned when a preference update contains an unsupported color mode.
 var ErrInvalidColorMode = errors.New("invalid color mode")
 
+// ErrPreferencesTooLarge is returned when a preferences update would store more
+// than the bounded per-user JSON blob.
+var ErrPreferencesTooLarge = errors.New("user preferences exceed the storage limit")
+
+// ErrInvalidReminderDays is returned when the requested reminder lead time is
+// outside the supported range.
+var ErrInvalidReminderDays = errors.New("reminder days must be between 1 and 30")
+
+// ErrInvalidCommentSortOrder is returned when a preference update requests an
+// unsupported comment thread order.
+var ErrInvalidCommentSortOrder = errors.New("comment sort order must be oldest or newest")
+
+// MinReminderDays and MaxReminderDays bound the per-user reminder lead time.
+const (
+	MinReminderDays = 1
+	MaxReminderDays = 30
+)
+
+// Comment thread orders accepted by the preferences API.
+const (
+	CommentSortOldest = "oldest"
+	CommentSortNewest = "newest"
+)
+
+// maxPreferencesBytes bounds the serialized per-user preferences document.
+// Dashboard layout plus view state and saved filters fit comfortably; this
+// only rejects pathological growth.
+const maxPreferencesBytes = 1 << 20 // 1 MiB
+
 type UserPreferencesSnapshot struct {
-	ColorMode string
-	ThemeID   *int
-	Theme     *models.Theme
-	TUI       models.UserTUIPreferences
+	ColorMode    string
+	ThemeID      *int
+	Theme        *models.Theme
+	TUI          models.UserTUIPreferences
+	ViewState    map[string]map[string]any
+	SavedFilters map[string]any
+	// DueDateRemindersEnabled and DueDateReminderDays are the user's opt-in
+	// for automatic reminders on their upcoming due items.
+	DueDateRemindersEnabled bool
+	DueDateReminderDays     int
+	// CommentSortOrder is the user's preferred comment thread order; always
+	// "oldest" or "newest".
+	CommentSortOrder string
 }
 
 type UserPreferencesPatch struct {
@@ -32,6 +70,23 @@ type UserPreferencesPatch struct {
 	TUISplitRatio      *float64
 	LastWorkspaceIDSet bool
 	LastWorkspaceID    *int
+	// ViewStateSet applies a per-scope view-state merge. A nil scope value
+	// deletes the whole scope; a nil view value deletes that view.
+	ViewStateSet bool
+	ViewState    map[string]map[string]any
+	// SavedFiltersSet replaces the stored filter list per provided scope. A
+	// nil scope value deletes that scope.
+	SavedFiltersSet bool
+	SavedFilters    map[string]any
+	// DueDateRemindersEnabledSet / DueDateReminderDaysSet update the user's
+	// due-date reminder opt-in and lead time independently.
+	DueDateRemindersEnabledSet bool
+	DueDateRemindersEnabled    bool
+	DueDateReminderDaysSet     bool
+	DueDateReminderDays        int
+	// CommentSortOrderSet updates the user's preferred comment thread order.
+	CommentSortOrderSet bool
+	CommentSortOrder    string
 }
 
 // UserPreferencesService owns user preference use cases.
@@ -73,6 +128,9 @@ func (s *UserPreferencesService) saveData(userID int, prefs models.UserPreferenc
 	if err != nil {
 		return err
 	}
+	if len(prefsBytes) > maxPreferencesBytes {
+		return ErrPreferencesTooLarge
+	}
 	return s.prefsRepo.UpsertJSON(userID, string(prefsBytes), time.Now())
 }
 
@@ -97,16 +155,41 @@ func (s *UserPreferencesService) GetSnapshot(userID int) (UserPreferencesSnapsho
 	if err != nil {
 		return UserPreferencesSnapshot{}, err
 	}
+	remindersEnabled, reminderDays, err := s.prefsRepo.GetReminderSettings(userID)
+	if err != nil {
+		return UserPreferencesSnapshot{}, err
+	}
 	return UserPreferencesSnapshot{
 		ColorMode: colorMode, ThemeID: prefs.ThemeID,
 		Theme: theme, TUI: tui,
+		ViewState:               prefs.ViewState,
+		SavedFilters:            prefs.SavedFilters,
+		DueDateRemindersEnabled: remindersEnabled,
+		DueDateReminderDays:     reminderDays,
+		CommentSortOrder:        normalizeCommentSortOrder(prefs.CommentSortOrder),
 	}, nil
+}
+
+func normalizeCommentSortOrder(order string) string {
+	if order == CommentSortNewest {
+		return CommentSortNewest
+	}
+	return CommentSortOldest
 }
 
 func (s *UserPreferencesService) UpdateSnapshot(userID int, patch UserPreferencesPatch) (UserPreferencesSnapshot, error) {
 	prefs, err := s.loadData(userID)
 	if err != nil {
 		return UserPreferencesSnapshot{}, err
+	}
+	if patch.DueDateReminderDaysSet && (patch.DueDateReminderDays < MinReminderDays || patch.DueDateReminderDays > MaxReminderDays) {
+		return UserPreferencesSnapshot{}, ErrInvalidReminderDays
+	}
+	if patch.CommentSortOrderSet && patch.CommentSortOrder != CommentSortOldest && patch.CommentSortOrder != CommentSortNewest {
+		return UserPreferencesSnapshot{}, ErrInvalidCommentSortOrder
+	}
+	if patch.CommentSortOrderSet {
+		prefs.CommentSortOrder = patch.CommentSortOrder
 	}
 	if patch.ColorModeSet {
 		if patch.ColorMode != "light" && patch.ColorMode != "dark" && patch.ColorMode != "system" {
@@ -141,10 +224,98 @@ func (s *UserPreferencesService) UpdateSnapshot(userID int, patch UserPreference
 	if prefs.TUI != nil {
 		normalizeTUIPreferences(userID, s.permissionService, prefs.TUI)
 	}
+	if patch.ViewStateSet {
+		prefs.ViewState = mergeViewState(prefs.ViewState, patch.ViewState)
+	}
+	if patch.SavedFiltersSet {
+		prefs.SavedFilters = mergeSavedFilters(prefs.SavedFilters, patch.SavedFilters)
+	}
 	if err := s.saveData(userID, prefs); err != nil {
 		return UserPreferencesSnapshot{}, err
 	}
+	if patch.DueDateRemindersEnabledSet || patch.DueDateReminderDaysSet {
+		enabled, days, err := s.prefsRepo.GetReminderSettings(userID)
+		if err != nil {
+			return UserPreferencesSnapshot{}, err
+		}
+		if patch.DueDateRemindersEnabledSet {
+			enabled = patch.DueDateRemindersEnabled
+		}
+		if patch.DueDateReminderDaysSet {
+			days = patch.DueDateReminderDays
+		}
+		if err := s.prefsRepo.UpsertReminderSettings(userID, enabled, days, time.Now()); err != nil {
+			return UserPreferencesSnapshot{}, err
+		}
+	}
 	return s.GetSnapshot(userID)
+}
+
+// mergeViewState applies a per-scope, per-view merge. A nil scope deletes the
+// scope; a nil view deletes that view; an empty scope after deletion is dropped.
+func mergeViewState(
+	current map[string]map[string]any,
+	patch map[string]map[string]any,
+) map[string]map[string]any {
+	if len(patch) == 0 {
+		return current
+	}
+	merged := make(map[string]map[string]any, len(current)+len(patch))
+	for scope, views := range current {
+		merged[scope] = views
+	}
+	for scope, views := range patch {
+		if views == nil {
+			delete(merged, scope)
+			continue
+		}
+		next := make(map[string]any, len(merged[scope])+len(views))
+		for view, value := range merged[scope] {
+			next[view] = value
+		}
+		for view, value := range views {
+			if value == nil {
+				delete(next, view)
+				continue
+			}
+			next[view] = value
+		}
+		if len(next) == 0 {
+			delete(merged, scope)
+		} else {
+			merged[scope] = next
+		}
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	return merged
+}
+
+// mergeSavedFilters replaces the filter list for every provided scope and
+// deletes scopes sent as null.
+func mergeSavedFilters(
+	current map[string]any,
+	patch map[string]any,
+) map[string]any {
+	if len(patch) == 0 {
+		return current
+	}
+	merged := make(map[string]any, len(current)+len(patch))
+	for scope, value := range current {
+		merged[scope] = value
+	}
+	for scope, value := range patch {
+		if value == nil {
+			delete(merged, scope)
+			continue
+		}
+		merged[scope] = value
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	return merged
 }
 
 // GetDashboardLayout returns the user's dashboard layout or an empty layout.

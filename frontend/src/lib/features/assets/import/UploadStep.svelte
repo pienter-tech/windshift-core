@@ -7,7 +7,11 @@
   import Button from '../../../components/Button.svelte';
   import AlertBox from '../../../components/AlertBox.svelte';
   import Spinner from '../../../components/Spinner.svelte';
-  import { IconUpload, IconFileSpreadsheet, IconPlus, IconSparkles, IconX } from '@tabler/icons-svelte-runes';
+  import IconUpload from '@tabler/icons-svelte-runes/icons/upload';
+  import IconFileSpreadsheet from '@tabler/icons-svelte-runes/icons/file-spreadsheet';
+  import IconPlus from '@tabler/icons-svelte-runes/icons/plus';
+  import IconMessageChatbot from '@tabler/icons-svelte-runes/icons/message-chatbot';
+  import IconX from '@tabler/icons-svelte-runes/icons/x';
   import DescriptionText from '../../../components/DescriptionText.svelte';
 
   let upload = $derived(assetImportStore.upload);
@@ -110,7 +114,7 @@
         <Button
           variant="secondary"
           size="small"
-          icon={IconSparkles}
+          icon={IconMessageChatbot}
           disabled={!upload.uploadId || ct.isLoadingSuggestions}
           loading={ct.isLoadingSuggestions}
           onclick={() => assetImportStore.suggestFields()}

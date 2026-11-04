@@ -1,10 +1,21 @@
 <script>
   import { onMount } from 'svelte';
-  import { IconFolder, IconPlus, IconEdit, IconTrash, IconTags, IconGripVertical, IconFileCheck, IconChevronDown, IconChevronRight, IconDots, IconListCheck } from '@tabler/icons-svelte-runes';
+  import IconFolder from '@tabler/icons-svelte-runes/icons/folder';
+  import IconPlus from '@tabler/icons-svelte-runes/icons/plus';
+  import IconEdit from '@tabler/icons-svelte-runes/icons/edit';
+  import IconTrash from '@tabler/icons-svelte-runes/icons/trash';
+  import IconTags from '@tabler/icons-svelte-runes/icons/tags';
+  import IconGripVertical from '@tabler/icons-svelte-runes/icons/grip-vertical';
+  import IconFileCheck from '@tabler/icons-svelte-runes/icons/file-check';
+  import IconChevronDown from '@tabler/icons-svelte-runes/icons/chevron-down';
+  import IconChevronRight from '@tabler/icons-svelte-runes/icons/chevron-right';
+  import IconDots from '@tabler/icons-svelte-runes/icons/dots';
+  import IconListCheck from '@tabler/icons-svelte-runes/icons/list-check';
   import DropdownMenu from '../../layout/DropdownMenu.svelte';
-  import { api } from '../../api.js';
+  import { tests } from '../../api/tests/index.js';
   import EmptyState from '../../components/EmptyState.svelte';
   import Input from '../../components/Input.svelte';
+  import TextField from '../../components/TextField.svelte';
   import Textarea from '../../components/Textarea.svelte';
   import Select from '../../components/Select.svelte';
   import LabelCombobox from '../../pickers/LabelCombobox.svelte';
@@ -26,7 +37,7 @@
   import { toHotkeyString, getShortcutDisplay, matchesShortcut, isTypingInField } from '../../utils/keyboardShortcuts.js';
   import { currentRoute, navigate } from '../../router.js';
   import { t } from '../../stores/i18n.svelte.js';
-  import { workspacePermissions } from '../../stores/index.js';
+  import { workspacePermissions } from '../../stores/workspacePermissions.svelte.js';
   import DescriptionText from '../../components/DescriptionText.svelte';
   import SearchInput from '../../components/SearchInput.svelte';
   import { useEventListener } from 'runed';
@@ -174,10 +185,10 @@
 
   async function loadFolders() {
     try {
-      const folders = await api.tests.testFolders.getAll(workspaceId, { page_size: 200 });
+      const folders = await tests.testFolders.getAll(workspaceId, { page_size: 200 });
       testFolders.set(folders || []);
 
-      const countResult = await api.tests.testCases.count(workspaceId);
+      const countResult = await tests.testCases.count(workspaceId);
       allCount = countResult?.count || 0;
     } catch (error) {
       console.error('Failed to load test folders:', error);
@@ -203,7 +214,7 @@
       params.offset = append ? $testCases.length : 0;
       params.q = testCaseSearchQuery.trim();
       params.label_id = selectedLabelFilterId;
-      const cases = await api.tests.testCases.getAll(workspaceId, params);
+      const cases = await tests.testCases.getAll(workspaceId, params);
       if (requestId !== testCaseLoadRequest) return;
       const nextCases = cases || [];
       testCases.set(append ? [...$testCases, ...nextCases] : nextCases);
@@ -223,7 +234,7 @@
 
   async function loadLabels() {
     try {
-      const labels = await api.tests.testLabels.getAll(workspaceId);
+      const labels = await tests.testLabels.getAll(workspaceId);
       testLabels.set(labels || []);
     } catch (error) {
       console.error('Failed to load test labels:', error);
@@ -310,7 +321,7 @@
     let bdd = testCase.bdd || null;
     if (testCase.format === 'bdd' && !bdd) {
       try {
-        const detail = await api.tests.testCases.get(workspaceId, testCase.id);
+        const detail = await tests.testCases.get(workspaceId, testCase.id);
         bdd = detail?.bdd || null;
       } catch (err) {
         console.error('Failed to load BDD content:', err);
@@ -347,9 +358,9 @@
       };
 
       if (editingFolder) {
-        await api.tests.testFolders.update(workspaceId, editingFolder.id, payload);
+        await tests.testFolders.update(workspaceId, editingFolder.id, payload);
       } else {
-        await api.tests.testFolders.create(workspaceId, payload);
+        await tests.testFolders.create(workspaceId, payload);
       }
       await loadFolders();
       showFolderForm = false;
@@ -392,9 +403,9 @@
       }
 
       if (editingCase) {
-        await api.tests.testCases.update(workspaceId, editingCase.id, payload);
+        await tests.testCases.update(workspaceId, editingCase.id, payload);
       } else {
-        await api.tests.testCases.create(workspaceId, payload);
+        await tests.testCases.create(workspaceId, payload);
       }
 
       // Reload both test cases and folders to update counts
@@ -417,7 +428,7 @@
     });
     if (!ok) return;
     try {
-      await api.tests.testFolders.delete(workspaceId, id);
+      await tests.testFolders.delete(workspaceId, id);
       await loadFolders();
       if (selectedFolder === id) {
         selectedFolder = null;
@@ -438,7 +449,7 @@
     });
     if (!ok) return;
     try {
-      await api.tests.testCases.delete(workspaceId, id);
+      await tests.testCases.delete(workspaceId, id);
       await loadTestCases(selectedFolder);
       await loadFolders();
     } catch (error) {
@@ -463,7 +474,7 @@
     if (!canManageTests) return;
     selectedTestCase = testCase;
     try {
-      const labels = await api.tests.testCases.labels.getAll(workspaceId, testCase.id);
+      const labels = await tests.testCases.labels.getAll(workspaceId, testCase.id);
       selectedTestCaseLabels = labels || [];
       showLabelsModal = true;
     } catch (error) {
@@ -481,9 +492,9 @@
 
   async function addLabelToTestCase(labelId) {
     try {
-      await api.tests.testCases.labels.add(workspaceId, selectedTestCase.id, labelId);
+      await tests.testCases.labels.add(workspaceId, selectedTestCase.id, labelId);
       // Reload labels for this test case
-      const labels = await api.tests.testCases.labels.getAll(workspaceId, selectedTestCase.id);
+      const labels = await tests.testCases.labels.getAll(workspaceId, selectedTestCase.id);
       selectedTestCaseLabels = labels || [];
       // Reload test cases to update display
       await loadTestCases(selectedFolder);
@@ -494,9 +505,9 @@
 
   async function removeLabelFromTestCase(labelId) {
     try {
-      await api.tests.testCases.labels.remove(workspaceId, selectedTestCase.id, labelId);
+      await tests.testCases.labels.remove(workspaceId, selectedTestCase.id, labelId);
       // Reload labels for this test case
-      const labels = await api.tests.testCases.labels.getAll(workspaceId, selectedTestCase.id);
+      const labels = await tests.testCases.labels.getAll(workspaceId, selectedTestCase.id);
       selectedTestCaseLabels = labels || [];
       // Reload test cases to update display
       await loadTestCases(selectedFolder);
@@ -521,7 +532,7 @@
 
   async function handleCreateLabel() {
     try {
-      await api.tests.testLabels.create(workspaceId, newLabelData);
+      await tests.testLabels.create(workspaceId, newLabelData);
       await loadLabels(); // Refresh the labels store
       showCreateLabelForm = false;
       // Reset form data
@@ -790,7 +801,7 @@
   async function handleTestCaseMove(testCaseId, targetFolderId) {
     try {
       // Use the dedicated move endpoint that only requires folder_id
-      const result = await api.tests.testCases.move(workspaceId, testCaseId, {
+      const result = await tests.testCases.move(workspaceId, testCaseId, {
         folder_id: targetFolderId,
         sort_order: 1000  // Default sort order for moved items
       });
@@ -1349,10 +1360,11 @@
         <div class="space-y-4">
           <!-- Search and create new label -->
           <div class="mb-6 space-y-2">
-            <Label class="block text-xs font-medium" color="subtle">
-              {t('testing.searchExistingLabels')}
-            </Label>
-            <Input
+            <TextField
+              label={t('testing.searchExistingLabels')}
+              labelSize="xs"
+              labelClass=""
+              labelColor="subtle"
               placeholder={t('testing.searchLabelsPlaceholder')}
               bind:value={labelSearchQuery}
               size="small"
@@ -1376,15 +1388,15 @@
             <Panel padding="default" rounded="md">
               <h4 class="font-medium mb-3" style="color: var(--ds-text);">{t('testing.createNewLabel')}</h4>
               <form onsubmit={(e) => { e.preventDefault(); handleCreateLabel(); }} class="space-y-3">
-                <div>
-                  <Label class="block text-xs font-medium mb-1">{t('common.name')}</Label>
-                  <Input
-                    bind:value={newLabelData.name}
-                    required
-                    placeholder={t('testing.enterLabelName')}
-                    size="small"
-                  />
-                </div>
+                <TextField
+                  label={t('common.name')}
+                  labelSize="xs"
+                  labelClass="mb-1"
+                  bind:value={newLabelData.name}
+                  required
+                  placeholder={t('testing.enterLabelName')}
+                  size="small"
+                />
                 <div class="flex gap-3">
                   <div class="flex-1">
                     <Label class="block text-xs font-medium mb-1">{t('common.color')}</Label>
@@ -1423,14 +1435,15 @@
                       </div>
                     </div>
                   </div>
-                  <div class="flex-2">
-                    <Label class="block text-xs font-medium mb-1">{t('common.description')}</Label>
-                    <Input
-                      bind:value={newLabelData.description}
-                      placeholder={t('testing.optionalDescription')}
-                      size="small"
-                    />
-                  </div>
+                  <TextField
+                    class="flex-2"
+                    label={t('common.description')}
+                    labelSize="xs"
+                    labelClass="mb-1"
+                    bind:value={newLabelData.description}
+                    placeholder={t('testing.optionalDescription')}
+                    size="small"
+                  />
                 </div>
                 <div class="flex gap-2 pt-2">
                   <Button

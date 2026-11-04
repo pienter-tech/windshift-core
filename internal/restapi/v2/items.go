@@ -22,6 +22,20 @@ type idBatchRequest struct {
 	IDs []int `json:"ids"`
 }
 
+// itemHierarchyRequest scopes an ancestor read to a level-picked base page.
+// workspace_id/collection_id/sub_ql mirror the list endpoint's scope; the
+// server resolves the QL so the caller cannot widen it.
+type itemHierarchyRequest struct {
+	RootIDs       []int  `json:"root_ids"`
+	WorkspaceID   *int   `json:"workspace_id"`
+	CollectionID  *int   `json:"collection_id"`
+	QL            string `json:"ql"`
+	SubQL         string `json:"sub_ql"`
+	MaxDepth      int    `json:"max_depth"`
+	PerRootLimit  int    `json:"per_root_limit"`
+	PerRootOffset int    `json:"per_root_offset"`
+}
+
 type itemListMeta struct {
 	NextCursor     string   `json:"next_cursor,omitempty"`
 	Watermark      int64    `json:"watermark,omitempty"`
@@ -114,6 +128,15 @@ type itemBulkPatchRequest struct {
 	} `json:"patches"`
 }
 
+type itemBulkTransitionRequest struct {
+	ItemIDs    []int `json:"item_ids"`
+	ToStatusID int   `json:"to_status_id"`
+}
+
+type itemBulkDeleteRequest struct {
+	ItemIDs []int `json:"item_ids"`
+}
+
 type roadmapHierarchyDatesRequest struct {
 	RootIDs []int `json:"root_ids"`
 }
@@ -175,6 +198,48 @@ func registerItemRoutes(builder *routeBuilder, app *services.ItemApplicationServ
 			return nil, err
 		}
 		result, err := app.BatchAncestors(r.Context(), user.ID, ids)
+		return result, itemError(err)
+	})
+	builder.JSON(http.MethodPost, collection+"/hierarchy", http.StatusOK, false, AuthAuthenticated, []string{"items:read"}, func(r *http.Request, input itemHierarchyRequest) ([]repository.HierarchyRootGroup, error) {
+		user, err := principal(r)
+		if err != nil {
+			return nil, err
+		}
+		rootIDs, err := normalizeBatchIDs(input.RootIDs)
+		if err != nil {
+			return nil, err
+		}
+		if input.MaxDepth < 0 || input.PerRootLimit < 0 || input.PerRootOffset < 0 {
+			return nil, invalidQuery("max_depth")
+		}
+		request := services.ItemHierarchyRequest{
+			UserID:        user.ID,
+			QL:            input.QL,
+			SubQL:         input.SubQL,
+			RootIDs:       rootIDs,
+			MaxDepth:      input.MaxDepth,
+			PerRootLimit:  input.PerRootLimit,
+			PerRootOffset: input.PerRootOffset,
+		}
+		if input.WorkspaceID != nil {
+			request.WorkspaceID = *input.WorkspaceID
+		}
+		if input.CollectionID != nil {
+			request.CollectionID = *input.CollectionID
+		}
+		result, err := app.Hierarchy(r.Context(), request)
+		return result, itemError(err)
+	})
+	builder.Read(collection+"/level-counts", AuthAuthenticated, []string{"items:read"}, func(r *http.Request) ([]repository.HierarchyLevelCount, error) {
+		user, err := principal(r)
+		if err != nil {
+			return nil, err
+		}
+		_, request, err := parseItemList(r, user.ID)
+		if err != nil {
+			return nil, err
+		}
+		result, err := app.LevelCounts(r.Context(), request)
 		return result, itemError(err)
 	})
 	builder.Read("/workspaces/{workspace_key}/items/{item_number}", AuthAuthenticated, []string{"items:read"}, func(r *http.Request) (*models.Item, error) {
@@ -293,6 +358,7 @@ type itemMergeRequest struct {
 type itemSplitRequest struct {
 	Title            string `json:"title"`
 	Description      string `json:"description"`
+	ItemTypeID       *int   `json:"item_type_id"`
 	CommentIDs       []int  `json:"comment_ids"`
 	AttachmentIDs    []int  `json:"attachment_ids"`
 	AssigneeID       *int   `json:"assignee_id"`
@@ -327,6 +393,7 @@ func registerItemLifecycleRoutes(builder *routeBuilder, lifecycle *services.Item
 		result, err := lifecycle.Split(r.Context(), services.ItemSplitInput{
 			ActorUserID: user.ID, ActorUsername: user.Username,
 			SourceItemID: id, Title: input.Title, Description: input.Description,
+			ItemTypeID: input.ItemTypeID,
 			CommentIDs: input.CommentIDs, AttachmentIDs: input.AttachmentIDs,
 			AssigneeID: input.AssigneeID, PortalCustomerID: input.PortalCustomerID,
 		})
@@ -440,6 +507,22 @@ func registerItemSetRoutes(builder *routeBuilder, app *services.ItemApplicationS
 		result, err := app.BulkPatch(r.Context(), auditActor(r, user), patches)
 		return result, itemError(err)
 	})
+	builder.JSON(http.MethodPost, "/items/bulk-transition", http.StatusOK, false, AuthAuthenticated, []string{"items:write"}, func(r *http.Request, input itemBulkTransitionRequest) (services.ItemBulkTransitionResult, error) {
+		user, err := principal(r)
+		if err != nil {
+			return services.ItemBulkTransitionResult{}, err
+		}
+		result, err := app.BulkTransition(r.Context(), auditActor(r, user), input.ItemIDs, input.ToStatusID)
+		return result, itemError(err)
+	})
+	builder.JSON(http.MethodPost, "/items/bulk-delete", http.StatusOK, false, AuthAuthenticated, []string{"items:delete"}, func(r *http.Request, input itemBulkDeleteRequest) (services.ItemBulkDeleteResult, error) {
+		user, err := principal(r)
+		if err != nil {
+			return services.ItemBulkDeleteResult{}, err
+		}
+		result, err := app.BulkDelete(auditActor(r, user), input.ItemIDs)
+		return result, itemError(err)
+	})
 	builder.JSON(http.MethodPost, "/items/roadmap-hierarchy-dates", http.StatusOK, false, AuthAuthenticated, []string{"items:read"}, func(r *http.Request, input roadmapHierarchyDatesRequest) (services.RoadmapHierarchyDatesResult, error) {
 		user, err := principal(r)
 		if err != nil {
@@ -530,6 +613,38 @@ func registerItemReadRoutes(builder *routeBuilder, app *services.ItemApplication
 			return services.ItemWatchStatus{}, err
 		}
 		result, err := app.Unwatch(r.Context(), user.ID, id)
+		return result, itemError(err)
+	})
+	builder.Read(path+"/watchers", AuthAuthenticated, []string{"items:read"}, func(r *http.Request) ([]models.ItemWatcher, error) {
+		user, id, err := itemTarget(r)
+		if err != nil {
+			return nil, err
+		}
+		result, err := app.Watchers(r.Context(), user.ID, id)
+		return result, itemError(err)
+	})
+	builder.Action(http.MethodPut, path+"/watchers/{user_id}", http.StatusOK, AuthAuthenticated, []string{"items:write"}, func(r *http.Request) ([]models.ItemWatcher, error) {
+		user, id, err := itemTarget(r)
+		if err != nil {
+			return nil, err
+		}
+		targetID, err := pathID(r, "user_id")
+		if err != nil {
+			return nil, err
+		}
+		result, err := app.AddWatcher(r.Context(), user.ID, id, targetID)
+		return result, itemError(err)
+	})
+	builder.Action(http.MethodDelete, path+"/watchers/{user_id}", http.StatusOK, AuthAuthenticated, []string{"items:write"}, func(r *http.Request) ([]models.ItemWatcher, error) {
+		user, id, err := itemTarget(r)
+		if err != nil {
+			return nil, err
+		}
+		targetID, err := pathID(r, "user_id")
+		if err != nil {
+			return nil, err
+		}
+		result, err := app.RemoveWatcher(r.Context(), user.ID, id, targetID)
 		return result, itemError(err)
 	})
 	builder.Read(path+"/personal-tasks", AuthAuthenticated, []string{"items:read"}, func(r *http.Request) ([]models.Item, error) {
@@ -783,10 +898,11 @@ func parseItemListAt(r *http.Request, userID int, now time.Time) (Pagination, se
 	query := r.URL.Query()
 	request := services.ItemListRequest{
 		UserID: userID, QL: query.Get("ql"), SubQL: query.Get("sub_ql"),
-		Pagination:       services.PaginationParams{Limit: page.PageSize, Offset: page.Offset, Cursor: query.Get("cursor"), CursorMode: query.Get("cursor") != ""},
-		OmitDescriptions: query.Get("fields") == "summary",
-		IncludeWatermark: query.Get("include_watermark") == "true",
-		ExcludePersonal:  excludePersonal(r),
+		Pagination:         services.PaginationParams{Limit: page.PageSize, Offset: page.Offset, Cursor: query.Get("cursor"), CursorMode: query.Get("cursor") != ""},
+		OmitDescriptions:   query.Get("fields") == "summary",
+		IncludeWatermark:   query.Get("include_watermark") == "true",
+		IncludeHasChildren: query.Get("include_has_children") == "true",
+		ExcludePersonal:    excludePersonal(r),
 	}
 	for name, target := range map[string]*int{"workspace_id": &request.WorkspaceID, "collection_id": &request.CollectionID} {
 		if query.Get(name) == "" {
@@ -804,10 +920,9 @@ func parseItemListAt(r *http.Request, userID int, now time.Time) (Pagination, se
 	if err := parseItemFilters(r, &request.Filters); err != nil {
 		return Pagination{}, services.ItemListRequest{}, err
 	}
-	request.Filters.TextQuery = strings.TrimSpace(query.Get("search"))
-	if request.Filters.TextQuery == "" {
-		request.Filters.TextQuery = ""
-	}
+	// Smart search matches title/description text and, when the query resolves
+	// to a full KEY-NUMBER reference, the item key too.
+	request.Filters.SearchQuery = strings.TrimSpace(query.Get("search"))
 	request.Filters.StatusIDs, err = itemIDList(query.Get("status_id"))
 	if err != nil {
 		return Pagination{}, services.ItemListRequest{}, invalidQuery("status_id")
@@ -1013,6 +1128,9 @@ func itemError(err error) error {
 	}
 	if errors.Is(err, services.ErrBulkItemNotFound) {
 		return newError(http.StatusNotFound, "not_found", "Item not found")
+	}
+	if errors.Is(err, services.ErrItemWatcherForbidden) {
+		return newError(http.StatusForbidden, "forbidden", "Managing other watchers requires edit permission")
 	}
 	if errors.Is(err, services.ErrBulkItemForbidden) {
 		return newError(http.StatusForbidden, "forbidden", "Item update is not permitted")

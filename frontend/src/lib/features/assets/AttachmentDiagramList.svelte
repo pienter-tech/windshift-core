@@ -1,9 +1,14 @@
 <script>
-  import { IconPaperclip, IconPencil, IconTrash, IconPhoto } from '@tabler/icons-svelte-runes';
+  import IconPaperclip from '@tabler/icons-svelte-runes/icons/paperclip';
+  import IconPencil from '@tabler/icons-svelte-runes/icons/pencil';
+  import IconTrash from '@tabler/icons-svelte-runes/icons/trash';
+  import IconPhoto from '@tabler/icons-svelte-runes/icons/photo';
+  import IconDownload from '@tabler/icons-svelte-runes/icons/download';
   import { t } from '../../stores/i18n.svelte.js';
   import { errorToast } from '../../stores/toasts.svelte.js';
+  import ModalBackdrop from '../../components/ModalBackdrop.svelte';
   import { portal } from '../../actions/portal.js';
-  import { api } from '../../api.js';
+  import { attachments as attachmentsApi } from '../../api/misc.js';
 
   let {
     attachments = [],
@@ -42,16 +47,12 @@
     lightbox = null;
   }
 
-  function handleLightboxKeydown(e) {
-    if (e.key === 'Escape') closeLightbox();
-  }
-
   function thumbUrl(att) {
-    return api.attachments.getThumbnailUrl(att.id);
+    return attachmentsApi.getThumbnailUrl(att.id);
   }
 
   function contentUrl(att) {
-    return api.attachments.getDownloadUrl(att.id);
+    return attachmentsApi.getContentUrl(att.id);
   }
 
   function formatFileSize(bytes) {
@@ -64,7 +65,7 @@
 
   async function handleDownload(attachment) {
     try {
-      const downloadUrl = api.attachments.getDownloadUrl(attachment.id);
+      const downloadUrl = attachmentsApi.getDownloadUrl(attachment.id);
       const response = await fetch(downloadUrl);
       if (!response.ok) {
         throw new Error(`Download failed: ${response.statusText}`);
@@ -148,7 +149,7 @@
         </span>
         {#if canDelete}
           <button
-            class="p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity hover:bg-[var(--ds-background-danger-hovered)]"
+            class="p-1 rounded opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100 transition-opacity hover:bg-[var(--ds-background-danger-hovered)]"
             style="color: var(--ds-text-danger);"
             onclick={() => handleDelete(attachment)}
             title={t('common.delete')}
@@ -178,7 +179,7 @@
         </span>
         {#if canDelete}
           <button
-            class="p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity hover:bg-[var(--ds-background-danger-hovered)]"
+            class="p-1 rounded opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100 transition-opacity hover:bg-[var(--ds-background-danger-hovered)]"
             style="color: var(--ds-text-danger);"
             onclick={() => handleDeleteDiagram(diagram)}
             title={t('common.delete')}
@@ -193,29 +194,31 @@
 {/if}
 
 {#if lightbox}
-  <!-- Fullscreen lightbox overlay. Backdrop click + Escape both close. PDFs
-       render in an iframe; images render at their native size, capped to the
-       viewport. -->
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    use:portal
-    class="fixed inset-0 z-50 flex items-center justify-center p-6"
-    style="background-color: rgba(0,0,0,0.85);"
-    onclick={(e) => { if (e.target === e.currentTarget) closeLightbox(); }}
-    onkeydown={handleLightboxKeydown}
-    role="dialog"
-    aria-modal="true"
-    tabindex="-1"
-  >
-    <button
-      type="button"
-      class="absolute top-4 right-4 text-white/80 hover:text-white text-3xl leading-none"
-      onclick={closeLightbox}
-      aria-label={t('common.close') || 'Close'}
-    >
-      ×
-    </button>
+  <!-- Fullscreen lightbox. ModalBackdrop owns Escape, click-outside and focus
+       restore. PDFs render in an iframe; images render at their native size,
+       capped to the viewport. -->
+  <div use:portal>
+  <ModalBackdrop show={true} onclose={closeLightbox} zIndex={50} opacity={0.85} blur={0}>
+    <div class="absolute top-4 right-4 flex items-center gap-3">
+      <button
+        type="button"
+        class="text-white/80 hover:text-white"
+        onclick={() => handleDownload(lightbox)}
+        aria-label={t('common.download') || 'Download'}
+        title={t('common.download') || 'Download'}
+        data-testid="attachment-lightbox-download"
+      >
+        <IconDownload class="w-7 h-7" />
+      </button>
+      <button
+        type="button"
+        class="text-white/80 hover:text-white text-3xl leading-none"
+        onclick={closeLightbox}
+        aria-label={t('common.close') || 'Close'}
+      >
+        ×
+      </button>
+    </div>
     <div class="max-w-full max-h-full">
       {#if isImage(lightbox)}
         <img
@@ -235,5 +238,6 @@
         {lightbox.original_filename}
       </div>
     </div>
+  </ModalBackdrop>
   </div>
 {/if}

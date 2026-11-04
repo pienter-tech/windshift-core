@@ -243,6 +243,7 @@ export default {
     numberedList: 'قائمة مرقمة',
     insertImage: 'إدراج صورة',
     userNotFound: 'المستخدم غير موجود',
+    multipleUsersMatch: 'يطابق عدة مستخدمين',
   },
   dialogs: {
     cancel: 'إلغاء',
@@ -385,7 +386,7 @@ export default {
     widthTwoThirds: 'ثلثان',
     widthFull: 'كامل',
     resizeAriaLabel: 'تغيير حجم الأداة',
-    resizeColumnsValue: '{count} من 12 عمود',
+    resizeColumnsValue: '{count} من {total} عمود',
     rowCount: 'عدد الصفوف',
     density: 'الكثافة',
     densityComfortable: 'مريح',

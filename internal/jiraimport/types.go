@@ -12,6 +12,9 @@ import (
 var (
 	ErrJobNotFound = errors.New("jira import job not found")
 	ErrJobActive   = errors.New("jira import job is queued or running")
+	// ErrLeaseLost reports that a worker no longer owns its import job: the
+	// lease was recovered, superseded, or cleaned up, so the worker must stop.
+	ErrLeaseLost = errors.New("jira import job lease lost")
 )
 
 type WorkspaceCountMismatchError struct {
@@ -68,8 +71,10 @@ type Progress struct {
 	ImportedAttachments int    `json:"imported_attachments"`
 	TotalComments       int    `json:"total_comments"`
 	ImportedComments    int    `json:"imported_comments"`
+	FailedComments      int    `json:"failed_comments"`
 	TotalWorklogs       int    `json:"total_worklogs"`
 	ImportedWorklogs    int    `json:"imported_worklogs"`
+	FailedWorklogs      int    `json:"failed_worklogs"`
 }
 
 type ImportedWorkspace struct {

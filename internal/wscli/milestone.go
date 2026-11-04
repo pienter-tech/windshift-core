@@ -6,6 +6,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// milestoneCancelledStatus is the canonical persisted milestone status. The
+// API also accepts the US spelling "canceled" and normalizes it.
+const milestoneCancelledStatus = "cancelled" //nolint:misspell // Persisted API status.
+
 var milestoneCmd = &cobra.Command{
 	Use:   "milestone",
 	Short: "Manage milestones",
@@ -236,7 +240,7 @@ func init() {
 	milestoneCmd.AddCommand(milestoneUpdateCmd)
 
 	// List filters
-	milestoneListCmd.Flags().StringVarP(&milestoneStatusFilter, "status", "s", "", "filter by status (planning, in-progress, completed, cancelled)") //nolint:misspell // Status values use British spelling.
+	milestoneListCmd.Flags().StringVarP(&milestoneStatusFilter, "status", "s", "", "filter by status (planning, in-progress, completed, "+milestoneCancelledStatus+")")
 	milestoneListCmd.Flags().BoolVar(&milestoneGlobalOnly, "global", false, "show only global milestones")
 
 	// Get flags
@@ -246,11 +250,11 @@ func init() {
 	milestoneCreateCmd.Flags().StringVarP(&milestoneCreateName, "name", "n", "", "milestone name (required)")
 	milestoneCreateCmd.Flags().StringVarP(&milestoneCreateDesc, "description", "d", "", "milestone description")
 	milestoneCreateCmd.Flags().StringVar(&milestoneCreateTarget, "target", "", "target date (YYYY-MM-DD)")
-	milestoneCreateCmd.Flags().StringVar(&milestoneCreateStatus, "status", "", "initial status (default: planning)")
+	milestoneCreateCmd.Flags().StringVar(&milestoneCreateStatus, "status", "", "initial status: planning (default), in-progress, completed, "+milestoneCancelledStatus)
 
 	// Update flags
 	milestoneUpdateCmd.Flags().StringVarP(&milestoneUpdateName, "name", "n", "", "new milestone name")
 	milestoneUpdateCmd.Flags().StringVarP(&milestoneUpdateDesc, "description", "d", "", "new description")
 	milestoneUpdateCmd.Flags().StringVar(&milestoneUpdateTarget, "target", "", "new target date (YYYY-MM-DD)")
-	milestoneUpdateCmd.Flags().StringVar(&milestoneUpdateStatus, "status", "", "new status")
+	milestoneUpdateCmd.Flags().StringVar(&milestoneUpdateStatus, "status", "", "new status: planning, in-progress, completed, "+milestoneCancelledStatus)
 }

@@ -1,8 +1,12 @@
 <script>
   import { onMount } from 'svelte';
-  import { api } from '../../api.js';
+  import { statuses as statusesApi, workflows as workflowsApi } from '../../api/workflows.js';
   import { navigate } from '../../router.js';
-  import { Plus, Edit, Trash2, Workflow, ArrowRight } from '@lucide/svelte';
+  import Plus from '@lucide/svelte/icons/plus';
+  import Edit from '@lucide/svelte/icons/edit';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
+  import Workflow from '@lucide/svelte/icons/workflow';
+  import ArrowRight from '@lucide/svelte/icons/arrow-right';
   import { t } from '../../stores/i18n.svelte.js';
   import { errorToast } from '../../stores/toasts.svelte.js';
   import { confirm } from '../../composables/useConfirm.js';
@@ -11,11 +15,10 @@
   import Card from '../../components/Card.svelte';
   import PageHeader from '../../layout/PageHeader.svelte';
   import DataTable from '../../components/DataTable.svelte';
-  import Input from '../../components/Input.svelte';
+  import TextField from '../../components/TextField.svelte';
   import Lozenge from '../../components/Lozenge.svelte';
   import Modal from '../../dialogs/Modal.svelte';
   import ModalHeader from '../../dialogs/ModalHeader.svelte';
-  import Label from '../../components/Label.svelte';
   import Checkbox from '../../components/Checkbox.svelte';
   import SearchInput from '../../components/SearchInput.svelte';
   import { toHotkeyString } from '../../utils/keyboardShortcuts.js';
@@ -59,7 +62,7 @@
 
   async function loadStatuses() {
     try {
-      statuses = await api.statuses.getAll();
+      statuses = await statusesApi.getAll();
       loadingStatuses = false;
     } catch (error) {
       console.error('Failed to load statuses:', error);
@@ -69,7 +72,7 @@
 
   async function loadWorkflows() {
     try {
-      const result = await api.workflows.getAll();
+      const result = await workflowsApi.getAll();
       workflows = result;
       loading = false;
     } catch (error) {
@@ -106,7 +109,7 @@
 
     saving = true;
     try {
-      const created = await api.workflows.create(newWorkflow);
+      const created = await workflowsApi.create(newWorkflow);
       workflows = [...workflows, created];
       creating = false;
       newWorkflow = { name: '', description: '', is_default: false };
@@ -144,7 +147,7 @@
     saving = true;
     try {
       translationEditor?.validate();
-      await api.workflows.update(editingId, editWorkflow);
+      await workflowsApi.update(editingId, editWorkflow);
       await translationEditor?.save();
       await loadWorkflows();
       editingId = null;
@@ -168,7 +171,7 @@
     if (!confirmed) return;
 
     try {
-      await api.workflows.delete(workflow.id);
+      await workflowsApi.delete(workflow.id);
       workflows = workflows.filter(wf => wf.id !== workflow.id);
       await loadWorkflows();
       window.dispatchEvent(new CustomEvent('refresh-workspace-data'));
@@ -314,17 +317,17 @@
   <div class="px-6 py-4">
     <form onsubmit={(e) => { e.preventDefault(); createWorkflow(); }}>
       <div class="space-y-4">
-        <div>
-          <Label color="default" required class="mb-2">{t('common.name')}</Label>
-          <Input
-            type="text"
-            bind:value={newWorkflow.name}
-            bind:inputRef={nameInput}
-            placeholder={t('workflows.workflowNamePlaceholder')}
-            size="small"
-            required
-          />
-        </div>
+        <TextField
+          label={t('common.name')}
+          labelColor="default"
+          labelClass="mb-2"
+          type="text"
+          bind:value={newWorkflow.name}
+          bind:inputRef={nameInput}
+          placeholder={t('workflows.workflowNamePlaceholder')}
+          size="small"
+          required
+        />
 
         <div>
           <TextareaField

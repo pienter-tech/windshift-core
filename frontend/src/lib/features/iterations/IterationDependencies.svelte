@@ -1,13 +1,25 @@
 <script>
   import { onMount } from 'svelte';
-  import { api } from '../../api.js';
-  import { IconSparkles, IconArrowLeft, IconRotate, IconCircleCheck, IconAlertCircle, IconSquareCheck, IconSquare, IconArrowRight, IconCalendar, IconWorld, IconBuilding } from '@tabler/icons-svelte-runes';
+  import { ai, llmProviders } from '../../api/ai.js';
+  import { iterations } from '../../api/milestones.js';
+  import IconMessageChatbot from '@tabler/icons-svelte-runes/icons/message-chatbot';
+  import IconRotate from '@tabler/icons-svelte-runes/icons/rotate';
+  import IconCircleCheck from '@tabler/icons-svelte-runes/icons/circle-check';
+  import IconAlertCircle from '@tabler/icons-svelte-runes/icons/alert-circle';
+  import IconSquareCheck from '@tabler/icons-svelte-runes/icons/square-check';
+  import IconSquare from '@tabler/icons-svelte-runes/icons/square';
+  import IconArrowRight from '@tabler/icons-svelte-runes/icons/arrow-right';
+  import IconCalendar from '@tabler/icons-svelte-runes/icons/calendar';
+  import IconWorld from '@tabler/icons-svelte-runes/icons/world';
+  import IconBuilding from '@tabler/icons-svelte-runes/icons/building';
   import { navigate } from '../../router.js';
   import PageHeader from '../../layout/PageHeader.svelte';
   import Card from '../../components/Card.svelte';
   import Button from '../../components/Button.svelte';
+  import BackButton from '../../components/BackButton.svelte';
   import Select from '../../components/Select.svelte';
   import Lozenge from '../../components/Lozenge.svelte';
+  import ItemKey from '../../components/ItemKey.svelte';
   import { successToast, errorToast } from '../../stores/toasts.svelte.js';
   import ItemPicker from '../../pickers/ItemPicker.svelte';
   import DescriptionText from '../../components/DescriptionText.svelte';
@@ -31,9 +43,9 @@
   onMount(async () => {
     try {
       const [conns, iter, iters] = await Promise.all([
-        api.llmProviders.getEnabled(),
-        api.iterations.get(iterationId),
-        api.iterations.getAll()
+        llmProviders.getEnabled(),
+        iterations.get(iterationId),
+        iterations.getAll()
       ]);
       connections = conns;
       iteration = iter;
@@ -61,7 +73,7 @@
     selected = new Set();
 
     try {
-      result = await api.ai.analyzeDependencies(
+      result = await ai.analyzeDependencies(
         iterationId,
         compareIterationIds.length > 0 ? { compare_iteration_ids: compareIterationIds } : {},
         selectedConnectionId
@@ -87,7 +99,7 @@
       }));
 
     try {
-      acceptResult = await api.ai.acceptDependencies(iterationId, payload);
+      acceptResult = await ai.acceptDependencies(iterationId, payload);
       accepted = true;
       successToast(`Created ${acceptResult.created} dependency link${acceptResult.created !== 1 ? 's' : ''}`);
     } catch (err) {
@@ -151,20 +163,17 @@
 <div class="flex min-h-screen" style="background-color: var(--ds-surface);">
   <div class="flex-1 max-w-5xl mx-auto p-6">
   <PageHeader
-    icon={IconSparkles}
+    icon={IconMessageChatbot}
     title="Dependency Analysis"
     subtitle={iteration ? `Analyze dependencies for ${iteration.name}` : 'AI-powered dependency detection'}
   />
 
   <!-- Back link -->
-  <a
+  <BackButton
     href={`/iterations/${iterationId}`}
-    class="flex items-center gap-2 text-sm font-medium hover:opacity-80 transition-opacity mb-6 no-underline"
-    style="color: var(--ds-text-subtle);"
-  >
-    <IconArrowLeft class="w-4 h-4" />
-    Back to Iteration
-  </a>
+    label="Back to Iteration"
+    class="mb-6"
+  />
 
   <div class="space-y-6">
     {#if !result && !loading}
@@ -172,7 +181,7 @@
       <Card variant="raised" padding="default">
         <div class="flex flex-col items-center py-8 gap-4">
           <div class="rounded-full p-4" style="background-color: var(--ds-surface-sunken);">
-            <IconSparkles size={32} style="color: var(--ds-text-subtle);" />
+            <IconMessageChatbot size={32} style="color: var(--ds-text-subtle);" />
           </div>
           <p class="text-sm text-center max-w-md" style="color: var(--ds-text-subtle);">
             Analyze items in this iteration to discover dependency relationships between work items across workspaces.
@@ -314,9 +323,7 @@
                 <div class="flex-1 min-w-0 space-y-2">
                   <!-- Source item -->
                   <div class="flex items-center gap-2 flex-wrap">
-                    <span class="text-xs font-mono px-1.5 py-0.5 rounded" style="background-color: var(--ds-surface-sunken); color: var(--ds-text-subtle);">
-                      {suggestion.source_item_key}
-                    </span>
+                    <ItemKey itemKey={suggestion.source_item_key} variant="badge" />
                     <span class="text-sm font-medium truncate" style="color: var(--ds-text);">
                       {suggestion.source_item_title}
                     </span>
@@ -332,9 +339,7 @@
 
                   <!-- Target item -->
                   <div class="flex items-center gap-2 flex-wrap">
-                    <span class="text-xs font-mono px-1.5 py-0.5 rounded" style="background-color: var(--ds-surface-sunken); color: var(--ds-text-subtle);">
-                      {suggestion.target_item_key}
-                    </span>
+                    <ItemKey itemKey={suggestion.target_item_key} variant="badge" />
                     <span class="text-sm font-medium truncate" style="color: var(--ds-text);">
                       {suggestion.target_item_title}
                     </span>

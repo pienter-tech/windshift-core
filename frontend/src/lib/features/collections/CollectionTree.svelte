@@ -1,62 +1,81 @@
 <script>
   import { onMount, untrack } from 'svelte';
-  import { api } from '../../api.js';
-  import { collectionStore } from '../../stores/collectionContext.js';
+  import {
+    applyCollectionItem,
+    collectionStore,
+    scheduleCollectionReconciliation,
+  } from '../../stores/collectionContext.js';
+  import { useCollectionEventStream } from '../../composables/useCollectionEventStream.svelte.js';
   import { t } from '../../stores/i18n.svelte.js';
+  import { errorToast } from '../../stores/toasts.svelte.js';
+  import { workspacePermissions } from '../../stores/workspacePermissions.svelte.js';
   import { useGradientStyles, loadWorkspaceGradient } from '../../stores/workspaceGradient.svelte.js';
-  import { ChevronRight, ChevronDown, FileCheck, Minus } from '@lucide/svelte';
-  import ItemTypeIcon from '../../components/ItemTypeIcon.svelte';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
+  import FileCheck from '@lucide/svelte/icons/file-check';
+  import Minus from '@lucide/svelte/icons/minus';
   import ViewHeader from '../../layout/ViewHeader.svelte';
   import StaticViewBackground from '../../layout/StaticViewBackground.svelte';
   import SubFilterBar from './SubFilterBar.svelte';
-  import ItemKey from '../items/ItemKey.svelte';
-  import ColorDot from '../../components/ColorDot.svelte';
   import LinkComponent from '../../components/Link.svelte';
   import TestCaseViewModal from '../../dialogs/TestCaseViewModal.svelte';
-  import Lozenge from '../../components/Lozenge.svelte';
   import EmptyState from '../../components/EmptyState.svelte';
   import TableHeaderBar from '../../components/TableHeaderBar.svelte';
-  import { formatDate } from '../../utils/dateFormatter.js';
   import { moduleSettings } from '../../stores/moduleSettings.js';
-  import { itemTestCaseLinksStore, workspaceDataStore } from '../../stores/index.js';
+  import { collectionEditorOptions } from '../../stores/collectionEditorOptions.svelte.js';
+  import { collectionFieldLinks } from '../../stores/collectionFieldLinks.svelte.js';
+  import { itemTestCaseLinksStore } from '../../stores/itemTestCaseLinksStore.svelte.js';
+  import { workspaceDataStore } from '../../stores/workspaceDataStore.svelte.js';
+  import { collectionPreferences } from '../../stores/collectionPreferences.svelte.js';
   import {
-    findOrphansByMissingParent,
-    indexCollectionHierarchy,
-    mergeAncestorContext,
-  } from './collectionHierarchy.js';
+    getListColumnLabel,
+    listGridMinWidth,
+    listGridTemplateColumns,
+  } from '../../utils/workItemListColumns.js';
+  import ListCellRenderer from './ListCellRenderer.svelte';
+  import ColumnSelector from './ColumnSelector.svelte';
+  import CollectionLevelFilter from './CollectionLevelFilter.svelte';
+  import CollectionHierarchyLoadMore from './CollectionHierarchyLoadMore.svelte';
+  import ItemKey from '../../components/ItemKey.svelte';
+  import { useListColumnConfig } from './listColumnConfig.svelte.js';
+  import { useCollectionHierarchy } from '../../composables/useCollectionHierarchy.svelte.js';
 
   let { workspaceId, collectionId = null } = $props();
 
   let workspace = $derived(workspaceDataStore.workspace);
-  // Items as loaded from the collection store, plus fetched ancestor context.
-  let storeItems = $state([]);
-  // Missing parent id -> ancestor chain (root -> parent). Fills gaps left by
-  // pagination and the completed filter so hierarchies stay whole.
-  let ancestorsByParent = $state({});
-  let ancestorsRequestInFlight = false;
-  let ancestorsRerunPending = false;
   let itemTypes = $derived(workspaceDataStore.itemTypes);
   let statuses = $derived(workspaceDataStore.statuses);
   let statusCategories = $derived(workspaceDataStore.statusCategories);
   let priorities = $derived(workspaceDataStore.priorities);
+  let users = $derived(workspaceDataStore.users);
+  let milestones = $derived(workspaceDataStore.milestones);
+  let iterations = $derived(workspaceDataStore.iterations);
+  let projects = $derived(workspaceDataStore.projects);
+  let customFieldDefinitions = $derived(workspaceDataStore.customFieldDefinitions);
+
+  // Shown fields come from the same list-column configuration as the list view.
+  const columnConfig = useListColumnConfig(() => ({ workspaceId, collectionId }));
+  let listColumns = $derived(columnConfig.columns);
+  // Shared lazy hierarchy: the store owns the level-scoped base page and this
+  // owns the subtrees below it.
+  const hierarchy = useCollectionHierarchy({
+    getWorkspaceId: () => workspaceId ?? null,
+    getCollectionId: () => collectionId ?? null,
+    getView: () => 'tree',
+    getMaxDepth: () => 0,
+    getSubFilterQL: () => collectionStore.effectiveSubFilterQL,
+  });
+  let allItems = $derived(hierarchy.allItems);
+  let hierarchyIndex = $derived(hierarchy.hierarchyIndex);
+  let loadedItemIds = $derived(new Set(allItems.map((item) => item.id)));
+
   let loading = $state(true);
   let currentCollectionName = $state('Default');
-  let expandedItems = $state(new Set()); // Track which items are expanded
-  let allItems = $derived(
-    [...mergeAncestorContext(storeItems, ancestorsByParent)].sort(
-      (a, b) => a.level - b.level || a.id - b.id
-    )
-  );
-  let hierarchyIndex = $derived(indexCollectionHierarchy(allItems));
   // Filter-scoped item total from the server: everything the tree contains
-  // across all pages, independent of expansion state or the current page.
+  // across all pages, independent of expansion state or the loaded page.
   // Drives the header's "N shown" so it cannot be misread as per-page count.
   let matchingItemCount = $derived(collectionStore.itemsPagination?.total_items ?? null);
   
-  // Pagination state
-  let currentPage = $state(1);
-  let itemsPerPage = $state(50);
-
   // Test case toggle state
   let showTestCases = $state(false);
   let loadingTestCases = $state(false);
@@ -64,16 +83,35 @@
   // Test case modal state
   let showTestCaseModal = $state(false);
   let selectedTestCaseId = $state(null);
+  let selectedTestCaseWorkspaceId = $state(null);
 
   // Centralized gradient styling
   const styles = useGradientStyles();
 
+  // Scoped SSE invalidations (WI-1624): any frame runs the existing delta fetch,
+  // and a reconnect reconciles. Without this the tree kept showing items that
+  // were deleted from the item detail modal, unlike the board views.
+  useCollectionEventStream(
+    () => (collectionId ? { kind: 'collection', id: collectionId } : { kind: 'workspace', id: workspaceId }),
+    { onInvalidate: () => scheduleCollectionReconciliation() }
+  );
+
   // On mount, request the same page size used by collection store filter reloads.
   onMount(async () => {
-    // Load test case toggle preference from localStorage
-    const saved = localStorage.getItem('collectionTree_showTestCases');
-    if (saved !== null) {
-      showTestCases = saved === 'true';
+    // Prefer the server preference; fall back to the legacy localStorage key.
+    const stored = collectionPreferences.viewStateValue(
+      workspaceId,
+      collectionId,
+      'tree',
+      'show_test_cases'
+    );
+    if (stored !== undefined) {
+      showTestCases = stored === true;
+    } else {
+      const saved = localStorage.getItem('collectionTree_showTestCases');
+      if (saved !== null) {
+        showTestCases = saved === 'true';
+      }
     }
 
     if (workspaceId) {
@@ -82,80 +120,63 @@
     await loadData();
   });
 
-  // Sync items from central store, then reset expansion to the all-roots
-  // default for the new page. Ancestors fetched later expand themselves in
-  // syncAncestorContext so their children stay visible.
   $effect(() => {
-    if (!collectionStore.loading && collectionStore.items.length >= 0) {
-      currentCollectionName = collectionStore.collectionName;
-      storeItems = [...collectionStore.items].sort((a, b) => a.level - b.level || a.id - b.id);
-      untrack(() => {
-        const rootItems = getRootItems();
-        expandedItems = new Set(rootItems.filter(i => hasChildren(i.id)).map(i => i.id));
-      });
-    }
+    currentCollectionName = collectionStore.collectionName;
   });
 
-  // Load ancestor chains for items whose parent is not on the loaded page so
-  // filtered or paginated children do not render as stray roots.
+  // Prime the row-editor cache from the shared workspace store so opening a
+  // cell does not repeat those requests (see CollectionList). Global
+  // collections skip this: their rows resolve per owning workspace.
   $effect(() => {
-    const items = storeItems;
-    untrack(() => void syncAncestorContext(items));
-  });
-
-  async function syncAncestorContext(items) {
-    const orphansByParent = findOrphansByMissingParent(items);
-    const neededParents = new Set(orphansByParent.keys());
-
-    // Drop cached chains whose gap the store has since filled itself.
-    const kept = {};
-    let pruned = false;
-    for (const [parentId, chain] of Object.entries(ancestorsByParent)) {
-      if (neededParents.has(Number(parentId))) {
-        kept[parentId] = chain;
-      } else {
-        pruned = true;
-      }
-    }
-    if (pruned) ancestorsByParent = kept;
-
-    const parentByOrphanId = new Map();
-    for (const [parentId, orphans] of orphansByParent) {
-      parentByOrphanId.set(orphans[0].id, parentId);
-    }
-    const orphanIds = [...parentByOrphanId.keys()].filter(
-      (orphanId) => !kept[String(parentByOrphanId.get(orphanId))]
-    );
-    if (orphanIds.length === 0) return;
-    if (ancestorsRequestInFlight) {
-      // A newer page may need different chains; rerun when the current
-      // request settles.
-      ancestorsRerunPending = true;
+    const id = Number(workspaceId);
+    if (
+      !Number.isInteger(id) ||
+      id <= 0 ||
+      !workspaceDataStore.initialized ||
+      Number(workspaceDataStore.workspaceId) !== id
+    ) {
       return;
     }
-    ancestorsRequestInFlight = true;
-    try {
-      const entries = await api.items.getManyAncestors(orphanIds);
-      for (const { item_id: orphanId, ancestors } of entries) {
-        // The gap may have closed while the request was in flight.
-        const parentId = parentByOrphanId.get(orphanId);
-        if (!ancestors?.length || parentId == null || !neededParents.has(parentId)) continue;
-        ancestorsByParent = { ...ancestorsByParent, [String(parentId)]: ancestors };
-        // Keep previously visible children visible under their new parents.
-        for (const ancestor of ancestors) {
-          expandedItems.add(ancestor.id);
-        }
-      }
-      expandedItems = new Set(expandedItems);
-    } catch (error) {
-      console.error('[CollectionTree] Failed to load ancestor context:', error);
-    } finally {
-      ancestorsRequestInFlight = false;
+    untrack(() =>
+      collectionEditorOptions.prime(
+        id,
+        { statuses, users, milestones, iterations, projects },
+        workspaceDataStore.planningCompleteness
+      )
+    );
+  });
+
+  // Resolve only the assignees the tree references.
+  $effect(() => {
+    const ids = allItems.map((item) => item.assignee_id).filter(Boolean);
+    if (ids.length > 0) void workspaceDataStore.hydrateUsers(ids);
+  });
+
+  // Linking fields live in item_links; hydrate them in one batch when a
+  // linking column is shown.
+  $effect(() => {
+    const linkingFieldIds = new Set(
+      customFieldDefinitions
+        .filter((field) => field.field_type === 'linking')
+        .map((field) => String(field.id)),
+    );
+    const hasLinkingColumn = listColumns.some(
+      (column) =>
+        column.field_type === 'custom' && linkingFieldIds.has(String(column.field_identifier)),
+    );
+    if (hasLinkingColumn) {
+      collectionFieldLinks.loadForItems(allItems.map((item) => item.id));
     }
-    if (ancestorsRerunPending) {
-      ancestorsRerunPending = false;
-      await syncAncestorContext(storeItems);
-    }
+  });
+
+  function handleItemUpdated(data) {
+    applyCollectionItem(data.item);
+  }
+
+  function handleUpdateError(data) {
+    const { error, field } = data;
+    console.error(`Failed to update ${field}:`, error);
+    errorToast(t('dialogs.alerts.failedToUpdate', { error: `${field}: ${error}` }));
   }
 
   async function loadData() {
@@ -179,48 +200,30 @@
     }
   });
 
-  function getItemsByParent(parentId) {
-    return hierarchyIndex.childrenByParent.get(parentId) || [];
-  }
+  const getItemsByParent = (parentId) => hierarchy.getChildren(parentId);
+  const getRootItems = () => hierarchy.roots;
+  const hasChildren = (itemId) => hierarchy.hasChildren(itemId);
+  const toggleExpanded = (itemId) => hierarchy.toggleExpanded(itemId);
+  const isExpanded = (itemId) => hierarchy.isExpanded(itemId);
+  const collapseAll = () => hierarchy.collapseAll();
+  const expandAll = () => hierarchy.expandAll();
 
-  function getRootItems() {
-    return hierarchyIndex.roots;
-  }
-
-  function hasChildren(itemId) {
-    return hierarchyIndex.childrenByParent.has(itemId);
-  }
-
-  function toggleExpanded(itemId) {
-    if (expandedItems.has(itemId)) {
-      expandedItems.delete(itemId);
-    } else {
-      expandedItems.add(itemId);
-    }
-    expandedItems = new Set(expandedItems);
-  }
-
-  function isExpanded(itemId) {
-    return expandedItems.has(itemId);
-  }
-
-  function collapseAll() {
-    expandedItems.clear();
-    expandedItems = new Set(expandedItems);
-  }
-
-  function expandAll() {
-    // Expand all items that have children
-    allItems.forEach(item => {
-      if (hasChildren(item.id)) {
-        expandedItems.add(item.id);
-      }
-    });
-    expandedItems = new Set(expandedItems);
+  // A row shows a parent reference when its real parent is not drawn in the
+  // tree: base-level rows (parent above the picked level) and flattened rows
+  // (parent filtered out). Replaces the old synthetic ancestor row (GH #271).
+  function parentReference(item) {
+    if (item.parent_id == null || loadedItemIds.has(item.parent_id)) return null;
+    return {
+      id: item.parent_id,
+      workspace_id: item.workspace_id,
+      workspace_key: item.workspace_key,
+      workspace_item_number: item.parent_workspace_item_number,
+      title: item.parent_title,
+    };
   }
 
   function toggleExpandCollapse() {
-    if (expandedItems.size === 0) {
+    if (hierarchy.expandedCount === 0) {
       expandAll();
     } else {
       collapseAll();
@@ -244,8 +247,9 @@
   async function toggleShowTestCases() {
     showTestCases = !showTestCases;
 
-    // Save preference to localStorage
-    localStorage.setItem('collectionTree_showTestCases', showTestCases.toString());
+    collectionPreferences.patchViewState(workspaceId, collectionId, 'tree', {
+      show_test_cases: showTestCases,
+    });
 
     if (showTestCases) {
       await loadPendingTestCases();
@@ -262,73 +266,54 @@
   }
 
   // Handle test case click to open modal
-  function handleTestCaseClick(event, testCaseId) {
+  function handleTestCaseClick(event, testCaseId, testCaseWorkspaceId = null) {
     event.preventDefault();
     selectedTestCaseId = testCaseId;
+    selectedTestCaseWorkspaceId = testCaseWorkspaceId ?? null;
     showTestCaseModal = true;
   }
 
-  function getPaginatedRootItems() {
-    const rootItems = getRootItems();
-    const startIndex = (currentPage - 1) * itemsPerPage;
-    const endIndex = startIndex + itemsPerPage;
-    
-    return rootItems.slice(startIndex, endIndex);
-  }
-
-  function getTotalRootItems() {
-    return getRootItems().length;
-  }
-
-  function getTotalPages() {
-    const total = getTotalRootItems();
-    return total === 0 ? 1 : Math.ceil(total / itemsPerPage);
-  }
-
-  let paginationInfo = $derived({
-    start: (currentPage - 1) * itemsPerPage + 1,
-    end: Math.min(currentPage * itemsPerPage, getTotalRootItems()),
-    total: getTotalRootItems()
-  });
-
-  function goToPage(page) {
-    currentPage = page;
-  }
-
   function getIndentLevel(level) {
-    return `${level * 24}px`;
+    return `${level * 1.5}rem`;
   }
 
-  function getItemTypeInfo(item) {
-    if (!item.item_type_id || !itemTypes.length) {
-      // Fallback to hierarchy level based icons
-      const fallbackIndicators = [
-        { iconName: 'GitBranch', color: '#9333ea', label: 'Epic' },      // Level 0
-        { iconName: 'Circle', color: '#2563eb', label: 'Feature' },      // Level 1
-        { iconName: 'Circle', color: '#16a34a', label: 'Story' },        // Level 2
-        { iconName: 'Circle', color: '#ea580c', label: 'Task' },         // Level 3
-        { iconName: 'Circle', color: '#4b5563', label: 'Subtask' }       // Level 4+
-      ];
-      return fallbackIndicators[Math.min(item.level || 0, fallbackIndicators.length - 1)];
+  // Depth indent for the tree column: the padding creates the offset and a
+  // repeating gradient draws one guide line per ancestor level. An expanded
+  // parent additionally draws a short branch from its chevron to the bottom of
+  // the row, so the child guide line connects to the chevron instead of
+  // starting in mid-air. The background is clipped to the indent width, so it
+  // never runs under the row's content.
+  function getIndentStyle(level, branch = false) {
+    const layers = [];
+    const sizes = [];
+    const positions = [];
+    if (level) {
+      const width = getIndentLevel(level);
+      layers.push(
+        'repeating-linear-gradient(to right, transparent 0 0.75rem, var(--ds-border) 0.75rem 0.8125rem, transparent 0.8125rem 1.5rem)',
+      );
+      sizes.push(`${width} 100%`);
+      positions.push('0 0');
     }
-
-    // Find the actual item type
-    const itemType = itemTypes.find(type => type.id === item.item_type_id);
-    if (itemType) {
-      return {
-        iconName: itemType.icon,
-        color: itemType.color, // Use the actual hex color
-        label: itemType.name
-      };
+    if (branch) {
+      layers.push('linear-gradient(var(--ds-border), var(--ds-border))');
+      // Stop short of the chevron so the branch does not touch it.
+      sizes.push('0.0625rem calc(50% - 0.375rem)');
+      positions.push(`${level * 1.5 + 0.75}rem 100%`);
     }
-
-    // Fallback if item type not found
-    return { iconName: 'Circle', color: '#4b5563', label: 'Unknown' };
+    if (layers.length === 0) return undefined;
+    const style = [];
+    if (level) style.push(`padding-left: ${getIndentLevel(level)}`);
+    style.push(`background-image: ${layers.join(', ')}`);
+    style.push(`background-size: ${sizes.join(', ')}`);
+    style.push(`background-position: ${positions.join(', ')}`);
+    style.push('background-repeat: no-repeat');
+    return style.join('; ');
   }
 
   function renderTreeItems(parentId = null, level = 0, result = [], rootItems = null) {
-    // For root level, use paginated items, otherwise get all children
-    const items = parentId === null ? (rootItems || getPaginatedRootItems()) : getItemsByParent(parentId);
+    // The root level renders every loaded root; children follow the loaded set.
+    const items = parentId === null ? (rootItems || getRootItems()) : getItemsByParent(parentId);
 
     for (const item of items) {
       // Add the current item with its level and children info
@@ -354,9 +339,20 @@
         });
       }
 
-      // Show children if the current item is expanded
+      // Show children if the current item is expanded, then a per-root
+      // continuation when the subtree exceeded the per-root cap.
       if (isExpanded(item.id)) {
         renderTreeItems(item.id, level + 1, result);
+        if (hierarchy.hasMore(item.id)) {
+          result.push({
+            id: `more-${item.id}`,
+            level: level + 1,
+            isLoadMore: true,
+            loadMoreFor: item.id,
+            remaining: hierarchy.remaining(item.id),
+            loading: hierarchy.isLoading(item.id),
+          });
+        }
       }
     }
 
@@ -367,35 +363,92 @@
   // Svelte 5 automatically tracks dependencies accessed inside renderTreeItems()
   let treeData = $derived(
     allItems.length > 0
-      ? renderTreeItems(null, 0, [], getPaginatedRootItems())
+      ? renderTreeItems(null, 0, [], getRootItems())
       : []
   );
+
+  // The expander lives at the start of the indent column, after the depth
+  // padding, so it sits directly against the guide lines and every child row
+  // reads as nested content rather than a separate expander gutter. The tree
+  // also widens the key track for the parent reference and asks for a wider
+  // title track so rows fit in the two-line clamp.
+  let indentColumnId = $derived(
+    listColumns.some((column) => column.field_identifier === 'title')
+      ? 'title'
+      : listColumns[0]?.field_identifier
+  );
+  // The parent-reference chip needs a wider key track, but only when a row
+  // actually shows one; otherwise the default key width keeps the row compact.
+  let hasParentReferences = $derived(allItems.some((item) => parentReference(item) != null));
+  let treeGridOptions = $derived({
+    titleMinWidth: 24,
+    keyWidth: hasParentReferences ? 10 : undefined,
+  });
+  let gridTemplateColumns = $derived(listGridTemplateColumns(listColumns, treeGridOptions));
+  let gridMinWidth = $derived(listGridMinWidth(listColumns, treeGridOptions));
 </script>
 
-{#snippet paginationControls()}
-  <div class="flex items-center gap-2">
-    <button
-      class="px-3 py-2 text-sm border rounded disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-      style="{styles.glassStyle(12)} {styles.glassTextStyle}"
-      onclick={() => goToPage(currentPage - 1)}
-      disabled={currentPage === 1}
-    >
-      {t('common.previous')}
-    </button>
-
-    <span class="px-4 py-2 text-sm" style="color: var(--ctx-text, var(--ds-text));">
-      {t('collectionTree.pageOfTotal', { current: currentPage, total: getTotalPages() })}
+{#snippet parentChip({ item })}
+  {@const parent = parentReference(item)}
+  {#if parent}
+    <span class="inline-flex items-center gap-0.5 min-w-0" title={parent.title || ''}>
+      <ItemKey
+        item={parent}
+        variant="badge"
+        size="compact"
+        dataTestid={`tree-parent-${item.id}`}
+      />
+      <span class="text-xs" style="color: var(--ds-text-subtle);">›</span>
     </span>
+  {/if}
+{/snippet}
 
+{#snippet treeLeading({ item, testCaseCount = 0 })}
+  {#if item.hasChildren}
     <button
-      class="px-3 py-2 text-sm border rounded disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-      style="{styles.glassStyle(12)} {styles.glassTextStyle}"
-      onclick={() => goToPage(currentPage + 1)}
-      disabled={currentPage === getTotalPages()}
+      data-testid={`tree-expand-${item.id}`}
+      class="w-6 h-6 flex-shrink-0 flex items-center justify-center rounded transition-colors cursor-pointer expand-btn"
+      onclick={(e) => { e.stopPropagation(); toggleExpanded(item.id); }}
+      aria-label={isExpanded(item.id) ? 'Collapse' : 'Expand'}
     >
-      {t('common.next')}
+      {#if isExpanded(item.id)}
+        <ChevronDown class="w-4 h-4" style={styles.glassTextStyle} />
+      {:else}
+        <ChevronRight class="w-4 h-4" style={styles.glassTextStyle} />
+      {/if}
     </button>
-  </div>
+  {:else}
+    <div class="w-6 h-6 flex-shrink-0"></div>
+  {/if}
+
+  {#if showTestCases && testCaseCount > 0}
+    <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-xs font-medium rounded-full flex-shrink-0" style="background-color: var(--ds-background-accent-green-subtler); color: var(--ds-accent-green);">
+      <FileCheck class="w-3 h-3" />
+      {testCaseCount}
+    </span>
+  {/if}
+{/snippet}
+
+{#snippet testCaseCell({ item, column })}
+  {#if column.field_identifier === 'key'}
+    <LinkComponent
+      href="#view-test-case"
+      onClick={(e) => handleTestCaseClick(e, item.id, item.testCaseData?.workspaceId)}
+      class="text-xs font-mono px-1.5 py-0.5 rounded cursor-pointer transition-colors text-ds-text-accent-green bg-ds-accent-green-subtle hover:opacity-80"
+    >
+      TC-{item.id}
+    </LinkComponent>
+  {:else if column.field_identifier === 'title'}
+    <LinkComponent
+      href="#view-test-case"
+      onClick={(e) => handleTestCaseClick(e, item.id, item.testCaseData?.workspaceId)}
+      class="block text-left w-full text-sm transition-colors truncate cursor-pointer text-ds-text-accent-green hover:opacity-80"
+    >
+      {item.title}
+    </LinkComponent>
+  {:else if column.field_identifier === 'status'}
+    <span class="text-sm text-ds-text-success">{t('testing.testCase')}</span>
+  {/if}
 {/snippet}
 
 {#if loading}
@@ -421,8 +474,20 @@
       </div>
 
       <!-- Controls Bar -->
-      <div class="flex items-center mb-4">
-        <SubFilterBar {workspaceId} />
+      <div class="flex items-center justify-between mb-6">
+        <div class="flex items-center gap-4">
+          <SubFilterBar {workspaceId} {collectionId} />
+          <CollectionLevelFilter {workspaceId} {collectionId} view="tree" />
+        </div>
+        <div class="flex items-center gap-2">
+          <ColumnSelector
+            columns={listColumns}
+            {customFieldDefinitions}
+            canConfigure={columnConfig.canConfigure}
+            testId="tree-column-selector-trigger"
+            onchange={({ columns }) => columnConfig.save(columns)}
+          />
+        </div>
       </div>
 
       <!-- Tree View -->
@@ -440,7 +505,7 @@
               style="{styles.glassStyle(12)} {styles.glassTextStyle}"
               onclick={toggleExpandCollapse}
             >
-              {#if expandedItems.size === 0}
+              {#if hierarchy.expandedCount === 0}
                 <ChevronDown class="w-4 h-4" />
                 {t('collectionTree.expandAll')}
               {:else}
@@ -467,185 +532,149 @@
             {/if}
           </div>
 
-          <!-- Pagination Info and Controls -->
-          {#if getTotalPages() > 1}
-            <div class="flex items-center gap-4">
-              <span class="text-sm" style="color: var(--ctx-text, var(--ds-text));">
-                {t('collectionTree.showingRootItems', { start: paginationInfo.start, end: paginationInfo.end, total: paginationInfo.total })}
-              </span>
-              {@render paginationControls()}
-            </div>
-          {/if}
         </div>
 
         <!-- Table Container -->
-        <div class="rounded-xl border shadow-sm overflow-hidden" style="{styles.glassStyle(12)}">
+        <div class="rounded-xl border shadow-sm overflow-x-auto" style="{styles.glassStyle(12)}">
           <!-- Table Header -->
-          <TableHeaderBar columns="3rem 6rem 1fr 6rem 5rem 5rem">
+          <TableHeaderBar columns={gridTemplateColumns} minWidth={gridMinWidth}>
+            {#each listColumns as column (column.field_identifier)}
+              <div>{getListColumnLabel(column, customFieldDefinitions)}</div>
+            {/each}
             <div></div>
-            <div>{t('collectionTree.itemKey')}</div>
-            <div>{t('common.summary')}</div>
-            <div>{t('common.status')}</div>
-            <div>{t('common.priority')}</div>
-            <div>{t('common.created')}</div>
           </TableHeaderBar>
 
           <!-- Tree Items -->
           <div style="--divide-color: var(--ds-border);">
-            {#each treeData as item, idx (item.isTestCase ? `tc-${item.id}` : `item-${item.id}`)}
-            {#if item.isTestCase}
+            {#each treeData as item, idx (item.isLoadMore ? item.id : item.isTestCase ? `tc-${item.id}` : `item-${item.id}`)}
+            {#if item.isLoadMore}
+              <!-- Per-root continuation when a subtree exceeded the cap -->
+              <div
+                class="grid gap-4 items-center px-4 py-2.5"
+                style="grid-template-columns: {gridTemplateColumns}; min-width: {gridMinWidth};"
+                data-testid={`tree-load-more-${item.loadMoreFor}`}
+              >
+                {#each listColumns as column (column.field_identifier)}
+                  <div
+                    class={column.field_identifier === indentColumnId ? 'min-w-0 overflow-hidden self-stretch -my-2.5 flex items-center' : 'min-w-0 overflow-hidden'}
+                    style={column.field_identifier === indentColumnId ? getIndentStyle(item.level) : undefined}
+                  >
+                    {#if column.field_identifier === indentColumnId}
+                      <button
+                        type="button"
+                        class="text-sm transition-colors cursor-pointer"
+                        style="color: var(--ds-interactive);"
+                        disabled={item.loading}
+                        data-testid={`tree-load-more-button-${item.loadMoreFor}`}
+                        onclick={() => hierarchy.loadMore(item.loadMoreFor)}
+                      >
+                        {item.loading ? t('common.loading') : t('common.loadMore')}
+                        {#if item.remaining > 0}
+                          ({item.remaining} {t('common.remaining')})
+                        {/if}
+                      </button>
+                    {/if}
+                  </div>
+                {/each}
+                <div></div>
+              </div>
+            {:else if item.isTestCase}
               <!-- Test Case Row -->
               <div
-                class="flex items-center gap-4 px-4 py-2.5 transition-colors group bg-ds-success-subtle/30 hover:bg-ds-success-subtle/50"
+                class="grid gap-4 items-center px-4 py-2.5 transition-colors group bg-ds-success-subtle/30 hover:bg-ds-success-subtle/50"
+                style="grid-template-columns: {gridTemplateColumns}; min-width: {gridMinWidth};"
               >
-                <!-- Hierarchy Indent + Icon -->
-                <div class="flex items-center gap-1" style="margin-left: {getIndentLevel(item.level)}">
-                  <div class="w-6 h-6"></div> <!-- Spacer (no expand/collapse) -->
-
-                  <!-- Test Case Icon -->
-                  <div class="w-4 h-4 rounded flex items-center justify-center bg-ds-accent-green">
-                    <FileCheck class="w-2.5 h-2.5 text-white" />
+                {#each listColumns as column (column.field_identifier)}
+                  <div
+                    class={column.field_identifier === indentColumnId ? 'min-w-0 overflow-hidden self-stretch -my-2.5' : 'min-w-0 overflow-hidden'}
+                    style={column.field_identifier === indentColumnId ? getIndentStyle(item.level) : undefined}
+                  >
+                    {#if column.field_identifier === indentColumnId}
+                      <div class="h-full flex items-center gap-2">
+                        <div class="w-6 h-6 flex-shrink-0 flex items-center justify-center">
+                          <div class="w-4 h-4 rounded flex items-center justify-center bg-ds-accent-green">
+                            <FileCheck class="w-2.5 h-2.5 text-white" />
+                          </div>
+                        </div>
+                        <div class="min-w-0 flex-1">
+                          {@render testCaseCell({ item, column })}
+                        </div>
+                      </div>
+                    {:else}
+                      {@render testCaseCell({ item, column })}
+                    {/if}
                   </div>
-                </div>
-
-                <!-- Test Case ID -->
-                <div class="min-w-24">
-                  <LinkComponent
-                    href="#view-test-case"
-                    onClick={(e) => handleTestCaseClick(e, item.id)}
-                    class="text-xs font-mono px-1.5 py-0.5 rounded cursor-pointer transition-colors text-ds-text-accent-green bg-ds-accent-green-subtle hover:opacity-80"
-                  >
-                    TC-{item.id}
-                  </LinkComponent>
-                </div>
-
-                <!-- Test Case Title -->
-                <div class="flex-1 min-w-0">
-                  <LinkComponent
-                    href="#view-test-case"
-                    onClick={(e) => handleTestCaseClick(e, item.id)}
-                    class="text-left w-full text-sm transition-colors truncate cursor-pointer text-ds-text-accent-green hover:opacity-80"
-                  >
-                    {item.title}
-                  </LinkComponent>
-                </div>
-
-                <!-- Empty columns for alignment -->
-                <div class="w-24 text-sm text-ds-text-success">{t('testing.testCase')}</div>
-                <div class="w-20"></div>
-                <div class="w-20"></div>
+                {/each}
+                <div></div>
               </div>
             {:else}
               <!-- Regular Work Item Row -->
-              {@const typeInfo = getItemTypeInfo(item)}
-              {@const selectedStatus = statuses.find(s => s.id === item.status_id)}
-              {@const statusCategory = selectedStatus ? statusCategories.find(sc => sc.id === selectedStatus.category_id) : null}
-              {@const selectedPriority = priorities.find(p => p.id === item.priority_id)}
               {@const testCaseCount = (showTestCases && itemTestCaseLinksStore.get(item.id)) ? itemTestCaseLinksStore.get(item.id).length : 0}
               <div
                 data-testid={`tree-row-${item.id}`}
-                class="flex items-center gap-4 px-4 py-3 transition-colors group tree-row"
-                style="border-top: 1px solid var(--ctx-border, var(--ds-border));{idx === 0 ? 'border-top: none;' : ''}"
+                class="grid gap-4 items-center px-4 py-3 transition-colors group tree-row"
+                style="grid-template-columns: {gridTemplateColumns}; min-width: {gridMinWidth}; border-top: 1px solid var(--ctx-border, var(--ds-border));{idx === 0 ? 'border-top: none;' : ''}"
               >
-                <!-- Hierarchy Indent + Expand/Collapse + Icon -->
-                <div class="flex items-center gap-1" style="margin-left: {getIndentLevel(item.level)}">
-                  <!-- Expand/Collapse Button -->
-                  {#if item.hasChildren}
-                    <button
-                      class="w-6 h-6 flex items-center justify-center rounded transition-colors cursor-pointer expand-btn"
-                      onclick={(e) => { e.stopPropagation(); toggleExpanded(item.id); }}
-                      aria-label={isExpanded(item.id) ? 'Collapse' : 'Expand'}
-                    >
-                      {#if isExpanded(item.id)}
-                        <ChevronDown class="w-4 h-4" style={styles.glassTextStyle} />
-                      {:else}
-                        <ChevronRight class="w-4 h-4" style={styles.glassTextStyle} />
-                      {/if}
-                    </button>
-                  {:else}
-                    <div class="w-6 h-6"></div> <!-- Spacer for alignment -->
-                  {/if}
-
-                  <!-- Work Item Type Icon -->
-                  <ItemTypeIcon
-                    icon={typeInfo.iconName}
-                    color={typeInfo.color}
-                    title={typeInfo.label}
-                  />
-                </div>
-
-                <!-- Issue Key + Test Case Count Badge -->
-                <div class="min-w-24 flex items-center gap-1.5">
-                  <ItemKey
-                    {item}
-                    {workspace}
-                    href={collectionId && workspaceId
-                      ? `/workspaces/${workspaceId}/collections/${collectionId}/items/${item.id}`
-                      : `/workspaces/${workspaceId || item.workspace_id}/items/${item.id}`}
-                    style={styles.glassSubtleTextStyle}
-                  />
-
-                  <!-- Test Case Count Badge -->
-                  {#if showTestCases && testCaseCount > 0}
-                    <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-xs font-medium rounded-full" style="background-color: var(--ds-background-accent-green-subtler); color: var(--ds-accent-green);">
-                      <FileCheck class="w-3 h-3" />
-                      {testCaseCount}
-                    </span>
-                  {/if}
-                </div>
-
-                <!-- Summary -->
-                <div class="flex-1 min-w-0">
-                  <LinkComponent
-                    data-testid="tree-item-{item.id}"
-                    href={collectionId && workspaceId
-                      ? `/workspaces/${workspaceId}/collections/${collectionId}/items/${item.id}`
-                      : `/workspaces/${workspaceId || item.workspace_id}/items/${item.id}`}
-                    class="text-left w-full transition-colors truncate cursor-pointer summary-link"
-                    style={styles.glassTextStyle}
+                {#each listColumns as column (column.field_identifier)}
+                  <div
+                    class={column.field_identifier === indentColumnId ? 'min-w-0 overflow-hidden self-stretch -my-3' : 'min-w-0 overflow-hidden'}
+                    data-testid={column.field_identifier === indentColumnId ? `tree-indent-${item.id}` : undefined}
+                    style={column.field_identifier === indentColumnId ? getIndentStyle(item.level, item.hasChildren && isExpanded(item.id)) : undefined}
                   >
-                    {item.title}
-                  </LinkComponent>
-                </div>
-
-                <!-- Status -->
-                <div class="w-24">
-                  <Lozenge
-                    text={selectedStatus ? selectedStatus.name : t('collectionTree.noStatus')}
-                    customBg={statusCategory?.color || '#6b7280'}
-                  />
-                </div>
-
-                <!-- Priority -->
-                <div class="w-20">
-                  {#if selectedPriority}
-                    <div class="flex items-center gap-1.5">
-                      <ColorDot color={selectedPriority.color} />
-                      <span class="text-sm capitalize" style="color: {selectedPriority.color};">
-                        {selectedPriority.name}
-                      </span>
-                    </div>
-                  {:else}
-                    <span class="text-sm" style="{styles.glassSubtleTextStyle}">-</span>
-                  {/if}
-                </div>
-
-                <!-- Created Date -->
-                <div class="w-20 text-sm" style="{styles.glassSubtleTextStyle}">
-                  {formatDate(item.created_at) || '-'}
-                </div>
+                    {#if column.field_identifier === indentColumnId}
+                      <div class="h-full flex items-center gap-2 min-w-0">
+                        {@render treeLeading({ item, testCaseCount })}
+                        <div class="min-w-0 flex-1">
+                          <ListCellRenderer
+                            {item}
+                            {column}
+                            {workspace}
+                            keyBefore={parentChip}
+                            canEdit={workspacePermissions.canEdit(item.workspace_id)}
+                            {statuses}
+                            {statusCategories}
+                            {priorities}
+                            {milestones}
+                            {iterations}
+                            {users}
+                            {projects}
+                            {itemTypes}
+                            {customFieldDefinitions}
+                            onitemUpdated={handleItemUpdated}
+                            onupdateError={handleUpdateError}
+                          />
+                        </div>
+                      </div>
+                    {:else}
+                      <ListCellRenderer
+                        {item}
+                        {column}
+                        {workspace}
+                        keyBefore={parentChip}
+                        canEdit={workspacePermissions.canEdit(item.workspace_id)}
+                        {statuses}
+                        {statusCategories}
+                        {priorities}
+                        {milestones}
+                        {iterations}
+                        {users}
+                        {projects}
+                        {itemTypes}
+                        {customFieldDefinitions}
+                        onitemUpdated={handleItemUpdated}
+                        onupdateError={handleUpdateError}
+                      />
+                    {/if}
+                  </div>
+                {/each}
+                <div></div>
               </div>
             {/if}
           {/each}
         </div>
       </div>
 
-        <!-- Bottom Pagination -->
-        {#if getTotalPages() > 1}
-          <div class="flex justify-center items-center gap-4 mt-6 pt-4 border-t" style="border-color: var(--ds-border);">
-            {@render paginationControls()}
-          </div>
-        {/if}
+        <CollectionHierarchyLoadMore testid="tree-load-more" />
       {/if}
   </StaticViewBackground>
 {:else}
@@ -660,7 +689,8 @@
 <TestCaseViewModal
   isOpen={showTestCaseModal}
   testCaseId={selectedTestCaseId}
-  onclose={() => { showTestCaseModal = false; selectedTestCaseId = null; }}
+  workspaceId={selectedTestCaseWorkspaceId ?? workspaceId}
+  onclose={() => { showTestCaseModal = false; selectedTestCaseId = null; selectedTestCaseWorkspaceId = null; }}
 />
 
 <style>
@@ -672,7 +702,4 @@
     background-color: var(--ds-background-neutral-hovered);
   }
 
-  :global(.summary-link:hover) {
-    color: var(--ds-link) !important;
-  }
 </style>
