@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS attachments (
 	has_thumbnail BOOLEAN DEFAULT false,
 	thumbnail_path TEXT,
 	category TEXT DEFAULT '',
+	is_internal BOOLEAN NOT NULL DEFAULT false, -- hidden from portal customers (e.g. JSM internal-note files)
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 	FOREIGN KEY (uploaded_by) REFERENCES users(id) ON DELETE SET NULL,
 	FOREIGN KEY (uploaded_by_portal_customer_id) REFERENCES portal_customers(id) ON DELETE SET NULL
@@ -55,6 +56,20 @@ CREATE TABLE IF NOT EXISTS comments (
 CREATE INDEX IF NOT EXISTS idx_comments_item_id ON comments(item_id);
 CREATE INDEX IF NOT EXISTS idx_comments_author_id ON comments(author_id);
 CREATE INDEX IF NOT EXISTS idx_comments_portal_customer_id ON comments(portal_customer_id);
+
+-- Comment reactions: one row per user, comment, and reaction key
+CREATE TABLE IF NOT EXISTS comment_reactions (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	comment_id INTEGER NOT NULL,
+	user_id INTEGER NOT NULL,
+	reaction TEXT NOT NULL,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	FOREIGN KEY (comment_id) REFERENCES comments(id) ON DELETE CASCADE,
+	FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+	UNIQUE(comment_id, user_id, reaction)
+);
+
+CREATE INDEX IF NOT EXISTS idx_comment_reactions_user_id ON comment_reactions(user_id);
 
 -- Diagram System Tables
 CREATE TABLE IF NOT EXISTS item_diagrams (

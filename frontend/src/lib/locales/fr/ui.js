@@ -126,7 +126,7 @@ export default {
       createdAt: { name: 'Créé le', description: 'Date de création de l’élément' },
       updatedAt: { name: 'Mis à jour le', description: 'Dernière mise à jour de l’élément' },
       dueDate: { name: 'Date d’échéance', description: 'Date d’échéance de l’élément' },
-      startDate: { name: 'Date de début', description: 'Début des travaux' },
+      startDate: { name: 'Date de début', description: 'Début de l’élément' },
       estimate: { name: 'Estimation', description: 'Effort estimé' },
       labels: { name: 'Étiquettes', description: 'Étiquettes de l’élément' },
       sprint: { name: 'Sprint', description: 'Sprint associé' },
@@ -216,6 +216,14 @@ export default {
 
   editors: {
     enterText: 'Saisir du texte…',
+    useProvider: 'Modifier avec {label}',
+    useRichText: 'Utiliser l’éditeur de texte enrichi',
+    providerActive: '{label} est actif',
+    discardProviderChanges: 'Ignorer les modifications non enregistrées ?',
+    discardProviderChangesMessage:
+      'Vos modifications dans {label} n’ont pas été enregistrées. Changer d’éditeur les supprime.',
+    discardChanges: 'Ignorer',
+    providerError: 'Le plugin d’éditeur a signalé une erreur : {message}',
     selectDate: 'Sélectionner une date…',
     clickToChangeColor: 'Cliquer pour changer la couleur',
     saveEnter: 'Enregistrer (Entrée)',
@@ -236,6 +244,7 @@ export default {
     numberedList: 'Liste numérotée',
     insertImage: 'Insérer une image',
     userNotFound: 'Utilisateur introuvable',
+    multipleUsersMatch: 'Plusieurs utilisateurs correspondent',
     insertDiagram: 'Insérer un schéma',
     diagramEdit: 'Modifier le schéma',
     diagramOpen: 'Ouvrir le schéma',
@@ -432,7 +441,7 @@ export default {
     widthTwoThirds: 'Deux tiers',
     widthFull: 'Pleine largeur',
     resizeAriaLabel: 'Redimensionner le widget',
-    resizeColumnsValue: '{count} sur 12 colonnes',
+    resizeColumnsValue: '{count} sur {total} colonnes',
     rowCount: 'Nombre de lignes',
     density: 'Densité',
     densityComfortable: 'Aéré',
@@ -447,6 +456,7 @@ export default {
     chart: {
       items: 'éléments',
       noDataAvailable: 'Aucune donnée disponible',
+      otherSlices: 'Autres ({count} de plus)',
     },
     completionChart: {
       title: 'Graphique de réalisation',

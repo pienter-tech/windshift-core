@@ -23,6 +23,7 @@ import adminOperations from './adminOperations.js';
 import agents from './agents.js';
 import dashboard from './dashboard.js';
 import mobile from './mobile.js';
+import backfill from './backfill.js';
 
 export default createLocale({
   common,
@@ -45,4 +46,5 @@ export default createLocale({
   agents,
   dashboard,
   mobile,
+  backfill,
 });

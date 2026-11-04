@@ -86,7 +86,8 @@ func (s *EmailVerificationService) SendVerificationEmail(user *models.User, toke
 	return s.smtpSender.SendTransactional(user.Email, emailutil.TemplateEmailVerification, struct {
 		FirstName       string
 		VerificationURL string
-	}{firstName, url})
+		ExpiresIn       string
+	}{firstName, url, emailutil.HumanizeDuration(TokenExpiry)})
 }
 
 // VerifyEmail validates the token and marks the user's email as verified

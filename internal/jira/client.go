@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"windshift/internal/utils"
@@ -106,6 +108,7 @@ type cloudClient struct {
 	authHeader     string
 	httpClient     *http.Client
 	limiter        *rate.Limiter
+	throttle       *jiraThrottle
 	retryWait      func(context.Context, time.Duration) error
 	retryAttempts  int
 }
@@ -156,6 +159,7 @@ func NewClient(cfg Config) (Client, error) {
 		Transport: utils.ConfigureHTTPTransport(&http.Transport{DialContext: utils.SafeNetDialer(timeout).DialContext}),
 	}
 	limiter := rate.NewLimiter(rate.Limit(rateLimit), rateLimit)
+	throttle := &jiraThrottle{}
 
 	if cfg.DeploymentType == DeploymentDataCenter {
 		return &dataCenterClient{
@@ -166,6 +170,7 @@ func NewClient(cfg Config) (Client, error) {
 			authHeader:     authHeader,
 			httpClient:     httpClient,
 			limiter:        limiter,
+			throttle:       throttle,
 		}, nil
 	}
 
@@ -179,6 +184,7 @@ func NewClient(cfg Config) (Client, error) {
 		authHeader:     authHeader,
 		httpClient:     httpClient,
 		limiter:        limiter,
+		throttle:       throttle,
 	}, nil
 }
 
@@ -199,13 +205,17 @@ func jiraAuthHeader(cfg Config) (string, error) {
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(authString)), nil
 }
 
+// defaultCloudGatewayBase is the Atlassian gateway host prefix. The discovered
+// cloud ID is appended to form the per-tenant gateway base.
+const defaultCloudGatewayBase = "https://api.atlassian.com/ex/jira/"
+
 // cloudRouting holds the resolved base URLs for a Cloud client. All three
 // already include their respective REST path prefix so the caller can
 // concatenate sub-paths directly.
 type cloudRouting struct {
 	platformBase    string // .../rest/api/3
 	agileBase       string // .../rest/agile/1.0
-	assetsBase      string // legacy .../rest/assets/1.0 or gateway .../workspace/{id}/v1
+	assetsBase      string // .../jsm/assets/workspace/{id}/v1; empty when unavailable
 	serviceDeskBase string // .../rest/servicedeskapi
 	viaGateway      bool   // chosen routing, for logging only
 }
@@ -215,14 +225,12 @@ type cloudRouting struct {
 // gateway /myself after discovering the cloud ID. Any discovery or probe failure
 // falls back to the site URL, preserving legacy and private-network behavior.
 func cloudRoutingProbe(siteURL, authHeader string, httpClient *http.Client) cloudRouting {
-	siteRouting := cloudRouting{
-		platformBase:    siteURL + "/rest/api/3",
-		agileBase:       siteURL + "/rest/agile/1.0",
-		assetsBase:      siteURL + "/rest/assets/1.0",
-		serviceDeskBase: siteURL + "/rest/servicedeskapi",
-		viaGateway:      false,
-	}
+	return cloudRoutingProbeWithGateway(siteURL, authHeader, httpClient, defaultCloudGatewayBase)
+}
 
+// cloudRoutingProbeWithGateway is cloudRoutingProbe with the gateway prefix
+// injected so tests can point the probe at a local server.
+func cloudRoutingProbeWithGateway(siteURL, authHeader string, httpClient *http.Client, gatewayPrefix string) cloudRouting {
 	cloudID, err := discoverCloudID(siteURL, httpClient)
 	if err != nil || cloudID == "" {
 		slog.Debug("Jira cloud routing: tenant_info lookup failed, using site URL",
@@ -230,16 +238,16 @@ func cloudRoutingProbe(siteURL, authHeader string, httpClient *http.Client) clou
 			slog.String("site_url", siteURL),
 			slog.Any("error", err),
 		)
-		return siteRouting
+		return resolveSiteRouting(siteURL, authHeader, httpClient)
 	}
 
-	gatewayBase := "https://api.atlassian.com/ex/jira/" + cloudID
+	gatewayBase := gatewayPrefix + cloudID
 	if !gatewayAuthProbe(gatewayBase, authHeader, httpClient) {
 		slog.Info("Jira cloud routing: gateway probe declined, using site URL",
 			slog.String("component", "jira"),
 			slog.String("cloud_id", cloudID),
 		)
-		return siteRouting
+		return resolveSiteRouting(siteURL, authHeader, httpClient)
 	}
 
 	slog.Info("Jira cloud routing: using api.atlassian.com gateway (scoped token detected)",
@@ -259,6 +267,28 @@ func cloudRoutingProbe(siteURL, authHeader string, httpClient *http.Client) clou
 		assetsBase:      assetsBase,
 		serviceDeskBase: gatewayBase + "/rest/servicedeskapi",
 		viaGateway:      true,
+	}
+}
+
+// resolveSiteRouting builds the site-URL routing and resolves the supported
+// Assets workspace API. The legacy /rest/assets/1.0 navlist API is deprecated,
+// so an unresolved workspace reports Assets as unavailable (empty assetsBase)
+// instead of falling back to it.
+func resolveSiteRouting(siteURL, authHeader string, httpClient *http.Client) cloudRouting {
+	assetsBase, assetsErr := discoverAssetsWorkspaceBase(siteURL, authHeader, httpClient)
+	if assetsErr != nil {
+		slog.Info("Jira cloud routing: Assets workspace is unavailable",
+			slog.String("component", "jira"),
+			slog.String("base_url", siteURL),
+			slog.Any("error", assetsErr),
+		)
+	}
+	return cloudRouting{
+		platformBase:    siteURL + "/rest/api/3",
+		agileBase:       siteURL + "/rest/agile/1.0",
+		assetsBase:      assetsBase,
+		serviceDeskBase: siteURL + "/rest/servicedeskapi",
+		viaGateway:      false,
 	}
 }
 
@@ -368,7 +398,7 @@ func gatewayAuthProbe(gatewayBase, authHeader string, httpClient *http.Client) b
 // do performs an HTTP request with rate limiting
 func (c *cloudClient) do(ctx context.Context, method, reqURL string, body any) (*http.Response, error) {
 	return doReadOnlyJiraRequest(
-		ctx, c.httpClient, c.limiter, c.authHeader, method, reqURL, body,
+		ctx, c.httpClient, c.limiter, c.throttle, c.authHeader, method, reqURL, body,
 		c.retryAttempts, c.retryWait,
 	)
 }
@@ -379,10 +409,46 @@ const (
 	jiraRetryMaxDelay        = 5 * time.Second
 )
 
+// jiraThrottle is a per-client cooldown that every request observes. When one
+// request is rate limited with a Retry-After window, the whole client pauses
+// instead of each worker retrying in lockstep and extending the throttling.
+type jiraThrottle struct {
+	mu    sync.Mutex
+	until time.Time
+}
+
+// wait blocks until the current cooldown elapses.
+func (t *jiraThrottle) wait(ctx context.Context) error {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	until := t.until
+	t.mu.Unlock()
+	if delay := time.Until(until); delay > 0 {
+		return waitForJiraRetry(ctx, delay)
+	}
+	return nil
+}
+
+// pause extends the cooldown so it lasts at least delay from now. It never
+// shortens an existing cooldown.
+func (t *jiraThrottle) pause(delay time.Duration) {
+	if t == nil || delay <= 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if until := time.Now().Add(delay); until.After(t.until) {
+		t.until = until
+	}
+}
+
 func doReadOnlyJiraRequest(
 	ctx context.Context,
 	httpClient *http.Client,
 	limiter *rate.Limiter,
+	throttle *jiraThrottle,
 	authHeader string,
 	method string,
 	reqURL string,
@@ -401,17 +467,7 @@ func doReadOnlyJiraRequest(
 			return nil, err
 		}
 	}
-	if retryAttempts <= 0 {
-		retryAttempts = defaultJiraRetryAttempts
-	}
-	if retryWait == nil {
-		retryWait = waitForJiraRetry
-	}
-
-	for attempt := 0; ; attempt++ {
-		if err := limiter.Wait(ctx); err != nil {
-			return nil, err
-		}
+	return jiraRetryRequest(ctx, httpClient, limiter, throttle, retryAttempts, retryWait, func() (*http.Request, error) {
 		var bodyReader io.Reader
 		if bodyBytes != nil {
 			bodyReader = bytes.NewReader(bodyBytes)
@@ -425,15 +481,72 @@ func doReadOnlyJiraRequest(
 		if bodyBytes != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}
-		resp, err := httpClient.Do(req) //nolint:gosec // G704: URL constructed from configured Jira base URL
+		return req, nil
+	})
+}
+
+// jiraRetryRequest executes an idempotent read-only request with the shared
+// rate-limit, cooldown, and backoff contract. build must return a fresh request
+// for each attempt. Retryable responses are drained and closed before the next
+// attempt so the connection can be reused.
+func jiraRetryRequest(
+	ctx context.Context,
+	httpClient *http.Client,
+	limiter *rate.Limiter,
+	throttle *jiraThrottle,
+	retryAttempts int,
+	retryWait func(context.Context, time.Duration) error,
+	build func() (*http.Request, error),
+) (*http.Response, error) {
+	if retryAttempts <= 0 {
+		retryAttempts = defaultJiraRetryAttempts
+	}
+	if retryWait == nil {
+		retryWait = waitForJiraRetry
+	}
+
+	for attempt := 0; ; attempt++ {
+		if err := throttle.wait(ctx); err != nil {
+			return nil, err
+		}
+		if err := limiter.Wait(ctx); err != nil {
+			return nil, err
+		}
+		req, err := build()
 		if err != nil {
 			return nil, err
+		}
+		resp, err := httpClient.Do(req) //nolint:gosec // G704: URL constructed from configured Jira base URL
+		if err != nil {
+			if attempt >= retryAttempts {
+				return nil, err
+			}
+			delay := jiraBackoffDelay(attempt)
+			slog.Warn("Jira request failed; retrying",
+				slog.String("component", "jira"),
+				slog.Int("attempt", attempt+1),
+				slog.Duration("delay", delay),
+				slog.Any("error", err))
+			if waitErr := retryWait(ctx, delay); waitErr != nil {
+				return nil, waitErr
+			}
+			continue
 		}
 		if !jiraResponseIsRetryable(resp.StatusCode) || attempt >= retryAttempts {
 			return resp, nil
 		}
 
 		delay := jiraRetryDelay(resp.Header.Get("Retry-After"), attempt, time.Now())
+		// Pause every worker, not just this one, so a throttled import backs off
+		// as a whole instead of stampeding the rate limit.
+		throttle.pause(delay)
+		// Make upstream throttling diagnosable: without this a slow import cannot
+		// be told apart from a rate-limited one.
+		slog.Warn("Jira request throttled; retrying",
+			slog.String("component", "jira"),
+			slog.Int("status", resp.StatusCode),
+			slog.Int("attempt", attempt+1),
+			slog.Duration("delay", delay))
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		_ = resp.Body.Close()
 		if err := retryWait(ctx, delay); err != nil {
@@ -442,8 +555,19 @@ func doReadOnlyJiraRequest(
 	}
 }
 
+// jiraResponseIsRetryable reports whether a response status is transient.
+// Every Jira request the importer makes is read-only, so retrying is safe.
 func jiraResponseIsRetryable(status int) bool {
-	return status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable
+	switch status {
+	case http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
 }
 
 func jiraRetryDelay(retryAfter string, attempt int, now time.Time) time.Duration {
@@ -457,11 +581,22 @@ func jiraRetryDelay(retryAfter string, attempt int, now time.Time) time.Duration
 		}
 		return 0
 	}
-	delay := jiraRetryBaseDelay * time.Duration(1<<min(attempt, 4))
-	if delay > jiraRetryMaxDelay {
-		return jiraRetryMaxDelay
+	return jiraBackoffDelay(attempt)
+}
+
+// jiraBackoffDelay returns an exponential backoff for the attempt with equal
+// jitter, so concurrent workers do not retry in lockstep when the server does
+// not send Retry-After.
+func jiraBackoffDelay(attempt int) time.Duration {
+	base := jiraRetryBaseDelay * time.Duration(1<<min(attempt, 4))
+	if base > jiraRetryMaxDelay {
+		base = jiraRetryMaxDelay
 	}
-	return delay
+	half := base / 2
+	if half <= 0 {
+		return base
+	}
+	return half + time.Duration(rand.Int64N(int64(half))) //nolint:gosec // G404: retry jitter, not a security decision
 }
 
 func waitForJiraRetry(ctx context.Context, delay time.Duration) error {
@@ -491,7 +626,6 @@ func validateReadOnlyRequest(method, reqURL string) error {
 			"/rest/api/3/search/jql",
 			"/rest/api/3/issue/bulkfetch",
 			"/rest/api/3/workflows",
-			"/rest/assets/1.0/object/navlist/aql",
 		} {
 			if strings.HasSuffix(parsed.Path, suffix) {
 				return nil
@@ -583,13 +717,11 @@ func (c *cloudClient) TestConnection(ctx context.Context) (*JiraInstanceInfo, er
 // Project Methods
 // ================================================================
 
-// ListProjects lists all projects accessible to the user
+// ListProjects lists all projects accessible to the user. Jira Cloud removed
+// the legacy unpaginated GET /project endpoint, so walk the supported paginated
+// GET /project/search instead. Data Center keeps its deployment-specific call.
 func (c *cloudClient) ListProjects(ctx context.Context) ([]JiraProject, error) {
-	var projects []JiraProject
-	if err := jiraGetJSON(ctx, c, c.baseURL+"/project?expand=description", &projects); err != nil {
-		return nil, err
-	}
-	return projects, nil
+	return cloudPageValues[JiraProject](ctx, c, c.baseURL+"/project/search?expand=description")
 }
 
 // GetProject gets details about a specific project
@@ -1536,7 +1668,7 @@ func (c *cloudClient) GetBoardSprints(ctx context.Context, boardID int) (*Sprint
 
 // DownloadAttachment downloads an attachment and returns the reader and content type
 func (c *cloudClient) DownloadAttachment(ctx context.Context, attachmentURL string) (io.ReadCloser, string, error) {
-	return jiraDownloadAttachment(ctx, c.httpClient, c.limiter, c.authHeader, attachmentURL)
+	return jiraDownloadAttachment(ctx, c.httpClient, c.limiter, c.throttle, c.authHeader, attachmentURL)
 }
 
 // ================================================================
@@ -1580,35 +1712,14 @@ func (c *cloudClient) GetUserEmail(ctx context.Context, accountID string) (strin
 // Jira Assets (Insight) Methods
 // ================================================================
 
-// ListObjectSchemas lists all object schemas in Assets
+// ListObjectSchemas lists all object schemas in Assets. Cloud uses the
+// workspace API exclusively; an unresolved workspace reports Assets as
+// unavailable rather than falling back to the deprecated legacy endpoint.
 func (c *cloudClient) ListObjectSchemas(ctx context.Context) ([]AssetObjectSchema, error) {
 	if c.assetsURL == "" {
 		return nil, ErrAssetsNotAvailable
 	}
-	if strings.Contains(c.assetsURL, "/jsm/assets/workspace/") {
-		return c.listCurrentObjectSchemas(ctx)
-	}
-
-	resp, err := c.do(ctx, http.MethodGet, c.assetsURL+"/objectschema/list", nil)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, ErrAssetsNotAvailable
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, jiraErrorFromResponse(resp)
-	}
-
-	var result struct {
-		ObjectSchemas []AssetObjectSchema `json:"objectschemas"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
-	}
-	return result.ObjectSchemas, nil
+	return c.listCurrentObjectSchemas(ctx)
 }
 
 func (c *cloudClient) listCurrentObjectSchemas(ctx context.Context) ([]AssetObjectSchema, error) {
@@ -1663,6 +1774,9 @@ func (c *cloudClient) listCurrentObjectSchemas(ctx context.Context) ([]AssetObje
 
 // GetObjectSchema gets a single object schema by ID
 func (c *cloudClient) GetObjectSchema(ctx context.Context, schemaID string) (*AssetObjectSchema, error) {
+	if c.assetsURL == "" {
+		return nil, ErrAssetsNotAvailable
+	}
 	var schema AssetObjectSchema
 	if err := jiraGetJSON(ctx, c, c.assetsURL+"/objectschema/"+url.PathEscape(schemaID), &schema); err != nil {
 		return nil, err
@@ -1672,6 +1786,9 @@ func (c *cloudClient) GetObjectSchema(ctx context.Context, schemaID string) (*As
 
 // ListObjectTypes lists all object types in a schema
 func (c *cloudClient) ListObjectTypes(ctx context.Context, schemaID string) ([]AssetObjectType, error) {
+	if c.assetsURL == "" {
+		return nil, ErrAssetsNotAvailable
+	}
 	var types []AssetObjectType
 	if err := jiraGetJSON(ctx, c, c.assetsURL+"/objectschema/"+url.PathEscape(schemaID)+"/objecttypes/flat", &types); err != nil {
 		return nil, err
@@ -1681,6 +1798,9 @@ func (c *cloudClient) ListObjectTypes(ctx context.Context, schemaID string) ([]A
 
 // GetObjectTypeAttributes gets all attributes for an object type
 func (c *cloudClient) GetObjectTypeAttributes(ctx context.Context, objectTypeID string) ([]AssetObjectAttribute, error) {
+	if c.assetsURL == "" {
+		return nil, ErrAssetsNotAvailable
+	}
 	var attrs []AssetObjectAttribute
 	if err := jiraGetJSON(ctx, c, c.assetsURL+"/objecttype/"+url.PathEscape(objectTypeID)+"/attributes", &attrs); err != nil {
 		return nil, err
@@ -1689,31 +1809,14 @@ func (c *cloudClient) GetObjectTypeAttributes(ctx context.Context, objectTypeID 
 	return attrs, nil
 }
 
-// SearchObjects searches for objects in a schema
+// SearchObjects searches for objects in a schema. Cloud uses the workspace
+// object/aql API exclusively; an unresolved workspace reports Assets as
+// unavailable rather than calling the deprecated legacy navlist endpoint.
 func (c *cloudClient) SearchObjects(ctx context.Context, opts ObjectSearchOptions) (*ObjectSearchResult, error) {
-	if strings.Contains(c.assetsURL, "/jsm/assets/workspace/") {
-		return c.searchCurrentObjects(ctx, opts)
+	if c.assetsURL == "" {
+		return nil, ErrAssetsNotAvailable
 	}
-
-	// Build the request body for object search
-	reqBody := map[string]any{
-		"objectSchemaId":    opts.ObjectSchemaID,
-		"page":              opts.Page,
-		"resultsPerPage":    opts.PageSize,
-		"includeAttributes": opts.IncludeAttributes,
-	}
-	if opts.ObjectTypeID != "" {
-		reqBody["objectTypeId"] = opts.ObjectTypeID
-	}
-	if opts.IQL != "" {
-		reqBody["iql"] = opts.IQL
-	}
-
-	var result ObjectSearchResult
-	if err := jiraRequestJSON(ctx, c, http.MethodPost, c.assetsURL+"/object/navlist/aql", reqBody, &result); err != nil {
-		return nil, err
-	}
-	return &result, nil
+	return c.searchCurrentObjects(ctx, opts)
 }
 
 func (c *cloudClient) searchCurrentObjects(ctx context.Context, opts ObjectSearchOptions) (*ObjectSearchResult, error) {
@@ -1750,13 +1853,25 @@ func (c *cloudClient) searchCurrentObjects(ctx context.Context, opts ObjectSearc
 		StartAt              int                    `json:"startAt"`
 		Total                int                    `json:"total"`
 		IsLast               bool                   `json:"isLast"`
-		HasMoreResults       bool                   `json:"hasMoreResults"`
+		HasMoreResults       *bool                  `json:"hasMoreResults"`
 		Last                 bool                   `json:"last"`
 	}
 	if err := jiraRequestJSON(ctx, c, http.MethodPost, c.assetsURL+"/object/aql?"+query.Encode(), reqBody, &current); err != nil {
 		return nil, err
 	}
 	normalizeAssetDefaultTypes(current.ObjectTypeAttributes)
+
+	// hasMoreResults is optional in the Assets response. Treat an absent flag
+	// as unknown rather than "no more": negating a missing field previously
+	// forced IsLast and silently truncated imports after the first page.
+	isLast := current.IsLast || current.Last
+	if current.HasMoreResults != nil && !*current.HasMoreResults {
+		isLast = true
+	}
+	if current.Total > 0 && current.StartAt+len(current.Values) >= current.Total {
+		isLast = true
+	}
+
 	return &ObjectSearchResult{
 		ObjectEntries:        current.Values,
 		ObjectTypeAttributes: current.ObjectTypeAttributes,
@@ -1765,7 +1880,7 @@ func (c *cloudClient) searchCurrentObjects(ctx context.Context, opts ObjectSearc
 		TotalFilterCount:     current.Total,
 		StartIndex:           current.StartAt,
 		ToIndex:              current.StartAt + len(current.Values),
-		IsLast:               current.IsLast || current.Last || !current.HasMoreResults,
+		IsLast:               isLast,
 	}, nil
 }
 

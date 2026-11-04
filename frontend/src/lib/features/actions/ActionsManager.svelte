@@ -6,7 +6,10 @@
   import Button from '../../components/Button.svelte';
   import EmptyState from '../../components/EmptyState.svelte';
   import TestActionModal from './TestActionModal.svelte';
-  import { Plus, Play, Zap, Sparkles } from '@lucide/svelte';
+  import Plus from '@lucide/svelte/icons/plus';
+  import Play from '@lucide/svelte/icons/play';
+  import Zap from '@lucide/svelte/icons/zap';
+  import IconMessageChatbot from '@tabler/icons-svelte-runes/icons/message-chatbot';
   import PageHeader from '../../layout/PageHeader.svelte';
   import Badge from '../../components/Badge.svelte';
 
@@ -41,6 +44,7 @@
   function getTriggerTypeLabel(triggerType) {
     const labels = {
       'status_transition': t('actions.trigger.statusTransition'),
+      'status_loop': t('actions.trigger.statusLoop'),
       'item_created': t('actions.trigger.itemCreated'),
       'sla_breached': t('actions.trigger.slaBreached'),
       'sla_warning': t('actions.trigger.slaWarning'),
@@ -95,7 +99,7 @@
       {#if onfromtemplate}
         <Button
           variant="ghost"
-          icon={Sparkles}
+          icon={IconMessageChatbot}
           dataTestid="actions-from-template"
           onclick={handleFromTemplate}
         >

@@ -1,5 +1,5 @@
 <script>
-  import { Calendar } from '@lucide/svelte';
+  import Calendar from '@lucide/svelte/icons/calendar';
   import ItemPicker from '../../pickers/ItemPicker.svelte';
   import { iterationPickerConfig } from '../../pickers/pickerConfigs.js';
   import IterationCellValue from './IterationCellValue.svelte';
@@ -35,9 +35,13 @@
       {#if iteration}
         <IterationCellValue {iteration} interactive />
       {:else}
-        <span class="flex items-center gap-2 text-sm cursor-pointer" style="color: var(--ds-text-subtle);">
-          <Calendar class="w-4 h-4" />
-          {selectPrompt}
+        <span
+          class="flex items-center gap-2 text-sm cursor-pointer whitespace-nowrap"
+          style="color: var(--ds-text-subtle);"
+          data-testid="iteration-cell-display"
+        >
+          <Calendar class="w-4 h-4 flex-shrink-0" />
+          <span data-testid="iteration-cell-value">{selectPrompt}</span>
         </span>
       {/if}
     {/snippet}

@@ -119,25 +119,6 @@ export default {
       "missingHistory": "{count} 当前完成的项目已被排除，因为缺少完成历史记录。"
     }
   },
-  "users": {
-    "labels": {
-      "tabLabel": "标签",
-      "tabDescription": "管理您的个人标签。",
-      "searchPlaceholder": "搜索标签",
-      "new": "新标签",
-      "createTitle": "创建标签",
-      "editTitle": "编辑标签",
-      "namePlaceholder": "例如紧急",
-      "mine": "我的标签",
-      "empty": "还没有标签",
-      "emptyHint": "创建您的第一个标签来组织项目。",
-      "created": "已创建标签",
-      "updated": "已更新标签",
-      "deleted": "已删除标签",
-      "deleteTitle": "删除标签？",
-      "deleteMessage": "删除“{name}”？这会将其从所附加的任何项目中删除。"
-    }
-  },
   "channel": {
     "channelConfigCorrupted": "通道配置已损坏，无法安全编辑。请联系管理员。",
     "portalSlugInvalid": "Slug 必须是 1–40 个小写字母、数字或连字符，并且不能以连字符开头或结尾，也不能包含连续的连字符。",
@@ -177,6 +158,7 @@ export default {
   "portal": {
     "selectWorkspace": "选择工作区",
     "workspaceFieldResolution": "工作区字段解析",
+    "bindingLocked": "创建后固定。如需更改，请删除并重新创建请求类型。",
     "notFound": "找不到门户",
     "createAssetReport": "创建资产报告",
     "editAssetReport": "编辑资产报告",
@@ -366,11 +348,6 @@ export default {
     }
   },
   "testing": {
-    "generateWithAI": "使用 AI 生成",
-    "overwriteDescriptionTitle": "覆盖描述？",
-    "overwriteDescriptionConfirm": "用 AI 生成的摘要替换现有描述？",
-    "overwrite": "覆盖",
-    "generateFailed": "无法生成描述。",
     "actualResult": "实际结果",
     "editTestPlan": "编辑测试计划",
     "execute": "执行",
@@ -434,7 +411,8 @@ export default {
   },
   "widgets": {
     "chart": {
-      "noDataAvailable": "无可用数据"
+      "noDataAvailable": "无可用数据",
+      "otherSlices": "其他（另有 {count} 项）",
     },
     "completionChart": {
       "title": "完成图表"
@@ -725,6 +703,37 @@ export default {
     "agentAuthored": "由 AI 代理编写",
     "agentOwnedBy": "由 {owner} 拥有的 AI 代理"
   },
+  "boardControls": {
+    "milestoneSwimlanes": "按里程碑分组卡片",
+    "milestoneSwimlanesDescription": "按里程碑对卡片进行分组",
+    "configureMilestones": "配置里程碑泳道",
+    "configureMilestonesDescription": "选择全局里程碑和已完成里程碑",
+    "showCompletedMilestones": "显示已完成的里程碑",
+    "showCompletedMilestonesHint": "已隐藏的已完成里程碑上的卡片仍会显示在统一的已完成里程碑泳道中。",
+    "showOpenFromCompletedMilestones": "显示已完成里程碑中的未解决事项",
+    "showOpenFromCompletedMilestonesHint": "将仍分配给已完成或已取消里程碑的未解决事项集中到专用泳道，以便将其移到正确的里程碑。",
+    "openFromCompletedMilestones": "已完成里程碑中的未解决事项",
+    "globalMilestones": "全局里程碑",
+    "globalMilestonesSelected": "已选择 {count} 个",
+    "globalMilestonesHint": "全局里程碑在所有工作区之间共享；只有选中的里程碑会保留空泳道。带有卡片的里程碑始终显示。",
+    "noGlobalMilestones": "没有可用的全局里程碑。",
+    "completedMilestones": "已完成的里程碑",
+    "milestoneSwimlanesSaved": "里程碑泳道设置已保存",
+    "completedLabel": "已完成：{value}",
+    "completedAll": "显示全部",
+    "completedAllDescription": "加载所有已完成事项",
+    "completedLastDay": "最近一天",
+    "completedLastDayDescription": "最近 24 小时内有活动的已完成事项",
+    "completedLastWeek": "最近一周",
+    "completedLastWeekDescription": "最近 7 天内有活动的已完成事项",
+    "completedLimit": "限制为",
+    "completedLimitDescription": "仅加载最新的已完成事项",
+    "completedNone": "隐藏已完成",
+    "completedNoneDescription": "不在此看板加载已完成工作",
+    "completedLatestFifty": "最近 50 项",
+    "completedCustom": "自定义",
+    "completedVisibilitySaved": "已完成工作可见性已保存"
+  },
   "collections": {
     "selectType": "选择类型",
     "queryPlaceholder": "示例：workspace = \"My Project\" AND status = \"open\"",
@@ -737,6 +746,26 @@ export default {
     "builderDisabledDesc": "单击查询栏中的“重置为构建器”以重新启用这些字段。",
     "builderRecoveryDropped": "查询的某些部分（例如 NOT、OR 组或不受支持的字段）无法重建并被删除。",
     "publicBoard": "公共板",
+    "publish": "发布",
+    "publicBoardSharing": {
+      "title": "共享公开板",
+      "subtitle": "将此集合发布为只读看板。",
+      "enable": "启用公开共享",
+      "enableHint": "任何拥有链接的人无需登录即可查看看板。",
+      "boardUrl": "看板 URL",
+      "slugHint": "使用 3–64 个小写字母、数字和连字符。",
+      "copyLink": "复制公开链接",
+      "copied": "已复制！",
+      "openBoard": "打开看板",
+      "milestoneSwimlanes": "按里程碑分组卡片",
+      "milestoneSwimlanesHint": "公开访客将看到里程碑泳道，但无法切换分组或拖动卡片。",
+      "scopeNote": "集合查询必须包含 workspaceKey 范围。您必须是所有引用工作区的管理员。",
+      "save": "保存共享",
+      "disable": "停用共享",
+      "saveError": "无法保存公开共享设置。"
+    },
+    "milestoneLaneHiddenCompletedHint": "已完成里程碑上的卡片",
+    "milestoneLaneOpenFromCompletedHint": "已完成里程碑中的未解决事项",
     "transition_failed": "状态转换失败。董事会已经刷新。",
     "manual_sort_unavailable_title": "无法手动排序",
     "manual_sort_unavailable": "切换到排名模式以手动排列卡片。",

@@ -16,10 +16,18 @@ func registerPreferenceRoutes(builder *routeBuilder, preferences preferencesAppl
 }
 
 type preferencesDTO struct {
-	ColorMode string                    `json:"color_mode"`
-	ThemeID   *int                      `json:"theme_id"`
-	Theme     *models.Theme             `json:"theme"`
-	TUI       models.UserTUIPreferences `json:"tui"`
+	ColorMode    string                    `json:"color_mode"`
+	ThemeID      *int                      `json:"theme_id"`
+	Theme        *models.Theme             `json:"theme"`
+	TUI          models.UserTUIPreferences `json:"tui"`
+	ViewState    map[string]map[string]any `json:"view_state"`
+	SavedFilters map[string]any            `json:"saved_filters"`
+	// DueDateRemindersEnabled and DueDateReminderDays drive the per-user
+	// automatic reminders for upcoming due items.
+	DueDateRemindersEnabled bool `json:"due_date_reminders_enabled"`
+	DueDateReminderDays     int  `json:"due_date_reminder_days"`
+	// CommentSortOrder is the user's preferred comment thread order.
+	CommentSortOrder string `json:"comment_sort_order"`
 }
 
 type tuiPreferencesPatch struct {
@@ -29,9 +37,16 @@ type tuiPreferencesPatch struct {
 }
 
 type preferencesPatchRequest struct {
-	ColorMode Optional[string]              `json:"color_mode"`
-	ThemeID   Optional[int]                 `json:"theme_id"`
-	TUI       Optional[tuiPreferencesPatch] `json:"tui"`
+	ColorMode    Optional[string]                    `json:"color_mode"`
+	ThemeID      Optional[int]                       `json:"theme_id"`
+	TUI          Optional[tuiPreferencesPatch]       `json:"tui"`
+	ViewState    Optional[map[string]map[string]any] `json:"view_state"`
+	SavedFilters Optional[map[string]any]            `json:"saved_filters"`
+
+	DueDateRemindersEnabled Optional[bool] `json:"due_date_reminders_enabled"`
+	DueDateReminderDays     Optional[int]  `json:"due_date_reminder_days"`
+
+	CommentSortOrder Optional[string] `json:"comment_sort_order"`
 }
 
 func getPreferences(preferences preferencesApplication) readOperation[preferencesDTO] {
@@ -64,6 +79,30 @@ func updatePreferences(preferences preferencesApplication) jsonOperation[prefere
 		if input.ThemeID.Set && !input.ThemeID.Null {
 			patch.ThemeID = &input.ThemeID.Value
 		}
+		if input.ViewState.Set {
+			patch.ViewStateSet = true
+			if !input.ViewState.Null {
+				patch.ViewState = input.ViewState.Value
+			}
+		}
+		if input.SavedFilters.Set {
+			patch.SavedFiltersSet = true
+			if !input.SavedFilters.Null {
+				patch.SavedFilters = input.SavedFilters.Value
+			}
+		}
+		if input.DueDateRemindersEnabled.Set {
+			patch.DueDateRemindersEnabledSet = true
+			patch.DueDateRemindersEnabled = input.DueDateRemindersEnabled.Value
+		}
+		if input.DueDateReminderDays.Set {
+			patch.DueDateReminderDaysSet = true
+			patch.DueDateReminderDays = input.DueDateReminderDays.Value
+		}
+		if input.CommentSortOrder.Set {
+			patch.CommentSortOrderSet = true
+			patch.CommentSortOrder = input.CommentSortOrder.Value
+		}
 		if input.TUI.Set {
 			if input.TUI.Null {
 				patch.TUIThemeSet = true
@@ -93,9 +132,21 @@ func updatePreferences(preferences preferencesApplication) jsonOperation[prefere
 }
 
 func preferencesFromSnapshot(snapshot services.UserPreferencesSnapshot) preferencesDTO {
+	viewState := snapshot.ViewState
+	if viewState == nil {
+		viewState = map[string]map[string]any{}
+	}
+	savedFilters := snapshot.SavedFilters
+	if savedFilters == nil {
+		savedFilters = map[string]any{}
+	}
 	return preferencesDTO{
 		ColorMode: snapshot.ColorMode, ThemeID: snapshot.ThemeID,
 		Theme: snapshot.Theme, TUI: snapshot.TUI,
+		ViewState: viewState, SavedFilters: savedFilters,
+		DueDateRemindersEnabled: snapshot.DueDateRemindersEnabled,
+		DueDateReminderDays:     snapshot.DueDateReminderDays,
+		CommentSortOrder:        snapshot.CommentSortOrder,
 	}
 }
 
@@ -103,6 +154,12 @@ func preferenceMutationError(err error) error {
 	switch {
 	case errors.Is(err, services.ErrInvalidColorMode):
 		return newError(http.StatusBadRequest, "invalid_request", "color_mode must be light, dark, or system")
+	case errors.Is(err, services.ErrInvalidReminderDays):
+		return newError(http.StatusBadRequest, "invalid_request", err.Error())
+	case errors.Is(err, services.ErrInvalidCommentSortOrder):
+		return newError(http.StatusBadRequest, "invalid_request", err.Error())
+	case errors.Is(err, services.ErrPreferencesTooLarge):
+		return newError(http.StatusRequestEntityTooLarge, "payload_too_large", "Preferences exceed the storage limit")
 	case errors.Is(err, repository.ErrNotFound), errors.Is(err, sql.ErrNoRows):
 		return newError(http.StatusNotFound, "not_found", "Theme was not found")
 	default:
