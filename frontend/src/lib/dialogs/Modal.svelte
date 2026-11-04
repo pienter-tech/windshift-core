@@ -1,4 +1,10 @@
+<script module>
+  // Context key through which a ModalHeader names its dialog.
+  export const modalTitleKey = Symbol('modal-title');
+</script>
+
 <script>
+  import { onDestroy, setContext, untrack } from 'svelte';
   import { getShortcut, matchesShortcut, getDisplayString } from '../utils/keyboardShortcuts.js';
   import { portal } from '../actions/portal.js';
 
@@ -19,6 +25,22 @@
     dataTestid = undefined,
     children
   } = $props();
+
+  // A ModalHeader inside this dialog registers through context, takes this
+  // id for its heading, and so gives the dialog its accessible name
+  // (aria-labelledby). The id is per instance, so stacked dialogs don't clash.
+  const uid = $props.id();
+  const titleId = `${uid}-title`;
+  let titleCount = $state(0);
+  setContext(modalTitleKey, {
+    id: titleId,
+    // Called from the header's effect; untracked so that effect doesn't
+    // depend on the count it changes.
+    register() {
+      untrack(() => (titleCount += 1));
+      return () => untrack(() => (titleCount -= 1));
+    }
+  });
 
   let backdropElement = $state(null);
   let modalContentElement = $state(null);
@@ -124,6 +146,28 @@
     });
   }
 
+  // Return focus to the control that opened the dialog once it closes
+  // (WCORE-63). The opener is whatever had focus when the dialog opened; this
+  // pre-effect runs before the dialog moves focus into itself. The restore
+  // waits a microtask so the dialog is gone, and only runs when focus fell
+  // to <body> with it: a caller that already moved focus elsewhere keeps
+  // it. It also skips an opener that left the document and a close caused
+  // by navigating to another page.
+  $effect.pre(() => {
+    if (!isOpen || inline) return;
+    const opener = /** @type {HTMLElement | null} */ (document.activeElement);
+    const path = location.pathname;
+    return () => {
+      queueMicrotask(() => {
+        if (!opener || opener === document.body || !opener.isConnected) return;
+        if (location.pathname !== path) return;
+        const active = document.activeElement;
+        if (active && active !== document.body) return;
+        opener.focus();
+      });
+    };
+  });
+
   $effect(() => {
     if (!isOpen || inline) return;
     const press = () => {
@@ -141,11 +185,37 @@
     };
   });
 
+  // Auto-focus runs once per open. The effect below re-runs whenever the modal
+  // content is (re)mounted, so a timer scheduled inside it would keep resetting
+  // and could fire late — after the user has opened a dropdown — stealing focus
+  // back to the first field and scrolling the modal away from the control.
+  let autoFocusTimer = null;
+
+  onDestroy(() => {
+    if (autoFocusTimer !== null) clearTimeout(autoFocusTimer);
+  });
+
   $effect(() => {
-    if (isOpen && modalContentElement && backdropElement) {
-      const timer = setTimeout(() => {
+    if (!isOpen) {
+      if (autoFocusTimer !== null) {
+        clearTimeout(autoFocusTimer);
+        autoFocusTimer = null;
+      }
+      return;
+    }
+    if (!modalContentElement || !backdropElement) return;
+
+    if (autoFocusTimer === null) {
+      autoFocusTimer = setTimeout(() => {
+        autoFocusTimer = null;
+        if (!modalContentElement || !backdropElement) return;
         detectTextarea();
         if (modalContentElement.contains(document.activeElement)) return;
+        // Never steal focus from an open portaled overlay (select listbox,
+        // menu, nested dialog). Those render outside the modal content, so the
+        // containment check above cannot see them.
+        const active = document.activeElement;
+        if (active && active !== document.body && active.closest?.('[data-escapee]')) return;
         backdropElement.focus();
         if (autoFocus) {
           const focusable = modalContentElement.querySelector(
@@ -156,15 +226,13 @@
           }
         }
       }, 100);
-      // A lazily-mounted editor may appear after the initial detect — keep the
-      // submit hint in sync as the modal's subtree changes.
-      const observer = new MutationObserver(detectTextarea);
-      observer.observe(modalContentElement, { childList: true, subtree: true });
-      return () => {
-        clearTimeout(timer);
-        observer.disconnect();
-      };
     }
+
+    // A lazily-mounted editor may appear after the initial detect — keep the
+    // submit hint in sync as the modal's subtree changes.
+    const observer = new MutationObserver(detectTextarea);
+    observer.observe(modalContentElement, { childList: true, subtree: true });
+    return () => observer.disconnect();
   });
 </script>
 
@@ -191,6 +259,7 @@
     onfocusout={handleFocusOut}
     role="dialog"
     aria-modal="true"
+    aria-labelledby={titleCount > 0 ? titleId : undefined}
     data-testid={dataTestid}
   >
     <div

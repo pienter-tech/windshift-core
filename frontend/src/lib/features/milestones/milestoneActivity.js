@@ -1,6 +1,6 @@
 import { itemUrl } from '../../utils/urls.js';
 
-// Milestone Activity (WCORE-21): turns one feed entry from
+// Milestone Activity: turns one feed entry from
 // GET /milestones/{id}/activity into display parts. The component renders
 // `actor lead [target link] trail`.
 

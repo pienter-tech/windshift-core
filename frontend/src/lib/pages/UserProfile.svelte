@@ -1,18 +1,26 @@
 <script>
-	import { Bot, CalendarDays, Camera, GitBranch, Globe, Plane, Tag, User } from '@lucide/svelte';
-	import { api } from '../api.js';
+	import Bot from '@lucide/svelte/icons/bot';
+	import Bell from '@lucide/svelte/icons/bell';
+	import CalendarDays from '@lucide/svelte/icons/calendar-days';
+	import Camera from '@lucide/svelte/icons/camera';
+	import GitBranch from '@lucide/svelte/icons/git-branch';
+	import Globe from '@lucide/svelte/icons/globe';
+	import Plane from '@lucide/svelte/icons/plane';
+	import User from '@lucide/svelte/icons/user';
+	import { getUser } from '../api/users.js';
 	import AlertBox from '../components/AlertBox.svelte';
 	import Badge from '../components/Badge.svelte';
 	import Tabs from '../components/Tabs.svelte';
-	import PersonalLabelManager from '../features/labels/PersonalLabelManager.svelte';
 	import PageHeader from '../layout/PageHeader.svelte';
 	import LeavePeriods from '../profile/LeavePeriods.svelte';
 	import ProfileAgentsTab from '../profile/ProfileAgentsTab.svelte';
 	import ProfileAvatarTab from '../profile/ProfileAvatarTab.svelte';
 	import ProfileCalendarTab from '../profile/ProfileCalendarTab.svelte';
+	import ProfileNotificationsTab from '../profile/ProfileNotificationsTab.svelte';
 	import ProfileRegionalSettingsTab from '../profile/ProfileRegionalSettingsTab.svelte';
 	import ConnectedAccountsTab from '../settings/ConnectedAccountsTab.svelte';
-	import { attachmentStatus, authStore } from '../stores';
+	import { attachmentStatus } from '../stores/attachmentStatus.svelte.js';
+	import { authStore } from '../stores/auth.svelte.js';
 	import { t } from '../stores/i18n.svelte.js';
 
 	let user = $state(null);
@@ -28,18 +36,18 @@
 			: []),
 		{ id: 'regional-settings', label: t('users.regionalSettings'), icon: Globe },
 		{
+			id: 'notifications',
+			label: t('users.notificationsTab'),
+			icon: Bell,
+			testid: 'profile-tab-notifications'
+		},
+		{
 			id: 'agents',
 			label: t('workspaceSettings.tabs.codingAgents'),
 			icon: Bot,
 			testid: 'profile-tab-agents'
 		},
 		{ id: 'connected-accounts', label: t('users.connectedAccountsTab'), icon: GitBranch },
-		{
-			id: 'labels',
-			label: t('users.labels.tabLabel') || 'Personal labels',
-			icon: Tag,
-			testid: 'profile-tab-labels'
-		},
 		{ id: 'calendar-integration', label: t('users.calendarIntegration'), icon: CalendarDays },
 		{ id: 'leave', label: t('profile.leave.tabLabel'), icon: Plane }
 	]);
@@ -66,7 +74,7 @@
 		const version = ++loadVersion;
 		error = '';
 		try {
-			const loadedUser = await api.getUser(userId);
+			const loadedUser = await getUser(userId);
 			if (version === loadVersion && userId === currentUserId) {
 				user = loadedUser;
 			}
@@ -156,6 +164,9 @@
 		<div class:hidden={activeTab !== 'calendar-integration'}>
 			<ProfileCalendarTab />
 		</div>
+		<div class:hidden={activeTab !== 'notifications'}>
+			<ProfileNotificationsTab />
+		</div>
 
 		{#if activeTab === 'connected-accounts'}
 			<div class="mb-6">
@@ -168,17 +179,6 @@
 				</p>
 			</div>
 			<ConnectedAccountsTab />
-		{:else if activeTab === 'labels'}
-			<div class="mb-6">
-				<h2 class="text-lg font-medium flex items-center gap-2" style="color: var(--ds-text);">
-					<Tag class="h-5 w-5" style="color: var(--ds-text-subtle);" />
-					{t('users.labels.tabLabel')}
-				</h2>
-				<p class="text-sm" style="color: var(--ds-text-subtle);">
-					{t('users.labels.tabDescription')}
-				</p>
-			</div>
-			<PersonalLabelManager />
 		{:else if activeTab === 'leave'}
 			<LeavePeriods />
 		{/if}

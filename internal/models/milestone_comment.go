@@ -2,7 +2,7 @@ package models
 
 import "time"
 
-// MilestoneComment is one Markdown comment on a milestone (WCORE-20). It is
+// MilestoneComment is one Markdown comment on a milestone. It is
 // separate from the item-only Comment so milestone discussion stays out of
 // item events, notifications, mentions, and webhooks.
 type MilestoneComment struct {

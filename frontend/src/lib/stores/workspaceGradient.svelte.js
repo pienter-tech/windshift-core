@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store';
-import { api } from '../api.js';
+import { workspaces } from '../api/workspaces.js';
 import { gradients } from '../utils/gradients.js';
 import { workspaceDataStore } from './workspaceDataStore.svelte.js';
 
@@ -80,7 +80,7 @@ export async function loadWorkspaceGradient(workspaceId, { force = false } = {})
 }
 
 async function loadWorkspaceLayout(workspaceId, force) {
-  if (force) return api.workspaces.getHomepageLayout(workspaceId);
+  if (force) return workspaces.getHomepageLayout(workspaceId);
   await workspaceDataStore.initialize(workspaceId);
   const expectedID = Number.parseInt(String(workspaceId), 10);
   if (
@@ -92,7 +92,7 @@ async function loadWorkspaceLayout(workspaceId, force) {
   }
   // Keep standalone/error recovery behavior when the aggregate snapshot could
   // not initialize. A healthy workspace route never reaches this fallback.
-  return api.workspaces.getHomepageLayout(workspaceId);
+  return workspaces.getHomepageLayout(workspaceId);
 }
 
 export function hydrateWorkspaceGradientLayout(workspaceId, layout) {
@@ -310,6 +310,7 @@ export function useGradientStyles() {
           '--ctx-surface-raised: var(--ds-glass-bg)',
           '--ctx-surface-overlay: var(--ds-glass-bg)',
           '--ctx-surface-info: var(--ds-glass-bg)',
+          '--ctx-badge-bg: var(--ds-glass-bg)',
           '--ctx-border: var(--ds-glass-border)',
           '--ctx-border-focused: var(--ds-glass-border)',
           '--ctx-text: white',
@@ -327,6 +328,7 @@ export function useGradientStyles() {
         '--ctx-surface-raised: var(--ds-surface-raised)',
         '--ctx-surface-overlay: var(--ds-surface-overlay)',
         '--ctx-surface-info: var(--ds-surface-information)',
+        '--ctx-badge-bg: var(--ds-background-neutral)',
         '--ctx-border: var(--ds-border)',
         '--ctx-border-focused: var(--ds-border-focused)',
         '--ctx-text: var(--ds-text)',
@@ -334,8 +336,8 @@ export function useGradientStyles() {
         '--ctx-text-subtlest: var(--ds-text-subtlest)',
         '--ctx-text-interactive: var(--ds-interactive)',
         '--ctx-backdrop: none',
-        '--ctx-active-bg: var(--ds-accent-blue-subtler)',
-        '--ctx-active-text: var(--ds-accent-blue)',
+        '--ctx-active-bg: var(--ds-interactive-subtle)',
+        '--ctx-active-text: var(--ds-interactive)',
         '--ctx-inactive-text: var(--ds-text-subtle)',
       ].join('; ')};`;
     },

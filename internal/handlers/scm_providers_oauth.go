@@ -15,6 +15,7 @@ import (
 
 	"windshift/internal/models"
 	"windshift/internal/scm"
+	"windshift/internal/utils"
 )
 
 // StartOAuth initiates the OAuth flow for an SCM provider.
@@ -250,6 +251,15 @@ func (h *SCMProviderHandler) OAuthCallback(w http.ResponseWriter, r *http.Reques
 	// Delete used state (check error)
 	if _, err = h.db.ExecWrite("DELETE FROM scm_oauth_state WHERE state = ?", state); err != nil {
 		slog.Warn("failed to delete OAuth state", slog.String("component", "scm"), slog.Any("error", err))
+	}
+
+	// Bind the flow to the initiating account so a forwarded authorization URL
+	// cannot attach the victim's provider credentials to another identity.
+	currentUser := utils.GetCurrentUser(r)
+	if currentUser == nil || currentUser.ID != userID {
+		slog.Warn("SCM OAuth state/account mismatch", slog.String("component", "scm"))
+		redirectOAuthOutcome(w, r, landing, "error", "", "Sign in to the account that started this connection and try again")
+		return
 	}
 
 	slog.Debug("OAuth state validated", slog.String("component", "scm"), slog.Int("provider_id", providerID), slog.String("redirect_uri", redirectURI), slog.Any("workspace_id", workspaceID))

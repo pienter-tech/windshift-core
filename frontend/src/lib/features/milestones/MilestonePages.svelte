@@ -1,7 +1,7 @@
 <script>
 	import { onMount } from 'svelte';
 	import { FileText, Plus, Trash2 } from '@lucide/svelte';
-	import { api } from '../../api.js';
+	import { milestones as milestonesApi } from '../../api/milestones.js';
 	import AlertBox from '../../components/AlertBox.svelte';
 	import LinkComponent from '../../components/Link.svelte';
 	import DialogFooter from '../../dialogs/DialogFooter.svelte';
@@ -11,12 +11,12 @@
 	import { errorToast } from '../../stores/toasts.svelte.js';
 	import { t } from '../../stores/i18n.svelte.js';
 
-	// Pages linked to a workspace milestone (WCORE-19), shown as a list in the
-	// milestone header card (WCORE-46). Global milestones have no workspace and
+	// Pages linked to a workspace milestone, shown as a list in the
+	// milestone header card. Global milestones have no workspace and
 	// therefore no Pages section. Anyone who can view the milestone sees the
 	// linked pages they may view; users with edit rights on the milestone
 	// (canEdit) link pages from its workspace through "+ Add", which opens a
-	// link dialog like the item detail's Pages "+ Add" (WCORE-58), and unlink
+	// link dialog like the item detail's Pages "+ Add", and unlink
 	// them per row.
 	let { milestoneId, workspaceId, canEdit = false } = $props();
 
@@ -46,7 +46,7 @@
 		loading = true;
 		error = '';
 		try {
-			links = (await api.milestones.getPageLinks(milestoneId)) || [];
+			links = (await milestonesApi.getPageLinks(milestoneId)) || [];
 		} catch (err) {
 			console.error('Failed to load milestone page links:', err);
 			error = t('dialogs.alerts.failedToLoad', { error: t('items.linkedPages') });
@@ -90,7 +90,7 @@
 		if (!canSubmit) return;
 		linking = true;
 		try {
-			const created = await api.milestones.linkPage(milestoneId, selectedPage.id);
+			const created = await milestonesApi.linkPage(milestoneId, selectedPage.id);
 			links = [...links.filter((link) => link.id !== created.id), created];
 			linking = false;
 			closeDialog();
@@ -104,7 +104,7 @@
 
 	async function unlinkPage(linkId) {
 		try {
-			await api.milestones.unlinkPage(milestoneId, linkId);
+			await milestonesApi.unlinkPage(milestoneId, linkId);
 			links = links.filter((link) => link.id !== linkId);
 			// The focused remove button is gone; keep keyboard focus in the section.
 			addButton?.focus();
@@ -115,7 +115,7 @@
 	}
 </script>
 
-<!-- Compact list inside the milestone header card (WCORE-46), styled like
+<!-- Compact list inside the milestone header card, styled like
      the item detail Pages section. Viewers only see it when pages are linked;
      editors always get the heading and "+ Add". -->
 {#if visible}
@@ -198,7 +198,7 @@
 
 {#if canEdit}
 	<!-- Link dialog, built from the same Modal pieces as the item detail's
-	     LinkItemModal in Page mode (WCORE-58): title, page picker limited to the
+	     LinkItemModal in Page mode: title, page picker limited to the
 	     milestone's workspace, Cancel and "Add Link". -->
 	<Modal
 		bind:isOpen={dialogOpen}

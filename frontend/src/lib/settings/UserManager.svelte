@@ -1,12 +1,23 @@
 <script>
 	import { onMount } from 'svelte';
 	import Avatar from '../components/Avatar.svelte';
-	import { api } from '../api.js';
-	import { authStore } from '../stores';
-	import { Plus, Edit, Trash2, RotateCcw, Circle, CheckCircle, Key, Users, UserCheck, UserX, AlertTriangle, Send, Link } from '@lucide/svelte';
+	import { activateUser as activateUserApi, createApiToken, createUser, deactivateUser as deactivateUserApi, deleteUser as deleteUserApi, getAdminUsers, inviteUser, resetUserPassword as resetUserPasswordApi, updateUser } from '../api/users.js';
+	import { authStore } from '../stores/auth.svelte.js';
+	import Plus from '@lucide/svelte/icons/plus';
+	import Edit from '@lucide/svelte/icons/edit';
+	import Trash2 from '@lucide/svelte/icons/trash-2';
+	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
+	import Circle from '@lucide/svelte/icons/circle';
+	import CheckCircle from '@lucide/svelte/icons/check-circle';
+	import Key from '@lucide/svelte/icons/key';
+	import Users from '@lucide/svelte/icons/users';
+	import UserCheck from '@lucide/svelte/icons/user-check';
+	import UserX from '@lucide/svelte/icons/user-x';
+	import AlertTriangle from '@lucide/svelte/icons/alert-triangle';
+	import Send from '@lucide/svelte/icons/send';
+	import Link from '@lucide/svelte/icons/link';
 	import CopyButton from '../components/CopyButton.svelte';
 	import Button from '../components/Button.svelte';
-	import Input from '../components/Input.svelte';
 	import DataTable from '../components/DataTable.svelte';
 	import PageHeader from '../layout/PageHeader.svelte';
 	import Modal from '../dialogs/Modal.svelte';
@@ -83,7 +94,7 @@
 	async function loadUsers() {
 		loading = true;
 		try {
-			users = await api.getAdminUsers();
+			users = await getAdminUsers();
 			error = '';
 		} catch (err) {
 			error = err.message || t('users.failedToLoad');
@@ -101,14 +112,14 @@
 		}
 		try {
 			if (editingUser) {
-				await api.updateUser(editingUser.id, formData);
+				await updateUser(editingUser.id, formData);
 			} else if (isInviteMode) {
-				const result = await api.inviteUser(formData);
+				const result = await inviteUser(formData);
 				invitationLink = `${publicBaseURL()}/set-password/${result.token}`;
 				emailSent = result.email_sent;
 				showInviteResultModal = true;
 			} else {
-				await api.createUser(formData);
+				await createUser(formData);
 			}
 
 			if (!isInviteMode || editingUser) {
@@ -131,7 +142,7 @@
 		});
 		if (!ok) return;
 		try {
-			await api.deleteUser(userId);
+			await deleteUserApi(userId);
 			await loadUsers();
 		} catch (err) {
 			const errorMsg = err.message || t('users.failedToDelete');
@@ -149,7 +160,7 @@
 		});
 		if (!ok) return;
 		try {
-			await api.activateUser(userId);
+			await activateUserApi(userId);
 			await loadUsers();
 		} catch (err) {
 			const errorMsg = err.message || t('users.failedToActivate');
@@ -167,7 +178,7 @@
 		});
 		if (!ok) return;
 		try {
-			await api.deactivateUser(userId);
+			await deactivateUserApi(userId);
 			await loadUsers();
 		} catch (err) {
 			const errorMsg = err.message || t('users.failedToDeactivate');
@@ -189,7 +200,7 @@
 				? { generate_random: true }
 				: { password: newPassword };
 			
-			const response = await api.resetUserPassword(resetPasswordUser.id, payload);
+			const response = await resetUserPasswordApi(resetPasswordUser.id, payload);
 			
 			if (generateRandomPassword) {
 				temporaryPassword = response.temporary_password;
@@ -404,7 +415,7 @@
 				permissions: newTokenScopes,
 				expires_on: newTokenExpiry || null
 			};
-			const result = await api.createApiToken(payload);
+			const result = await createApiToken(payload);
 			mintedToken = result?.token || result?.api_token?.token || '';
 		} catch (err) {
 			mintedTokenError = err?.message || 'Failed to create token';
@@ -524,19 +535,16 @@
 				</div>
 
 				{#if !editingUser && !isInviteMode}
-					<div>
-						<Label for="password" color="default" {...formData.is_agent ? {} : { required: true }}>
-							{formData.is_agent ? `${t('common.password')} (not used for agents)` : t('common.password')}
-						</Label>
-						<Input
-							id="password"
-							type="password"
-							bind:value={formData.password}
-							required={!formData.is_agent}
-							disabled={formData.is_agent}
-							placeholder={formData.is_agent ? 'Agents authenticate via API token only' : t('placeholders.enterPassword')}
-						/>
-					</div>
+					<TextField
+						label={formData.is_agent ? `${t('common.password')} (not used for agents)` : t('common.password')}
+						id="password"
+						labelColor="default"
+						type="password"
+						required={!formData.is_agent}
+						disabled={formData.is_agent}
+						placeholder={formData.is_agent ? 'Agents authenticate via API token only' : t('placeholders.enterPassword')}
+						bind:value={formData.password}
+					/>
 
 					<div class="flex items-start gap-3 p-3 rounded border" style="border-color: var(--ds-border); background-color: var(--ds-background-neutral);">
 						<Checkbox

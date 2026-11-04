@@ -1,7 +1,8 @@
 <script>
   import { onMount } from 'svelte';
-  import { api } from '../../api.js';
-  import { attachmentStatus } from '../../stores';
+  import { customFields as customFieldsApi } from '../../api/configuration.js';
+  import { customerOrganisations } from '../../api/portal.js';
+  import { attachmentStatus } from '../../stores/attachmentStatus.svelte.js';
   import Button from '../../components/Button.svelte';
   import DataTable from '../../components/DataTable.svelte';
   import TimeCustomerModal from '../../dialogs/TimeCustomerModal.svelte';
@@ -9,10 +10,14 @@
   import Avatar from '../../components/Avatar.svelte';
   import Text from '../../components/Text.svelte';
   import { toHotkeyString } from '../../utils/keyboardShortcuts.js';
-  import { Plus, Trash2, Edit, Users } from '@lucide/svelte';
+  import Plus from '@lucide/svelte/icons/plus';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
+  import Edit from '@lucide/svelte/icons/edit';
+  import Users from '@lucide/svelte/icons/users';
   import { t } from '../../stores/i18n.svelte.js';
+  import { realCustomers } from '../../utils/customerLabel.js';
   import { errorToast } from '../../stores/toasts.svelte.js';
-  import { permissionStore, isSystemAdmin } from '../../stores';
+  import { permissionStore, isSystemAdmin } from '../../stores/permissions.svelte.js';
   import PageHeader from '../../layout/PageHeader.svelte';
   import { formatDateSimple } from '../../utils/dateFormatter.js';
   import { confirm } from '../../composables/useConfirm.js';
@@ -38,7 +43,7 @@
 
   async function loadCustomFields() {
     try {
-      customFields = await api.customFields.getAll();
+      customFields = await customFieldsApi.getAll();
       // Filter fields that apply to customer organisations
       customerOrgFields = customFields.filter(f => f.applies_to_customer_organisations);
     } catch (err) {
@@ -48,8 +53,8 @@
 
   async function loadCustomers() {
     try {
-      const result = await api.customerOrganisations.getAll();
-      customers = result || [];
+      const result = await customerOrganisations.getAll();
+      customers = realCustomers(result);
     } catch (error) {
       console.error('Failed to load customers:', error);
       customers = []; // Ensure customers is always an array
@@ -95,9 +100,9 @@
   async function saveCustomer() {
     try {
       if (editingCustomer) {
-        await api.customerOrganisations.update(editingCustomer.id, formData);
+        await customerOrganisations.update(editingCustomer.id, formData);
       } else {
-        await api.customerOrganisations.create(formData);
+        await customerOrganisations.create(formData);
       }
       await loadCustomers();
       cancelForm();
@@ -118,10 +123,11 @@
 
     if (confirmed) {
       try {
-        await api.customerOrganisations.delete(customer.id);
+        await customerOrganisations.delete(customer.id);
         await loadCustomers();
       } catch (error) {
         console.error('Failed to delete customer:', error);
+        errorToast(t('time.organizations.failedToDelete') + ': ' + (error.message || error));
       }
     }
   }
@@ -146,6 +152,7 @@
         icon: Edit,
         title: t('common.edit'),
         hoverClass: 'hover-bg',
+        testid: 'time-customer-edit',
         onClick: () => startEdit(customer)
       },
       {
@@ -154,6 +161,7 @@
         icon: Trash2,
         title: t('common.delete'),
         hoverClass: 'hover-danger',
+        testid: 'time-customer-delete',
         onClick: () => deleteCustomer(customer)
       }
     ];
@@ -199,6 +207,7 @@
     emptyMessage={t('time.organizations.noOrganizations')}
     emptyIcon={Users}
     actionItems={buildCustomerDropdownItems}
+    actionTriggerTestid={(customer) => `time-customer-actions-${customer.id}`}
   >
     <!-- Customer name with avatar/initials and description -->
     {#snippet name(customer)}

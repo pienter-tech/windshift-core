@@ -357,7 +357,7 @@ func (nm *NotificationManager) AddNotificationsContext(ctx context.Context, noti
 		byUser[notification.UserID] = append(byUser[notification.UserID], notification)
 	}
 	for userID := range byUser {
-		services.PublishUserChange(userID, services.UserChangeNotifications)
+		services.PublishUserChange(userID)
 	}
 	for userID, additions := range byUser {
 		cache, ok := nm.cacheSnapshot(userID)

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"windshift/internal/auth"
 	"windshift/internal/logger"
 	"windshift/internal/models"
 	"windshift/internal/repository"
@@ -127,6 +128,10 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// Hash password if provided
 	var passwordHash *string
 	if req.Password != "" {
+		if err := auth.ValidatePasswordLength(req.Password); err != nil {
+			respondValidationError(w, r, err.Error())
+			return
+		}
 		hashedBytes, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 		if err != nil {
 			respondInternalError(w, r, fmt.Errorf("failed to hash password: %w", err))
@@ -334,6 +339,13 @@ func (h *UserHandler) UpdateAvatar(w http.ResponseWriter, r *http.Request) {
 		respondInternalError(w, r, err)
 		return
 	}
+
+	h.auditor.LogWithDetails(r, currentUser,
+		logger.ActionUserAvatarUpdate,
+		logger.ResourceUser,
+		&id, user.Username,
+		map[string]any{"avatar_url": avatarURL},
+	)
 
 	respondJSONOK(w, user)
 }
@@ -574,6 +586,10 @@ func (h *UserHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 			"message":            "Password reset successfully. User must change password on next login.",
 		}
 	} else {
+		if err := auth.ValidatePasswordLength(req.Password); err != nil {
+			respondValidationError(w, r, err.Error())
+			return
+		}
 		password = req.Password
 		requiresReset = false
 		response = map[string]any{
@@ -778,7 +794,7 @@ func (h *UserHandler) DeactivateUser(w http.ResponseWriter, r *http.Request) {
 		for _, agentID := range cascade.AgentIDs {
 			aid := agentID
 			h.auditor.LogWithDetails(r, currentUser,
-				logger.ActionAgentDeactivate, logger.ResourceUser,
+				logger.ActionAgentDeactivate, logger.ResourceAgent,
 				&aid, "",
 				map[string]any{
 					"reason":   "owner_deactivated",

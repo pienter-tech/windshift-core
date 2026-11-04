@@ -1,21 +1,17 @@
 // Shared board-column derivation used by CollectionBoard (rendering) and
 // collectionContext store (split fetching). Keeping both on one code path
-// guarantees the store excludes exactly the statuses the board renders in
-// its capped rightmost column.
-
-/** Max cards rendered in the rightmost column when the board configuration
- * enables show_rightmost_column_last_50. Also the page size the store uses
- * for the separate rightmost-column fetch. */
-export const RIGHTMOST_COLUMN_LIMIT = 50;
+// guarantees the store excludes exactly the statuses the board renders.
 
 // Personal tasks use the system Open and Done statuses without a workflow.
 export const PERSONAL_TASK_OPEN_STATUS_ID = 1;
 export const PERSONAL_TASK_DONE_STATUS_ID = 3;
 
+// Non-completed categories: To Do first, In Progress second, then every
+// custom category (rank 3). Completed categories are forced to the end by
+// the primary is_completed sort below.
 const CATEGORY_ORDER = {
   to_do: 1,
   in_progress: 2,
-  done: 3,
 };
 
 function categoryBuiltinKey(status) {
@@ -26,14 +22,25 @@ function categoryColor(status) {
   return status.category_color ?? status.category?.color;
 }
 
+/** Whether a status belongs to a completed category. */
+export function statusIsCompleted(status) {
+  return status.is_completed ?? status.category?.is_completed ?? false;
+}
+
 /**
- * Sorts statuses into board order: To Do -> In Progress -> Done categories,
- * alphabetical within a category.
+ * Sorts statuses into a sensible default board order: non-completed work
+ * first, completed categories last. Within each group To Do precedes
+ * In Progress and custom categories follow In Progress, alphabetical within
+ * a category.
  */
 export function sortStatusesForBoard(statuses = []) {
   return statuses.slice().sort((a, b) => {
-    const aOrder = CATEGORY_ORDER[categoryBuiltinKey(a)] || 999;
-    const bOrder = CATEGORY_ORDER[categoryBuiltinKey(b)] || 999;
+    const aCompleted = statusIsCompleted(a) ? 1 : 0;
+    const bCompleted = statusIsCompleted(b) ? 1 : 0;
+    if (aCompleted !== bCompleted) return aCompleted - bCompleted;
+
+    const aOrder = CATEGORY_ORDER[categoryBuiltinKey(a)] || 3;
+    const bOrder = CATEGORY_ORDER[categoryBuiltinKey(b)] || 3;
     if (aOrder !== bOrder) return aOrder - bOrder;
     return a.name.localeCompare(b.name);
   });
@@ -115,18 +122,4 @@ export function statusIdForBoardColumnMove(
   if (targetIndex === 0) return PERSONAL_TASK_OPEN_STATUS_ID;
   if (targetIndex === validColumns.length - 1) return PERSONAL_TASK_DONE_STATUS_ID;
   return null;
-}
-
-/**
- * Returns the status IDs of the board's capped rightmost column, or null
- * when the cap doesn't apply (no config, cap disabled, or no resolvable
- * rightmost column).
- */
-export function rightmostCapStatusIds(boardConfig, statuses = []) {
-  if (!boardConfig?.show_rightmost_column_last_50) return null;
-  const columns = buildDisplayColumns(boardConfig, statuses).filter(
-    (col) => col.status_ids?.length > 0
-  );
-  const rightmost = columns[columns.length - 1];
-  return rightmost?.status_ids?.length ? rightmost.status_ids : null;
 }

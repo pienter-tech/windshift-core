@@ -1,10 +1,13 @@
 <script>
   import { onMount } from 'svelte';
-  import { draggable, dropTargetForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter';
-  import { attachClosestEdge, extractClosestEdge } from '@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge';
-  import { Plus, Edit, Trash2, Settings, Circle, Layout } from '@lucide/svelte';
+  import Plus from '@lucide/svelte/icons/plus';
+  import Edit from '@lucide/svelte/icons/edit';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
+  import Settings from '@lucide/svelte/icons/settings';
+  import Circle from '@lucide/svelte/icons/circle';
+  import Layout from '@lucide/svelte/icons/layout';
   import { SYSTEM_FIELDS } from '../stores/fieldConfig.js';
-  import { screenEditorStore } from '../stores';
+  import { screenEditorStore } from '../stores/screenEditorStore.svelte.js';
   import { t } from '../stores/i18n.svelte.js';
   import { errorToast } from '../stores/toasts.svelte.js';
   import { confirm } from '../composables/useConfirm.js';
@@ -26,6 +29,7 @@
   import Checkbox from '../components/Checkbox.svelte';
   import LocalizedObjectFields from '../settings/LocalizedObjectFields.svelte';
   import { objectDisplayValue } from '../utils/systemLabels.js';
+  import { createFieldLayoutDrag } from '../editors/fieldLayoutDrag.js';
 
   // Bind to store values
   let screens = $derived(screenEditorStore.screens);
@@ -44,9 +48,6 @@
   let screenCanonicalDescription = $state('');
   let translationEditor = $state(null);
 
-  let setupCleanups = [];
-  let setupTimeout;
-
   function getScreenDisplayValue(screen, field) {
     return objectDisplayValue(screen, field, 'screen');
   }
@@ -55,118 +56,33 @@
     await screenEditorStore.loadScreens();
   });
 
-  $effect(() => {
-    return () => {
-      cleanupDragAndDrop();
-    };
+  const screenDrag = createFieldLayoutDrag({
+    availableSelector: '[data-available-field]',
+    availableDataKey: 'availableField',
+    selectedSelector: '[data-screen-field]',
+    dropZoneSelector: '[data-drop-zone]',
+    selectedType: 'screen-field',
+    onDragState: (fieldId, state) => screenEditorStore.setDragState(fieldId, state),
+    clearDragState: () => screenEditorStore.clearDragState(),
+    setDraggedField: (value) => {
+      if (value) screenEditorStore.setDraggedField(true);
+      else screenEditorStore.clearDraggedField();
+    },
+    addFieldAtPosition: (...args) => screenEditorStore.addFieldAtPosition(...args),
+    reorderFieldWithEdge: (...args) => screenEditorStore.reorderFieldWithEdge(...args),
+    addFieldToEnd: (field) => screenEditorStore.addFieldToScreen(field),
   });
 
-  function cleanupDragAndDrop() {
-    if (setupTimeout) clearTimeout(setupTimeout);
-    setupCleanups.forEach(fn => fn());
-    setupCleanups = [];
-    screenEditorStore.clearDragState();
-  }
-
-  function setupDragAndDrop() {
-    cleanupDragAndDrop();
-
-    // Setup available fields as draggable
-    /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('[data-available-field]')).forEach(element => {
-      const fieldData = JSON.parse(element.dataset.availableField);
-
-      const cleanup = draggable({
-        element,
-        getInitialData: () => ({ field: fieldData, type: 'available-field' }),
-        onDragStart: () => { element.style.opacity = '0.5'; },
-        onDrop: () => { element.style.opacity = ''; }
-      });
-
-      setupCleanups.push(cleanup);
-    });
-
-    // Setup screen fields as both draggable and drop targets with edge detection
-    /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('[data-screen-field]')).forEach(element => {
-      const fieldIndex = parseInt(element.dataset.fieldIndex);
-      const fieldId = element.dataset.fieldId;
-
-      screenEditorStore.setDragState(fieldId, { closestEdge: null });
-
-      // Make draggable
-      const dragHandle = element.querySelector('.cursor-grab');
-      const draggableCleanup = draggable({
-        element,
-        dragHandle: dragHandle || element,
-        getInitialData: () => ({ fieldIndex, fieldId, type: 'screen-field' }),
-        onDragStart: () => { element.style.opacity = '0.5'; },
-        onDrop: () => {
-          element.style.opacity = '';
-          screenEditorStore.clearDragState();
-        }
-      });
-
-      // Make drop target with edge detection
-      const dropTargetCleanup = dropTargetForElements({
-        element,
-        canDrop: ({ source }) => {
-          const data = source.data;
-          if (data.type === 'screen-field' && data.fieldIndex === fieldIndex) return false;
-          return data.type === 'available-field' || data.type === 'screen-field';
-        },
-        getData: ({ input, element }) => {
-          return attachClosestEdge({}, { input, element, allowedEdges: ['top', 'bottom'] });
-        },
-        onDragEnter: ({ self }) => {
-          const closestEdge = extractClosestEdge(self.data);
-          screenEditorStore.setDragState(fieldId, { closestEdge });
-        },
-        onDragLeave: () => {
-          screenEditorStore.setDragState(fieldId, { closestEdge: null });
-        },
-        onDrop: ({ self, source }) => {
-          const closestEdge = extractClosestEdge(self.data);
-          const data = source.data;
-
-          if (data.type === 'available-field') {
-            screenEditorStore.addFieldAtPosition(data.field, fieldIndex, closestEdge);
-          } else if (data.type === 'screen-field') {
-            screenEditorStore.reorderFieldWithEdge(data.fieldIndex, fieldIndex, closestEdge);
-          }
-
-          screenEditorStore.setDragState(fieldId, { closestEdge: null });
-        }
-      });
-
-      setupCleanups.push(() => {
-        draggableCleanup();
-        dropTargetCleanup();
-      });
-    });
-
-    // Setup drop zone for empty area / append to end
-    const dropZone = /** @type {HTMLElement | null} */ (document.querySelector('[data-drop-zone]'));
-    if (dropZone) {
-      const cleanup = dropTargetForElements({
-        element: dropZone,
-        canDrop: ({ source }) => source.data.type === 'available-field',
-        onDragEnter: () => { screenEditorStore.setDraggedField(true); },
-        onDragLeave: () => { screenEditorStore.clearDraggedField(); },
-        onDrop: ({ source }) => {
-          if (source.data.type === 'available-field') {
-            screenEditorStore.addFieldToScreen(source.data.field);
-          }
-          screenEditorStore.clearDraggedField();
-        }
-      });
-      setupCleanups.push(cleanup);
-    }
-  }
+  $effect(() => {
+    return () => {
+      screenDrag.cleanup();
+    };
+  });
 
   // Re-setup drag and drop when field editor is shown or fields change
   $effect(() => {
     if (showFieldEditor && screenFields && typeof document !== 'undefined') {
-      if (setupTimeout) clearTimeout(setupTimeout);
-      setupTimeout = setTimeout(() => setupDragAndDrop(), 50);
+      screenDrag.schedule();
     }
   });
 
@@ -190,7 +106,7 @@
 
   function cancelFieldEditor() {
     screenEditorStore.cancelFieldEditor();
-    cleanupDragAndDrop();
+    screenDrag.cleanup();
   }
 
   async function saveScreen() {
@@ -218,7 +134,7 @@
   }
 
   async function deleteScreen(screen) {
-    if (screen.id === 1) {
+    if (screen.builtin_key) {
       errorToast(t('dialogs.alerts.cannotDeleteDefaultScreen'));
       return;
     }
@@ -280,8 +196,9 @@
       }
     ];
 
-    // Don't show delete option for default screen (ID 1)
-    if (screen.id !== 1) {
+    // Built-in screens back the default configuration set and cannot be
+    // removed.
+    if (!screen.builtin_key) {
       items.push({
         id: 'delete',
         type: 'regular',

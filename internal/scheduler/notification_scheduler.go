@@ -49,13 +49,20 @@ type NotificationScheduler struct {
 	runRepo       *repository.SchedulerRunRepository
 	notifSvc      *services.NotificationService
 	batchInterval time.Duration
-	replyOutbox   emailReplyOutbox
-	claimOwner    string
-	claimLease    time.Duration
-	now           func() time.Time
-	runCancel     context.CancelFunc
-	runDone       chan struct{}
-	runNow        chan chan struct{}
+	// tickBudget bounds one digest tick. Without it a slow SMTP server can keep
+	// a tick running for hours across the recipient cap.
+	tickBudget time.Duration
+	// outboxBatchSize is how many reply/mention outbox rows the digest's
+	// backstop pass claims. Set from WINDSHIFT_EMAIL_OUTBOX_BATCH_SIZE.
+	outboxBatchSize int
+	replyOutbox     emailReplyOutbox
+	mentionOutbox   mentionEmailOutbox
+	claimOwner      string
+	claimLease      time.Duration
+	now             func() time.Time
+	runCancel       context.CancelFunc
+	runDone         chan struct{}
+	runNow          chan chan struct{}
 
 	// Per-user failure tracking for the circuit breaker. Keyed by user email
 	// (matching how we fan-out batches today). Resets on restart — the goal
@@ -72,7 +79,11 @@ type SMTPSender interface {
 }
 
 type emailReplyOutbox interface {
-	ProcessPendingReplies(limit int) (int, error)
+	ProcessPendingReplies(ctx context.Context, limit int) (int, error)
+}
+
+type mentionEmailOutbox interface {
+	ProcessPendingMentions(ctx context.Context, limit int) (int, error)
 }
 
 // SetEmailReplyOutbox wires the durable threaded-reply queue after the
@@ -80,6 +91,37 @@ type emailReplyOutbox interface {
 func (ns *NotificationScheduler) SetEmailReplyOutbox(outbox emailReplyOutbox) {
 	ns.mu.Lock()
 	ns.replyOutbox = outbox
+	ns.mu.Unlock()
+}
+
+// SetMentionEmailOutbox wires the durable @mention email queue. It runs
+// before the digest claims unread notifications so a delivered mention email
+// suppresses the duplicate digest entry.
+func (ns *NotificationScheduler) SetMentionEmailOutbox(outbox mentionEmailOutbox) {
+	ns.mu.Lock()
+	ns.mentionOutbox = outbox
+	ns.mu.Unlock()
+}
+
+// SetTickBudget overrides how long one digest tick may keep sending. A
+// non-positive value keeps the current setting.
+func (ns *NotificationScheduler) SetTickBudget(budget time.Duration) {
+	if budget <= 0 {
+		return
+	}
+	ns.mu.Lock()
+	ns.tickBudget = budget
+	ns.mu.Unlock()
+}
+
+// SetOutboxBatchSize overrides how many outbox rows the digest's backstop
+// pass claims. A non-positive value keeps the built-in default.
+func (ns *NotificationScheduler) SetOutboxBatchSize(size int) {
+	if size <= 0 {
+		return
+	}
+	ns.mu.Lock()
+	ns.outboxBatchSize = size
 	ns.mu.Unlock()
 }
 
@@ -92,20 +134,27 @@ func NewNotificationScheduler(db database.Database, smtpSender SMTPSender, batch
 		batchInterval = defaultBatchInterval
 	}
 	scheduler := &NotificationScheduler{
-		db:            db,
-		stopChan:      make(chan struct{}),
-		running:       false,
-		smtpSender:    smtpSender,
-		runRepo:       repository.NewSchedulerRunRepository(db),
-		notifSvc:      notifSvc,
-		batchInterval: batchInterval,
-		failCounts:    make(map[string]int),
-		skipUntil:     make(map[string]time.Time),
-		claimLease:    notificationClaimLease,
-		now:           time.Now,
-		runNow:        make(chan chan struct{}),
+		db:              db,
+		stopChan:        make(chan struct{}),
+		running:         false,
+		smtpSender:      smtpSender,
+		runRepo:         repository.NewSchedulerRunRepository(db),
+		notifSvc:        notifSvc,
+		batchInterval:   batchInterval,
+		tickBudget:      batchInterval,
+		failCounts:      make(map[string]int),
+		skipUntil:       make(map[string]time.Time),
+		claimLease:      notificationClaimLease,
+		now:             time.Now,
+		runNow:          make(chan chan struct{}),
+		outboxBatchSize: defaultOutboxBatchSize,
 	}
 	scheduler.claimOwner = fmt.Sprintf("notification-scheduler-%d-%p", time.Now().UnixNano(), scheduler)
+	// Hold users in an SMTP failure cooldown out of the per-tick recipient scan
+	// instead of claiming and releasing their rows every tick (WI-1768).
+	if notifSvc != nil {
+		notifSvc.SetRecipientEligibility(func(email string) bool { return !scheduler.inCooldown(email) })
+	}
 	return scheduler
 }
 
@@ -187,7 +236,7 @@ func (ns *NotificationScheduler) processPendingNotificationsContext(ctx context.
 	start := ns.now()
 	var batchesProcessed int
 	var runErr error
-	defer recordSchedulerRun(ns.runRepo, "notification", start, &batchesProcessed, &runErr)
+	defer recordSchedulerRun(ns.runRepo, "notification", start, &batchesProcessed, &runErr, ns.now)
 
 	// Check if SMTP is configured first
 	if !ns.smtpSender.IsSMTPConfigured() {
@@ -203,19 +252,32 @@ func (ns *NotificationScheduler) processPendingNotificationsContext(ctx context.
 
 	ns.mu.RLock()
 	replyOutbox := ns.replyOutbox
+	mentionOutbox := ns.mentionOutbox
+	outboxBatchSize := ns.outboxBatchSize
 	ns.mu.RUnlock()
 	if replyOutbox != nil {
-		delivered, err := replyOutbox.ProcessPendingReplies(maxBatchSize)
+		delivered, err := replyOutbox.ProcessPendingReplies(ctx, outboxBatchSize)
 		batchesProcessed += delivered
 		if err != nil {
 			slog.Error("Failed to process pending threaded email replies", slog.Any("error", err))
 			runErr = err
 		}
 	}
+	// Deliver mention emails before claiming the digest so a successful send
+	// marks the matching notification sent and the digest skips it.
+	if mentionOutbox != nil {
+		delivered, err := mentionOutbox.ProcessPendingMentions(ctx, outboxBatchSize)
+		batchesProcessed += delivered
+		if err != nil {
+			slog.Error("Failed to process pending mention emails", slog.Any("error", err))
+			runErr = err
+		}
+	}
 
-	// Claim each recipient batch before SMTP. Claims are owner-fenced and expire
-	// after a crash so another scheduler can recover them.
-	userBatches, err := ns.notifSvc.ClaimUnreadEmailBatches(ns.claimOwner, ns.now(), ns.claimLease, maxBatchSize)
+	// Select the recipient batches without claiming them. Each batch is claimed
+	// immediately before its SMTP send so a slow tick cannot let an unsent
+	// batch's lease expire and be duplicated by another instance (WI-1773).
+	userBatches, err := ns.notifSvc.UnreadEmailBatchesAt(maxBatchSize, ns.now())
 	if err != nil {
 		slog.Error("Failed to get unread notifications", slog.String("component", "scheduler"), slog.Any("error", err))
 		runErr = err
@@ -228,15 +290,23 @@ func (ns *NotificationScheduler) processPendingNotificationsContext(ctx context.
 	}
 	batchesProcessed += len(userBatches)
 
+	ns.mu.RLock()
+	tickBudget := ns.tickBudget
+	ns.mu.RUnlock()
+	tickCtx := ctx
+	if tickBudget > 0 {
+		var cancel context.CancelFunc
+		tickCtx, cancel = context.WithTimeout(ctx, tickBudget)
+		defer cancel()
+	}
+
 	// Send batches for each user. Track failures so the deferred recordSchedulerRun
 	// can mark this tick failed when at least one batch couldn't be sent — otherwise
 	// the admin Diagnostics page reports "100% success rate" while users miss email.
 	failures := 0
 	for userEmail, batch := range userBatches {
-		if ctx.Err() != nil {
-			if err := ns.notifSvc.ReleaseNotificationEmailClaim(batch, ns.now()); err != nil {
-				slog.Error("failed to release unstarted notification claim during shutdown", slog.Any("error", err))
-			}
+		if tickCtx.Err() != nil {
+			// Nothing is claimed yet, so there is nothing to release.
 			continue
 		}
 		if ns.inCooldown(userEmail) {
@@ -244,17 +314,23 @@ func (ns *NotificationScheduler) processPendingNotificationsContext(ctx context.
 				slog.String("component", "scheduler"),
 				slog.String("user_email", userEmail),
 			)
-			if err := ns.notifSvc.ReleaseNotificationEmailClaim(batch, ns.now()); err != nil {
-				slog.Error("failed to release notification batch during cooldown",
-					slog.String("component", "scheduler"),
-					slog.String("user_email", userEmail),
-					slog.Any("error", err),
-				)
-				failures++
-			}
 			continue
 		}
-		deliverable, err := ns.notifSvc.NotificationEmailClaimDeliverable(batch)
+		claim, err := ns.notifSvc.ClaimNotificationEmailBatch(batch, ns.claimOwner, ns.now(), ns.claimLease)
+		if err != nil {
+			slog.Error("failed to claim notification email batch",
+				slog.String("component", "scheduler"),
+				slog.String("user_email", userEmail),
+				slog.Any("error", err),
+			)
+			failures++
+			continue
+		}
+		if claim == nil {
+			// Another instance claimed this batch first.
+			continue
+		}
+		deliverable, err := ns.notifSvc.NotificationEmailClaimDeliverable(claim)
 		if err != nil {
 			slog.Error("failed to reauthorize claimed notification email batch",
 				slog.String("component", "scheduler"),
@@ -265,7 +341,7 @@ func (ns *NotificationScheduler) processPendingNotificationsContext(ctx context.
 			continue
 		}
 		if !deliverable {
-			if err := ns.notifSvc.ReleaseNotificationEmailClaim(batch, ns.now()); err != nil {
+			if err := ns.notifSvc.ReleaseNotificationEmailClaim(claim, ns.now()); err != nil {
 				slog.Error("failed to release ineligible notification email batch",
 					slog.String("component", "scheduler"),
 					slog.String("user_email", userEmail),
@@ -275,16 +351,16 @@ func (ns *NotificationScheduler) processPendingNotificationsContext(ctx context.
 			}
 			continue
 		}
-		if err := ns.sendNotificationBatch(ctx, batch.UserNotificationBatch); err != nil {
-			if ctx.Err() != nil {
+		if err := ns.sendNotificationBatch(tickCtx, claim.UserNotificationBatch); err != nil {
+			if tickCtx.Err() != nil {
 				// SMTP acceptance may be ambiguous after cancellation. Keep the
 				// claim fenced until expiry so restart cannot overlap it immediately.
-				runErr = ctx.Err()
+				runErr = tickCtx.Err()
 				failures++
 				continue
 			}
 			slog.Error("Failed to send notification batch", slog.String("component", "scheduler"), slog.String("user_email", userEmail), slog.Any("error", err))
-			if claimErr := ns.notifSvc.FailNotificationEmailClaim(batch, err, ns.now()); claimErr != nil {
+			if claimErr := ns.notifSvc.FailNotificationEmailClaim(claim, err, ns.now()); claimErr != nil {
 				slog.Error("failed to record notification email failure; claim will recover after expiry",
 					slog.String("component", "scheduler"),
 					slog.String("user_email", userEmail),
@@ -295,7 +371,7 @@ func (ns *NotificationScheduler) processPendingNotificationsContext(ctx context.
 			failures++
 			continue
 		}
-		if err := ns.notifSvc.CompleteNotificationEmailClaim(batch, ns.now()); err != nil {
+		if err := ns.notifSvc.CompleteNotificationEmailClaim(claim, ns.now()); err != nil {
 			// SMTP may already have accepted the message. Leave the fenced claim
 			// intact; expiry permits recovery under the documented at-least-once
 			// policy without allowing this worker to rewrite newer ownership.
