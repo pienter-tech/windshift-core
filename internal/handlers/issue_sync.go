@@ -13,7 +13,7 @@ import (
 	"windshift/internal/services"
 )
 
-// IssueSyncHandler handles GitHub Issue sync configuration endpoints.
+// IssueSyncHandler handles issue sync configuration endpoints.
 type IssueSyncHandler struct {
 	issueSyncService  *scm.IssueSyncService
 	permissionService *services.PermissionService
@@ -337,7 +337,7 @@ func (h *IssueSyncHandler) GetSyncStatus(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-// GetSyncedItems returns the list of synced items with GitHub links.
+// GetSyncedItems returns the list of synced items with their issue links.
 func (h *IssueSyncHandler) GetSyncedItems(w http.ResponseWriter, r *http.Request) {
 	_, workspaceID, ok := h.requireAuthWorkspaceID(w, r)
 	if !ok {
@@ -379,8 +379,8 @@ func requireRepoIDParam(w http.ResponseWriter, r *http.Request) (int, bool) {
 	return repoID, true
 }
 
-// GetGitHubLabels fetches labels from the linked GitHub repo for the mapping UI.
-func (h *IssueSyncHandler) GetGitHubLabels(w http.ResponseWriter, r *http.Request) {
+// GetRepoLabels fetches labels from the linked repository for the mapping UI.
+func (h *IssueSyncHandler) GetRepoLabels(w http.ResponseWriter, r *http.Request) {
 	_, workspaceID, ok := h.requireAuthWorkspaceID(w, r)
 	if !ok {
 		return
@@ -391,7 +391,7 @@ func (h *IssueSyncHandler) GetGitHubLabels(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	labels, err := h.issueSyncService.GetGitHubLabels(r.Context(), workspaceID, repoID)
+	labels, err := h.issueSyncService.GetRepoLabels(r.Context(), workspaceID, repoID)
 	if err != nil {
 		if errors.Is(err, scm.ErrRepositoryNotInWorkspace) {
 			respondNotFound(w, r, "repository")
@@ -404,8 +404,8 @@ func (h *IssueSyncHandler) GetGitHubLabels(w http.ResponseWriter, r *http.Reques
 	respondJSONOK(w, labels)
 }
 
-// GetGitHubMilestones fetches milestones from the linked GitHub repo for the mapping UI.
-func (h *IssueSyncHandler) GetGitHubMilestones(w http.ResponseWriter, r *http.Request) {
+// GetRepoMilestones fetches milestones from the linked repository for the mapping UI.
+func (h *IssueSyncHandler) GetRepoMilestones(w http.ResponseWriter, r *http.Request) {
 	_, workspaceID, ok := h.requireAuthWorkspaceID(w, r)
 	if !ok {
 		return
@@ -416,7 +416,7 @@ func (h *IssueSyncHandler) GetGitHubMilestones(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	milestones, err := h.issueSyncService.GetGitHubMilestones(r.Context(), workspaceID, repoID)
+	milestones, err := h.issueSyncService.GetRepoMilestones(r.Context(), workspaceID, repoID)
 	if err != nil {
 		if errors.Is(err, scm.ErrRepositoryNotInWorkspace) {
 			respondNotFound(w, r, "repository")

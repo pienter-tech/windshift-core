@@ -74,10 +74,11 @@ func RegisterSCMRoutes(deps *Deps) {
 	api.HandleH("GET /workspaces/{id}/scm-connections/{connId}/auth/status", auth(wsView(http.HandlerFunc(deps.SCM.Workspace.GetWorkspaceConnectionAuthStatus))))
 	api.HandleH("POST /workspace-repositories/{repoId}/sync", auth(http.HandlerFunc(deps.SCM.ItemLinks.SyncWorkspaceRepository)))
 	api.HandleH("GET /workspace-repositories/{repoId}/release-candidates", auth(http.HandlerFunc(deps.SCM.ItemLinks.ListReleaseCandidates)))
-	api.HandleH("GET /workspace-repositories/{repoId}/webhook", auth(http.HandlerFunc(deps.SCM.ItemLinks.GetGitLabWebhookConfig)))
-	api.HandleH("POST /workspace-repositories/{repoId}/webhook/rotate-secret", auth(http.HandlerFunc(deps.SCM.ItemLinks.RotateGitLabWebhookSecret)))
-	api.HandleH("DELETE /workspace-repositories/{repoId}/webhook", auth(http.HandlerFunc(deps.SCM.ItemLinks.DeleteGitLabWebhookConfig)))
+	api.HandleH("GET /workspace-repositories/{repoId}/webhook", auth(http.HandlerFunc(deps.SCM.ItemLinks.GetWebhookConfig)))
+	api.HandleH("POST /workspace-repositories/{repoId}/webhook/rotate-secret", auth(http.HandlerFunc(deps.SCM.ItemLinks.RotateWebhookSecret)))
+	api.HandleH("DELETE /workspace-repositories/{repoId}/webhook", auth(http.HandlerFunc(deps.SCM.ItemLinks.DeleteWebhookConfig)))
 	api.HandleH("POST /scm/webhooks/gitlab/{webhookKey}", deps.WebhookLimiter.Limit(http.HandlerFunc(deps.SCM.ItemLinks.ReceiveGitLabWebhook)))
+	api.HandleH("POST /scm/webhooks/gitea/{webhookKey}", deps.WebhookLimiter.Limit(http.HandlerFunc(deps.SCM.ItemLinks.ReceiveGiteaWebhook)))
 
 	// Item SCM Links endpoints
 	api.HandleH("GET /items/{id}/scm-links", auth(http.HandlerFunc(deps.SCM.ItemLinks.GetItemSCMLinks)))
@@ -98,8 +99,8 @@ func RegisterSCMRoutes(deps *Deps) {
 		api.HandleH("POST /workspaces/{id}/issue-sync/trigger", auth(wsAdmin(http.HandlerFunc(deps.SCM.IssueSync.TriggerSync))))
 		api.HandleH("GET /workspaces/{id}/issue-sync/status", auth(wsView(http.HandlerFunc(deps.SCM.IssueSync.GetSyncStatus))))
 		api.HandleH("GET /workspaces/{id}/issue-sync/items", auth(wsView(http.HandlerFunc(deps.SCM.IssueSync.GetSyncedItems))))
-		api.HandleH("GET /workspaces/{id}/issue-sync/github-labels", auth(wsView(http.HandlerFunc(deps.SCM.IssueSync.GetGitHubLabels))))
-		api.HandleH("GET /workspaces/{id}/issue-sync/github-milestones", auth(wsView(http.HandlerFunc(deps.SCM.IssueSync.GetGitHubMilestones))))
+		api.HandleH("GET /workspaces/{id}/issue-sync/labels", auth(wsView(http.HandlerFunc(deps.SCM.IssueSync.GetRepoLabels))))
+		api.HandleH("GET /workspaces/{id}/issue-sync/milestones", auth(wsView(http.HandlerFunc(deps.SCM.IssueSync.GetRepoMilestones))))
 	}
 
 	// User SCM connections (personal OAuth tokens)

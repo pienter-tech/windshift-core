@@ -98,8 +98,8 @@ type AgentMentionTrigger interface {
 
 // CommentIssueSync mirrors committed public comments to linked external issues.
 type CommentIssueSync interface {
-	PushCommentToGitHub(context.Context, int, int, int, string)
-	PushCommentUpdateToGitHub(context.Context, int, int, string)
+	PushCommentToIssue(context.Context, int, int, int, string)
+	PushCommentUpdateToIssue(context.Context, int, int, string)
 }
 
 // CommentService encapsulates comment creation logic used by both HTTP handlers
@@ -789,7 +789,7 @@ func (s *CommentService) create(ctx context.Context, params CreateCommentParams)
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			s.issueSync.PushCommentToGitHub(ctx, params.ItemID, int(commentID), params.AuthorID, params.Content)
+			s.issueSync.PushCommentToIssue(ctx, params.ItemID, int(commentID), params.AuthorID, params.Content)
 		}()
 	}
 
@@ -1253,7 +1253,7 @@ func (s *CommentService) UpdateWithEffects(params UpdateCommentParams) (*models.
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			s.issueSync.PushCommentUpdateToGitHub(ctx, params.CommentID, *before.AuthorID, params.Content)
+			s.issueSync.PushCommentUpdateToIssue(ctx, params.CommentID, *before.AuthorID, params.Content)
 		}()
 	}
 	return updated, nil

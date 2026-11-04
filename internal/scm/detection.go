@@ -17,6 +17,22 @@ const (
 	DetectionSourceCommitMessage DetectionSource = "commit_message"
 )
 
+// syncDetectionSourcesSQL lists, as an SQL value list, the detection sources
+// the repository sync writes. Only links with one of these sources are
+// "detected": the sync may remove them, and deleting one is remembered.
+const syncDetectionSourcesSQL = `('pr_title', 'pr_body', 'branch_name', 'commit_message')`
+
+// isSyncDetectionSource reports whether a link's detection_source marks it as
+// detected by the repository sync rather than created by a user, a plugin or
+// a coding agent.
+func isSyncDetectionSource(source string) bool {
+	switch DetectionSource(source) {
+	case DetectionSourcePRTitle, DetectionSourcePRBody, DetectionSourceBranchName, DetectionSourceCommitMessage:
+		return true
+	}
+	return false
+}
+
 // DetectedItemKey represents an item key found in text
 type DetectedItemKey struct {
 	Key    string          // The full key (e.g., "PROJ-123")

@@ -1,0 +1,73 @@
+# Pienter fork only; never send upstream.
+#
+# Publishes the `ws` CLI for each fork release as a GitHub Release, in the
+# archive layout of upstream's release.sh, so the dotfiles ws-install.sh can
+# install it. Upstream builds its releases locally with release.sh, which the
+# fork cannot reuse (desktop app, signing, windshiftapp images).
+name: CLI Release
+
+on:
+  push:
+    tags: ['v*-pienter.*']
+  # Publishes an existing tag, e.g. one created before this workflow existed.
+  # Runs this workflow from main but builds the tag's code.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing vX.Y.Z-pienter.N tag'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish ws
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build and package ws
+        run: |
+          set -euo pipefail
+          commit=$(git rev-parse --short HEAD)
+          date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          mkdir -p dist
+          for platform in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do
+            goos=${platform%/*}
+            goarch=${platform#*/}
+            name="ws-${TAG}-${goos}-${goarch}"
+            mkdir -p "dist/${name}"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build \
+              -ldflags "-s -w -X main.version=${TAG#v} -X main.commit=${commit} -X main.date=${date}" \
+              -o "dist/${name}/ws" ./cmd/ws
+            tar -C dist -czf "dist/${name}.tar.gz" "$name"
+          done
+          (cd dist && sha256sum ws-*.tar.gz > SHA256SUMS.txt)
+          cat dist/SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.tar.gz dist/SHA256SUMS.txt --clobber
+          else
+            gh release create "$TAG" dist/*.tar.gz dist/SHA256SUMS.txt \
+              --verify-tag \
+              --title "$TAG" \
+              --notes "Pienter fork release. Server image: \`ghcr.io/${GH_REPO}:${TAG#v}\`. Install the CLI with the dotfiles \`windshift/ws-install.sh\`."
+          fi

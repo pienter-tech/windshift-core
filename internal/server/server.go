@@ -1124,6 +1124,7 @@ func (s *Server) initialize() error {
 	issueSyncService := scm.NewIssueSyncService(s.db, scmProviderHandler.GetEncryption())
 	issueSyncService.SetUserService(services.NewUserReadService(s.db))
 	issueSyncHandler := handlers.NewIssueSyncHandler(issueSyncService, permService, logger.NewAuditor(s.db))
+	scmItemLinksHandler.SetIssueSync(issueSyncService)
 	issueSyncHandler.SetSyncConfigChanged(func() { s.refreshIssueSyncLoop(issueSyncService) })
 	s.refreshIssueSyncLoop(issueSyncService)
 
@@ -1334,6 +1335,10 @@ func (s *Server) initialize() error {
 		repository.NewItemRepository(s.db),
 	)
 	scmSyncService.SetApprovalService(approvalService)
+	scmItemLinksHandler.SetSmartCommitServices(
+		workflowService, commentService, permService, conditionService, approvalService,
+		repository.NewItemRepository(s.db),
+	)
 	// Outbound "@agent" PR-comment continuation trigger (WI-426): the sync poller
 	// hands detected comments to the binding service to continue the PR. Nil-safe
 	// when the coding-agent harness is disabled (bindingSvc may be nil).
@@ -1348,6 +1353,7 @@ func (s *Server) initialize() error {
 	//     attachment via the scm.MilestoneAttacher adapter).
 	scmSyncService.SetActionEvents(s.actionService)
 	scmSyncService.SetDurableActionEvents(s.actionService)
+	scmItemLinksHandler.SetActionEvents(s.actionService, s.actionService)
 	milestoneItemUpdater := services.NewItemUpdateApplicationService(s.db, permService)
 	milestoneItemUpdater.SetEmitter(eventCoordinator)
 	milestoneAttacher := scm.NewMilestoneAttacher(
@@ -3014,7 +3020,7 @@ func (s *Server) refreshIssueSyncLoop(issueSyncService *scm.IssueSyncService) {
 	go s.runIssueSync(issueSyncService, s.issueSyncLoopStop)
 }
 
-// runIssueSync runs periodic GitHub Issue synchronization while enabled.
+// runIssueSync runs periodic issue synchronization while enabled.
 func (s *Server) runIssueSync(issueSyncService *scm.IssueSyncService, stop <-chan struct{}) {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()

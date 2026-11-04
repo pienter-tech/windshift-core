@@ -13,12 +13,16 @@
   import Trash2 from '@lucide/svelte/icons/trash-2';
   import GitBranchPlus from '@lucide/svelte/icons/git-branch-plus';
   import Link2 from '@lucide/svelte/icons/link-2';
+  import CircleCheck from '@lucide/svelte/icons/circle-check';
+  import CircleX from '@lucide/svelte/icons/circle-x';
+  import CircleDashed from '@lucide/svelte/icons/circle-dashed';
   import Button from '../../components/Button.svelte';
   import Text from '../../components/Text.svelte';
   import LinkSectionHeader from './LinkSectionHeader.svelte';
   import { t } from '../../stores/i18n.svelte.js';
   import { confirm } from '../../composables/useConfirm.js';
   import { safeHref } from '../../utils/sanitize';
+  import { ciStatusDisplay } from './scmCIStatus.js';
 
   let { itemId, onaddlink, oncreatebranch, oncreatepr } = $props();
 
@@ -147,10 +151,12 @@
     }
   }
 
-  async function deleteLink(linkId) {
+  async function deleteLink(link) {
     const confirmed = await confirm({
       title: t('common.remove'),
-      message: t('scm.confirmRemoveLink'),
+      // Deleting any link stops the sync from re-creating it; say so for the
+      // links Windshift found itself, which would otherwise come back.
+      message: t(isManualLink(link) ? 'scm.confirmRemoveLink' : 'scm.confirmRemoveDetectedLink'),
       confirmText: t('common.remove'),
       cancelText: t('common.cancel'),
       variant: 'danger'
@@ -158,8 +164,8 @@
     if (!confirmed) return;
 
     try {
-      await itemSCMLinks.delete(linkId);
-      links = links.filter(l => l.id !== linkId);
+      await itemSCMLinks.delete(link.id);
+      links = links.filter(l => l.id !== link.id);
     } catch (err) {
       console.error('Failed to delete link:', err);
     }
@@ -200,6 +206,8 @@
     }
   }
 
+  const ciStatusIcons = { pending: CircleDashed, success: CircleCheck, failure: CircleX };
+
   function getDisplayText(link) {
     if (link.link_type === 'pull_request') {
       return link.title || `#${link.external_id}`;
@@ -216,7 +224,7 @@
     return parts[parts.length - 1] || link.repository_name;
   }
 
-  function canDeleteLink(link) {
+  function isManualLink(link) {
     return !link.detection_source || link.detection_source === 'manual';
   }
 
@@ -385,6 +393,21 @@
             {link.state}
           </span>
         {/if}
+
+        <!-- Combined CI status (Gitea/Forgejo pull requests only) -->
+        {@render ciStatus(link)}
+
+        <!-- The PR only mentions this item in its body: its automations skip it -->
+        {#if link.is_mention}
+          <span
+            class="text-xs px-1.5 py-0.5 rounded"
+            style="background-color: var(--ds-background-neutral); color: var(--ds-text-subtle);"
+            title={t('scm.mentionedHint')}
+            data-testid="scm-link-mentioned"
+          >
+            {t('scm.mentioned')}
+          </span>
+        {/if}
       </div>
 
       <!-- Title (if different from external_id) -->
@@ -435,16 +458,44 @@
       >
         <ExternalLink class="w-3 h-3" />
       </a>
-      {#if canDeleteLink(link)}
-        <button
-          class="p-1 rounded hover:bg-opacity-50"
-          style="color: var(--ds-text-danger);"
-          onclick={() => deleteLink(link.id)}
-          title={t('items.removeLink')}
-        >
-          <Trash2 class="w-3 h-3" />
-        </button>
-      {/if}
+      <button
+        class="p-1 rounded hover:bg-opacity-50"
+        style="color: var(--ds-text-danger);"
+        onclick={() => deleteLink(link)}
+        title={t('items.removeLink')}
+      >
+        <Trash2 class="w-3 h-3" />
+      </button>
     </div>
   </div>
+{/snippet}
+
+{#snippet ciStatus(link)}
+  {@const ci = ciStatusDisplay(link)}
+  {#if ci}
+    {@const CIIcon = ciStatusIcons[ci.state]}
+    {#if link.ci_url && safeHref(link.ci_url) !== '#'}
+      <a
+        href={safeHref(link.ci_url)}
+        target="_blank"
+        rel="noopener noreferrer"
+        class="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded hover:underline"
+        style="background-color: {ci.bg}; color: {ci.text};"
+        title={t('scm.openCIRun')}
+        data-testid="scm-ci-status"
+      >
+        <CIIcon class="w-3 h-3" />
+        {t(ci.labelKey)}
+      </a>
+    {:else}
+      <span
+        class="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded"
+        style="background-color: {ci.bg}; color: {ci.text};"
+        data-testid="scm-ci-status"
+      >
+        <CIIcon class="w-3 h-3" />
+        {t(ci.labelKey)}
+      </span>
+    {/if}
+  {/if}
 {/snippet}
