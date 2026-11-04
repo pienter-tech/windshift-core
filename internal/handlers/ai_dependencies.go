@@ -16,6 +16,7 @@ import (
 	"windshift/internal/itemevents"
 	"windshift/internal/llm"
 	"windshift/internal/models"
+	"windshift/internal/redact"
 	"windshift/internal/repository"
 	"windshift/internal/sanitize"
 	"windshift/internal/services"
@@ -342,7 +343,7 @@ func (h *AIHandler) AnalyzeDependencies(w http.ResponseWriter, r *http.Request) 
 		},
 	})
 	if err != nil {
-		respondLLMError(w, r, err)
+		respondLLMError(w, r, err, h.permService)
 		return
 	}
 
@@ -464,10 +465,23 @@ func (h *AIHandler) AcceptDependencies(w http.ResponseWriter, r *http.Request) {
 	created := 0
 	skipped := 0
 
+	// Resolve every referenced item's workspace in one query rather than two
+	// lookups per suggestion. Items that do not exist are absent from the map
+	// and count as skipped.
+	lookupIDs := make([]int, 0, len(req.Suggestions)*2)
+	for _, s := range req.Suggestions {
+		lookupIDs = append(lookupIDs, s.SourceItemID, s.TargetItemID)
+	}
+	workspaceByItem, err := itemRepo.GetWorkspaceIDs(lookupIDs)
+	if err != nil {
+		respondInternalError(w, r, err)
+		return
+	}
+
 	for _, s := range req.Suggestions {
 		// Verify user has edit permission on the source item's workspace
-		srcWorkspaceID, err := itemRepo.GetWorkspaceID(s.SourceItemID)
-		if err != nil {
+		srcWorkspaceID, ok := workspaceByItem[s.SourceItemID]
+		if !ok {
 			skipped++
 			continue
 		}
@@ -478,8 +492,8 @@ func (h *AIHandler) AcceptDependencies(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Verify user has view permission on target item's workspace
-		tgtWorkspaceID, err := itemRepo.GetWorkspaceID(s.TargetItemID)
-		if err != nil {
+		tgtWorkspaceID, ok := workspaceByItem[s.TargetItemID]
+		if !ok {
 			skipped++
 			continue
 		}
@@ -840,7 +854,7 @@ func (h *AIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		_ = runRepo.Finalize(r.Context(), begun.RunID, models.AgentRunStatusFailed,
 			"Configured LLM is unavailable", time.Now().UTC())
-		respondLLMError(w, r, err)
+		respondLLMError(w, r, err, h.permService)
 		return
 	}
 
@@ -897,13 +911,16 @@ func (h *AIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 		SystemPrompt:  systemPrompt,
 		Tools:         aitooladapter.BuildTools(mode.entries),
 		MaxTokens:     chatMaxOutputTokens(llmDescriptor),
-		Temperature:   0.1,
+		Temperature:   llm.ChatTemperature,
 		MaxIterations: 12,
 		TerminalTools: mode.terminalTools,
 	}, promptMessage, executor.Execute, history)
 	if err != nil {
+		// Persist the provider's own message (redacted) so the failed turn is
+		// diagnosable from the run history, not just the process log.
+		detail := redact.String(err.Error())
 		_ = runRepo.Finalize(context.Background(), begun.RunID, models.AgentRunStatusFailed,
-			"Agent chat execution failed", time.Now().UTC())
+			detail, time.Now().UTC())
 		slog.ErrorContext(r.Context(), "chat agent run failed",
 			slog.Int("user_id", user.ID),
 			slog.String("ctx_view", chatContextView(req.Context)),
@@ -913,8 +930,9 @@ func (h *AIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 			slog.Int("ctx_item_id", chatContextItemID(req.Context)),
 			slog.String("ctx_item_key", chatContextItemKey(req.Context)),
 			slog.String("error_type", fmt.Sprintf("%T", err)),
+			slog.String("error", detail),
 		)
-		respondLLMError(w, r, err)
+		respondLLMError(w, r, err, h.permService)
 		return
 	}
 

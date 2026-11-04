@@ -1,5 +1,5 @@
 <script>
-  import { onDestroy, onMount, untrack } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { t } from '../../stores/i18n.svelte.js';
   import { collections } from '../../api/collections.js';
   import { items as itemsApi } from '../../api/items.js';
@@ -12,6 +12,7 @@
   import { navigate } from '../../router.js';
   import { confirm } from '../../composables/useConfirm.js';
   import { useCollectionEventStream } from '../../composables/useCollectionEventStream.svelte.js';
+  import { useCollectionEditorOptionsPrime } from '../../composables/useCollectionEditorOptionsPrime.svelte.js';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import ArrowRight from '@lucide/svelte/icons/arrow-right';
   import EyeOff from '@lucide/svelte/icons/eye-off';
@@ -38,7 +39,6 @@
   } from '../../utils/workItemListColumns.js';
   import { useGradientStyles } from '../../stores/workspaceGradient.svelte.js';
   import { workspacePermissions } from '../../stores/workspacePermissions.svelte.js';
-  import { collectionEditorOptions } from '../../stores/collectionEditorOptions.svelte.js';
   import ViewHeader from '../../layout/ViewHeader.svelte';
   import StaticViewBackground from '../../layout/StaticViewBackground.svelte';
   import EmptyState from '../../components/EmptyState.svelte';
@@ -46,9 +46,8 @@
   import SearchInput from '../../components/SearchInput.svelte';
   import TableHeaderBar from '../../components/TableHeaderBar.svelte';
   import DropdownMenu from '../../layout/DropdownMenu.svelte';
-  import LazyRender from '../../components/LazyRender.svelte';
-  import Pagination from '../../components/Pagination.svelte';
-  import ListCellRenderer from '../collections/ListCellRenderer.svelte';
+  import WorkItemListRow from '../collections/WorkItemListRow.svelte';
+  import WorkItemListFooter from '../collections/WorkItemListFooter.svelte';
   import ColumnSelector from '../collections/ColumnSelector.svelte';
   import QlFilterBuilder from '../shared/QlFilterBuilder.svelte';
 
@@ -186,31 +185,10 @@
   // A workspace-scoped list already has these option sets in the shared
   // workspace store. Prime the row-editor cache so opening a cell does not
   // repeat those requests, exactly like the list view does.
-  $effect(() => {
-    const id = Number(workspaceId);
-    if (
-      !Number.isInteger(id) ||
-      id <= 0 ||
-      !workspaceDataStore.initialized ||
-      Number(workspaceDataStore.workspaceId) !== id
-    ) {
-      return;
-    }
-
-    untrack(() =>
-      collectionEditorOptions.prime(
-        id,
-        {
-          statuses,
-          users,
-          milestones,
-          iterations,
-          projects,
-        },
-        workspaceDataStore.planningCompleteness
-      )
-    );
-  });
+  useCollectionEditorOptionsPrime(
+    () => workspaceId,
+    () => ({ statuses, users, milestones, iterations, projects })
+  );
 
   async function loadCollection() {
     if (!collectionId) {
@@ -538,7 +516,11 @@
     });
     try {
       if (editorQueueId) {
-        await fetchV2Data(`/queues/${editorQueueId}`, { method: 'PATCH', body });
+        await fetchV2Data(`/queues/${editorQueueId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/merge-patch+json' },
+          body,
+        });
         successToast(t('supportQueue.updated'));
       } else {
         const path = queuesPath();
@@ -883,76 +865,48 @@
 
           <div>
             {#each items as item (item.id)}
-              <div
-                class="px-4 py-3 list-row transition-colors"
-                style="border-top: 1px solid var(--ds-border);"
-                data-item-row
-                data-item-id={item.id}
-                data-testid={`support-queue-row-${item.id}`}
+              <WorkItemListRow
+                {item}
+                columns={listColumns}
+                {gridTemplateColumns}
+                {gridMinWidth}
+                {workspace}
+                canEdit={canEdit && item.workspace_id === Number(workspaceId)}
+                {statuses}
+                {statusCategories}
+                {priorities}
+                {milestones}
+                {iterations}
+                {users}
+                {projects}
+                {itemTypes}
+                {customFieldDefinitions}
+                actions={buildItemActions(item)}
+                onitemUpdated={handleItemUpdated}
+                onupdateError={handleUpdateError}
+                rowTestid={`support-queue-row-${item.id}`}
               >
-                <LazyRender>
-                  {#snippet children()}
-                    <div
-                      class="grid gap-4 items-center"
-                      style="grid-template-columns: {gridTemplateColumns}; min-width: {gridMinWidth};"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={selectedIds.has(item.id)}
-                        aria-label={t('supportQueue.selectAll')}
-                        data-testid={`support-queue-item-checkbox-${item.id}`}
-                        onchange={() => toggleItem(item.id)}
-                      />
-                      {#each listColumns as column (column.field_identifier)}
-                        <div class="min-w-0 overflow-hidden">
-                          <ListCellRenderer
-                            {item}
-                            {column}
-                            {workspace}
-                            canEdit={canEdit && item.workspace_id === Number(workspaceId)}
-                            {statuses}
-                            {statusCategories}
-                            {priorities}
-                            {milestones}
-                            {iterations}
-                            {users}
-                            {projects}
-                            {itemTypes}
-                            {customFieldDefinitions}
-                            onitemUpdated={handleItemUpdated}
-                            onupdateError={handleUpdateError}
-                          />
-                        </div>
-                      {/each}
-
-                      <!-- Actions -->
-                      <div>
-                        <DropdownMenu
-                          triggerText=""
-                          triggerIcon={MoreHorizontal}
-                          triggerClass="p-2 rounded action-btn transition-colors"
-                          items={buildItemActions(item)}
-                        />
-                      </div>
-                    </div>
-                  {/snippet}
-                </LazyRender>
-              </div>
+                {#snippet leading(row)}
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(row.id)}
+                    aria-label={t('supportQueue.selectAll')}
+                    data-testid={`support-queue-item-checkbox-${row.id}`}
+                    onchange={() => toggleItem(row.id)}
+                  />
+                {/snippet}
+              </WorkItemListRow>
             {/each}
           </div>
         </div>
 
         {#if itemsPagination && itemsPagination.total_items > 0 && items.length > 0}
-          <div class="mt-6">
-            <Pagination
-              currentPage={itemsPagination.page}
-              totalItems={itemsPagination.total_items}
-              itemsPerPage={itemsPagination.limit}
-              maxItems={10000}
-              onpageChange={handlePageChange}
-              onpageSizeChange={handlePageSizeChange}
-            />
-          </div>
+          <WorkItemListFooter
+            pagination={itemsPagination}
+            itemCount={items.length}
+            onpageChange={handlePageChange}
+            onpageSizeChange={handlePageSizeChange}
+          />
         {/if}
       {/if}
     </div>
@@ -1001,9 +955,3 @@
     />
   </div>
 </Modal>
-
-<style>
-  .list-row:hover {
-    background-color: var(--ctx-background-neutral-hovered, var(--ds-background-neutral-hovered));
-  }
-</style>

@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
+	"windshift/internal/blobstore"
 	"windshift/internal/database"
 	"windshift/internal/jira"
 	"windshift/internal/jiraimport"
@@ -24,6 +26,7 @@ import (
 type JiraImportHandler struct {
 	db                 database.Database
 	imports            *jiraimport.Service
+	storage            *blobstore.Store
 	encryption         *sso.SecretEncryption
 	capturePayloadsDir string // JIRA_CAPTURE_PAYLOADS (empty disables capture)
 	mappingFailuresMu  sync.Mutex
@@ -33,6 +36,12 @@ type JiraImportHandler struct {
 	// through every import helper.
 	jobTokens        map[string]string
 	cacheInvalidator *services.AuthorizationCacheInvalidator
+	// importMaxDuration caps a single import. Zero disables the overall limit.
+	importMaxDuration time.Duration
+	// importWatchers enables the per-issue watcher fetch and item-watch import.
+	importWatchers bool
+	// importConcurrency bounds in-flight Jira requests for independent work.
+	importConcurrency int
 }
 
 func (h *JiraImportHandler) WithAuthorizationCacheInvalidator(invalidator *services.AuthorizationCacheInvalidator) *JiraImportHandler {
@@ -40,20 +49,50 @@ func (h *JiraImportHandler) WithAuthorizationCacheInvalidator(invalidator *servi
 	return h
 }
 
+// WithImportMaxDuration sets the overall import limit. Zero (the default) means
+// no wall-clock cap.
+func (h *JiraImportHandler) WithImportMaxDuration(maxDuration time.Duration) *JiraImportHandler {
+	h.importMaxDuration = maxDuration
+	return h
+}
+
+// WithImportWatchers enables mapping Jira watchers to Windshift item watches.
+// It is off by default because the identities cost one Jira request per issue.
+func (h *JiraImportHandler) WithImportWatchers(enabled bool) *JiraImportHandler {
+	h.importWatchers = enabled
+	return h
+}
+
+// WithImportConcurrency overrides how many independent Jira requests the import
+// keeps in flight. Values below 1 keep the default; values above the maximum
+// are clamped so a misconfiguration cannot spawn an unbounded pool.
+func (h *JiraImportHandler) WithImportConcurrency(workers int) *JiraImportHandler {
+	if workers <= 0 {
+		return h
+	}
+	if workers > jiraImportMaxConcurrency {
+		workers = jiraImportMaxConcurrency
+	}
+	h.importConcurrency = workers
+	return h
+}
+
 // NewJiraImportHandler creates a new Jira import handler.
 // sessionSecret: session-signing secret (resolved upstream by config.Load).
 // capturePayloadsDir: optional directory for request/response capture (empty = disabled).
-func NewJiraImportHandler(db database.Database, sessionSecret, capturePayloadsDir string) *JiraImportHandler {
+func NewJiraImportHandler(db database.Database, sessionSecret, capturePayloadsDir string, storage *blobstore.Store) *JiraImportHandler {
 	if sessionSecret == "" {
 		slog.Error("NewJiraImportHandler received empty session secret (config wiring bug)", slog.String("component", "jira"))
 		panic("config: empty session secret passed to NewJiraImportHandler")
 	}
 	return &JiraImportHandler{
 		db:                 db,
-		imports:            jiraimport.New(db),
+		imports:            jiraimport.New(db, storage),
+		storage:            storage,
 		encryption:         sso.NewSecretEncryption(sessionSecret),
 		capturePayloadsDir: capturePayloadsDir,
 		mappingFailures:    make(map[string]error),
+		importConcurrency:  jiraImportDefaultConcurrency,
 	}
 }
 
@@ -108,7 +147,7 @@ func (h *JiraImportHandler) Connect(w http.ResponseWriter, r *http.Request) {
 			IPAddress:    utils.GetClientIP(r),
 			UserAgent:    r.UserAgent(),
 			ActionType:   logger.ActionJiraConnect,
-			ResourceType: logger.ResourceJiraImport,
+			ResourceType: logger.ResourceJiraConnection,
 			ResourceName: connectionID,
 			Details: map[string]any{
 				"instance_url":    req.InstanceURL,
@@ -196,7 +235,7 @@ func (h *JiraImportHandler) UpdateConnection(w http.ResponseWriter, r *http.Requ
 			IPAddress:    utils.GetClientIP(r),
 			UserAgent:    r.UserAgent(),
 			ActionType:   logger.ActionJiraConnectionUpdate,
-			ResourceType: logger.ResourceJiraImport,
+			ResourceType: logger.ResourceJiraConnection,
 			ResourceName: connectionID,
 			Details: map[string]any{
 				"instance_url":    stored.InstanceURL,
@@ -310,7 +349,7 @@ func (h *JiraImportHandler) DeleteConnection(w http.ResponseWriter, r *http.Requ
 			IPAddress:    utils.GetClientIP(r),
 			UserAgent:    r.UserAgent(),
 			ActionType:   logger.ActionJiraDisconnect,
-			ResourceType: logger.ResourceJiraImport,
+			ResourceType: logger.ResourceJiraConnection,
 			ResourceName: connectionID,
 			Success:      true,
 		})

@@ -45,6 +45,11 @@ type HandleCommentParams struct {
 	PortalCustomerID *int
 	Content          string
 	IsPrivate        bool
+	// SourceKind and ActorKind identify the write path that created the
+	// comment. The reply service never emails comments written by a historical
+	// import, whichever field carries the import marker.
+	SourceKind string
+	ActorKind  string
 }
 
 const (
@@ -454,20 +459,34 @@ func (s *CommentService) UpdateContentInTx(ctx context.Context, tx database.Tx, 
 }
 
 func (s *CommentService) Create(params CreateCommentParams) (*CreateCommentResult, error) {
+	return s.CreateContext(context.Background(), params)
+}
+
+// CreateContext is Create with cancellation propagated into the comment
+// transaction. Callers with a per-request budget (email intake) use it so a
+// slow database cannot outlive the caller's deadline.
+func (s *CommentService) CreateContext(ctx context.Context, params CreateCommentParams) (*CreateCommentResult, error) {
 	if err := validateCommentSource(params.Content); err != nil {
 		return nil, err
 	}
-	return s.create(params)
+	return s.create(ctx, params)
 }
 
 // CreateImported creates a comment from an external system without rejecting
 // the surrounding import when its source needs UTF-8 repair or truncation.
+// Imported comments are historical, so live side effects (notifications,
+// mentions, webhooks, automation, customer email, per-comment audit, and
+// activity tracking) are suppressed; the canonical fact and the support
+// first-response metric are still recorded so imported history stays accurate.
+// (GH #439)
 func (s *CommentService) CreateImported(params CreateCommentParams) (*CreateCommentResult, error) {
 	params.Content = normalizeImportedCommentSource(params.Content)
 	if params.EventMetadata.SourceKind == "" {
 		params.EventMetadata.SourceKind = "import"
 	}
-	return s.create(params)
+	params.SuppressNotifications = true
+	params.SuppressActionEvents = true
+	return s.create(context.Background(), params)
 }
 
 // isPublicAgentComment reports whether a comment counts as the
@@ -477,7 +496,10 @@ func isPublicAgentComment(isPrivate bool, authorID int, portalCustomerID *int) b
 	return !isPrivate && authorID > 0 && portalCustomerID == nil
 }
 
-func (s *CommentService) create(params CreateCommentParams) (*CreateCommentResult, error) {
+func (s *CommentService) create(ctx context.Context, params CreateCommentParams) (*CreateCommentResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	// 2. Get item details for notifications and the webhook payload
 	item, err := repository.NewItemRepository(s.db).FindByIDWithDetails(params.ItemID)
 	if err != nil {
@@ -502,7 +524,7 @@ func (s *CommentService) create(params CreateCommentParams) (*CreateCommentResul
 		updatedAt = *params.UpdatedAt
 	}
 
-	tx, err := s.db.Begin()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin comment transaction: %w", err)
 	}
@@ -547,7 +569,11 @@ func (s *CommentService) create(params CreateCommentParams) (*CreateCommentResul
 	}
 	fallback.OccurredAt = now
 	metadata := mergeItemEventMetadata(params.EventMetadata, fallback)
-	if _, err := itemevents.NewRecorder(s.db).CommentCreated(context.Background(), tx, item.WorkspaceID, itemevents.CommentCreatedV1{
+	// Imported comments are historical. They keep the canonical fact and the
+	// support first-response metric, but must not drive live operational side
+	// effects such as per-comment audit entries or presence tracking.
+	importOrigin := itemevents.IsImportOrigin(metadata.ActorKind, metadata.SourceKind)
+	if _, err := itemevents.NewRecorder(s.db).CommentCreated(ctx, tx, item.WorkspaceID, itemevents.CommentCreatedV1{
 		ItemID: params.ItemID, CommentID: commentID, AuthorID: authorID,
 		PortalCustomerID: params.PortalCustomerID, IsPrivate: params.IsPrivate,
 		SuppressSideEffects: params.SuppressNotifications,
@@ -565,8 +591,10 @@ func (s *CommentService) create(params CreateCommentParams) (*CreateCommentResul
 
 	// Agent replies on customer-facing tickets are the helpdesk communication
 	// history (WI-1142); internal notes, internal items, and portal replies
-	// are not audited here.
-	if isPublicAgentComment(params.IsPrivate, params.AuthorID, params.PortalCustomerID) &&
+	// are not audited here. Imported comments are historical and are recorded
+	// by the import job's own audit entry instead.
+	if !importOrigin &&
+		isPublicAgentComment(params.IsPrivate, params.AuthorID, params.PortalCustomerID) &&
 		(item.ChannelID != nil || item.CreatorPortalCustomerID != nil) {
 		commentID := int(commentID)
 		emitServiceAudit(s.db, AuditActor{UserID: params.ActorUserID, Username: ""},
@@ -576,8 +604,9 @@ func (s *CommentService) create(params CreateCommentParams) (*CreateCommentResul
 			})
 	}
 
-	// 4. Track activity (if activityTracker != nil)
-	if s.activityTracker != nil {
+	// 4. Track activity (if activityTracker != nil). Imports do not make their
+	// historical authors look currently active.
+	if s.activityTracker != nil && !importOrigin {
 		if err := s.activityTracker.TrackItemActivity(params.ActorUserID, params.ItemID, ActivityComment); err != nil {
 			// Don't fail the request if activity tracking fails, just log it
 			slog.Warn("failed to track comment activity",
@@ -739,6 +768,8 @@ func (s *CommentService) create(params CreateCommentParams) (*CreateCommentResul
 				PortalCustomerID: params.PortalCustomerID,
 				Content:          params.Content,
 				IsPrivate:        params.IsPrivate,
+				SourceKind:       metadata.SourceKind,
+				ActorKind:        metadata.ActorKind,
 			}); err != nil {
 				slog.Warn("failed to handle email reply for comment",
 					slog.String("component", "comment_service"),
@@ -754,6 +785,7 @@ func (s *CommentService) create(params CreateCommentParams) (*CreateCommentResul
 	PublishItemChange(params.ItemID)
 
 	if s.issueSync != nil && !params.IsPrivate && !params.SuppressNotifications && params.AuthorID > 0 {
+		//nolint:gosec // The GitHub push intentionally outlives the request.
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()

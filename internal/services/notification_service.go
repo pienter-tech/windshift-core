@@ -46,6 +46,11 @@ type NotificationEvent struct {
 	ReferencedWorkspacePermission string         // Permission required to receive secondary-entity data
 	ReferencedEntityType          string         // Entity whose rendered data requires independent authorization
 	ReferencedEntityID            int            // Referenced entity ID
+	// ActorKind/SourceKind preserve provenance on the durable side-effect event
+	// so consumers can apply the same import and suppression rules as canonical
+	// domain facts. Empty defaults to system/side_effect.
+	ActorKind  string
+	SourceKind string
 }
 
 // RuleCache stores cached notification rules for fast lookup
@@ -177,6 +182,12 @@ type NotificationService struct {
 // per-tick recipient budget forever. Legacy scopes fail closed.
 func (ns *NotificationService) UnreadEmailBatches(maxBatchSize int) (map[string]*UserNotificationBatch, error) {
 	return ns.unreadEmailBatches(maxBatchSize, time.Now())
+}
+
+// UnreadEmailBatchesAt is UnreadEmailBatches with an explicit clock so the
+// scheduler can select batches and claim them against the same instant.
+func (ns *NotificationService) UnreadEmailBatchesAt(maxBatchSize int, now time.Time) (map[string]*UserNotificationBatch, error) {
+	return ns.unreadEmailBatches(maxBatchSize, now)
 }
 
 // SetRecipientEligibility installs a predicate the digest recipient scan
@@ -424,6 +435,40 @@ func (ns *NotificationService) queryUnreadEmailNotificationPage(userID, pageSize
 		return nil, fmt.Errorf("iterate unread notifications for user %d: %w", userID, err)
 	}
 	return page, nil
+}
+
+// ClaimNotificationEmailBatch fences one already-selected recipient batch. The
+// scheduler claims each batch immediately before sending it, so a long tick
+// cannot let an unsent batch's lease expire while another instance is free to
+// claim and duplicate it (WI-1773).
+func (ns *NotificationService) ClaimNotificationEmailBatch(batch *UserNotificationBatch, owner string, now time.Time, lease time.Duration) (*NotificationEmailClaim, error) {
+	if batch == nil || len(batch.NotificationIDs) == 0 {
+		return nil, fmt.Errorf("claim notification email batch: batch is empty")
+	}
+	if strings.TrimSpace(owner) == "" {
+		return nil, fmt.Errorf("claim notification email batch: owner is required")
+	}
+	if lease <= 0 {
+		return nil, fmt.Errorf("claim notification email batch: lease must be positive")
+	}
+	token, err := newNotificationClaimToken()
+	if err != nil {
+		return nil, err
+	}
+	expiresAt := now.Add(lease)
+	claimed, err := ns.claimNotificationIDs(batch.NotificationIDs, owner, token, now, expiresAt)
+	if err != nil {
+		return nil, err
+	}
+	if !claimed {
+		return nil, nil
+	}
+	return &NotificationEmailClaim{
+		UserNotificationBatch: batch,
+		Owner:                 owner,
+		Token:                 token,
+		ExpiresAt:             expiresAt,
+	}, nil
 }
 
 // ClaimUnreadEmailBatches atomically fences each selected recipient batch.
@@ -677,19 +722,44 @@ func (ns *NotificationService) NotifyUsers(userIDs []int, workspaceID, itemID, a
 	return err
 }
 
+// directNotificationSpec is the content and provenance shared by direct
+// (non-rule) notification batches. The notification manager validates the
+// authorization scope and provenance on insert.
+type directNotificationSpec struct {
+	Type               string
+	Title              string
+	Message            string
+	ActionURL          string
+	AuthorizationScope string
+	WorkspaceID        *int
+	ItemID             *int
+	SourceType         string
+	SourceID           *int
+	// DeliveryKey makes the insert idempotent when non-empty. A duplicate is
+	// silently skipped and not returned as stored. It must already include the
+	// recipient when the batch spans more than one user.
+	DeliveryKey string
+	// Timestamp defaults to the current time when zero.
+	Timestamp time.Time
+}
+
 // NotifyUsersWithRecords is NotifyUsers but returns the persisted
 // notifications so callers can correlate follow-up delivery. The mention
 // email path needs the notification id to suppress the content-less digest
 // copy once the dedicated email carrying the message body has gone out.
 func (ns *NotificationService) NotifyUsersWithRecords(userIDs []int, workspaceID, itemID, actorUserID int, notifType, title, message string) ([]models.Notification, error) {
-	var authorize func(int) (bool, error)
-	if ns.permService != nil {
-		authorize = func(userID int) (bool, error) {
-			return ns.permService.HasWorkspacePermission(userID, workspaceID, models.PermissionItemView)
-		}
-	}
-	return ns.notifyUsersAtURL(userIDs, actorUserID, notifType, title, message, itemActionURL(workspaceID, itemID),
-		models.NotificationScopeWorkspace, &workspaceID, &itemID, "item", &itemID, authorize)
+	workspace, item := workspaceID, itemID
+	return ns.notifyUsersAtURL(userIDs, actorUserID, directNotificationSpec{
+		Type:               notifType,
+		Title:              title,
+		Message:            message,
+		ActionURL:          itemActionURL(workspaceID, itemID),
+		AuthorizationScope: models.NotificationScopeWorkspace,
+		WorkspaceID:        &workspace,
+		ItemID:             &item,
+		SourceType:         "item",
+		SourceID:           &item,
+	}, ns.workspaceViewAuthorizer(workspaceID))
 }
 
 // NotifyUsersForAsset creates direct notifications for users who currently
@@ -707,8 +777,16 @@ func (ns *NotificationService) NotifyUsersForAsset(userIDs []int, setID, assetID
 	authorize := func(userID int) (bool, error) {
 		return checker.HasAssetSetPermission(userID, setID, AssetPermissionKeyView)
 	}
-	notifications, err := ns.notifyUsersAtURL(userIDs, actorUserID, notifType, title, message, actionURL,
-		models.NotificationScopeAsset, nil, nil, "asset", &assetID, authorize)
+	asset := assetID
+	notifications, err := ns.notifyUsersAtURL(userIDs, actorUserID, directNotificationSpec{
+		Type:               notifType,
+		Title:              title,
+		Message:            message,
+		ActionURL:          actionURL,
+		AuthorizationScope: models.NotificationScopeAsset,
+		SourceType:         "asset",
+		SourceID:           &asset,
+	}, authorize)
 	if err != nil {
 		return nil, err
 	}
@@ -719,13 +797,57 @@ func (ns *NotificationService) NotifyUsersForAsset(userIDs []int, setID, assetID
 	return delivered, nil
 }
 
+// DueDateReminder is one due-soon item reminder to deliver.
+type DueDateReminder struct {
+	RecipientID int
+	WorkspaceID int
+	ItemID      int
+	ItemKey     string
+	Title       string
+	DueDate     time.Time
+}
+
+// NotifyDueDateReminder delivers one due-date reminder through the shared
+// direct-notification path: agents, inactive users, and users without current
+// workspace view permission are dropped, and the delivery key makes the insert
+// idempotent. A nil error means the candidate was handled, whether or not a row
+// was inserted, so the caller can record the sent-reminder ledger and keep an
+// ineligible recipient from being re-selected on every sweep.
+func (ns *NotificationService) NotifyDueDateReminder(reminder DueDateReminder, now time.Time) error {
+	dueDate := reminder.DueDate.Format("2006-01-02")
+	workspaceID, itemID := reminder.WorkspaceID, reminder.ItemID
+	_, err := ns.notifyUsersAtURL([]int{reminder.RecipientID}, 0, directNotificationSpec{
+		Type:               "reminder",
+		Title:              fmt.Sprintf("Reminder: %s is due soon", reminder.ItemKey),
+		Message:            fmt.Sprintf("%s is due on %s", reminder.Title, dueDate),
+		ActionURL:          itemActionURL(workspaceID, itemID),
+		AuthorizationScope: models.NotificationScopeWorkspace,
+		WorkspaceID:        &workspaceID,
+		ItemID:             &itemID,
+		SourceType:         "item.due_reminder",
+		SourceID:           &itemID,
+		DeliveryKey:        fmt.Sprintf("due-reminder:%d:%s:%d", itemID, dueDate, reminder.RecipientID),
+		Timestamp:          now,
+	}, ns.workspaceViewAuthorizer(workspaceID))
+	return err
+}
+
+// workspaceViewAuthorizer re-checks the recipient's current item.view
+// permission before a direct notification is stored. A nil permission service
+// (test wiring) admits every recipient.
+func (ns *NotificationService) workspaceViewAuthorizer(workspaceID int) func(int) (bool, error) {
+	if ns.permService == nil {
+		return nil
+	}
+	return func(userID int) (bool, error) {
+		return ns.permService.HasWorkspacePermission(userID, workspaceID, models.PermissionItemView)
+	}
+}
+
 func (ns *NotificationService) notifyUsersAtURL(
 	userIDs []int,
 	actorUserID int,
-	notifType, title, message, actionURL, authorizationScope string,
-	workspaceID, itemID *int,
-	sourceType string,
-	sourceID *int,
+	spec directNotificationSpec,
 	authorize func(int) (bool, error),
 ) ([]models.Notification, error) {
 	if ns.notificationManager == nil {
@@ -735,9 +857,12 @@ func (ns *NotificationService) notifyUsersAtURL(
 	if ns.db != nil {
 		skipAsAgent = ns.agentOrUnknownUsers(userIDs)
 	}
+	now := spec.Timestamp
+	if now.IsZero() {
+		now = time.Now()
+	}
 	seen := make(map[int]bool, len(userIDs))
 	notifications := make([]models.Notification, 0, len(userIDs))
-	now := time.Now()
 	for _, uid := range userIDs {
 		if uid <= 0 || uid == actorUserID || seen[uid] || skipAsAgent[uid] {
 			continue
@@ -754,17 +879,18 @@ func (ns *NotificationService) notifyUsersAtURL(
 		}
 		notifications = append(notifications, models.Notification{
 			UserID:             uid,
-			Title:              title,
-			Message:            message,
-			Type:               notifType,
+			Title:              spec.Title,
+			Message:            spec.Message,
+			Type:               spec.Type,
 			Timestamp:          now,
 			Read:               false,
-			ActionURL:          actionURL,
-			AuthorizationScope: authorizationScope,
-			WorkspaceID:        workspaceID,
-			ItemID:             itemID,
-			SourceType:         sourceType,
-			SourceID:           sourceID,
+			ActionURL:          spec.ActionURL,
+			AuthorizationScope: spec.AuthorizationScope,
+			WorkspaceID:        spec.WorkspaceID,
+			ItemID:             spec.ItemID,
+			SourceType:         spec.SourceType,
+			SourceID:           spec.SourceID,
+			DeliveryKey:        spec.DeliveryKey,
 		})
 	}
 	if len(notifications) == 0 {
@@ -1256,14 +1382,23 @@ func (ns *NotificationService) determineRecipients(event *NotificationEvent, rul
 		if skipAsAgent[userID] {
 			continue
 		}
-		if !ns.canViewWorkspace(userID, event.WorkspaceID) {
+		// Resolve the recipient's permission snapshot once and reuse it for
+		// the workspace view check and the referenced-entity check. The
+		// is_agent/is_active probe above is already batched, so no per-recipient
+		// user query is needed.
+		permissions, err := ns.recipientPermissions(userID)
+		if err != nil {
+			slog.Warn("permission snapshot failed during recipient filtering; denying",
+				slog.String("component", "notifications"),
+				slog.Int("user_id", userID),
+				slog.Any("error", err))
+			continue
+		}
+		if !ns.canViewWorkspaceSnapshot(permissions, event.WorkspaceID) {
 			continue
 		}
 		if event.ReferencedEntityType != "" || event.ReferencedWorkspacePermission != "" {
-			snapshot, err := ns.notificationAuth.Snapshot(userID)
-			if err != nil {
-				continue
-			}
+			snapshot := ns.notificationAuth.snapshotForRecipient(userID, true, permissions)
 			visible, err := snapshot.Visible(models.Notification{
 				UserID:                        userID,
 				AuthorizationScope:            models.NotificationScopeSystem,
@@ -1347,27 +1482,26 @@ func (ns *NotificationService) agentOrUnknownUsers(userIDs []int) map[int]bool {
 	return skip
 }
 
-// canViewWorkspace returns true when the user currently has item-view
-// permission on the workspace. A nil permService (test wiring) means we
-// fall back to "allow" so legacy paths keep working.
-func (ns *NotificationService) canViewWorkspace(userID, workspaceID int) bool {
-	return ns.canUseWorkspacePermission(userID, workspaceID, models.PermissionItemView)
-}
-
-func (ns *NotificationService) canUseWorkspacePermission(userID, workspaceID int, permission string) bool {
+// canViewWorkspaceSnapshot answers the item.view fan-out check from an already
+// resolved snapshot. A nil permission service (test wiring) admits every
+// recipient; a nil snapshot with a live service fails closed.
+func (ns *NotificationService) canViewWorkspaceSnapshot(permissions *models.UserPermissionCache, workspaceID int) bool {
 	if ns.permService == nil {
 		return true
 	}
-	ok, err := ns.permService.HasWorkspacePermission(userID, workspaceID, permission)
-	if err != nil {
-		slog.Warn("permission check failed during recipient filtering; denying",
-			slog.String("component", "notifications"),
-			slog.Int("user_id", userID),
-			slog.Int("workspace_id", workspaceID),
-			slog.Any("error", err))
+	if permissions == nil {
 		return false
 	}
-	return ok
+	return ns.permService.workspacePermission(permissions, workspaceID, models.PermissionItemView)
+}
+
+// recipientPermissions resolves a recipient's permission snapshot once per
+// fan-out pass. A nil permission service (test wiring) returns a nil snapshot.
+func (ns *NotificationService) recipientPermissions(userID int) (*models.UserPermissionCache, error) {
+	if ns.permService == nil {
+		return nil, nil
+	}
+	return ns.permService.GetUserEffectivePermissions(userID)
 }
 
 // queryUserIDs runs a query that selects a single user-id column and returns

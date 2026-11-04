@@ -25,6 +25,9 @@ type itemCreation struct {
 	updatedAt  time.Time
 	statusID   *int
 	priorityID *int
+	// eventMetadata is the merged provenance recorded with the creation fact.
+	// finish() consults it so import-origin writes never start an agent run.
+	eventMetadata itemevents.Metadata
 }
 
 func prepareItemCreation(ctx context.Context, db database.Database, params ItemCreationParams) (*itemCreation, error) {
@@ -247,9 +250,9 @@ func (c *itemCreation) insert() (int, error) {
 		if err != nil {
 			return 0, fmt.Errorf("failed to generate frac_index: %w", err)
 		}
-		itemNumber, err := repository.NewItemRepository(c.db).GetNextWorkspaceItemNumber(tx, c.params.WorkspaceID)
+		itemNumber, err := c.resolveItemNumber(tx)
 		if err != nil {
-			return 0, fmt.Errorf("failed to generate workspace item number: %w", err)
+			return 0, err
 		}
 		itemID, err := c.insertRow(tx, itemNumber, fracIndex)
 		if err != nil {
@@ -263,6 +266,49 @@ func (c *itemCreation) insert() (int, error) {
 		}
 		return itemID, nil
 	})
+}
+
+// resolveItemNumber honors a pinned number while it is free and otherwise
+// falls back to the MAX+1 allocator. The availability check runs inside the
+// creation transaction, so a concurrent create that takes the same number
+// pushes the retry onto the fallback path instead of failing the import.
+func (c *itemCreation) resolveItemNumber(tx database.Tx) (int, error) {
+	repo := repository.NewItemRepository(c.db)
+	if c.params.PinnedItemNumber == nil {
+		number, err := repo.GetNextWorkspaceItemNumber(tx, c.params.WorkspaceID)
+		if err != nil {
+			return 0, fmt.Errorf("failed to generate workspace item number: %w", err)
+		}
+		return number, nil
+	}
+
+	requested := *c.params.PinnedItemNumber
+	taken, err := repo.IsWorkspaceItemNumberTaken(tx, c.params.WorkspaceID, requested)
+	if err != nil {
+		return 0, fmt.Errorf("failed to check pinned workspace item number: %w", err)
+	}
+	if !taken {
+		c.recordPinnedItemNumber(requested, requested, false)
+		return requested, nil
+	}
+
+	number, err := repo.GetNextWorkspaceItemNumber(tx, c.params.WorkspaceID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to allocate fallback workspace item number: %w", err)
+	}
+	c.recordPinnedItemNumber(requested, number, true)
+	return number, nil
+}
+
+func (c *itemCreation) recordPinnedItemNumber(requested, assigned int, fellBack bool) {
+	if c.params.PinnedItemNumberResult == nil {
+		return
+	}
+	*c.params.PinnedItemNumberResult = PinnedItemNumberOutcome{
+		Requested: requested,
+		Assigned:  assigned,
+		FellBack:  fellBack,
+	}
 }
 
 func (c *itemCreation) insertRow(tx database.Tx, itemNumber int, fracIndex string) (int, error) {
@@ -302,6 +348,7 @@ func (c *itemCreation) recordCreation(tx database.Tx, itemID, itemNumber int) er
 		return err
 	}
 	metadata := itemCreateEventMetadata(c.params, c.createdAt)
+	c.eventMetadata = metadata
 	creatorUserID := 0
 	if c.params.CreatorID != nil {
 		creatorUserID = *c.params.CreatorID
@@ -356,7 +403,11 @@ func decodeItemEventFields(raw, name string) (map[string]any, error) {
 func (c *itemCreation) finish(itemID int) {
 	p := c.params
 	maybeRecordPortalThreadAnchor(c.db, int64(itemID), p.ChannelID, p.CreatorPortalCustomerID, p.Title)
-	if !p.SkipAssigneeTrigger && p.AssigneeID != nil {
+	// A bulk import of pre-assigned items must not start one agent run per row.
+	// The import marker on the creation fact is authoritative, so a caller that
+	// forgets SkipAssigneeTrigger is still safe.
+	if !p.SkipAssigneeTrigger && p.AssigneeID != nil &&
+		!itemevents.IsImportOrigin(c.eventMetadata.ActorKind, c.eventMetadata.SourceKind) {
 		triggeredBy := p.ValidatingUserID
 		if triggeredBy == 0 && p.CreatorID != nil {
 			triggeredBy = *p.CreatorID

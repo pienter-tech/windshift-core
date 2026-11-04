@@ -52,21 +52,22 @@ type Config struct {
 	CodingAgent  CodingAgentConfig
 	Logbook      LogbookConfig
 	Notification NotificationConfig
+	Reminders    ReminderConfig
+	Email        EmailConfig
 	OutboundTLS  OutboundTLSConfig
 	Push         PushConfig
 	Jira         JiraConfig
 	Memory       MemoryConfig
+	Storage      StorageConfig
 
 	// Flat fields (no logical grouping)
-	AttachmentPath              string
-	EnableAdminFallback         bool
-	DisableIPRateLimit          bool
-	MaxUserConcurrency          int
-	MaxTemplateSeedItems        int
-	MCPEnabled                  bool
-	RecoverUser                 string
-	ActivateDurableActions      bool
-	ActivateDurableAssetActions bool
+	AttachmentPath       string
+	EnableAdminFallback  bool
+	DisableIPRateLimit   bool
+	MaxUserConcurrency   int
+	MaxTemplateSeedItems int
+	MCPEnabled           bool
+	RecoverUser          string
 
 	// MetricsToken, when non-empty (WINDSHIFT_METRICS_TOKEN), makes GET /metrics
 	// require an "Authorization: Bearer <token>" header. Empty leaves the
@@ -83,6 +84,31 @@ type Config struct {
 // process. The runtime heap target and cache allocations are derived from it.
 type MemoryConfig struct {
 	LimitMB int
+}
+
+// Storage backend names accepted by STORAGE_BACKEND.
+const (
+	StorageBackendLocal = "local"
+	StorageBackendS3    = "s3"
+)
+
+// StorageConfig selects where attachment blobs live. Local disk stays the
+// zero-config default; S3 is opt-in.
+type StorageConfig struct {
+	Backend   string
+	LocalPath string
+	S3        S3StorageConfig
+}
+
+// S3StorageConfig holds the S3-compatible bucket settings.
+type S3StorageConfig struct {
+	Endpoint        string
+	Bucket          string
+	Region          string
+	AccessKeyID     string
+	SecretAccessKey string
+	Prefix          string
+	ForcePathStyle  bool
 }
 
 // DBConfig holds database connection + pool configuration.
@@ -172,6 +198,9 @@ type PluginsConfig struct {
 	// LicensePubKey is the base64 Ed25519 public key that plugin license
 	// tokens must verify against. Empty disables license enforcement.
 	LicensePubKey string
+	// AllowPublicRoutes permits plugin routes that declare auth "none". Off by
+	// default: a public route is a deliberate operator opt-in.
+	AllowPublicRoutes bool
 }
 
 // LLMConfig holds LLM-related configuration.
@@ -203,6 +232,16 @@ type LogbookConfig struct {
 	Endpoint string
 }
 
+// ReminderConfig holds the due-date reminder scheduler knobs.
+type ReminderConfig struct {
+	// Interval is how often the scheduler scans for due-soon items
+	// (WINDSHIFT_REMINDER_INTERVAL). Zero means the built-in default (1 hour).
+	Interval time.Duration
+	// BatchSize caps how many due items one scan handles
+	// (WINDSHIFT_REMINDER_BATCH_SIZE). Zero means the built-in default (500).
+	BatchSize int
+}
+
 // NotificationConfig holds the notification WriteBatcher tuning knobs.
 type NotificationConfig struct {
 	FlushInterval time.Duration
@@ -219,6 +258,19 @@ type NotificationConfig struct {
 	// OutboxBatchSize is how many outbox rows one drain pass claims
 	// (WINDSHIFT_EMAIL_OUTBOX_BATCH_SIZE). Zero means the built-in default.
 	OutboxBatchSize int
+}
+
+// EmailConfig holds inbound email polling knobs.
+type EmailConfig struct {
+	// PollInterval is how often the scheduler polls mailboxes
+	// (WINDSHIFT_EMAIL_POLL_INTERVAL). Zero means the built-in default.
+	PollInterval time.Duration
+	// BatchSize is how many messages one intake fetches per poll
+	// (WINDSHIFT_EMAIL_BATCH_SIZE). Zero means the built-in default.
+	BatchSize int
+	// PollConcurrency bounds how many mailboxes poll at once
+	// (WINDSHIFT_EMAIL_POLL_CONCURRENCY). Zero means the built-in default.
+	PollConcurrency int
 }
 
 // OutboundTLSConfig controls process-wide certificate verification for
@@ -251,21 +303,33 @@ type JiraConfig struct {
 	// CapturePayloadsDir, when non-empty, makes the Jira import path write
 	// request/response payloads to this directory for debugging.
 	CapturePayloadsDir string
+	// ImportMaxDuration caps a single Jira import. Zero (the default) means no
+	// overall wall-clock limit: per-request HTTP timeouts and the worker lease
+	// already keep the import live, and a large project must be allowed to
+	// finish. When set, an import that hits the limit stops and reports a
+	// timed_out status instead of a misleading completed_with_errors.
+	ImportMaxDuration time.Duration
+	// ImportWatchers enables mapping Jira issue watchers to Windshift item
+	// watches. It is off by default: the identities require one extra Jira
+	// request per issue, which dominates large imports for a low-value mapping.
+	ImportWatchers bool
+	// ImportConcurrency overrides how many independent Jira requests an import
+	// keeps in flight. Zero uses the built-in default.
+	ImportConcurrency int
 }
 
 // LogbookSidecarConfig is the sibling of Config for the standalone logbook
 // sidecar binary (cmd/logbook/main.go). The sidecar never parses CLI flags
 // and has a narrower set of concerns than the main server.
 type LogbookSidecarConfig struct {
-	PostgresConn           string
-	Port                   string
-	StoragePath            string
-	LLMEndpoint            string
-	ArticleEndpoint        string
-	MainServerURL          string
-	MainServerSecret       string
-	BaseURL                string
-	ActivateDurableActions bool
-	Logging                LoggingConfig
-	OutboundTLS            OutboundTLSConfig
+	PostgresConn     string
+	Port             string
+	StoragePath      string
+	LLMEndpoint      string
+	ArticleEndpoint  string
+	MainServerURL    string
+	MainServerSecret string
+	BaseURL          string
+	Logging          LoggingConfig
+	OutboundTLS      OutboundTLSConfig
 }

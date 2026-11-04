@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"windshift/internal/blobstore"
 	"windshift/internal/database"
 	"windshift/internal/repository"
 	"windshift/internal/services"
@@ -22,6 +23,7 @@ const JiraImportLeaseDuration = 2 * time.Minute
 
 type Service struct {
 	db           database.Database
+	storage      *blobstore.Store
 	statuses     *repository.StatusRepository
 	itemTypes    *repository.ItemTypeRepository
 	customFields *repository.CustomFieldRepository
@@ -46,9 +48,10 @@ type Service struct {
 	workspaces   *repository.WorkspaceRepository
 }
 
-func New(db database.Database) *Service {
+func New(db database.Database, storage *blobstore.Store) *Service {
 	return &Service{
 		db:           db,
+		storage:      storage,
 		statuses:     repository.NewStatusRepository(db),
 		itemTypes:    repository.NewItemTypeRepository(db),
 		customFields: repository.NewCustomFieldRepository(db),
@@ -142,6 +145,7 @@ func (s *Service) ListJobs() ([]JobInfo, error) {
 		       j.config_json, j.progress_json, j.result_json, j.error_message, j.created_at, j.started_at, j.completed_at
 		FROM jira_import_jobs j
 		LEFT JOIN jira_import_connections c ON j.connection_id = c.id
+		WHERE j.hidden_at IS NULL
 		ORDER BY j.created_at DESC
 	`)
 	if err != nil {
@@ -244,7 +248,7 @@ func (s *Service) PreviousImports(projectKeys []string) ([]PreviousImport, error
 		       (SELECT COUNT(*) FROM jira_import_id_mappings m WHERE m.job_id = j.id AND m.entity_type = 'workspace'),
 		       (SELECT COUNT(*) FROM jira_import_id_mappings m WHERE m.job_id = j.id AND m.entity_type = 'item')
 		FROM jira_import_jobs j
-		WHERE j.status IN ('completed', 'completed_with_errors')
+		WHERE j.status IN ('completed', 'completed_with_errors', 'timed_out')
 		ORDER BY j.completed_at DESC
 		LIMIT 10
 	`)
@@ -271,6 +275,32 @@ func (s *Service) PreviousImports(projectKeys []string) ([]PreviousImport, error
 		imports = append(imports, previous)
 	}
 	return imports, rows.Err()
+}
+
+// HideJob clears a finished import from the history listing without touching
+// the job or its imported data. The job keeps driving conflict detection, so a
+// re-import of the same projects still requires an explicit force.
+func (s *Service) HideJob(jobID string) error {
+	var status string
+	var hiddenAt sql.NullTime
+	err := s.db.QueryRow(`SELECT status, hidden_at FROM jira_import_jobs WHERE id = ?`, jobID).Scan(&status, &hiddenAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrJobNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if status == "queued" || status == "running" {
+		return ErrJobActive
+	}
+	if hiddenAt.Valid {
+		return nil
+	}
+	_, err = s.db.ExecWrite(`
+		UPDATE jira_import_jobs SET hidden_at = CURRENT_TIMESTAMP
+		WHERE id = ? AND hidden_at IS NULL
+	`, jobID)
+	return err
 }
 
 func (s *Service) Creator(jobID string) (int, error) {
@@ -315,7 +345,7 @@ func (s *Service) UpdateStatus(jobID, token, status, phase string, progress *Pro
 	var result sql.Result
 	var err error
 	switch status {
-	case "completed", "completed_with_errors", "failed":
+	case "completed", "completed_with_errors", "failed", "timed_out":
 		result, err = s.db.ExecWrite(`
 			UPDATE jira_import_jobs
 			SET status = ?, phase = ?, progress_json = ?, error_message = ?,

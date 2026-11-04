@@ -251,6 +251,17 @@ export const jiraImport = {
     }
   },
 
+  // Clear an import from the history listing without deleting its data.
+  async hideImportJob(jobId) {
+    try {
+      await jiraImportApi.hideImportJob(jobId);
+      await this.loadImportJobs();
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err.message || 'Failed to remove import from history' };
+    }
+  },
+
   // Use a saved connection (for wizard)
   useSavedConnection(connection) {
     connectionState.connectionId = connection.id;
@@ -727,7 +738,7 @@ export const jiraImport = {
           importState.result = status;
           markWizardStepComplete('import');
           return; // Stop polling
-        } else if (status.status === 'failed') {
+        } else if (status.status === 'failed' || status.status === 'timed_out') {
           importState.error = status.error_message || 'Import failed';
           return; // Stop polling
         }

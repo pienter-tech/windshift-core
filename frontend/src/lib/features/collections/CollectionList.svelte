@@ -1,8 +1,7 @@
 <script>
-  import { untrack } from 'svelte';
-  import { useEventListener } from 'runed';
   import { t } from '../../stores/i18n.svelte.js';
   import { errorToast } from '../../stores/toasts.svelte.js';
+  import { onWorkItemRefresh } from '../../stores/workItemRefresh.js';
   import {
     applyCollectionItem,
     collectionStore,
@@ -11,6 +10,7 @@
   } from '../../stores/collectionContext.js';
   import { useCollectionEventStream } from '../../composables/useCollectionEventStream.svelte.js';
   import { useCollectionSearch } from '../../composables/useCollectionSearch.svelte.js';
+  import { useCollectionEditorOptionsPrime } from '../../composables/useCollectionEditorOptionsPrime.svelte.js';
   import { createDeleteItemHandler, createItemActionsBuilder } from '../../utils/workItemTableHelpers.js';
   import {
     getListColumnLabel,
@@ -19,26 +19,21 @@
   } from '../../utils/workItemListColumns.js';
   import { useGradientStyles } from '../../stores/workspaceGradient.svelte.js';
   import { workspacePermissions } from '../../stores/workspacePermissions.svelte.js';
-  import { collectionEditorOptions } from '../../stores/collectionEditorOptions.svelte.js';
   import { collectionFieldLinks } from '../../stores/collectionFieldLinks.svelte.js';
   import { itemModalStore } from '../../stores/itemModalStore.svelte.js';
   import { workspaceDataStore } from '../../stores/workspaceDataStore.svelte.js';
-  import MoreHorizontal from '@lucide/svelte/icons/more-horizontal';
   import ArrowUp from '@lucide/svelte/icons/arrow-up';
   import ArrowDown from '@lucide/svelte/icons/arrow-down';
   import ArrowUpDown from '@lucide/svelte/icons/arrow-up-down';
-  import { draggable } from '@atlaskit/pragmatic-drag-and-drop/element/adapter';
   import SearchInput from '../../components/SearchInput.svelte';
-  import DropdownMenu from '../../layout/DropdownMenu.svelte';
-  import Pagination from '../../components/Pagination.svelte';
   import ViewHeader from '../../layout/ViewHeader.svelte';
   import StaticViewBackground from '../../layout/StaticViewBackground.svelte';
   import EmptyState from '../../components/EmptyState.svelte';
   import TableHeaderBar from '../../components/TableHeaderBar.svelte';
-  import ListCellRenderer from './ListCellRenderer.svelte';
+  import WorkItemListRow from './WorkItemListRow.svelte';
+  import WorkItemListFooter from './WorkItemListFooter.svelte';
   import ColumnSelector from './ColumnSelector.svelte';
   import SubFilterBar from './SubFilterBar.svelte';
-  import LazyRender from '../../components/LazyRender.svelte';
   import { useListColumnConfig } from './listColumnConfig.svelte.js';
 
   let { workspaceId, collectionId = null } = $props();
@@ -92,31 +87,10 @@
   // workspace store. Prime the row-editor cache so opening a cell does not
   // repeat those requests. Global collections deliberately skip this: their
   // rows can belong to different workspaces and must resolve independently.
-  $effect(() => {
-    const id = Number(workspaceId);
-    if (
-      !Number.isInteger(id) ||
-      id <= 0 ||
-      !workspaceDataStore.initialized ||
-      Number(workspaceDataStore.workspaceId) !== id
-    ) {
-      return;
-    }
-
-    untrack(() =>
-      collectionEditorOptions.prime(
-        id,
-        {
-          statuses,
-          users,
-          milestones,
-          iterations,
-          projects,
-        },
-        workspaceDataStore.planningCompleteness
-      )
-    );
-  });
+  useCollectionEditorOptionsPrime(
+    () => workspaceId,
+    () => ({ statuses, users, milestones, iterations, projects })
+  );
 
   // Computed: Generate grid-template-columns CSS via the shared list grid
   // helpers (also used by the support queue's list-shaped table).
@@ -124,16 +98,18 @@
 
   let gridMinWidth = $derived(listGridMinWidth(listColumns));
 
-  useEventListener(() => window, 'refresh-work-items', (/** @type {CustomEvent} */ event) => {
-    const item = event.detail?.item;
-    // Workspace-scoped views can apply the item immediately as a display
-    // optimization. Collection membership is verified by the store's
-    // coalesced reconciliation instead of one query per event.
-    if (item && !collectionId && Number(item.workspace_id) === Number(workspaceId)) {
-      applyCollectionItem(item);
-    }
-    scheduleCollectionReconciliation();
-  });
+  $effect(() =>
+    onWorkItemRefresh((detail) => {
+      const item = detail?.item;
+      // Workspace-scoped views can apply the item immediately as a display
+      // optimization. Collection membership is verified by the store's
+      // coalesced reconciliation instead of one query per event.
+      if (item && !collectionId && Number(item.workspace_id) === Number(workspaceId)) {
+        applyCollectionItem(item);
+      }
+      scheduleCollectionReconciliation();
+    })
+  );
 
   // Scoped SSE invalidations (WI-1624): any frame runs the existing delta fetch,
   // and a reconnect reconciles. Without this the list kept showing items that
@@ -172,7 +148,6 @@
     () => `${workspaceId ?? ''}|${collectionId ?? ''}|${collectionStore.effectiveSubFilterQL}`
   );
   let filteredItems = $derived(search.items);
-  let filteredItemsById = $derived(new Map(filteredItems.map((item) => [item.id, item])));
 
   // Resolve only the assignees the visible rows reference instead of waiting
   // for the whole directory before the list can render.
@@ -180,28 +155,6 @@
     const ids = filteredItems.map((item) => item.assignee_id).filter(Boolean);
     if (ids.length > 0) void workspaceDataStore.hydrateUsers(ids);
   });
-
-  function registerListRow(element, itemId) {
-    const cleanup = draggable({
-      element,
-      getInitialData: () => ({
-        item: filteredItemsById.get(itemId),
-        type: 'work-item'
-      }),
-      onDragStart: () => {
-        element.style.opacity = '0.5';
-      },
-      onDrop: () => {
-        element.style.opacity = '';
-      }
-    });
-    return {
-      destroy() {
-        element.style.opacity = '';
-        cleanup();
-      }
-    };
-  }
 
   // Linking fields live in item_links rather than custom_field_values. Hydrate
   // all visible rows through the bounded batch endpoint so adding one linking
@@ -275,7 +228,7 @@
             placeholder={t('common.search')}
             dataTestid="list-search-input"
           />
-          <SubFilterBar {workspaceId} />
+          <SubFilterBar {workspaceId} {collectionId} />
         </div>
 
         <div class="flex items-center gap-2">
@@ -350,48 +303,28 @@
           <!-- Table Body -->
           <div>
             {#each filteredItems as item (item.id)}
-              <div use:registerListRow={item.id} class="px-4 py-3 list-row transition-colors" style="border-top: 1px solid var(--ds-border);" data-item-row data-item-id={item.id} data-testid={`workspace-item-row-${item.id}`}>
-                <LazyRender>
-                  {#snippet children()}
-                    <div
-                      class="grid gap-4 items-center"
-                      style="grid-template-columns: {gridTemplateColumns}; min-width: {gridMinWidth};"
-                    >
-                      {#each listColumns as column (column.field_identifier)}
-                        <div class="min-w-0 overflow-hidden">
-                          <ListCellRenderer
-                            {item}
-                            {column}
-                            {workspace}
-                            canEdit={workspacePermissions.canEdit(item.workspace_id)}
-                            {statuses}
-                            {statusCategories}
-                            {priorities}
-                            {milestones}
-                            {iterations}
-                            {users}
-                            {projects}
-                            {itemTypes}
-                            {customFieldDefinitions}
-                            onitemUpdated={handleItemUpdated}
-                            onupdateError={handleUpdateError}
-                          />
-                        </div>
-                      {/each}
-
-                      <!-- Actions -->
-                      <div>
-                        <DropdownMenu
-                          triggerText=""
-                          triggerIcon={MoreHorizontal}
-                          triggerClass="p-2 rounded action-btn transition-colors"
-                          items={buildItemActions(item)}
-                        />
-                      </div>
-                    </div>
-                  {/snippet}
-                </LazyRender>
-              </div>
+              <WorkItemListRow
+                {item}
+                columns={listColumns}
+                {gridTemplateColumns}
+                {gridMinWidth}
+                {workspace}
+                canEdit={workspacePermissions.canEdit(item.workspace_id)}
+                {statuses}
+                {statusCategories}
+                {priorities}
+                {milestones}
+                {iterations}
+                {users}
+                {projects}
+                {itemTypes}
+                {customFieldDefinitions}
+                actions={buildItemActions(item)}
+                onitemUpdated={handleItemUpdated}
+                onupdateError={handleUpdateError}
+                draggable
+                rowTestid={`workspace-item-row-${item.id}`}
+              />
             {/each}
           </div>
         </div>
@@ -420,16 +353,12 @@
             </div>
           {/if}
         {:else if itemsPagination && itemsPagination.total_items > 0 && workItems.length > 0}
-          <div class="mt-6">
-            <Pagination
-              currentPage={itemsPagination.page}
-              totalItems={itemsPagination.total_items}
-              itemsPerPage={itemsPagination.limit}
-              maxItems={10000}
-              onpageChange={handlePageChange}
-              onpageSizeChange={handlePageSizeChange}
-            />
-          </div>
+          <WorkItemListFooter
+            pagination={itemsPagination}
+            itemCount={workItems.length}
+            onpageChange={handlePageChange}
+            onpageSizeChange={handlePageSizeChange}
+          />
         {:else}
           <!-- Results Summary for legacy/non-paginated responses -->
           <div class="mt-4 text-sm  text-center" style="color: var(--ctx-text-subtle, var(--ds-text-subtle));">
@@ -447,10 +376,6 @@
 {/if}
 
 <style>
-  .list-row:hover {
-    background-color: var(--ds-background-neutral-hovered);
-  }
-
   :global(.item-key:hover) {
     background-color: var(--ds-background-neutral-hovered) !important;
   }

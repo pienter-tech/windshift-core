@@ -3,6 +3,7 @@
   import { tests } from '../../api/tests/index.js';
   import { t } from '../../stores/i18n.svelte.js';
   import Badge from '../../components/Badge.svelte';
+  import StatusButton from '../../components/StatusButton.svelte';
   import { parseScenarioSpec, flattenExamples, applyExampleRow } from './bddSpec.js';
   import BDDScenarioView from './BDDScenarioView.svelte';
 
@@ -51,9 +52,16 @@
   let expanded = $state({});
   let saving = $state({});
   let loadError = $state(null);
+  // The results/expanded state belongs to one case's execution. Rehydrating
+  // on every incoming results array would clobber local state with the
+  // parent's copy of our own saves (and collapse the expanders), so the
+  // snapshot below is only taken when a different case's data arrives.
+  let hydratedCaseId = $state(null);
 
   $effect(() => {
-    // Re-hydrate whenever the parent hands us a different case's results.
+    const caseId = testCase?.id ?? null;
+    if (caseId === hydratedCaseId) return;
+    hydratedCaseId = caseId;
     const next = {};
     for (const result of initialResults) {
       next[result.example_index] = {
@@ -100,6 +108,8 @@
       ...results,
       [exampleIndex]: { ...(results[exampleIndex] || { row_values: {} }), status },
     };
+    // Merge-patch: only the status changes; notes and actual result are kept
+    // server-side, and an in-flight notes write cannot revert the status.
     saveExample(exampleIndex, { status });
   }
 
@@ -112,11 +122,9 @@
 
   function commitExampleNotes(exampleIndex, value) {
     setExampleField(exampleIndex, 'notes', value);
-    saveExample(exampleIndex, {
-      notes: value,
-      status: results[exampleIndex]?.status || 'not_run',
-      actual_result: results[exampleIndex]?.actual_result || '',
-    });
+    // Merge-patch: only the notes change, so this cannot race a status
+    // click into reverting it.
+    saveExample(exampleIndex, { notes: value });
   }
 
   function toggleSteps(exampleIndex) {
@@ -155,12 +163,12 @@
   }
 
   function setExampleStepStatus(exampleIndex, stepNumber, status) {
-    saveExampleStep(exampleIndex, stepNumber, {
-      status,
-      item_id: results[exampleIndex]?.step_results?.[stepNumber]?.item_id ?? null,
-    });
+    // Merge-patch: only the status changes; a previously linked item and any
+    // notes are preserved server-side.
+    saveExampleStep(exampleIndex, stepNumber, { status });
   }
 
+  /** @type {Array<{ status: 'passed' | 'failed' | 'blocked' | 'skipped', label: string }>} */
   const statusButtons = [
     { status: 'passed', label: t('testing.pass') },
     { status: 'failed', label: t('testing.fail') },
@@ -191,7 +199,12 @@
         <div class="flex items-center justify-between gap-3 flex-wrap">
           <div class="flex items-center gap-2 flex-wrap">
             <span class="text-sm font-semibold" style="color: var(--ds-text);">
-              {t('testing.exampleN', { n: row.exampleIndex + 1 })}
+              {#if row.blockIndex === -1}
+                <!-- Plain scenario: the implicit execution row is the whole scenario. -->
+                {spec.scenario_keyword}: {spec.scenario_name}
+              {:else}
+                {t('testing.exampleN', { n: row.exampleIndex + 1 })}
+              {/if}
             </span>
             {#each row.header as column, i (column)}
               <Badge size="xs">{column}: {row.row[i] ?? ''}</Badge>
@@ -203,16 +216,15 @@
             {/if}
             {#if canExecute}
             {#each statusButtons as button (button.status)}
-              <button
-                type="button"
-                class="status-btn flex items-center gap-1 px-3 py-1.5 rounded transition cursor-pointer text-sm"
-                data-status={button.status}
-                class:selected={result.status === button.status}
-                data-testid="bdd-example-status-{button.status}"
+              <StatusButton
+                status={button.status}
+                selected={result.status === button.status}
+                dataTestid="bdd-example-status-{button.status}"
                 onclick={() => setExampleStatus(row.exampleIndex, button.status)}
+                class="flex items-center gap-1 px-3 py-1.5 rounded transition cursor-pointer text-sm"
               >
                 {button.label}
-              </button>
+              </StatusButton>
             {/each}
             {/if}
           </div>
@@ -304,69 +316,3 @@
   {/if}
 </div>
 
-<style>
-  .status-btn {
-    background-color: transparent;
-    border: 1px solid;
-  }
-
-  .status-btn[data-status='passed'] {
-    color: var(--ds-status-success-text);
-    border-color: var(--ds-status-success-border);
-  }
-
-  .status-btn[data-status='failed'] {
-    color: var(--ds-status-danger-text);
-    border-color: var(--ds-status-danger-border);
-  }
-
-  .status-btn[data-status='blocked'] {
-    color: var(--ds-status-warning-text);
-    border-color: var(--ds-status-warning-border);
-  }
-
-  .status-btn[data-status='skipped'] {
-    color: var(--ds-status-neutral-text);
-    border-color: var(--ds-status-neutral-border);
-  }
-
-  .status-btn.selected {
-    color: white;
-  }
-
-  .status-btn[data-status='passed'].selected {
-    background-color: var(--ds-status-success-solid);
-    border-color: var(--ds-status-success-solid);
-  }
-
-  .status-btn[data-status='failed'].selected {
-    background-color: var(--ds-status-danger-solid);
-    border-color: var(--ds-status-danger-solid);
-  }
-
-  .status-btn[data-status='blocked'].selected {
-    background-color: var(--ds-status-warning-solid);
-    border-color: var(--ds-status-warning-solid);
-  }
-
-  .status-btn[data-status='skipped'].selected {
-    background-color: var(--ds-status-neutral-solid);
-    border-color: var(--ds-status-neutral-solid);
-  }
-
-  .status-btn[data-status='passed']:hover:not(.selected) {
-    background-color: var(--ds-status-success-bg);
-  }
-
-  .status-btn[data-status='failed']:hover:not(.selected) {
-    background-color: var(--ds-status-danger-bg);
-  }
-
-  .status-btn[data-status='blocked']:hover:not(.selected) {
-    background-color: var(--ds-status-warning-bg);
-  }
-
-  .status-btn[data-status='skipped']:hover:not(.selected) {
-    background-color: var(--ds-status-neutral-bg);
-  }
-</style>

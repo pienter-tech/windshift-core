@@ -487,6 +487,40 @@ export const MAIN_APP_TEST_VIEWS = new Set([
   'test-set-detail',
 ]);
 
+// Views whose content grows with the document and should end with the app
+// footer. Viewport-filling surfaces (boards, canvases, editors, Svelte Flow
+// designers, and two-panel pages that fill the viewport and scroll one of their
+// own panes) are intentionally absent: the footer wrapper is not viewport tall,
+// so an `h-full` pane inside it collapses to its content height.
+export const MAIN_APP_FOOTER_VIEWS = new Set([
+  'homepage',
+  'workspaces',
+  'workspace-settings',
+  'workspace-list',
+  'collection-list',
+  'collections-edit',
+  'teams-list',
+  'team-detail',
+  'profile',
+  'security',
+  'notifications',
+  'approvals-inbox',
+  'search',
+  'about',
+  'licenses',
+  '404',
+  'workspace-detail',
+  'workspace-overview',
+  'personal-workspace',
+  'workspace-look-and-feel',
+  'workspace-board-config',
+  'collection-board-config',
+  'workspace-nav-config',
+  'collection-nav-config',
+  'asset-settings',
+  'logbook-document',
+]);
+
 export const WORKSPACE_SETTINGS_TABS = {
   'workspace-settings-categories': 'categories',
   'workspace-settings-members': 'members',
@@ -535,6 +569,12 @@ export function resolveMainAppRoute(view) {
   }
 
   return { key: null, config: null };
+}
+
+/** True when the view ends with the app footer. Resolves through matchViews so
+ * settings tabs and similar aliases map to their base route. */
+export function isMainAppFooterView(view) {
+  return MAIN_APP_FOOTER_VIEWS.has(resolveMainAppRoute(view).key);
 }
 
 export function resolveEffectiveMainAppView(currentRoute, personalWorkspaceId) {

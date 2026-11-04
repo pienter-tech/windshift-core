@@ -19,7 +19,7 @@
   import ListOrdered from '@lucide/svelte/icons/list-ordered';
   import Strikethrough from '@lucide/svelte/icons/strikethrough';
   import ImageIcon from '@lucide/svelte/icons/image';
-  import Workflow from '@lucide/svelte/icons/workflow';
+  import IconGraph from '@tabler/icons-svelte-runes/icons/graph';
   import BookOpen from '@lucide/svelte/icons/book-open';
   import { getAssignableUsers, getUsers } from '../api/users.js';
   import { attachments as attachmentsApi } from '../api/misc.js';
@@ -39,6 +39,7 @@
   import { t } from '../stores/i18n.svelte.js';
   import { attachmentStatus } from '../stores/attachmentStatus.svelte.js';
   import { navigate } from '../router.js';
+  import { runWithConcurrency } from '../utils/concurrency.js';
 
   let {
     content = $bindable(''), placeholder = '', readonly = false,
@@ -208,9 +209,9 @@
     if (!editor || !mentionRange) return;
     const range = mentionRange;
 
-    // The picker supplies the identifier from the full roster so a duplicated
-    // display name becomes @username instead of an ambiguous @"Name".
-    const mentionText = user.mentionText || mentionTextFor(user, [user]);
+    // The picker supplies the token, which embeds the user id so the mention
+    // resolves without depending on a display name being unique.
+    const mentionText = user.mentionText || mentionTextFor(user);
 
     // Get the editor view and replace the mention range with the formatted mention
     editor.action((ctx) => {
@@ -261,10 +262,11 @@
     return mentionRosterPromise;
   }
 
-  // Resolve the hovered mention against the same roster the picker offers, so
-  // the card shows the person the mention refers to. A display-name mention
-  // that matches several people shows every candidate instead of guessing.
-  async function loadUserForHoverCard(identifier) {
+  // Resolve the hovered mention to a single user. Id-embedded mentions resolve
+  // by id; legacy mentions resolve against the same roster the picker offers, so
+  // a display name that matches several people shows every candidate instead of
+  // guessing.
+  async function loadUserForHoverCard(target) {
     const request = ++hoverCardRequest;
     hoverCardLoading = true;
     hoverCardUser = null;
@@ -272,9 +274,13 @@
     try {
       const roster = await ensureMentionRoster();
       if (request !== hoverCardRequest) return;
-      const resolved = resolveMentionUser(roster, identifier);
-      hoverCardUser = resolved.user;
-      hoverCardMatches = resolved.user ? [] : resolved.matches;
+      if (target.userId) {
+        hoverCardUser = (roster || []).find((user) => user.id === target.userId) || null;
+      } else {
+        const resolved = resolveMentionUser(roster, target.identifier);
+        hoverCardUser = resolved.user;
+        hoverCardMatches = resolved.user ? [] : resolved.matches;
+      }
     } catch (e) {
       if (request !== hoverCardRequest) return;
       console.error('Failed to load users for hover card:', e);
@@ -282,7 +288,7 @@
     if (request === hoverCardRequest) hoverCardLoading = false;
   }
 
-  function showHoverCard(element, identifier) {
+  function showHoverCard(element, target) {
     if (hideCardTimeout) {
       clearTimeout(hideCardTimeout);
       hideCardTimeout = null;
@@ -297,7 +303,7 @@
       hoverCardVisible = true;
       hoverCardUser = null;
       hoverCardMatches = [];
-      loadUserForHoverCard(identifier);
+      loadUserForHoverCard(target);
     }, 300);
   }
 
@@ -333,11 +339,15 @@
   // Event delegation handlers for mention hover (more efficient than MutationObserver)
   function handleMentionMouseOver(e) {
     const chip = e.target.closest('.mention-chip');
-    if (chip) {
-      const identifier = chip.dataset.mention;
-      if (identifier) {
-        showHoverCard(chip, identifier);
-      }
+    if (!chip) return;
+    const userId = Number(chip.dataset.mentionUserId);
+    if (Number.isInteger(userId) && userId > 0) {
+      showHoverCard(chip, { userId });
+      return;
+    }
+    const identifier = chip.dataset.mention;
+    if (identifier) {
+      showHoverCard(chip, { identifier });
     }
   }
 
@@ -373,63 +383,63 @@
       return { nodes: [], attachments: [] };
     }
 
-    const results = await Promise.all(
-      images.map(async (image) => {
-        try {
-          if (deferImageUploads && !effectiveEntityId && !customUploadFn) {
-            const src = URL.createObjectURL(image);
-            onDeferredImageUpload?.({ file: image, url: src });
-            const node = schema?.nodes?.image?.createAndFill({
-              src,
-              alt: image.name,
-            }) || null;
+    const settled = await runWithConcurrency(images, async (image) => {
+      try {
+        if (deferImageUploads && !effectiveEntityId && !customUploadFn) {
+          const src = URL.createObjectURL(image);
+          onDeferredImageUpload?.({ file: image, url: src });
+          const node = schema?.nodes?.image?.createAndFill({
+            src,
+            alt: image.name,
+          }) || null;
 
-            return {
-              node,
-              attachment: null,
-              src,
-              alt: image.name,
-            };
-          }
-
-          let result;
-          if (!customUploadFn && effectiveEntityType === 'item' && effectiveEntityId) {
-            const attachment = await attachmentsApi.uploadToItem(effectiveEntityId, image);
-            result = { success: true, attachment };
-          } else {
-            const formData = new FormData();
-            formData.append('file', image);
-            if (effectiveEntityId && effectiveEntityType) {
-              formData.append('entity_id', effectiveEntityId.toString());
-              formData.append('entity_type', effectiveEntityType);
-            }
-            result = customUploadFn
-              ? await customUploadFn(formData)
-              : await attachmentsApi.upload(formData);
-          }
-          if (result.success && result.attachment) {
-            const src = downloadUrlBase === '/api/attachments'
-              ? attachmentsApi.getContentUrl(result.attachment.id)
-              : `${downloadUrlBase}/${result.attachment.id}/download`;
-            const node = schema?.nodes?.image?.createAndFill({
-              src,
-              alt: image.name,
-            }) || null;
-
-            return {
-              node,
-              attachment: result.attachment,
-              src,
-              alt: image.name,
-            };
-          }
-          return null;
-        } catch (error) {
-          console.error('[MilkdownEditor] Image upload error:', error);
-          return null;
+          return {
+            node,
+            attachment: null,
+            src,
+            alt: image.name,
+          };
         }
-      })
-    );
+
+        let result;
+        if (!customUploadFn && effectiveEntityType === 'item' && effectiveEntityId) {
+          const attachment = await attachmentsApi.uploadToItem(effectiveEntityId, image);
+          result = { success: true, attachment };
+        } else {
+          const formData = new FormData();
+          formData.append('file', image);
+          if (effectiveEntityId && effectiveEntityType) {
+            formData.append('entity_id', effectiveEntityId.toString());
+            formData.append('entity_type', effectiveEntityType);
+          }
+          result = customUploadFn
+            ? await customUploadFn(formData)
+            : await attachmentsApi.upload(formData);
+        }
+        if (result.success && result.attachment) {
+          const src = downloadUrlBase === '/api/attachments'
+            ? attachmentsApi.getContentUrl(result.attachment.id)
+            : `${downloadUrlBase}/${result.attachment.id}/download`;
+          const node = schema?.nodes?.image?.createAndFill({
+            src,
+            alt: image.name,
+          }) || null;
+
+          return {
+            node,
+            attachment: result.attachment,
+            src,
+            alt: image.name,
+          };
+        }
+        return null;
+      } catch (error) {
+        console.error('[MilkdownEditor] Image upload error:', error);
+        return null;
+      }
+    });
+
+    const results = settled.map((entry) => (entry.ok ? entry.value : null));
 
     const nodes = [];
     const attachments = [];
@@ -946,7 +956,7 @@
         <Tooltip content={t('editors.insertDiagram')} placement="bottom">
           {#snippet children()}
             <button type="button" class="toolbar-btn" tabindex="-1" onclick={openDiagramCreate} aria-label={t('editors.insertDiagram')} data-testid="milkdown-insert-diagram">
-              <Workflow size={14} />
+              <IconGraph size={14} />
             </button>
           {/snippet}
         </Tooltip>

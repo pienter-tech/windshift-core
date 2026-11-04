@@ -63,6 +63,16 @@ export const channels = {
     fetchAPI(`/channels/${id}/email/replies/${commentId}/discard`, {
       method: 'POST',
     }),
+  // Row-scoped discard for outbox rows without a comment, i.e. intake receipts.
+  discardEmailReplyById: (id, replyId) =>
+    fetchAPI(`/channels/${id}/email/outbox/${replyId}/discard`, {
+      method: 'POST',
+    }),
+  // Bulk cancel of the channel's whole pending reply queue.
+  discardPendingEmailReplies: (id) =>
+    fetchAPI(`/channels/${id}/email/replies/discard-pending`, {
+      method: 'POST',
+    }),
   // Email OAuth (inline per-channel OAuth credentials)
   startEmailOAuth: (channelId, restoreChannelEnabled = false) =>
     fetchAPI(`/channels/${channelId}/inline-oauth/start`, {

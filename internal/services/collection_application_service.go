@@ -358,9 +358,6 @@ func (s *CollectionApplicationService) Update(actor AuditActor, id int, update C
 		}
 	}
 	if err := s.repository.Update(id, collection); err != nil {
-		if errors.Is(err, repository.ErrCollectionQueuesRequireWorkspace) {
-			return nil, collectionValidation("remove collection queues before clearing its workspace")
-		}
 		if database.IsUniqueConstraintError(err) {
 			return nil, ErrCollectionConflict
 		}
@@ -895,7 +892,16 @@ func normalizeStoredViewSettings(settings *models.ViewSettings) {
 // are limited to the collection-scoped views because tools and
 // test-management entries only render in the workspace default context.
 func validateViewSettings(settings *models.ViewSettings, collectionScope bool) error {
-	if settings == nil || settings.EnabledViews == nil {
+	if settings == nil {
+		return nil
+	}
+	if settings.CompletedVisibility != nil && !models.IsCompletedVisibility(*settings.CompletedVisibility) {
+		return collectionValidation(fmt.Sprintf("unknown completed_visibility %q", *settings.CompletedVisibility))
+	}
+	if settings.CompletedLimit != nil && (*settings.CompletedLimit < models.MinCompletedLimit || *settings.CompletedLimit > models.MaxCompletedLimit) {
+		return collectionValidation(fmt.Sprintf("completed_limit must be between %d and %d", models.MinCompletedLimit, models.MaxCompletedLimit))
+	}
+	if settings.EnabledViews == nil {
 		return nil
 	}
 	views := *settings.EnabledViews
@@ -961,6 +967,12 @@ func mergeViewSettings(current, update *models.ViewSettings) *models.ViewSetting
 	if update.MilestoneSwimlanes != nil {
 		merged.MilestoneSwimlanes = update.MilestoneSwimlanes
 	}
+	if update.CompletedVisibility != nil {
+		merged.CompletedVisibility = update.CompletedVisibility
+	}
+	if update.CompletedLimit != nil {
+		merged.CompletedLimit = update.CompletedLimit
+	}
 	return &merged
 }
 
@@ -1002,8 +1014,33 @@ func (s *CollectionApplicationService) applyEffectiveViewSettings(config *models
 	if resolvedMilestones == nil && wsErr == nil && wsConfig.ViewSettings != nil {
 		resolvedMilestones = wsConfig.ViewSettings.MilestoneSwimlanes
 	}
+	// Completed-work visibility shares the board-options JSON and inherits the
+	// workspace default the same way milestone lanes do.
+	var ownCompletedVisibility *string
+	if config.ViewSettings != nil {
+		ownCompletedVisibility = config.ViewSettings.CompletedVisibility
+	}
+	resolvedCompletedVisibility := ownCompletedVisibility
+	if resolvedCompletedVisibility == nil && wsErr == nil && wsConfig.ViewSettings != nil {
+		resolvedCompletedVisibility = wsConfig.ViewSettings.CompletedVisibility
+	}
+	// The cap inherits alongside the preset, so a collection that selects
+	// "limit" without its own value uses the workspace's cap.
+	var ownCompletedLimit *int
+	if config.ViewSettings != nil {
+		ownCompletedLimit = config.ViewSettings.CompletedLimit
+	}
+	resolvedCompletedLimit := ownCompletedLimit
+	if resolvedCompletedLimit == nil && wsErr == nil && wsConfig.ViewSettings != nil {
+		resolvedCompletedLimit = wsConfig.ViewSettings.CompletedLimit
+	}
 	settingsWith := func(views *[]string) *models.ViewSettings {
-		return &models.ViewSettings{EnabledViews: views, MilestoneSwimlanes: resolvedMilestones}
+		return &models.ViewSettings{
+			EnabledViews:        views,
+			MilestoneSwimlanes:  resolvedMilestones,
+			CompletedVisibility: resolvedCompletedVisibility,
+			CompletedLimit:      resolvedCompletedLimit,
+		}
 	}
 	allViews := func() *models.ViewSettings {
 		views := slices.Clone(models.BoardViewIDs)
@@ -1022,6 +1059,8 @@ func (s *CollectionApplicationService) applyEffectiveViewSettings(config *models
 	}
 	if config.ViewSettings.HasEnabledViewsOverride() {
 		config.ViewSettings.MilestoneSwimlanes = resolvedMilestones
+		config.ViewSettings.CompletedVisibility = resolvedCompletedVisibility
+		config.ViewSettings.CompletedLimit = resolvedCompletedLimit
 		return nil
 	}
 	config.ViewSettingsInherited = true

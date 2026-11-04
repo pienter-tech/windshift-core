@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +31,7 @@ type ItemCRUDService struct {
 	repo                  *repository.ItemRepository
 	workspaceRepo         *repository.WorkspaceRepository
 	integrationLinkGuards *IntegrationLinkGuards
+	itemCache             *ItemCacheService
 }
 
 // NewItemCRUDService creates a new item CRUD service
@@ -40,6 +42,14 @@ func NewItemCRUDService(db database.Database) *ItemCRUDService {
 		workspaceRepo:         repository.NewWorkspaceRepository(db),
 		integrationLinkGuards: NewIntegrationLinkGuards(db),
 	}
+}
+
+// WithCache makes effective-project resolution read through the shared item
+// cache instead of walking the parent chain on every read. A nil cache keeps
+// the uncached resolver.
+func (s *ItemCRUDService) WithCache(cache *ItemCacheService) *ItemCRUDService {
+	s.itemCache = cache
+	return s
 }
 
 // GetByID retrieves an item by ID with all details
@@ -90,6 +100,7 @@ func (s *ItemCRUDService) DeleteSingleWithMetadata(itemID int, metadata itemeven
 func (s *ItemCRUDService) deleteSingleWithAuthorization(itemID int, metadata itemevents.Metadata, authorize func([]*models.Item) error) ([]int, error) {
 	var root *models.Item
 	var children []*models.Item
+	var attachmentPaths []string
 	err := database.WithTx(s.db, func(tx database.Tx) error {
 		ctx := context.Background()
 		var err error
@@ -148,7 +159,19 @@ func (s *ItemCRUDService) deleteSingleWithAuthorization(itemID int, metadata ite
 		if err := s.stampEmailTrackingCompletedTx(tx, []int{itemID}); err != nil {
 			return err
 		}
+		// Collect the root's blob paths inside the transaction (a SELECT only);
+		// removal happens after commit on the background workers so S3 I/O never
+		// holds the write connection.
+		if itemAttachmentBlobRemover != nil {
+			attachmentPaths, err = s.repo.AttachmentPathsForItemsTx(tx, []int{itemID})
+			if err != nil {
+				return err
+			}
+		}
 		if err := s.deleteItemRelationsTx(tx, itemID); err != nil {
+			return err
+		}
+		if err := s.repo.ReserveDeletedItemNumbers(tx, []*models.Item{root}, deleteActorUserID(metadata)); err != nil {
 			return err
 		}
 		return s.repo.Delete(tx, itemID)
@@ -156,6 +179,7 @@ func (s *ItemCRUDService) deleteSingleWithAuthorization(itemID int, metadata ite
 	if err != nil {
 		return nil, err
 	}
+	enqueueAttachmentDeletions(attachmentPaths)
 	s.finishItemDeletion(root.WorkspaceID, []int{itemID}, root.ParentID)
 	childIDs := make([]int, 0, len(children))
 	for _, child := range children {
@@ -179,6 +203,7 @@ func (s *ItemCRUDService) DeleteWithMetadata(itemID int, metadata itemevents.Met
 func (s *ItemCRUDService) deleteWithAuthorization(itemID int, metadata itemevents.Metadata, authorize func([]*models.Item) error) (*DeleteResult, error) {
 	var items []*models.Item
 	var result DeleteResult
+	var attachmentPaths []string
 	err := database.WithTx(s.db, func(tx database.Tx) error {
 		ctx := context.Background()
 		var err error
@@ -227,6 +252,20 @@ func (s *ItemCRUDService) deleteWithAuthorization(itemID int, metadata itemevent
 		if err := s.stampEmailTrackingCompletedTx(tx, itemIDs); err != nil {
 			return err
 		}
+		// Collect attachment paths inside the transaction (a SELECT only) and
+		// remove them after commit. S3 I/O must not hold the write connection,
+		// especially on SQLite's single-writer pool.
+		if itemAttachmentBlobRemover != nil {
+			attachmentPaths, err = s.repo.AttachmentPathsForItemsTx(tx, itemIDs)
+			if err != nil {
+				return err
+			}
+		}
+		// Retire the highest removed number across the whole subtree so the
+		// allocator cannot reissue a key the delete just freed.
+		if err := s.repo.ReserveDeletedItemNumbers(tx, items, deleteActorUserID(metadata)); err != nil {
+			return err
+		}
 		// Remove children first so the foreign key cannot bypass their cleanup.
 		for i := len(items) - 1; i >= 0; i-- {
 			id := items[i].ID
@@ -242,6 +281,7 @@ func (s *ItemCRUDService) deleteWithAuthorization(itemID int, metadata itemevent
 	if err != nil {
 		return nil, err
 	}
+	enqueueAttachmentDeletions(attachmentPaths)
 	for _, item := range items {
 		s.finishItemDeletion(item.WorkspaceID, []int{item.ID}, nil)
 	}
@@ -279,7 +319,26 @@ func (s *ItemCRUDService) stampEmailTrackingCompletedTx(tx database.Tx, itemIDs 
 	return nil
 }
 
+// deleteActorUserID extracts the deleting user for key-reservation provenance.
+// System, integration, and agent actors have no user row, so they leave NULL.
+func deleteActorUserID(metadata itemevents.Metadata) int {
+	if metadata.ActorKind != "user" {
+		return 0
+	}
+	id, err := strconv.Atoi(metadata.ActorRef)
+	if err != nil || id <= 0 {
+		return 0
+	}
+	return id
+}
+
 func (s *ItemCRUDService) deleteItemRelationsTx(tx database.Tx, itemID int) error {
+	if _, err := tx.Exec(`
+		DELETE FROM attachments
+		WHERE item_id = ? AND COALESCE(entity_type, 'item') = 'item'
+	`, itemID); err != nil {
+		return fmt.Errorf("failed to delete item attachments: %w", err)
+	}
 	if err := s.repo.DeleteItemWatches(tx, itemID); err != nil {
 		return err
 	}
@@ -724,6 +783,74 @@ func (s *ItemCRUDService) ListDistinctWorkspaceIDsWithQLContext(
 	})
 }
 
+// HierarchyListParams contains parameters for an ancestor-scoped hierarchy read.
+type HierarchyListParams struct {
+	WorkspaceID      int
+	CollectionID     int
+	QLQuery          string
+	SubQLQuery       string
+	WorkspaceIDs     []int
+	UserID           int
+	RootIDs          []int
+	MaxDepth         int
+	PerRootLimit     int
+	PerRootOffset    int
+	OmitDescriptions bool
+}
+
+// HierarchyDescendantsContext resolves the collection/QL once and returns the
+// matching descendants of each root, grouped and capped per root.
+func (s *ItemCRUDService) HierarchyDescendantsContext(ctx context.Context, params HierarchyListParams) ([]repository.HierarchyRootGroup, error) {
+	if len(params.WorkspaceIDs) == 0 || len(params.RootIDs) == 0 {
+		return []repository.HierarchyRootGroup{}, nil
+	}
+	resolvedQL, err := s.resolveItemListQLContext(ctx, params.QLQuery, params.CollectionID, params.SubQLQuery, params.UserID)
+	if err != nil {
+		return nil, err
+	}
+	filters := ItemFilters{}
+	if resolvedQL.sql != "" {
+		filters.QLQuery = resolvedQL.sql
+		filters.QLArgs = resolvedQL.args
+	}
+	if !resolvedQL.collectionResolved && params.WorkspaceID > 0 {
+		filters.WorkspaceID = &params.WorkspaceID
+	}
+	return s.repo.HierarchyDescendantsContext(ctx, repository.HierarchyReadParams{
+		RootIDs:          params.RootIDs,
+		WorkspaceIDs:     params.WorkspaceIDs,
+		Filters:          filters,
+		MaxDepth:         params.MaxDepth,
+		PerRootLimit:     params.PerRootLimit,
+		PerRootOffset:    params.PerRootOffset,
+		OmitDescriptions: params.OmitDescriptions,
+	})
+}
+
+// LevelCountsContext resolves the collection/QL once and returns the filtered
+// item count per item-type hierarchy level.
+func (s *ItemCRUDService) LevelCountsContext(ctx context.Context, params ListWithQLParams) ([]repository.HierarchyLevelCount, error) {
+	if len(params.WorkspaceIDs) == 0 {
+		return []repository.HierarchyLevelCount{}, nil
+	}
+	resolvedQL, err := s.resolveItemListQLContext(ctx, params.QLQuery, params.CollectionID, params.SubQLQuery, params.UserID)
+	if err != nil {
+		return nil, err
+	}
+	filters := params.Filters
+	if resolvedQL.sql != "" {
+		filters.QLQuery = resolvedQL.sql
+		filters.QLArgs = resolvedQL.args
+	}
+	if !resolvedQL.collectionResolved && params.WorkspaceID > 0 {
+		filters.WorkspaceID = &params.WorkspaceID
+	}
+	return s.repo.CountByHierarchyLevelContext(ctx, ItemListParams{
+		WorkspaceIDs: params.WorkspaceIDs,
+		Filters:      filters,
+	})
+}
+
 // GetWithEffectiveProject retrieves an item with effective project calculated
 // This is the most comprehensive Get method, used by the handler
 // deadcode-keep: called by core-tests/internal/services/item_crud_service_test.go
@@ -733,24 +860,15 @@ func (s *ItemCRUDService) GetWithEffectiveProject(id int) (*models.Item, error) 
 		return nil, err
 	}
 
-	// Resolve the effective project through the canonical resolver so this
-	// shares the single source of truth with the item handler and the cache
-	// (it keys off the inherit_project boolean and stops at the first ancestor
-	// with a direct project).
-	res, err := s.repo.ResolveEffectiveProject(id)
+	// Resolve the effective project through the shared cache when one is wired,
+	// so a repeat read does not re-walk the parent chain. The cache and the
+	// uncached path share ResolveEffectiveProject as the single source of truth.
+	effectiveProjectID, inheritanceMode, err := s.resolveEffectiveProject(id)
 	if err != nil {
 		return nil, err
 	}
-	switch {
-	case res.DirectProjectID == nil && !res.InheritProject:
-		item.ProjectInheritanceMode = "none"
-	case res.InheritProject:
-		item.EffectiveProjectID = res.EffectiveProjectID
-		item.ProjectInheritanceMode = "inherit"
-	default:
-		item.EffectiveProjectID = res.EffectiveProjectID
-		item.ProjectInheritanceMode = "direct"
-	}
+	item.EffectiveProjectID = effectiveProjectID
+	item.ProjectInheritanceMode = inheritanceMode
 
 	// Populate the effective project name when one resolved.
 	if item.EffectiveProjectID != nil {
@@ -768,6 +886,26 @@ func (s *ItemCRUDService) GetWithEffectiveProject(id int) (*models.Item, error) 
 	}
 
 	return item, nil
+}
+
+// resolveEffectiveProject returns (effective_project_id, mode, error) for an
+// item, preferring the shared cache when one is wired.
+func (s *ItemCRUDService) resolveEffectiveProject(id int) (effectiveProjectID *int, inheritanceMode string, err error) {
+	if s.itemCache != nil {
+		return s.itemCache.GetEffectiveProjectForItem(id)
+	}
+	res, err := s.repo.ResolveEffectiveProject(id)
+	if err != nil {
+		return nil, "", err
+	}
+	switch {
+	case res.DirectProjectID == nil && !res.InheritProject:
+		return nil, "none", nil
+	case res.InheritProject:
+		return res.EffectiveProjectID, "inherit", nil
+	default:
+		return res.EffectiveProjectID, "direct", nil
+	}
 }
 
 // GetHistory retrieves the change history for an item, with actor names

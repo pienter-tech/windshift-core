@@ -349,7 +349,7 @@ type TimeProject struct {
 type Worklog struct {
 	ID                  int      `json:"id"`
 	ProjectID           int      `json:"project_id"`
-	CustomerID          int      `json:"customer_id"`
+	CustomerID          int      `json:"customer_id"`       // Derived from the project; worklogs do not store a customer.
 	UserID              *int     `json:"user_id,omitempty"` // User who created the worklog
 	ItemID              *int     `json:"item_id,omitempty"` // Optional link to work item
 	Description         string   `json:"description"`
@@ -786,6 +786,12 @@ const (
 	ActionTriggerItemLinked       ActionTriggerType = "item_linked"
 	ActionTriggerManual           ActionTriggerType = "manual"
 
+	// ActionTriggerStatusLoop fires when an item's status is set to the status it
+	// already has and the item's workflow declares a self-transition for that
+	// status (from_status_id == to_status_id). ToStatusID optionally filters the
+	// looped status; ItemTypeID optionally filters the item type.
+	ActionTriggerStatusLoop ActionTriggerType = "status_loop"
+
 	// SLA-driven triggers emitted in the breach/warning transaction. They are
 	// configuration consumers, not fields on imported SLA goals.
 	ActionTriggerSLABreached ActionTriggerType = "sla_breached"
@@ -1053,6 +1059,11 @@ type ActionEvent struct {
 	// trigger across cascades. Customer-visible nodes must not emit
 	// outward-facing output when it is set.
 	TriggerCommentIsPrivate bool `json:"trigger_comment_is_private,omitempty"`
+	// ActorKind/SourceKind preserve provenance on the durable side-effect event
+	// so consumers can apply the same import and suppression rules as canonical
+	// domain facts. Empty defaults to system/side_effect.
+	ActorKind  string `json:"actor_kind,omitempty"`
+	SourceKind string `json:"source_kind,omitempty"`
 }
 
 // ExecutionContext holds context during action execution

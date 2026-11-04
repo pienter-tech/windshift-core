@@ -25,7 +25,7 @@ func NewIntakeRepository(db database.Database) *IntakeRepository {
 const intakeSelectColumns = `
 	i.id, i.mailbox_id, i.folder, i.workspace_id, i.portal_channel_id,
 	i.request_type_id, i.item_type_id, i.rate_limit_per_hour,
-	i.processing_disposition, i.send_confirmation, i.status, i.status_reason, i.created_at, i.updated_at,
+	i.processing_disposition, i.send_confirmation, i.import_existing_mail, i.status, i.status_reason, i.created_at, i.updated_at,
 	COALESCE(c.name, '') AS mailbox_name,
 	COALESCE(s.last_uid, 0), COALESCE(s.uid_validity, 0), s.updated_at,
 	COALESCE((
@@ -47,7 +47,7 @@ func scanIntake(scanner interface {
 	if err := scanner.Scan(
 		&in.ID, &in.MailboxID, &in.Folder, &in.WorkspaceID, &portalChannelID,
 		&requestTypeID, &itemTypeID, &rateLimit,
-		&in.ProcessingDisposition, &in.SendConfirmation, &in.Status, &in.StatusReason, &in.CreatedAt, &in.UpdatedAt,
+		&in.ProcessingDisposition, &in.SendConfirmation, &in.ImportExistingMail, &in.Status, &in.StatusReason, &in.CreatedAt, &in.UpdatedAt,
 		&in.MailboxName,
 		&in.LastUID, &in.UIDValidity, &lastPolledAt, &in.RateLimitedCount,
 	); err != nil {
@@ -141,6 +141,36 @@ func (r *IntakeRepository) ListEnabledForMailbox(ctx context.Context, mailboxID 
 	return scanIntakes(rows)
 }
 
+// ListByMailboxes returns every intake reading from the given mailboxes in
+// one query, grouped by mailbox id. Mailboxes without intakes are absent from
+// the map. Used to attach intake linkage to a channel listing without one
+// request per channel.
+func (r *IntakeRepository) ListByMailboxes(ctx context.Context, mailboxIDs []int) (map[int][]models.Intake, error) {
+	out := make(map[int][]models.Intake)
+	placeholders, args := inPlaceholders(mailboxIDs)
+	if placeholders == "" {
+		return out, nil
+	}
+	rows, err := r.db.QueryContext(ctx, `SELECT`+intakeSelectColumns+intakeFromJoins+`
+		WHERE i.mailbox_id IN (`+placeholders+`)
+		ORDER BY i.mailbox_id, i.folder, i.id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list intakes for mailboxes: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		in, scanErr := scanIntake(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan intake: %w", scanErr)
+		}
+		out[in.MailboxID] = append(out[in.MailboxID], in)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate intakes: %w", err)
+	}
+	return out, nil
+}
+
 // ListByPortal returns the intakes that expose requests to a portal.
 func (r *IntakeRepository) ListByPortal(ctx context.Context, portalChannelID int) ([]models.Intake, error) {
 	rows, err := r.db.QueryContext(ctx, `SELECT`+intakeSelectColumns+intakeFromJoins+`
@@ -148,18 +178,6 @@ func (r *IntakeRepository) ListByPortal(ctx context.Context, portalChannelID int
 		ORDER BY i.folder, i.id`, portalChannelID)
 	if err != nil {
 		return nil, fmt.Errorf("list intakes for portal %d: %w", portalChannelID, err)
-	}
-	defer func() { _ = rows.Close() }()
-	return scanIntakes(rows)
-}
-
-// ListByWorkspace returns the intakes routing into a workspace.
-func (r *IntakeRepository) ListByWorkspace(ctx context.Context, workspaceID int) ([]models.Intake, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT`+intakeSelectColumns+intakeFromJoins+`
-		WHERE i.workspace_id = ?
-		ORDER BY i.folder, i.id`, workspaceID)
-	if err != nil {
-		return nil, fmt.Errorf("list intakes for workspace %d: %w", workspaceID, err)
 	}
 	defer func() { _ = rows.Close() }()
 	return scanIntakes(rows)
@@ -228,10 +246,10 @@ func (r *IntakeRepository) Create(ctx context.Context, in *models.Intake) (int, 
 	err := r.db.QueryRowContext(ctx, `
 		INSERT INTO intakes (
 			mailbox_id, folder, workspace_id, portal_channel_id, request_type_id, item_type_id,
-			rate_limit_per_hour, processing_disposition, send_confirmation, status, status_reason, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
+			rate_limit_per_hour, processing_disposition, send_confirmation, import_existing_mail, status, status_reason, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
 	`, in.MailboxID, folder, in.WorkspaceID, in.PortalChannelID, in.RequestTypeID, in.ItemTypeID,
-		in.RateLimitPerHour, in.ProcessingDisposition, in.SendConfirmation, status, in.StatusReason, now, now).Scan(&id)
+		in.RateLimitPerHour, in.ProcessingDisposition, in.SendConfirmation, in.ImportExistingMail, status, in.StatusReason, now, now).Scan(&id)
 	if err != nil {
 		if database.IsUniqueConstraintError(err) {
 			return 0, ErrDuplicateEntry
@@ -250,10 +268,10 @@ func (r *IntakeRepository) Update(ctx context.Context, in *models.Intake) error 
 	res, err := r.db.ExecWriteContext(ctx, `
 		UPDATE intakes SET
 			folder = ?, workspace_id = ?, portal_channel_id = ?, request_type_id = ?, item_type_id = ?,
-			rate_limit_per_hour = ?, processing_disposition = ?, send_confirmation = ?, status = ?, status_reason = ?, updated_at = ?
+			rate_limit_per_hour = ?, processing_disposition = ?, send_confirmation = ?, import_existing_mail = ?, status = ?, status_reason = ?, updated_at = ?
 		WHERE id = ?
 	`, folder, in.WorkspaceID, in.PortalChannelID, in.RequestTypeID, in.ItemTypeID,
-		in.RateLimitPerHour, in.ProcessingDisposition, in.SendConfirmation, in.Status, in.StatusReason, time.Now(), in.ID)
+		in.RateLimitPerHour, in.ProcessingDisposition, in.SendConfirmation, in.ImportExistingMail, in.Status, in.StatusReason, time.Now(), in.ID)
 	if err != nil {
 		if database.IsUniqueConstraintError(err) {
 			return ErrDuplicateEntry
@@ -293,16 +311,6 @@ func (r *IntakeRepository) DeleteByWorkspaceTx(tx database.Tx, workspaceID int) 
 		`DELETE FROM intakes WHERE workspace_id = ?`, workspaceID,
 	); err != nil {
 		return fmt.Errorf("delete intakes for workspace %d: %w", workspaceID, err)
-	}
-	return nil
-}
-
-// DeleteByPortalTx removes every intake exposing requests to a deleted portal.
-func (r *IntakeRepository) DeleteByPortalTx(tx database.Tx, portalChannelID int) error {
-	if _, err := tx.Exec(
-		`DELETE FROM intakes WHERE portal_channel_id = ?`, portalChannelID,
-	); err != nil {
-		return fmt.Errorf("delete intakes for portal %d: %w", portalChannelID, err)
 	}
 	return nil
 }

@@ -5,11 +5,12 @@
   import MessageSquare from '@lucide/svelte/icons/message-square';
   import Bell from '@lucide/svelte/icons/bell';
   import HelpCircle from '@lucide/svelte/icons/help-circle';
+  import PlaceholderFieldLabel from './PlaceholderFieldLabel.svelte';
   import Database from '@lucide/svelte/icons/database';
   import PlusSquare from '@lucide/svelte/icons/plus-square';
   import Box from '@lucide/svelte/icons/box';
   import Globe from '@lucide/svelte/icons/globe';
-  import Sparkles from '@lucide/svelte/icons/sparkles';
+  import IconMessageChatbot from '@tabler/icons-svelte-runes/icons/message-chatbot';
   import Bot from '@lucide/svelte/icons/bot';
   import Milestone from '@lucide/svelte/icons/milestone';
   import UsersRound from '@lucide/svelte/icons/users-round';
@@ -182,7 +183,7 @@
     create_asset: PlusSquare,
     http_request: Globe,
     container_run: Box,
-    ai_extract: Sparkles,
+    ai_extract: IconMessageChatbot,
     ai_agent: Bot,
     transition_item: RefreshCw,
     related_items: RefreshCw,
@@ -240,6 +241,7 @@
   function triggerI18nKey(triggerType) {
     switch (triggerType) {
       case 'status_transition': return 'actions.trigger.statusTransition';
+      case 'status_loop': return 'actions.trigger.statusLoop';
       case 'item_created': return 'actions.trigger.itemCreated';
       case 'item_updated': return 'actions.trigger.itemUpdated';
       case 'item_linked': return 'actions.trigger.itemLinked';
@@ -782,6 +784,28 @@
         />
       </div>
     {/if}
+    {#if (selectedNode.data?.triggerType || action?.trigger_type) === 'status_loop'}
+      <div>
+        <label for="config-loop-status" class="block text-xs font-medium mb-1">{t('actions.config.loopStatus')}</label>
+        <Select
+          id="config-loop-status"
+          options={[{ value: '', label: t('actions.config.anyStatus') }, ...statuses.map(s => ({ value: s.id, label: s.name }))]}
+          value={selectedNode.data?.config?.to_status_id || ''}
+          onchange={(v) => store.updateNodeConfig(selectedNode.id, { to_status_id: v ? parseInt(v) : null })}
+          size="small"
+        />
+      </div>
+      <div>
+        <label for="config-loop-item-type" class="block text-xs font-medium mb-1">Item type</label>
+        <Select
+          id="config-loop-item-type"
+          options={[{ value: '', label: 'Any item type' }, ...itemTypes.map(it => ({ value: it.id, label: it.name }))]}
+          value={selectedNode.data?.config?.item_type_id || ''}
+          onchange={(v) => store.updateNodeConfig(selectedNode.id, { item_type_id: v ? parseInt(v) : null })}
+          size="small"
+        />
+      </div>
+    {/if}
     {#if (selectedNode.data?.triggerType || action?.trigger_type) === 'item_updated'}
       <div>
         <div class="block text-xs font-medium mb-1">{t('actions.config.triggerField')}</div>
@@ -893,16 +917,11 @@
         />
       </div>
       <div>
-        <div class="flex items-center gap-1 mb-1">
-          <label for="config-set-field-value" class="block text-xs font-medium">{t('actions.config.value')}</label>
-          <button
-            onclick={() => showPlaceholderModal = true}
-            class="text-[var(--ds-text-subtlest)] hover:text-[var(--ds-interactive)] transition-colors"
-            title={t('actions.placeholders.showReference')}
-          >
-            <HelpCircle class="w-3.5 h-3.5" />
-          </button>
-        </div>
+        <PlaceholderFieldLabel
+          forId="config-set-field-value"
+          label={t('actions.config.value')}
+          onShowReference={() => (showPlaceholderModal = true)}
+        />
         {#if isMilestoneSetField(selectedNode.data?.config)}
           <MilestoneCombobox
             value={getSetFieldMilestoneIDs(selectedNode.data?.config)}
@@ -945,16 +964,11 @@
       </div>
     {:else if selectedNode.type === 'add_comment'}
       <div>
-        <div class="flex items-center gap-1 mb-1">
-          <label for="config-comment-content" class="block text-xs font-medium">{t('actions.config.commentContent')}</label>
-          <button
-            onclick={() => showPlaceholderModal = true}
-            class="text-[var(--ds-text-subtlest)] hover:text-[var(--ds-interactive)] transition-colors"
-            title={t('actions.placeholders.showReference')}
-          >
-            <HelpCircle class="w-3.5 h-3.5" />
-          </button>
-        </div>
+        <PlaceholderFieldLabel
+          forId="config-comment-content"
+          label={t('actions.config.commentContent')}
+          onShowReference={() => (showPlaceholderModal = true)}
+        />
         <Textarea
           id="config-comment-content"
           rows={4}
@@ -1070,16 +1084,11 @@
         </div>
       {/if}
       <div>
-        <div class="flex items-center gap-1 mb-1">
-          <label for="config-notify-message" class="block text-xs font-medium">{t('actions.config.notifyMessage')}</label>
-          <button
-            onclick={() => showPlaceholderModal = true}
-            class="text-[var(--ds-text-subtlest)] hover:text-[var(--ds-interactive)] transition-colors"
-            title={t('actions.placeholders.showReference')}
-          >
-            <HelpCircle class="w-3.5 h-3.5" />
-          </button>
-        </div>
+        <PlaceholderFieldLabel
+          forId="config-notify-message"
+          label={t('actions.config.notifyMessage')}
+          onShowReference={() => (showPlaceholderModal = true)}
+        />
         <Textarea
           id="config-notify-message"
           rows={4}
@@ -1114,16 +1123,11 @@
         />
       </div>
       <div>
-        <div class="flex items-center gap-1 mb-1">
-          <label for="config-notify-customer-message" class="block text-xs font-medium">{t('actions.config.notifyMessage')}</label>
-          <button
-            onclick={() => showPlaceholderModal = true}
-            class="text-[var(--ds-text-subtlest)] hover:text-[var(--ds-interactive)] transition-colors"
-            title={t('actions.placeholders.showReference')}
-          >
-            <HelpCircle class="w-3.5 h-3.5" />
-          </button>
-        </div>
+        <PlaceholderFieldLabel
+          forId="config-notify-customer-message"
+          label={t('actions.config.notifyMessage')}
+          onShowReference={() => (showPlaceholderModal = true)}
+        />
         <Textarea
           id="config-notify-customer-message"
           data-testid="notify-customer-message"
@@ -1390,16 +1394,11 @@
         />
       </div>
       <div>
-        <div class="flex items-center gap-1 mb-1">
-          <label for="config-http-url" class="block text-xs font-medium">{t('actions.config.urlTemplate')}</label>
-          <button
-            onclick={() => showPlaceholderModal = true}
-            class="text-[var(--ds-text-subtlest)] hover:text-[var(--ds-interactive)] transition-colors"
-            title={t('actions.placeholders.showReference')}
-          >
-            <HelpCircle class="w-3.5 h-3.5" />
-          </button>
-        </div>
+        <PlaceholderFieldLabel
+          forId="config-http-url"
+          label={t('actions.config.urlTemplate')}
+          onShowReference={() => (showPlaceholderModal = true)}
+        />
         <Input
           id="config-http-url"
           type="text"

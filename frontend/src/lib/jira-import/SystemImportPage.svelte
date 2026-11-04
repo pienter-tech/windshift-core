@@ -16,6 +16,8 @@
   import KeyRound from '@lucide/svelte/icons/key-round';
   import Eye from '@lucide/svelte/icons/eye';
   import EyeOff from '@lucide/svelte/icons/eye-off';
+  import MoreHorizontal from '@lucide/svelte/icons/more-horizontal';
+  import DropdownMenu from '../layout/DropdownMenu.svelte';
   import FormField from '../components/FormField.svelte';
   import ExternalLink from '@lucide/svelte/icons/external-link';
   import Link from '@lucide/svelte/icons/link';
@@ -135,6 +137,7 @@
     switch (status) {
       case 'completed': return 'var(--ds-text-success)';
       case 'completed_with_errors': return 'var(--ds-text-warning)';
+      case 'timed_out': return 'var(--ds-text-warning)';
       case 'running': return 'var(--ds-text-accent-blue)';
       case 'failed': return 'var(--ds-text-danger)';
       case 'data_deleted': return 'var(--ds-text-subtle)';
@@ -147,6 +150,7 @@
     switch (status) {
       case 'completed': return CheckCircle;
       case 'completed_with_errors': return AlertTriangle;
+      case 'timed_out': return AlertTriangle;
       case 'running': return Loader;
       case 'failed': return XCircle;
       case 'data_deleted': return Trash2;
@@ -196,6 +200,67 @@
     if (result.success) {
       addToast({ message: t('systemImport.dataDeleted'), variant: 'success' });
       closeDeleteImportedData();
+    } else {
+      addToast({ message: result.error, variant: 'error' });
+    }
+  }
+
+  function connectionActions(connection) {
+    return [
+      {
+        id: 'update-token',
+        icon: KeyRound,
+        title: t('systemImport.updateToken'),
+        testid: `jira-import-connection-edit-${connection.id}`,
+        onClick: () => openEditConnection(connection)
+      },
+      { type: 'divider' },
+      {
+        id: 'remove-connection',
+        icon: Trash2,
+        title: t('systemImport.deleteConnection'),
+        testid: `jira-import-connection-delete-${connection.id}`,
+        color: 'var(--ds-text-danger)',
+        onClick: () => deleteConnection(connection.id)
+      }
+    ];
+  }
+
+  function canHideImportJob(job) {
+    return job && !['queued', 'running'].includes(job.status);
+  }
+
+  function importJobActions(job) {
+    /** @type {any[]} */
+    const items = [
+      {
+        id: 'hide',
+        icon: EyeOff,
+        title: t('systemImport.removeFromList'),
+        testid: `jira-import-history-hide-${job.id}`,
+        onClick: () => hideImportJob(job)
+      }
+    ];
+    if (canDeleteImportedData(job)) {
+      items.push(
+        { type: 'divider' },
+        {
+          id: 'delete-data',
+          icon: Trash2,
+          title: t('systemImport.deleteData'),
+          testid: `jira-import-history-delete-data-${job.id}`,
+          color: 'var(--ds-text-danger)',
+          onClick: () => openDeleteImportedData(job)
+        }
+      );
+    }
+    return items;
+  }
+
+  async function hideImportJob(job) {
+    const result = await jiraImport.hideImportJob(job.id);
+    if (result.success) {
+      addToast({ message: t('systemImport.importRemovedFromHistory'), variant: 'success' });
     } else {
       addToast({ message: result.error, variant: 'error' });
     }
@@ -277,8 +342,17 @@
                   <PlayCircle size={14} class="mr-1" />
                   {t('jiraImport.buttons.startImport')}
                 </Button>
-                <Button dataTestid={`jira-import-connection-edit-${connection.id}`} variant="ghost" size="small" icon={KeyRound} title={t('systemImport.updateToken')} onclick={() => openEditConnection(connection)}></Button>
-                <Button dataTestid={`jira-import-connection-delete-${connection.id}`} variant="danger-ghost" size="small" icon={Trash2} title={t('systemImport.deleteConnection')} onclick={() => deleteConnection(connection.id)}></Button>
+                <DropdownMenu
+                  triggerIcon={MoreHorizontal}
+                  triggerTestid={`jira-import-connection-actions-${connection.id}`}
+                  triggerLabel={t('common.actions')}
+                  showChevron={false}
+                  iconOnly={true}
+                  triggerClass="p-1.5 rounded transition-colors hover:bg-[var(--ds-background-neutral-hovered)]"
+                  triggerStyle="color: var(--ds-text-subtle);"
+                  placement="bottom-end"
+                  items={connectionActions(connection)}
+                />
               </div>
             </div>
           {/each}
@@ -392,12 +466,18 @@
                     </span>
                   </td>
                   <td class="py-3 px-4">
-                    {#if canDeleteImportedData(job)}
-                      <Button variant="danger-ghost" size="small" icon={Trash2} onclick={() => openDeleteImportedData(job)}>
-                        {t('systemImport.deleteData')}
-                      </Button>
-                    {:else if job.status === 'data_deleted'}
-                      <span class="text-xs" style="color: var(--ds-text-subtle);">{t('common.deleted')}</span>
+                    {#if canHideImportJob(job)}
+                      <DropdownMenu
+                        triggerIcon={MoreHorizontal}
+                        triggerTestid={`jira-import-history-actions-${job.id}`}
+                        triggerLabel={t('common.actions')}
+                        showChevron={false}
+                        iconOnly={true}
+                        triggerClass="p-1.5 rounded transition-colors hover:bg-[var(--ds-background-neutral-hovered)]"
+                        triggerStyle="color: var(--ds-text-subtle);"
+                        placement="bottom-end"
+                        items={importJobActions(job)}
+                      />
                     {:else}
                       <span class="text-xs" style="color: var(--ds-text-subtle);">{t('systemImport.unavailable')}</span>
                     {/if}

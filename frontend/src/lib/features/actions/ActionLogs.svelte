@@ -13,12 +13,14 @@
   import SkipForward from '@lucide/svelte/icons/skip-forward';
   import Eye from '@lucide/svelte/icons/eye';
   import { formatAuthenticatedDateTime } from '../../utils/authenticatedDateFormatter.js';
+  import { actionLogElapsedMs, formatElapsedMs } from '../../utils/timeUtils.js';
 
   let { workspaceId, action, onBack } = $props();
 
   function getTriggerTypeLabel(triggerType) {
     const labels = {
       'status_transition': t('actions.trigger.statusTransition'),
+      'status_loop': t('actions.trigger.statusLoop'),
       'item_created': t('actions.trigger.itemCreated'),
       'sla_breached': t('actions.trigger.slaBreached'),
       'sla_warning': t('actions.trigger.slaWarning'),
@@ -66,10 +68,8 @@
   }
 
   function formatDuration(log) {
-    if (!log.started_at || !log.completed_at) return '-';
-    const ms = new Date(log.completed_at).getTime() - new Date(log.started_at).getTime();
-    if (ms < 1000) return `${ms}ms`;
-    return `${(ms / 1000).toFixed(2)}s`;
+    const ms = actionLogElapsedMs(log);
+    return ms == null ? '-' : formatElapsedMs(ms, 2);
   }
 
   function formatDate(dateStr) {

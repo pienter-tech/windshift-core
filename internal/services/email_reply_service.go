@@ -16,6 +16,7 @@ import (
 
 	"windshift/internal/database"
 	"windshift/internal/emailutil"
+	"windshift/internal/itemevents"
 	"windshift/internal/models"
 	"windshift/internal/repository"
 	"windshift/internal/smtp"
@@ -69,6 +70,12 @@ func (s *EmailReplyService) HandleCommentCreated(params HandleCommentParams) err
 func (s *EmailReplyService) handleCommentCreated(params HandleCommentParams, deliverImmediately bool) error {
 	// Guard: skip private comments
 	if params.IsPrivate {
+		return nil
+	}
+
+	// Guard: imported comments are historical. Emailing them would send the
+	// whole archive to every customer on the ticket as if it were written now.
+	if itemevents.IsImportOrigin(params.ActorKind, params.SourceKind) {
 		return nil
 	}
 

@@ -1532,20 +1532,35 @@ const (
 	EmailReplySending
 )
 
-// DiscardEmailReply marks a pending outbound reply as never-send. A live
-// delivery lease reports EmailReplySending instead of pretending the mail
-// was canceled; delivered, already-discarded, and missing rows report
-// EmailReplyNotDiscardable.
+// DiscardEmailReply marks every pending outbound reply for a comment as
+// never-send. A live delivery lease reports EmailReplySending instead of
+// pretending the mail was canceled; delivered, already-discarded, and missing
+// rows report EmailReplyNotDiscardable.
 func (r *ChannelRepository) DiscardEmailReply(ctx context.Context, channelID, commentID int) (EmailReplyDiscardOutcome, error) {
+	return r.discardEmailReply(ctx, "channel_id = ? AND comment_id = ?", channelID, commentID)
+}
+
+// DiscardEmailReplyByID marks one pending outbox row as never-send. Unlike the
+// comment-scoped discard this targets a single row, so an intake receipt (which
+// has no comment_id) can be canceled too.
+func (r *ChannelRepository) DiscardEmailReplyByID(ctx context.Context, channelID, replyID int) (EmailReplyDiscardOutcome, error) {
+	return r.discardEmailReply(ctx, "id = ? AND channel_id = ?", replyID, channelID)
+}
+
+// discardEmailReply applies the never-send marker to the rows matched by where
+// and classifies a refusal so the API can distinguish an in-flight send from a
+// terminal or missing row. where is one of the fixed clauses above, never user
+// input.
+func (r *ChannelRepository) discardEmailReply(ctx context.Context, where string, args ...any) (EmailReplyDiscardOutcome, error) {
 	res, err := r.db.ExecWriteContext(ctx, `
 		UPDATE email_reply_outbox
 		SET discarded_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-		WHERE channel_id = ? AND comment_id = ?
+		WHERE `+where+`
 		  AND delivered_at IS NULL AND discarded_at IS NULL
 		  AND (lease_owner IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP)
-	`, channelID, commentID)
+	`, args...)
 	if err != nil {
-		return EmailReplyNotDiscardable, fmt.Errorf("discard email_reply_outbox row %d: %w", commentID, err)
+		return EmailReplyNotDiscardable, fmt.Errorf("discard email_reply_outbox rows: %w", err)
 	}
 	rows, err := res.RowsAffected()
 	if err != nil {
@@ -1560,18 +1575,56 @@ func (r *ChannelRepository) DiscardEmailReply(ctx context.Context, channelID, co
 	var delivered, discarded, lease sql.NullTime
 	err = r.db.QueryRowContext(ctx, `
 		SELECT delivered_at, discarded_at, next_attempt_at FROM email_reply_outbox
-		WHERE channel_id = ? AND comment_id = ?
-	`, channelID, commentID).Scan(&delivered, &discarded, &lease)
+		WHERE `+where+`
+	`, args...).Scan(&delivered, &discarded, &lease)
 	if errors.Is(err, sql.ErrNoRows) {
 		return EmailReplyNotDiscardable, nil
 	}
 	if err != nil {
-		return EmailReplyNotDiscardable, fmt.Errorf("load email_reply_outbox row %d: %w", commentID, err)
+		return EmailReplyNotDiscardable, fmt.Errorf("load email_reply_outbox row: %w", err)
 	}
 	if !delivered.Valid && !discarded.Valid && lease.Valid && lease.Time.After(time.Now()) {
 		return EmailReplySending, nil
 	}
 	return EmailReplyNotDiscardable, nil
+}
+
+// CountDiscardableEmailReplies returns how many rows the bulk discard would
+// cancel: pending rows that no worker is currently delivering.
+func (r *ChannelRepository) CountDiscardableEmailReplies(ctx context.Context, channelID int) (int, error) {
+	var total int
+	if err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM email_reply_outbox
+		WHERE channel_id = ?
+		  AND delivered_at IS NULL AND discarded_at IS NULL
+		  AND (lease_owner IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP)
+	`, channelID).Scan(&total); err != nil {
+		return 0, fmt.Errorf("count discardable email_reply_outbox rows: %w", err)
+	}
+	return total, nil
+}
+
+// DiscardPendingEmailReplies marks every pending outbound reply for a channel
+// as never-send in one statement. It is the recovery action after an import or
+// any other event queued a burst of customer mail. Rows a worker is actively
+// delivering keep their lease and are left alone, so an in-flight SMTP send is
+// never misreported as canceled. Returns how many rows were discarded.
+func (r *ChannelRepository) DiscardPendingEmailReplies(ctx context.Context, channelID int) (int64, error) {
+	res, err := r.db.ExecWriteContext(ctx, `
+		UPDATE email_reply_outbox
+		SET discarded_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+		WHERE channel_id = ?
+		  AND delivered_at IS NULL AND discarded_at IS NULL
+		  AND (lease_owner IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP)
+	`, channelID)
+	if err != nil {
+		return 0, fmt.Errorf("discard pending email_reply_outbox rows: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count discarded email_reply_outbox rows: %w", err)
+	}
+	return rows, nil
 }
 
 // CreateOAuthState records an in-flight OAuth state for a channel-level

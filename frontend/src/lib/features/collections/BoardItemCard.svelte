@@ -1,12 +1,15 @@
 <script>
   import CalendarDays from '@lucide/svelte/icons/calendar-days';
+  import CheckSquare from '@lucide/svelte/icons/square-check';
   import MoreHorizontal from '@lucide/svelte/icons/more-horizontal';
+  import Square from '@lucide/svelte/icons/square';
   import Avatar from '../../components/Avatar.svelte';
   import DropIndicator from '../../layout/DropIndicator.svelte';
   import DropdownMenu from '../../layout/DropdownMenu.svelte';
   import { formatDateOnly } from '../../utils/dateFormatter.js';
   import ItemTypeIcon from '../../components/ItemTypeIcon.svelte';
   import ItemKey from '../../components/ItemKey.svelte';
+  import { t } from '../../stores/i18n.svelte.js';
   import CardFieldChip from './CardFieldChip.svelte';
   import DependencySummary from './DependencySummary.svelte';
   import SLABadge from '../sla/SLABadge.svelte';
@@ -36,6 +39,16 @@
     canDrag = true,
     dndAction = () => {},
     refreshToken = 0,
+    focused = false,
+    selected = false,
+    // Board-wide selection mode: cards dim until selected and expose their
+    // checkbox. Outside this mode no selection control is rendered at all.
+    selectionMode = false,
+    visible = true,
+    onvisibilitychange = null,
+    registerElement = null,
+    onselect = null,
+    onshiftselect = null,
     onopen = null,
   } = $props();
 
@@ -82,6 +95,46 @@
 
   const avatarVariants = ['blue', 'teal', 'purple', 'green', 'orange'];
 
+  let rootElement = $state(null);
+
+  // Let the board own a card-element registry for roving keyboard focus.
+  $effect(() => {
+    const element = rootElement;
+    if (!element || !registerElement) return;
+    const registration = registerElement(element, item.id);
+    return () => registration?.destroy?.();
+  });
+
+  // Optional card reads (assignee hydration, dependencies, SLA) are owned by
+  // the board and only run for cards near the viewport.
+  $effect(() => {
+    const element = rootElement;
+    if (!element || !onvisibilitychange) return;
+    if (typeof IntersectionObserver === 'undefined') {
+      onvisibilitychange(item.id, true);
+      return () => onvisibilitychange(item.id, false);
+    }
+
+    let lastVisible = null;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.target !== element) continue;
+          const nextVisible = entry.isIntersecting;
+          if (nextVisible === lastVisible) continue;
+          lastVisible = nextVisible;
+          onvisibilitychange(item.id, nextVisible);
+        }
+      },
+      { rootMargin: '200px', threshold: 0 }
+    );
+    observer.observe(element);
+    return () => {
+      observer.disconnect();
+      if (lastVisible !== false) onvisibilitychange(item.id, false);
+    };
+  });
+
   function avatarVariant(userId) {
     return avatarVariants[Math.abs(Number(userId) || 0) % avatarVariants.length];
   }
@@ -90,15 +143,37 @@
     onopen?.(item.id, event);
   }
 
+  // In selection mode the whole card toggles its selection; otherwise
+  // shift-click extends the board selection and a plain click opens the card.
+  function handleCardClick(event) {
+    if (selectionMode && onselect) {
+      event.preventDefault();
+      onselect(item.id, event);
+      return;
+    }
+    if (event.shiftKey && onshiftselect) {
+      event.preventDefault();
+      onshiftselect(item.id, event);
+      return;
+    }
+    open(event);
+  }
+
   function handleKeydown(event) {
-    if (event.key === 'Enter' || event.key === ' ') {
+    if (event.key === 'Enter') {
       open(event);
     }
+  }
+
+  function handleSelectClick(event) {
+    event.stopPropagation();
+    onselect?.(item.id, event);
   }
 </script>
 
 <div
   use:dndAction={dndConfig}
+  bind:this={rootElement}
   class="board-card relative rounded-[4px] border px-3 py-2.5"
   style={cardStyle}
   data-testid={`board-item-${item.id}`}
@@ -106,9 +181,11 @@
   data-item-id={item.id}
   data-swimlane-dimension={swimlaneDimension}
   data-swimlane-key={swimlaneKey}
+  data-selected={selected ? 'true' : 'false'}
+  data-selection-mode={selectionMode ? 'true' : 'false'}
   role="button"
-  tabindex="0"
-  onclick={open}
+  tabindex={focused ? 0 : -1}
+  onclick={handleCardClick}
   onkeydown={handleKeydown}
 >
   {#if closestEdge}
@@ -118,6 +195,25 @@
   <div class={canDrag ? 'cursor-grab active:cursor-grabbing' : ''}>
     <div class="min-w-0">
       <div class="flex items-start gap-2">
+        {#if onselect && selectionMode}
+          <button
+            type="button"
+            class="board-card-select -ml-0.5 mt-0.5 shrink-0 rounded p-0.5"
+            style="color: {selected ? 'var(--ds-border-focused)' : 'var(--ds-icon-subtle)'};"
+            data-testid={`board-card-select-${item.id}`}
+            aria-pressed={selected}
+            aria-label={t('collections.toggleSelection')}
+            title={t('collections.toggleSelection')}
+            onclick={handleSelectClick}
+            onkeydown={(event) => event.stopPropagation()}
+          >
+            {#if selected}
+              <CheckSquare class="h-4 w-4" />
+            {:else}
+              <Square class="h-4 w-4" />
+            {/if}
+          </button>
+        {/if}
         <h4 class="min-w-0 flex-1 break-words text-sm font-medium leading-5" style={textStyle}>
           {item.title}
         </h4>
@@ -176,6 +272,7 @@
             href={itemHref}
             onClick={(event) => {
               event.preventDefault();
+              event.stopPropagation();
               open(event);
             }}
             size="compact"
@@ -196,7 +293,9 @@
         <DependencySummary {item} links={dependencyLinks} />
         {#if showsSLA}
           <span class="inline-flex shrink-0" data-testid={`board-card-sla-${item.id}`}>
-            <SLABadge itemId={item.id} workspaceId={item.workspace_id} {refreshToken} />
+            {#if visible}
+              <SLABadge itemId={item.id} workspaceId={item.workspace_id} {refreshToken} />
+            {/if}
           </span>
         {/if}
         <span class="flex-1"></span>
@@ -246,5 +345,21 @@
   .board-card:hover .board-card-menu,
   .board-card:focus-within .board-card-menu {
     opacity: 1;
+  }
+
+  /* Selection mode dims every card so the selected subset stands out. The
+     selected card stays fully opaque and carries the focus accent. */
+  .board-card[data-selection-mode='true']:not([data-selected='true']) {
+    opacity: 0.5;
+  }
+
+  .board-card[data-selection-mode='true']:not([data-selected='true']):hover {
+    opacity: 0.8;
+  }
+
+  .board-card[data-selected='true'] {
+    opacity: 1;
+    border-color: var(--ds-border-focused) !important;
+    box-shadow: 0 0 0 1px var(--ds-border-focused);
   }
 </style>

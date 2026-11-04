@@ -2,7 +2,6 @@
   import UserPicker from '../../pickers/UserPicker.svelte';
   import AssetPicker from '../../pickers/AssetPicker.svelte';
   import ItemPicker from '../../pickers/ItemPicker.svelte';
-  import PersonalLabelCombobox from '../../pickers/PersonalLabelCombobox.svelte';
   import BasePicker from '../../pickers/BasePicker.svelte';
   import PortalCustomerPicker from '../../pickers/PortalCustomerPicker.svelte';
   import CustomerOrganisationPicker from '../../pickers/CustomerOrganisationPicker.svelte';
@@ -16,7 +15,7 @@
   import Link2 from '@lucide/svelte/icons/link-2';
   import Mail from '@lucide/svelte/icons/mail';
   import ExternalLink from '@lucide/svelte/icons/external-link';
-  import CheckSquare from '@lucide/svelte/icons/check-square';
+  import CheckSquare from '@lucide/svelte/icons/square-check';
   import ColorDot from '../../components/ColorDot.svelte';
   import Checkbox from '../../components/Checkbox.svelte';
   import Input from '../../components/Input.svelte';
@@ -55,6 +54,9 @@
     onFieldLinksChanged = null,
     optionData = {}, optionLoading = {}, onRequestOptions = null, loadAssetOptions = null,
     displayAlignment = 'start', truncateDisplay = false, displayTestId = undefined,
+    // Workspace scope for the user/multi-user pickers. When set, the pickers
+    // load the workspace-scoped roster instead of the global directory.
+    workspaceId = null,
     // Row mode: the caller passes the field label and the component renders the
     // label/value row used by the item detail sidebar, swapping it for a
     // full-width editor. rowTestIdPrefix builds the row's stable test ids:
@@ -71,6 +73,15 @@
 
   const users = $derived(providedUsers ?? referenceDisplayCache.users);
   const usersLoading = $derived(providedUsers === null && referenceDisplayCache.usersLoading);
+
+  // User and multi-user custom fields are free pickers. When the caller knows
+  // the workspace, prefer the workspace-scoped roster (assignable-users) over
+  // the global directory, which non-admins cannot read (GH #420). A caller
+  // that supplies its own options keeps ownership of loading them.
+  const userPickerWorkspaceId = $derived(workspaceId ?? null);
+  const userPickerUsers = $derived(
+    providedUsers ?? (userPickerWorkspaceId ? null : users.length ? users : null)
+  );
   const displayHydration = new AbortController();
   onDestroy(() => displayHydration.abort());
 
@@ -449,7 +460,7 @@
     onChange(newValue);
     // Multi-value editors stay open so several entries can be picked in a
     // row; everything else returns to display right after the commit.
-    const multiValue = ['multi_user', 'multiselect', 'multi_milestone', 'combobox'].includes(field.field_type)
+    const multiValue = ['multi_user', 'multiselect', 'multi_milestone'].includes(field.field_type)
       || (field.field_type === 'asset' && isMultiAssetField);
     if (!multiValue) exitEditing();
   }
@@ -544,19 +555,11 @@
         const values = Array.isArray(missingValue) ? missingValue : [missingValue];
         return values.map((entry) => resolveOptionLabel(field.options, entry)).filter(Boolean).join(', ');
       }
-      case 'combobox':
-        return typeof missingValue === 'string' ? missingValue.split(',').map((entry) => entry.trim()).filter(Boolean).join(', ') : '';
       default:
         return '';
     }
   }
   // --------------------------------------------------------------------------
-
-  // Get combobox labels array
-  function getComboboxLabels(val) {
-    if (!val) return [];
-    return val.split(',').map(v => v.trim()).filter(v => v);
-  }
 </script>
 
 {#snippet readOnlyContent(interactive)}
@@ -631,14 +634,6 @@
             —
           {/if}
         </span>
-      </div>
-    {:else if field.field_type === 'combobox'}
-      <div class="flex items-center gap-1 flex-wrap {valueAlignment === 'end' ? 'justify-end' : ''}">
-        {#each getComboboxLabels(value) as labelName}
-          <span class="inline-flex items-center px-2 py-0.5 bg-ds-accent-blue-subtle text-ds-text-accent-blue text-xs rounded-full">
-            {labelName}
-          </span>
-        {/each}
       </div>
     {:else if isBooleanCustomFieldType(field.field_type)}
       <div class="flex items-center gap-2 {valueAlignment === 'end' ? 'justify-end' : ''}">
@@ -738,7 +733,8 @@
         {showSelectedInTrigger}
         class="w-full"
         {disabled}
-        users={providedUsers === null ? (users.length ? users : null) : providedUsers}
+        workspaceId={userPickerWorkspaceId}
+        users={userPickerUsers}
         loading={optionLoading.users ?? false}
         autoOpen={pickerAutoOpen}
         {resolveMissingLabel}
@@ -770,7 +766,8 @@
           showSelectedInTrigger={false}
           class="w-full"
           {disabled}
-          users={providedUsers === null ? (users.length ? users : null) : providedUsers}
+          workspaceId={userPickerWorkspaceId}
+          users={userPickerUsers}
           loading={optionLoading.users ?? false}
           autoOpen={pickerAutoOpen}
           onOpen={() => onRequestOptions?.('users')}
@@ -875,22 +872,6 @@
         {disabled}
         links={fieldLinks}
         onChanged={(change) => onFieldLinksChanged?.(change)}
-      />
-    {:else if field.field_type === 'combobox'}
-      <PersonalLabelCombobox
-        {value}
-        placeholder={t('items.selectOrCreateLabels')}
-        class="w-full"
-        userId={null}
-        {disabled}
-        labels={optionData.personalLabels ?? null}
-        loading={optionLoading.personalLabels ?? false}
-        onOpen={() => onRequestOptions?.('personalLabels')}
-        onSelect={(result) => {
-          const labelArray = result.value || [];
-          handleEditorChange(labelArray.join(','));
-        }}
-        onCancel={handleEditorCancel}
       />
     {:else if field.field_type === 'select'}
       <BasePicker

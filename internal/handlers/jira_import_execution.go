@@ -27,9 +27,9 @@ const (
 	jiraIssueKeyFieldName     = "Jira Key"
 )
 
-// executeImport runs the actual import process in the background
+// executeImport runs the actual import process in the background.
 func (h *JiraImportHandler) executeImport(jobID string, req StartImportRequest) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	ctx, cancel := h.jiraImportContext(context.Background())
 	defer cancel()
 
 	// Claim the job with a per-run ownership token. A job another worker already
@@ -91,6 +91,16 @@ func (h *JiraImportHandler) executeImport(jobID string, req StartImportRequest) 
 	}
 
 	h.executeImportWithClientContext(ctx, jobID, req, client, createdByID)
+}
+
+// jiraImportContext applies the operator-configured overall import limit. With
+// no limit (the default) it only derives a cancellable context, because
+// per-request HTTP timeouts and the worker lease already bound the import.
+func (h *JiraImportHandler) jiraImportContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if h.importMaxDuration > 0 {
+		return context.WithTimeout(parent, h.importMaxDuration)
+	}
+	return context.WithCancel(parent)
 }
 
 func jiraIssueImportJQL(projectKey string, openIssuesOnly, rankOrdered bool) string {
@@ -273,6 +283,35 @@ func jiraImportTerminalOutcome(progress *ImportProgress) (status, phase, errorMe
 	)
 }
 
+// jiraImportTimedOutOutcome describes an import stopped by the operator's
+// configured time limit. It is separate from jiraImportTerminalOutcome so a
+// limit reads as a partial stop with resume instructions rather than as a
+// generic completion with per-item errors.
+func jiraImportTimedOutOutcome(ctx context.Context, progress *ImportProgress) (status, phase, errorMessage string, timedOut bool) {
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return "", "", "", false
+	}
+	imported := progress.ImportedIssues + progress.ImportedTests
+	total := progress.TotalIssues + progress.TotalTests
+	return "timed_out", "timed_out", fmt.Sprintf(
+		"Import stopped at the configured time limit after importing %d of %d items. Re-run the import mapped onto the same workspace to continue; items are matched by their Jira ID and already-imported data is reused.",
+		imported, total,
+	), true
+}
+
+// finishTimedOutJiraImport writes the terminal state for an import that hit the
+// configured limit. It reports whether the job was stopped by that limit.
+func (h *JiraImportHandler) finishTimedOutJiraImport(ctx context.Context, jobID string, progress *ImportProgress) bool {
+	status, phase, errorMessage, timedOut := jiraImportTimedOutOutcome(ctx, progress)
+	if !timedOut {
+		return false
+	}
+	progress.Phase = phase
+	h.persistJiraImportResult(jobID, progress)
+	h.updateJobStatus(jobID, status, phase, progress, errorMessage)
+	return true
+}
+
 func (h *JiraImportHandler) executeImportWithClientContext(ctx context.Context, jobID string, req StartImportRequest, client jira.Client, createdByUserID int) {
 	h.clearMappingFailure(jobID)
 	defer h.clearMappingFailure(jobID)
@@ -303,6 +342,9 @@ func (h *JiraImportHandler) executeImportWithClientContext(ctx context.Context, 
 
 	xrayPlan, err := prepareXrayImport(ctx, client, req.Xray, req.ProjectKeys, req.OpenIssuesOnly)
 	if err != nil {
+		if h.finishTimedOutJiraImport(ctx, jobID, progress) {
+			return
+		}
 		h.updateJobStatus(jobID, "failed", "", progress, fmt.Sprintf("Failed to prepare Xray import: %v", err))
 		return
 	}
@@ -316,6 +358,7 @@ func (h *JiraImportHandler) executeImportWithClientContext(ctx context.Context, 
 
 	global, aborted := h.prepareJiraGlobalModel(ctx, jobID, req, client, createdByUserID, progress)
 	if aborted {
+		h.finishTimedOutJiraImport(ctx, jobID, progress)
 		return
 	}
 
@@ -337,6 +380,7 @@ func (h *JiraImportHandler) executeImportWithClientContext(ctx context.Context, 
 
 		skip, aborted := h.importJiraIssueBatches(ctx, im, projectKey, global, req.OpenIssuesOnly, xrayPlan)
 		if aborted {
+			h.finishTimedOutJiraImport(ctx, jobID, progress)
 			return
 		}
 		if skip {
@@ -368,6 +412,9 @@ func (h *JiraImportHandler) executeImportWithClientContext(ctx context.Context, 
 	}
 	if issueLinkImportErr != nil {
 		progress.FailedLinks = 1
+	}
+	if h.finishTimedOutJiraImport(ctx, jobID, progress) {
+		return
 	}
 	status, phase, errorMessage := jiraImportTerminalOutcome(progress)
 	progress.Phase = phase
@@ -625,6 +672,12 @@ func (h *JiraImportHandler) importJiraIssueBatches(
 
 	batchSize := 100
 	for j := 0; j < len(issueKeys); j += batchSize {
+		// A configured time limit (or a lost lease) stops the import before the
+		// next batch. Checking here keeps unprocessed issues out of the failure
+		// counts; the caller reports the limit as a partial stop.
+		if ctx.Err() != nil {
+			return false, true
+		}
 		// Stop before persisting a batch once the lease is lost: a recovered or
 		// cleaned-up job must not have its data resurrected by a stale worker.
 		if err := h.imports.CheckJobOwnership(im.jobID, h.jobToken(im.jobID)); err != nil {
@@ -683,17 +736,28 @@ func (h *JiraImportHandler) importJiraIssueBatches(
 // comment/worklog page in issue payloads; fetching the rest here lets author
 // mapping include every referenced user.
 func (h *JiraImportHandler) completeJiraBatchSubresources(ctx context.Context, im *jiraImportContext, projectKey string, issues []jira.JiraIssue, xrayPlan *xrayImportPlan) {
-	for idx := range issues {
+	// Each issue's subresource work is independent, so run it concurrently and
+	// fold the failure counts back into the shared progress on this goroutine.
+	type subresourceFailures struct {
+		comments int
+		worklogs int
+	}
+	failures := make([]subresourceFailures, len(issues))
+	jiraParallel(ctx, h.importConcurrency, len(issues), func(ctx context.Context, idx int) {
 		if xrayPlan.isTest(projectKey, issues[idx].Key) {
-			continue
+			return
 		}
-		if err := h.completePagedIssueContainers(ctx, &issues[idx], im.client, im.progress); err != nil {
+		comments, worklogs, err := h.completeJiraIssueSubresources(ctx, &issues[idx], im.client)
+		if err != nil {
 			slog.Warn("Failed to complete paged Jira issue containers",
 				slog.String("component", "jira"),
 				slog.String("issue", issues[idx].Key),
 				slog.Any("error", err))
 		}
-		h.completeIssueWatchers(ctx, &issues[idx], im.client)
+		failures[idx] = subresourceFailures{comments: comments, worklogs: worklogs}
+		if h.importWatchers {
+			h.completeIssueWatchers(ctx, &issues[idx], im.client)
+		}
 		if im.jsmImport != nil {
 			if err := h.annotateJiraServiceDeskCommentVisibility(ctx, &issues[idx], im.client); err != nil {
 				slog.Warn("Failed to load Jira Service Management comment visibility",
@@ -702,6 +766,10 @@ func (h *JiraImportHandler) completeJiraBatchSubresources(ctx context.Context, i
 					slog.Any("error", err))
 			}
 		}
+	})
+	for _, failure := range failures {
+		im.progress.FailedComments += failure.comments
+		im.progress.FailedWorklogs += failure.worklogs
 	}
 }
 
@@ -729,8 +797,10 @@ func (h *JiraImportHandler) collectJiraBatchUsers(im *jiraImportContext, project
 		addJiraUserSummaryFromUser(issue.Fields.Assignee, knownIdentityMap, &usersToProcess, usersSeen)
 		addJiraUserSummaryFromUser(issue.Fields.Reporter, knownIdentityMap, &usersToProcess, usersSeen)
 		addJiraUserSummaryFromUser(issue.Fields.Creator, knownIdentityMap, &usersToProcess, usersSeen)
-		for watcherIdx := range issue.Fields.Watchers {
-			addJiraUserSummaryFromUser(&issue.Fields.Watchers[watcherIdx], knownIdentityMap, &usersToProcess, usersSeen)
+		if h.importWatchers {
+			for watcherIdx := range issue.Fields.Watchers {
+				addJiraUserSummaryFromUser(&issue.Fields.Watchers[watcherIdx], knownIdentityMap, &usersToProcess, usersSeen)
+			}
 		}
 		if issue.Fields.Votes != nil {
 			for voterIdx := range issue.Fields.Votes.Voters {
@@ -1409,24 +1479,23 @@ func (h *JiraImportHandler) bindJiraImportFieldsToWorkspace(
 	return h.imports.BindFieldsToWorkspace(workspaceID, projectKey, fieldIDs)
 }
 
-func (h *JiraImportHandler) completePagedIssueContainers(ctx context.Context, issue *jira.JiraIssue, client jira.Client, progress *ImportProgress) error {
+// completeJiraIssueSubresources completes one issue's paginated comment and
+// worklog containers. It reports the failure counts instead of mutating the
+// shared progress so it can run concurrently across a batch.
+func (h *JiraImportHandler) completeJiraIssueSubresources(ctx context.Context, issue *jira.JiraIssue, client jira.Client) (failedComments, failedWorklogs int, err error) {
 	if issue == nil || issue.Key == "" {
-		return nil
+		return 0, 0, nil
 	}
 	var errs []error
 	if err := h.completeIssueComments(ctx, issue, client); err != nil {
-		if progress != nil {
-			progress.FailedComments++
-		}
+		failedComments = 1
 		errs = append(errs, err)
 	}
 	if err := h.completeIssueWorklogs(ctx, issue, client); err != nil {
-		if progress != nil {
-			progress.FailedWorklogs++
-		}
+		failedWorklogs = 1
 		errs = append(errs, err)
 	}
-	return errors.Join(errs...)
+	return failedComments, failedWorklogs, errors.Join(errs...)
 }
 
 func (h *JiraImportHandler) completeIssueWatchers(ctx context.Context, issue *jira.JiraIssue, client jira.Client) {
@@ -1567,7 +1636,6 @@ type jiraImportWorkflowGroup struct {
 	authoritative       bool
 	rulesComplete       bool
 	guardedTransitions  int
-	unsupportedLoops    int
 	unsupportedActions  int
 	unsupportedTriggers int
 }
@@ -1710,12 +1778,11 @@ func (h *JiraImportHandler) ensureWorkflowsAndConfigSet(
 			Edges: serviceEdges, ItemTypeIDs: group.itemTypeIDs,
 			Metadata: map[string]any{
 				"fidelity": fidelity, "transition_count": len(edges),
-				"transition_rules_complete":         group.rulesComplete,
-				"guarded_transition_count":          group.guardedTransitions,
-				"unsupported_loop_transition_count": group.unsupportedLoops,
-				"review_locked_transition_count":    countReviewLockedJiraEdges(edges),
-				"unsupported_transition_actions":    group.unsupportedActions,
-				"unsupported_transition_triggers":   group.unsupportedTriggers,
+				"transition_rules_complete":       group.rulesComplete,
+				"guarded_transition_count":        group.guardedTransitions,
+				"review_locked_transition_count":  countReviewLockedJiraEdges(edges),
+				"unsupported_transition_actions":  group.unsupportedActions,
+				"unsupported_transition_triggers": group.unsupportedTriggers,
 			},
 		})
 	}
@@ -1851,10 +1918,8 @@ func authoritativeJiraWorkflowEdges(
 	addEdge := func(fromStatusID *int, toStatusID int, reviewLocked bool) {
 		key := "initial:" + strconv.Itoa(toStatusID)
 		if fromStatusID != nil {
-			if *fromStatusID == toStatusID {
-				group.unsupportedLoops++
-				return
-			}
+			// A same-status (loop) transition is valid in Windshift, so import it
+			// like any other edge instead of dropping it.
 			key = strconv.Itoa(*fromStatusID) + ":" + strconv.Itoa(toStatusID)
 		}
 		edge := edgesByKey[key]

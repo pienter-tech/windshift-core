@@ -1191,9 +1191,11 @@ func (h *JiraImportHandler) collectJiraTrackingMetadata(issue *jira.JiraIssue, c
 	if issue.Fields.Watches != nil {
 		customFieldValues["_jira_watcher_count"] = issue.Fields.Watches.WatchCount
 	}
-	customFieldValues["_jira_watcher_identities_available"] = issue.Fields.WatcherIdentitiesAvailable
-	if issue.Fields.WatcherFetchError != "" {
-		customFieldValues["_jira_watcher_fetch_error"] = issue.Fields.WatcherFetchError
+	if h.importWatchers {
+		customFieldValues["_jira_watcher_identities_available"] = issue.Fields.WatcherIdentitiesAvailable
+		if issue.Fields.WatcherFetchError != "" {
+			customFieldValues["_jira_watcher_fetch_error"] = issue.Fields.WatcherFetchError
+		}
 	}
 }
 
@@ -1209,7 +1211,7 @@ func (h *JiraImportHandler) collectJiraIdentityMetadata(im *jiraImportContext, i
 	if assignee := jiraUserIdentityMetadata(issue.Fields.Assignee); len(assignee) > 0 {
 		customFieldValues["_jira_assignee"] = assignee
 	}
-	if len(issue.Fields.Watchers) > 0 {
+	if h.importWatchers && len(issue.Fields.Watchers) > 0 {
 		watchers := make([]map[string]any, 0, len(issue.Fields.Watchers))
 		for idx := range issue.Fields.Watchers {
 			if identity := jiraUserIdentityMetadata(&issue.Fields.Watchers[idx]); len(identity) > 0 {
@@ -1398,12 +1400,60 @@ func (h *JiraImportHandler) upsertJiraIssueItem(im *jiraImportContext, issue *ji
 	if previousItemMapping != nil {
 		itemID, err = h.updateImportedJiraItem(previousItemMapping.WindshiftID, itemParams)
 	} else {
+		// Preserve the Jira key's numeric suffix so commit and PR mentions keep
+		// resolving. A number already used or retired in the target workspace
+		// falls back to the next free number, reported as a fidelity finding.
+		var pinned services.PinnedItemNumberOutcome
+		if number, ok := jiraIssueNumber(issue.Key); ok {
+			itemParams.PinnedItemNumber = &number
+			itemParams.PinnedItemNumberResult = &pinned
+		}
 		itemID, err = services.CreateItem(h.db, itemParams)
+		if err == nil && itemParams.PinnedItemNumber != nil && pinned.FellBack {
+			h.recordJiraIssueNumberFallback(im, issue, pinned)
+		}
 	}
 	if err != nil {
 		return 0, nil, false, fmt.Errorf("failed to create or update item: %w", err)
 	}
 	return itemID, previousItemMapping, forked, nil
+}
+
+// jiraIssueNumber parses the numeric suffix of a Jira issue key
+// (`EXPL-30` -> 30). Keys are PROJECT-N, so split on the last hyphen.
+func jiraIssueNumber(key string) (int, bool) {
+	separator := strings.LastIndex(key, "-")
+	if separator < 0 || separator == len(key)-1 {
+		return 0, false
+	}
+	number, err := strconv.Atoi(key[separator+1:])
+	if err != nil || number <= 0 {
+		return 0, false
+	}
+	return number, true
+}
+
+// recordJiraIssueNumberFallback reports that a Jira key could not be pinned in
+// the target workspace, so the imported item carries a different number and
+// source-key mentions no longer resolve to it.
+func (h *JiraImportHandler) recordJiraIssueNumberFallback(im *jiraImportContext, issue *jira.JiraIssue, outcome services.PinnedItemNumberOutcome) {
+	meta := map[string]any{
+		"code":             "jira_issue_number_taken",
+		"severity":         "warning",
+		"disposition":      "renumbered",
+		"source_count":     1,
+		"resolved_count":   0,
+		"requested_number": outcome.Requested,
+		"assigned_number":  outcome.Assigned,
+		"jira_issue_key":   issue.Key,
+	}
+	summary := fmt.Sprintf("Jira key %s could not keep its number in the target workspace", issue.Key)
+	if err := h.recordMapping(im.jobID, "fidelity_finding", "item-number:"+issue.Key, summary, outcome.Assigned, meta); err != nil {
+		slog.Warn("Failed to record Jira issue-number fallback finding",
+			slog.String("component", "jira"),
+			slog.String("issue", issue.Key),
+			slog.Any("error", err))
+	}
 }
 
 func (h *JiraImportHandler) recordJiraIssueMapping(im *jiraImportContext, issue *jira.JiraIssue, refs *jiraIssueReferences, previous *previousJiraImportMapping, itemID int64) error {
@@ -1473,8 +1523,10 @@ func (h *JiraImportHandler) recordJiraIssueMapping(im *jiraImportContext, issue 
 // contractual order: watchers, labels, attachments, description media
 // re-render, comments, and worklogs.
 func (h *JiraImportHandler) importJiraIssueSubresources(ctx context.Context, im *jiraImportContext, issue *jira.JiraIssue, itemID int64, rawDescription any, description string, mentionResolver jira.MentionResolver, forked bool) error {
-	if err := h.importIssueWatchers(im.jobID, int(itemID), issue, im.userMap); err != nil {
-		return fmt.Errorf("import Jira issue watchers: %w", err)
+	if h.importWatchers {
+		if err := h.importIssueWatchers(im.jobID, int(itemID), issue, im.userMap); err != nil {
+			return fmt.Errorf("import Jira issue watchers: %w", err)
+		}
 	}
 
 	// Attach Jira labels (top-level Fields.Labels, distinct from labels-typed
@@ -1970,16 +2022,6 @@ func (h *JiraImportHandler) importWorklogs(jobID string, itemID int, issue *jira
 			slog.Int("total", issue.Fields.Worklog.Total))
 	}
 
-	customerID, err := h.imports.TimeProjectCustomerID(*timeProjectID)
-	if err != nil {
-		slog.Error("Failed to resolve time project customer for Jira worklogs",
-			slog.String("component", "jira"),
-			slog.String("issue", issue.Key),
-			slog.Int("timeProjectID", *timeProjectID),
-			slog.Any("error", err))
-		return nil
-	}
-
 	for _, worklog := range issue.Fields.Worklog.Worklogs {
 		if progress != nil {
 			progress.TotalWorklogs++
@@ -2038,7 +2080,6 @@ func (h *JiraImportHandler) importWorklogs(jobID string, itemID int, issue *jira
 		}
 		worklogID, err := h.imports.UpsertImportedWorklog(repository.ImportedWorklog{
 			ProjectID:       *timeProjectID,
-			CustomerID:      customerID,
 			UserID:          userID,
 			ItemID:          itemID,
 			Description:     description,
@@ -2119,6 +2160,18 @@ func jiraInternalAttachmentIDs(issue *jira.JiraIssue, rawDescription any, servic
 	return internal
 }
 
+// jiraAttachmentDownload is one attachment staged for download. The concurrent
+// phase fills the stored fields; the record-writing phase consumes them in
+// attachment order.
+type jiraAttachmentDownload struct {
+	attachment     jira.JiraAttachment
+	storedPath     string
+	storedFilename string
+	mimeType       string
+	fileSize       int64
+	err            error
+}
+
 // importAttachments downloads and stores attachments from a Jira issue. It
 // returns a map from Jira attachment id → the Windshift attachment reference
 // (id, mime type, original filename) so ADF media nodes can be linked to the
@@ -2130,20 +2183,18 @@ func (h *JiraImportHandler) importAttachments(ctx context.Context, jobID string,
 		return nil, nil
 	}
 
-	// Get attachment storage path from settings.
-	attachmentPath, ok := h.imports.AttachmentPath()
-	if !ok {
-		slog.Warn("Attachment settings not configured, skipping attachment import",
+	if !h.storage.Enabled() {
+		slog.Warn("Attachment storage not configured, skipping attachment import",
 			slog.String("component", "jira"), slog.String("issue", issue.Key))
 		return jiraNoAttachmentMediaRefs()
 	}
-	if err := ensureJiraAttachmentStorage(attachmentPath); err != nil {
-		slog.Error("Failed to prepare attachment storage",
-			slog.String("component", "jira"), slog.String("issue", issue.Key), slog.Any("error", err))
-		return map[string]jira.MediaAttachment{}, nil
-	}
 
 	mediaRefs := make(map[string]jira.MediaAttachment)
+
+	// Reuse prior mappings and collect the attachments that still need a
+	// download. Downloads run concurrently below; record writes stay on this
+	// goroutine so mapping order and DB access remain deterministic.
+	var downloads []*jiraAttachmentDownload
 	for _, attachment := range issue.Fields.Attachment {
 		if attachment.Content == "" {
 			continue
@@ -2184,45 +2235,24 @@ func (h *JiraImportHandler) importAttachments(ctx context.Context, jobID string,
 			}
 		}
 
-		reader, _, err := client.DownloadAttachment(ctx, attachment.Content)
-		if err != nil {
-			slog.Error("Failed to download attachment",
+		downloads = append(downloads, &jiraAttachmentDownload{attachment: attachment})
+	}
+
+	jiraParallel(ctx, h.importConcurrency, len(downloads), func(ctx context.Context, i int) {
+		download := downloads[i]
+		download.storedPath, download.storedFilename, download.mimeType, download.fileSize, download.err =
+			h.storeJiraAttachment(ctx, download.attachment, client)
+	})
+
+	for _, download := range downloads {
+		attachment := download.attachment
+		if download.err != nil {
+			slog.Error("Failed to store Jira attachment",
 				slog.String("component", "jira"),
 				slog.String("issue", issue.Key),
 				slog.String("filename", attachment.Filename),
-				slog.Any("error", err))
+				slog.Any("error", download.err))
 			continue
-		}
-
-		storedFilename := fmt.Sprintf("%s_%s", uuid.New().String(), filepath.Base(attachment.Filename))
-		filePath := filepath.Join(attachmentPath, storedFilename)
-
-		file, err := os.Create(filePath) //nolint:gosec // G304 — filePath from attachmentPath + UUID + filename
-		if err != nil {
-			_ = reader.Close()
-			slog.Error("Failed to create attachment file",
-				slog.String("component", "jira"),
-				slog.String("path", filePath),
-				slog.Any("error", err))
-			continue
-		}
-
-		written, err := io.Copy(file, reader)
-		_ = file.Close()
-		_ = reader.Close()
-		if err != nil {
-			_ = os.Remove(filePath) //nolint:gosec // G703 — filePath from attachmentPath + UUID + filepath.Base(filename)
-			slog.Error("Failed to write attachment file",
-				slog.String("component", "jira"),
-				slog.String("path", filePath),
-				slog.Any("error", err))
-			continue
-		}
-
-		// Use actual written size if Jira didn't report one
-		fileSize := attachment.Size
-		if fileSize == 0 {
-			fileSize = written
 		}
 
 		var uploadedBy *int
@@ -2232,25 +2262,15 @@ func (h *JiraImportHandler) importAttachments(ctx context.Context, jobID string,
 			}
 		}
 
-		// SECURITY: do not trust the remote-declared Content-Type. A malicious
-		// or compromised Jira source controls attachment.MimeType, and the
-		// download handler uses the stored MIME to decide inline rendering.
-		// Detect the type from the actual bytes so a remote source cannot get a
-		// script-capable document served inline in the app origin (stored XSS).
-		mimeType := detectStoredMimeType(filePath)
-		if mimeType == "" {
-			mimeType = "application/octet-stream"
-		}
-
 		attachmentSvc := services.NewAttachmentService(h.db)
 		attachmentID, err := attachmentSvc.CreateRecord(services.CreateAttachmentParams{
 			ItemID:           itemID,
 			EntityType:       "item",
-			Filename:         storedFilename,
+			Filename:         download.storedFilename,
 			OriginalFilename: attachment.Filename,
-			FilePath:         filePath,
-			MimeType:         mimeType,
-			FileSize:         fileSize,
+			FilePath:         download.storedPath,
+			MimeType:         download.mimeType,
+			FileSize:         download.fileSize,
 			UploadedBy:       uploadedBy,
 			IsInternal:       internalIDs[attachment.ID],
 		})
@@ -2266,8 +2286,8 @@ func (h *JiraImportHandler) importAttachments(ctx context.Context, jobID string,
 		attachmentMeta := map[string]any{
 			"filename":  attachment.Filename,
 			"content":   attachment.Content,
-			"mime_type": mimeType,
-			"size":      fileSize,
+			"mime_type": download.mimeType,
+			"size":      download.fileSize,
 		}
 		if attachment.Thumbnail != "" {
 			attachmentMeta["thumbnail"] = attachment.Thumbnail
@@ -2297,7 +2317,7 @@ func (h *JiraImportHandler) importAttachments(ctx context.Context, jobID string,
 		if attachment.ID != "" {
 			mediaRefs[attachment.ID] = jira.MediaAttachment{
 				ID:               int(attachmentID),
-				MimeType:         mimeType,
+				MimeType:         download.mimeType,
 				OriginalFilename: attachment.Filename,
 			}
 		}
@@ -2309,28 +2329,75 @@ func jiraNoAttachmentMediaRefs() (map[string]jira.MediaAttachment, error) {
 	return nil, nil
 }
 
-func ensureJiraAttachmentStorage(attachmentPath string) error {
-	if err := os.MkdirAll(attachmentPath, 0o750); err != nil {
-		return fmt.Errorf("create attachment directory: %w", err)
+// sniffAttachmentMimeType reads the first 512 bytes from f, rewinds it, and
+// returns the detected Content-Type. The caller still owns f.
+//
+// SECURITY: the remote-declared Content-Type is not trusted. A malicious or
+// compromised Jira source controls attachment.MimeType, and the download
+// handler uses the stored MIME to decide inline rendering. Sniffing the actual
+// bytes keeps a script-capable document out of the app origin (stored XSS).
+func sniffAttachmentMimeType(f *os.File) (string, error) {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return "", err
 	}
-	return nil
+	head := make([]byte, 512)
+	n, err := io.ReadFull(f, head)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return "", err
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
+	if n == 0 {
+		return "application/octet-stream", nil
+	}
+	return http.DetectContentType(head[:n]), nil
 }
 
-// detectStoredMimeType sniffs the Content-Type of an already-written file from
-// its leading bytes via http.DetectContentType, so the stored MIME reflects the
-// actual content rather than a remote-declared value. Returns "" if the file
-// cannot be read (caller falls back to application/octet-stream).
-func detectStoredMimeType(path string) string {
-	f, err := os.Open(path) //nolint:gosec // G304 — path is attachmentPath + UUID + filepath.Base(filename)
+// storeJiraAttachment downloads attachment, streams it to a temp file, sniffs
+// the MIME type, and stores it through the configured blob backend. The temp
+// file is always removed. Returns the stored path, stored filename, detected
+// MIME type, and size.
+func (h *JiraImportHandler) storeJiraAttachment(ctx context.Context, attachment jira.JiraAttachment, client jira.Client) (storedPath, storedFilename, mimeType string, size int64, err error) {
+	reader, _, err := client.DownloadAttachment(ctx, attachment.Content)
 	if err != nil {
-		return ""
+		return "", "", "", 0, fmt.Errorf("download: %w", err)
 	}
-	defer func() { _ = f.Close() }()
+	defer func() { _ = reader.Close() }()
 
-	buf := make([]byte, 512)
-	n, err := f.Read(buf)
-	if err != nil && n == 0 {
-		return ""
+	// Stream to a local temp file so a large attachment never has to fit in
+	// memory; the blob store then consumes the file.
+	tmp, err := os.CreateTemp("", "windshift-jira-attachment-*")
+	if err != nil {
+		return "", "", "", 0, fmt.Errorf("create staging file: %w", err)
 	}
-	return http.DetectContentType(buf[:n])
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	written, err := io.Copy(tmp, reader)
+	if err != nil {
+		_ = tmp.Close()
+		return "", "", "", 0, fmt.Errorf("stage attachment: %w", err)
+	}
+	mimeType, err = sniffAttachmentMimeType(tmp)
+	if err != nil {
+		_ = tmp.Close()
+		return "", "", "", 0, fmt.Errorf("detect content type: %w", err)
+	}
+
+	storedFilename = fmt.Sprintf("%s_%s", uuid.New().String(), filepath.Base(attachment.Filename))
+	storedPath = h.storage.Path(storedFilename)
+	if err := h.storage.Put(ctx, storedPath, tmp, written, mimeType); err != nil {
+		_ = tmp.Close()
+		return "", "", "", 0, fmt.Errorf("store: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", "", "", 0, fmt.Errorf("close staging file: %w", err)
+	}
+
+	size = attachment.Size
+	if size == 0 {
+		size = written
+	}
+	return storedPath, storedFilename, mimeType, size, nil
 }

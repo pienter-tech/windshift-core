@@ -1,6 +1,6 @@
 <script>
   import IconArchive from '@tabler/icons-svelte-runes/icons/archive';
-  import IconMessage from '@tabler/icons-svelte-runes/icons/message';
+  import IconMessageChatbot from '@tabler/icons-svelte-runes/icons/message-chatbot';
   import IconX from '@tabler/icons-svelte-runes/icons/x';
   import IconLoader2 from '@tabler/icons-svelte-runes/icons/loader-2';
   import IconSend from '@tabler/icons-svelte-runes/icons/send';
@@ -270,7 +270,7 @@
       onmousedown={startDrag}
     >
       <div class="flex min-w-0 flex-1 items-center gap-2">
-        <IconMessage size={20} stroke={1.5} style="color: var(--ds-text-subtle);" />
+        <IconMessageChatbot size={20} stroke={1.5} style="color: var(--ds-text-subtle);" />
         <h2 class="text-sm font-semibold" style="color: var(--ds-text);">AI Chat</h2>
       </div>
       <div class="flex items-center gap-2">
@@ -355,7 +355,7 @@
       {#if chatStore.messages.length === 0}
         <div class="flex items-center justify-center h-full">
           <EmptyState
-            icon={IconMessage}
+            icon={IconMessageChatbot}
             title={chatStore.sessionType === 'standard'
               ? `Start a private chat with ${activeStandardAgent?.name || 'this agent'}.`
               : 'Ask anything about your workspaces and items.'}
@@ -374,6 +374,15 @@
               <div class="max-w-full rounded-lg px-3 py-2 text-sm" style="background-color: var(--ds-surface-sunken); color: var(--ds-text);">
                 {#if msg.error}
                   <p class="text-sm" style="color: var(--ds-text-danger);">{msg.error}</p>
+                  {#if msg.errorDetail}
+                    <p
+                      class="mt-1 text-xs break-words font-mono"
+                      style="color: var(--ds-text-subtle);"
+                      data-testid="chat-provider-error"
+                    >
+                      {msg.errorDetail}
+                    </p>
+                  {/if}
                   {#if msg === chatStore.messages[chatStore.messages.length - 1] && !chatStore.loading}
                     <button
                       onclick={() => chatStore.retryLastMessage()}

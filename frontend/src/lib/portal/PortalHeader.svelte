@@ -1,7 +1,7 @@
 <script>
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import BookOpen from '@lucide/svelte/icons/book-open';
-  import CheckSquare from '@lucide/svelte/icons/check-square';
+  import CheckSquare from '@lucide/svelte/icons/square-check';
   import FileText from '@lucide/svelte/icons/file-text';
   import Home from '@lucide/svelte/icons/home';
   import KeyRound from '@lucide/svelte/icons/key-round';
@@ -265,7 +265,12 @@
               class="absolute top-11 right-0 w-56 rounded-lg border p-1.5 shadow-lg"
               style="background-color: var(--ds-surface-card); border-color: var(--ds-border);"
             >
-              <button type="button" onclick={() => navigate('/')} class="portal-menu-item">
+              <button
+                type="button"
+                onclick={() => navigate('/')}
+                class="portal-menu-item"
+                data-testid="portal-back-to-app"
+              >
                 <ArrowLeft class="w-4 h-4" />
                 <span>{t('portal.backToApp')}</span>
               </button>

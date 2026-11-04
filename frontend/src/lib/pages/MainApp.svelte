@@ -6,7 +6,6 @@
   import Spinner from '../components/Spinner.svelte';
   import EmailVerificationBanner from '../features/notifications/EmailVerificationBanner.svelte';
   import CollectionNavigation from '../features/collections/CollectionNavigation.svelte';
-  import Footer from '../layout/Footer.svelte';
   import MainSidebar from '../layout/MainSidebar.svelte';
   import {
     GLOBAL_COLLECTION_VIEWS,
@@ -131,6 +130,15 @@
 
   useEventListener(() => (isResizingTerminal ? document : null), 'mousemove', onTerminalMouseMove);
   useEventListener(() => (isResizingTerminal ? document : null), 'mouseup', onTerminalMouseUp);
+
+  let lastDisplayCacheUserID = null;
+  $effect(() => {
+    const userID = $authStore.user?.id ?? null;
+    if (lastDisplayCacheUserID !== null && userID !== lastDisplayCacheUserID) {
+      workspaceDataStore.resetUserDisplayCache();
+    }
+    lastDisplayCacheUserID = userID;
+  });
 
   $effect(() => {
     if (!isResizingTerminal) return;
@@ -413,7 +421,10 @@
             ? `width: ${terminalState.splitPercent}%; flex-shrink: 0;`
             : 'flex: 1;'}
         >
-          <main data-testid="main-content-scroll" class="flex-1 min-h-0 overflow-y-auto overscroll-contain">
+          <main
+            data-testid="main-content-scroll"
+            class="flex-1 min-h-0 overflow-y-auto overscroll-contain"
+          >
             <MainRouteContent view={effectiveView} route={$currentRoute} {lazyComponents} />
           </main>
         </div>
@@ -442,14 +453,6 @@
     </div>
   </div>
 
-  <footer
-    class="authenticated-footer flex-shrink-0 transition-[margin] duration-200 ease-[cubic-bezier(0.25,1,0.5,1)] motion-reduce:transition-none"
-    style={!$uiStore.reviewFullscreen
-      ? `margin-left: ${$uiStore.navExpanded ? '200px' : '64px'}`
-      : ''}
-  >
-    <Footer />
-  </footer>
 </div>
 
 <MainAppOverlays
@@ -516,11 +519,6 @@
       inset: 3rem 0 0 4rem;
       border: 0;
       background: color-mix(in srgb, var(--ds-blanket, #091e42) 54%, transparent);
-    }
-
-    .authenticated-footer {
-      margin-left: 4rem !important;
-      transform: none !important;
     }
   }
 

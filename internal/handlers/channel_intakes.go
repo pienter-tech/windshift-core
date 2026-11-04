@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"windshift/internal/email"
+	"windshift/internal/logger"
 	"windshift/internal/models"
 	"windshift/internal/repository"
 )
@@ -22,6 +23,7 @@ type intakeRequest struct {
 	RateLimitPerHour      *int   `json:"rate_limit_per_hour"`
 	ProcessingDisposition string `json:"processing_disposition"`
 	SendConfirmation      bool   `json:"send_confirmation"`
+	ImportExistingMail    bool   `json:"import_existing_mail"`
 	Status                string `json:"status"`
 }
 
@@ -176,6 +178,7 @@ func (h *ChannelHandler) validateIntakeRequest(ctx context.Context, actorID, mai
 		RateLimitPerHour:      req.RateLimitPerHour,
 		ProcessingDisposition: req.ProcessingDisposition,
 		SendConfirmation:      req.SendConfirmation,
+		ImportExistingMail:    req.ImportExistingMail,
 		Status:                status,
 	}, nil
 }
@@ -240,7 +243,7 @@ func (h *ChannelHandler) CreateChannelIntake(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	intake.ID = id
-	h.auditor.LogWithDetails(r, user, "channel_intake_create", "channel_intake", &id, channel.Name, map[string]any{
+	h.auditor.LogWithDetails(r, user, logger.ActionChannelIntakeCreate, logger.ResourceChannelIntake, &id, channel.Name, map[string]any{
 		"mailbox_id":        channelID,
 		"folder":            intake.Folder,
 		"workspace_id":      intake.WorkspaceID,
@@ -306,7 +309,7 @@ func (h *ChannelHandler) UpdateChannelIntake(w http.ResponseWriter, r *http.Requ
 		h.respondIntakeError(w, r, err)
 		return
 	}
-	h.auditor.LogWithDetails(r, user, "channel_intake_update", "channel_intake", &intakeID, channel.Name, map[string]any{
+	h.auditor.LogWithDetails(r, user, logger.ActionChannelIntakeUpdate, logger.ResourceChannelIntake, &intakeID, channel.Name, map[string]any{
 		"mailbox_id":        channelID,
 		"folder":            intake.Folder,
 		"workspace_id":      intake.WorkspaceID,
@@ -364,7 +367,7 @@ func (h *ChannelHandler) DeleteChannelIntake(w http.ResponseWriter, r *http.Requ
 		respondInternalError(w, r, err)
 		return
 	}
-	h.auditor.Log(r, user, "channel_intake_delete", "channel_intake", &intakeID, channel.Name)
+	h.auditor.Log(r, user, logger.ActionChannelIntakeDelete, logger.ResourceChannelIntake, &intakeID, channel.Name)
 	w.WriteHeader(http.StatusNoContent)
 }
 
