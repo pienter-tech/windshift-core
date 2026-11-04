@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   canManageMilestone,
   canReorderMilestoneRow,
+  hasReorderableMilestoneRow,
   milestoneWorkspaceId,
 } from './milestoneScope.js';
 
@@ -107,5 +108,36 @@ describe('canReorderMilestoneRow', () => {
 
   it('shows no grip without a row', () => {
     expect(canReorderMilestoneRow(null, rights(true, true))).toBe(false);
+  });
+});
+
+describe('hasReorderableMilestoneRow', () => {
+  const rights = (canReorderGlobal, canReorderLocal) => ({ canReorderGlobal, canReorderLocal });
+
+  it('needs no grip column when every row is a workspace milestone on the global page', () => {
+    // Global page: the local right is always false there.
+    expect(
+      hasReorderableMilestoneRow(
+        [workspaceMilestone, { ...workspaceMilestone, id: 52 }],
+        rights(true, false)
+      )
+    ).toBe(false);
+  });
+
+  it('needs the grip column when one row can be dragged', () => {
+    expect(
+      hasReorderableMilestoneRow([workspaceMilestone, globalMilestone], rights(true, false))
+    ).toBe(true);
+    expect(
+      hasReorderableMilestoneRow([workspaceMilestone, globalMilestone], rights(false, true))
+    ).toBe(true);
+  });
+
+  it('needs no grip column without rights or rows', () => {
+    expect(
+      hasReorderableMilestoneRow([workspaceMilestone, globalMilestone], rights(false, false))
+    ).toBe(false);
+    expect(hasReorderableMilestoneRow([], rights(true, true))).toBe(false);
+    expect(hasReorderableMilestoneRow(null, rights(true, true))).toBe(false);
   });
 });

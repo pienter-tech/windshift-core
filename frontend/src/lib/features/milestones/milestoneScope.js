@@ -43,3 +43,14 @@ export function canReorderMilestoneRow(milestone, rights) {
   if (!milestone) return false;
   return milestone.is_global ? rights.canReorderGlobal : rights.canReorderLocal;
 }
+
+/**
+ * Whether a milestone list needs its drag-grip column (WCORE-48): only when
+ * at least one of its rows shows a grip under `canReorderMilestoneRow`.
+ *
+ * @param {Array<object>} rows milestone rows the list shows
+ * @param {{ canReorderGlobal: boolean, canReorderLocal: boolean }} rights
+ */
+export function hasReorderableMilestoneRow(rows, rights) {
+  return (rows ?? []).some((milestone) => canReorderMilestoneRow(milestone, rights));
+}
