@@ -685,12 +685,8 @@ func (st *itemPersonalStore) UpdateTask(itemID, userID int, s taskState, fields 
 
 	// Live-update publish (WI-483): Todoist sync writes item fields directly,
 	// bypassing ItemUpdateService.
-	kind := ItemChangeUpdated
-	if _, ok := update["status_id"]; ok {
-		kind = ItemChangeStatus
-	}
-	PublishItemChange(itemID, kind)
-	PublishWorkspaceChange(updated.WorkspaceID, WorkspaceChangeItems)
+	PublishItemChange(itemID)
+	PublishWorkspaceChange(updated.WorkspaceID)
 	return nil
 }
 

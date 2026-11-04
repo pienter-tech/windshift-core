@@ -1,14 +1,16 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { api } from '../../api.js';
+  import { collections } from '../../api/collections.js';
   import { navigate } from '../../router.js';
   import { t } from '../../stores/i18n.svelte.js';
   import { errorToast, warningToast } from '../../stores/toasts.svelte.js';
-  import { IconFilter as Filter, IconSearch as Search } from '@tabler/icons-svelte-runes';
+  import Filter from '@tabler/icons-svelte-runes/icons/filter';
+  import Search from '@tabler/icons-svelte-runes/icons/search';
   import Card from '../../components/Card.svelte';
   import Pagination from '../../components/Pagination.svelte';
   import CollectionsSidebar from './CollectionsSidebar.svelte';
   import CollectionsBreadcrumbs from './CollectionsBreadcrumbs.svelte';
+  import { applyCollectionPrivacyToggle, buildCollectionAssociationUpdate } from './collectionService.js';
   import QlQueryBar from '../shared/QlQueryBar.svelte';
   import { createWorkItemSearchStore } from '../../stores/searchStore.svelte.js';
   import { createWorkItemSearchHandlers } from '../../composables/useWorkItemSearch.svelte.js';
@@ -21,7 +23,9 @@
   import Modal from '../../dialogs/Modal.svelte';
   import WorkspacePicker from '../../pickers/WorkspacePicker.svelte';
   import { collectionCategoriesStore } from '../../stores/collectionCategories.js';
-  import { permissionStore, isSystemAdmin, authStore, workspaceDataStore } from '../../stores';
+  import { permissionStore, isSystemAdmin } from '../../stores/permissions.svelte.js';
+  import { authStore } from '../../stores/auth.svelte.js';
+  import { workspaceDataStore } from '../../stores/workspaceDataStore.svelte.js';
   import ColumnSelector from './ColumnSelector.svelte';
   import WorkItemListTable from './WorkItemListTable.svelte';
   import {
@@ -71,13 +75,14 @@
   let listStatusCategories = $derived(workspaceDataStore.statusCategories);
   let listPriorities = $derived(workspaceDataStore.priorities);
   let customFieldDefinitions = $derived(workspaceDataStore.customFieldDefinitions);
-  let canConfigureColumns = $derived(
+  let canManageCollection = $derived(
     Boolean(
       currentCollection &&
         authStore.currentUser?.id != null &&
         String(currentCollection.created_by) === String(authStore.currentUser.id),
     ),
   );
+  let canConfigureColumns = $derived(canManageCollection);
 
   // Workspace / sharing modals
   let returnWorkspaceId = $state(null);
@@ -132,7 +137,7 @@
 
   async function loadCollectionById(id, restoreURLQuery = false) {
     try {
-      const collection = await api.collections.get(id);
+      const collection = await collections.get(id);
       if (!collection) return;
       currentCollection = collection;
       slugSaved = !!(collection.is_public && collection.public_slug);
@@ -154,7 +159,7 @@
 
   async function loadBoardConfiguration(id) {
     try {
-      const bootstrap = await api.collections.getBoardConfigurationBootstrap(id);
+      const bootstrap = await collections.getBoardConfigurationBootstrap(id);
       const config = bootstrap?.board_configuration ?? null;
       boardConfig = config;
       listColumns = listColumnsFromConfig(config);
@@ -173,12 +178,12 @@
     try {
       const configData = buildListColumnConfiguration(boardConfig, newColumns);
       const savedConfig = boardConfig?.id
-        ? await api.collections.updateBoardConfiguration(
+        ? await collections.updateBoardConfiguration(
             currentCollection.id,
             boardConfig.id,
             configData,
           )
-        : await api.collections.createBoardConfiguration(
+        : await collections.createBoardConfiguration(
             currentCollection.id,
             null,
             configData,
@@ -290,25 +295,46 @@
       filter_state: rawMode ? null : serializeFilterState(),
       workspace_id: currentCollection.workspace_id ?? null,
       category_id: currentCollection.category_id ?? null,
+      is_private: currentCollection.is_private ?? false,
+      public_milestone_swimlanes: currentCollection.public_milestone_swimlanes ?? false,
       ...overrides,
     };
   }
 
-  async function handlePublicSharingSave({ isPublic, publicSlug }) {
+  async function handlePrivacyToggle() {
+    if (!currentCollection) return;
+    const next = !currentCollection.is_private;
+    try {
+      const updated = await collections.update(
+        currentCollection.id,
+        buildCollectionUpdate({ is_private: next })
+      );
+      // Marking a collection private unpublishes its board server-side.
+      currentCollection = applyCollectionPrivacyToggle(currentCollection, updated, next);
+      slugSaved = Boolean(updated.is_public && updated.public_slug);
+    } catch (error) {
+      console.error('Failed to update collection privacy:', error);
+      errorToast(t('dialogs.alerts.failedToUpdate', { error: error.message || error }));
+    }
+  }
+
+  async function handlePublicSharingSave({ isPublic, publicSlug, publicMilestoneSwimlanes }) {
     if (!currentCollection) return { ok: false, error: 'Collection not found.' };
     savingPublicSharing = true;
     try {
       const update = buildCollectionUpdate({
         is_public: isPublic,
         public_slug: publicSlug,
+        public_milestone_swimlanes: isPublic ? publicMilestoneSwimlanes === true : false,
       });
-      await api.collections.update(currentCollection.id, update);
+      await collections.update(currentCollection.id, update);
       currentCollection = {
         ...currentCollection,
         ql_query: update.ql_query,
         filter_state: update.filter_state,
         is_public: isPublic,
         public_slug: publicSlug,
+        public_milestone_swimlanes: update.public_milestone_swimlanes,
       };
       slugSaved = Boolean(isPublic && publicSlug);
       return { ok: true };
@@ -330,7 +356,7 @@
       return;
     }
     try {
-      await api.collections.update(currentCollection.id, buildCollectionUpdate());
+      await collections.update(currentCollection.id, buildCollectionUpdate());
       navigate(returnPath || '/collections');
     } catch (error) {
       console.error('Failed to update collection:', error);
@@ -355,18 +381,29 @@
     workspaceAssociationSaving = true;
     const workspaceId =
       workspaceAssociationSelection.length === 1 ? workspaceAssociationSelection[0] : null;
+    const clearedCategory = workspaceId != null && currentCollection.category_id != null;
 
     try {
-      await api.collections.update(currentCollection.id, {
-        name: currentCollection.name,
-        description: currentCollection.description || null,
-        ql_query: qlQuery,
-        filter_state: rawMode ? null : serializeFilterState(),
-        is_public: currentCollection.is_public,
+      // Association is not a publishing operation: omit public-sharing fields so
+      // an ordinary owner without public_board.manage can move the collection.
+      await collections.update(
+        currentCollection.id,
+        buildCollectionAssociationUpdate({
+          collection: currentCollection,
+          qlQuery,
+          filterState: rawMode ? null : serializeFilterState(),
+          workspaceId,
+        })
+      );
+      currentCollection = {
+        ...currentCollection,
         workspace_id: workspaceId,
-      });
-      currentCollection = { ...currentCollection, workspace_id: workspaceId };
+        category_id: workspaceId ? null : currentCollection.category_id,
+      };
       showWorkspaceAssociationModal = false;
+      if (clearedCategory) {
+        warningToast(t('collections.categoryClearedOnAssociation'));
+      }
     } catch (error) {
       console.error('Failed to associate workspace:', error);
       workspaceAssociationError = error.message || 'Failed to associate workspace. Please try again.';
@@ -377,16 +414,18 @@
 
   let trimmedCollectionName = $derived((currentCollection?.name || '').trim());
   let trimmedQlQuery = $derived(qlQuery.trim());
-  let canSubmitCollection = $derived(Boolean(currentCollection && trimmedCollectionName && trimmedQlQuery));
-  // Public-board sharing is gated on the global public_board.manage permission
-  // AND ownership of this collection (system admins may manage any). Mirrors the
-  // backend: publishing requires the permission, and editing a collection's
-  // public state requires being its creator (requireCollectionOwner).
+  let canSubmitCollection = $derived(
+    Boolean(currentCollection && canManageCollection && trimmedCollectionName && trimmedQlQuery)
+  );
+  // Public-board sharing requires owning the collection (the backend enforces
+  // requireOwner without a system-admin exception) plus the global
+  // public_board.manage permission or system administration.
   let canManagePublicBoard = $derived(
-    Boolean(currentCollection) &&
-      ($isSystemAdmin ||
-        (($permissionStore.userPermissionKeys?.has('public_board.manage') ?? false) &&
-          currentCollection.created_by === authStore.currentUser?.id))
+    Boolean(
+      canManageCollection &&
+        ($isSystemAdmin ||
+          ($permissionStore.userPermissionKeys?.has('public_board.manage') ?? false)),
+    )
   );
   let associatedWorkspace = $derived(
     currentCollection?.workspace_id ? workspaces.find((w) => w.id === currentCollection.workspace_id) : null
@@ -427,6 +466,7 @@
       collection={currentCollection}
       workspace={associatedWorkspace}
       isEditing={!!currentCollection}
+      canEdit={canManageCollection}
       canSave={canSubmitCollection}
       categories={$collectionCategoriesStore}
       {returnPath}
@@ -444,9 +484,13 @@
       showPublicBoard={canManagePublicBoard}
       isPublic={currentCollection?.is_public || false}
       publicSlug={currentCollection?.public_slug || null}
+      publicMilestoneSwimlanes={currentCollection?.public_milestone_swimlanes || false}
       {slugSaved}
       saving={savingPublicSharing}
       onpublicsave={handlePublicSharingSave}
+      isPrivate={currentCollection?.is_private || false}
+      showPrivacyToggle={canManageCollection}
+      onprivacytoggle={handlePrivacyToggle}
     />
 
     <QlQueryBar
@@ -496,7 +540,6 @@
         statuses={listStatuses.length > 0 ? listStatuses : allStatuses}
         statusCategories={listStatusCategories.length > 0 ? listStatusCategories : statusCategories}
         priorities={listPriorities.length > 0 ? listPriorities : allPriorities}
-        collectionId={null}
         canEdit={false}
         testId="collection-search-results-table"
         emptyMessage={t('collections.noWorkItemsFound')}
@@ -545,6 +588,11 @@
       />
       {#if workspaceAssociationError}
         <div class="text-sm" style="color: var(--ds-text-danger);">{workspaceAssociationError}</div>
+      {/if}
+      {#if currentCollection?.category_id && workspaceAssociationSelection.length === 1}
+        <p class="text-xs" style="color: var(--ds-text-warning);" data-testid="category-cleared-note">
+          {t('collections.categoryClearedOnAssociation')}
+        </p>
       {/if}
       <p class="text-xs" style="color: var(--ds-text-subtle);">
         {t('collections.workspaceAssociationNote')}

@@ -1,16 +1,13 @@
-import {
-  IconBook,
-  IconCalendar,
-  IconClock,
-  IconFlag,
-  IconFolderSearch,
-  IconLifebuoy,
-  IconMessage2Plus,
-  IconPackage,
-  IconPhoneCheck,
-  IconSettings,
-  IconUsers,
-} from '@tabler/icons-svelte-runes';
+import IconBook from '@tabler/icons-svelte-runes/icons/book';
+import IconCalendar from '@tabler/icons-svelte-runes/icons/calendar';
+import IconClock from '@tabler/icons-svelte-runes/icons/clock';
+import IconFlag from '@tabler/icons-svelte-runes/icons/flag';
+import IconFolderSearch from '@tabler/icons-svelte-runes/icons/folder-search';
+import IconPackage from '@tabler/icons-svelte-runes/icons/package';
+import IconPhoneCheck from '@tabler/icons-svelte-runes/icons/phone-check';
+import IconSettings from '@tabler/icons-svelte-runes/icons/settings';
+import IconUsers from '@tabler/icons-svelte-runes/icons/users';
+import IconWorldSearch from '@tabler/icons-svelte-runes/icons/world-search';
 
 /**
  * @typedef {Object} NavItem
@@ -69,16 +66,8 @@ export const mainNavItems = [
     permission: 'canAccessAssets',
   },
   {
-    id: 'channel-management',
-    icon: IconLifebuoy,
-    labelKey: 'nav.channels',
-    href: '/manage/channels',
-    activeViews: ['channel-manager'],
-    permission: 'canManageChannels',
-  },
-  {
     id: 'portal-hub',
-    icon: IconMessage2Plus,
+    icon: IconWorldSearch,
     labelKey: 'nav.portalHub',
     href: '/channels',
     activeViews: ['hub', 'hub-inbox', 'channels'],

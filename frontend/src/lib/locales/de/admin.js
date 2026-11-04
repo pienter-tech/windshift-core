@@ -92,7 +92,7 @@ export default {
       },
       linkTypes: {
         title: 'Verknüpfungstypen',
-        description: 'Verknüpfungstypen zwischen Elementen verwalten',
+        description: 'Verknüpfungstypen zwischen Vorgängen verwalten',
       },
       attachments: {
         title: 'Anhänge',
@@ -160,7 +160,7 @@ export default {
       },
       workItemStaleness: {
         title: 'Qualitätsmetriken',
-        description: 'Festlegen, wann unbearbeitete Arbeitselemente als inaktiv gelten',
+        description: 'Festlegen, wann unbearbeitete Vorgänge als inaktiv gelten',
       },
 
       aiFeatures: {
@@ -555,8 +555,22 @@ export default {
       notConfigured: 'Nicht konfiguriert',
       callbackUrl: 'Callback-URL',
       callbackUrlHelp: 'Konfigurieren Sie diese URL als Redirect/Callback-URL in Ihrem Identitätsanbieter',
+      baseUrlWarningTitle: 'Server-Basis-URL ist nicht konfiguriert',
+      baseUrlWarningBody:
+        'Windshift verwendet ersatzweise {url} für Links und OAuth-Callbacks. Bei der SSO-Anmeldung wird diese Adresse an Ihren Identitätsanbieter gesendet. Legen Sie die Umgebungsvariable BASE_URL fest und starten Sie Windshift neu, bevor Sie die Callback-URL registrieren.',
       scopes: 'Scopes',
       scopesHelp: 'Leerzeichen-getrennte Liste von OIDC-Scopes',
+      nameClaimsHelp:
+        'Manche Anbieter (zum Beispiel Microsoft Entra ID) liefern standardmäßig nur den Anzeigenamen. Fügen Sie given_name und family_name als optionale Ansprüche hinzu, damit Windshift den strukturierten Namen erhält, statt den Anzeigenamen zu zerlegen.',
+      attributeMapping: 'Attributzuordnung',
+      attributeMappingHelp:
+        'Optional. Überschreiben Sie, aus welchem Claim ein Feld gelesen wird, wenn Ihr Anbieter keine Standard-Claim-Namen verwendet. Lassen Sie ein Feld leer, um den im Platzhalter angezeigten Standard-Claim zu verwenden.',
+      attributeEmail: 'E-Mail-Claim',
+      attributeEmailVerified: 'Claim für bestätigte E-Mail',
+      attributeName: 'Claim für vollständigen Namen',
+      attributeGivenName: 'Claim für Vorname',
+      attributeFamilyName: 'Claim für Nachname',
+      attributeUsername: 'Claim für Benutzername',
       enabled: 'Aktiviert',
       disabled: 'Deaktiviert',
       default: 'Standard',
@@ -657,6 +671,8 @@ export default {
         invitation: 'Neue Benutzereinladung',
         notification_batch: 'Gebündelte Benachrichtigungen',
         portal_reply: 'Portal-Kundenantwort',
+        approval_requested: 'Portal-Genehmigungsanfrage',
+        intake_confirmation: 'Eingangsbestätigung (E-Mail)',
       },
     },
     linkTypes: {
@@ -679,7 +695,7 @@ export default {
       forwardHint: 'Wenn A mit B verknüpft ist, als „A implementiert B“ anzeigen',
       reverseHint: 'Wenn B von A verknüpft wird, als „B implementiert von A“ anzeigen',
       descriptionPlaceholder: 'Optionale Beschreibung dieses Verknüpfungstyps',
-      empty: 'Keine Verknüpfungstypen gefunden. Erstellen Sie den ersten Typ für Beziehungen zwischen Einträgen.',
+      empty: 'Keine Verknüpfungstypen gefunden. Erstellen Sie den ersten Typ für Beziehungen zwischen Vorgängen.',
       defaults: {
         tests: { name: 'Testet', description: 'Testfall testet einen Arbeitsvorgang' },
         implements: { name: 'Implementiert', description: 'Arbeitsvorgang implementiert einen anderen Arbeitsvorgang' },
@@ -745,9 +761,9 @@ export default {
         subtask: 'Unteraufgabe',
       },
       genericSubtaskLevel: 'Generischer Untervorgang (jede übergeordnete Ebene)',
-      hierarchyChangeWarningTitle: 'Bestehende Einträge behalten ihre Verknüpfungen',
+      hierarchyChangeWarningTitle: 'Bestehende Vorgänge behalten ihre Verknüpfungen',
       hierarchyChangeWarningDescription:
-        'Beim Wechsel von Ebene {fromLevel} zu Ebene {toLevel} werden bestehende Einträge nicht verschoben. Künftige Auswahlmöglichkeiten für übergeordnete und untergeordnete Einträge werden anhand von Ebene {toLevel} berechnet; für ältere Einträge muss vor einer neuen Zuordnung möglicherweise ein kompatibler Typ gewählt werden.',
+        'Beim Wechsel von Ebene {fromLevel} zu Ebene {toLevel} werden bestehende Vorgänge nicht verschoben. Künftige Auswahlmöglichkeiten für übergeordnete und untergeordnete Vorgänge werden anhand von Ebene {toLevel} berechnet; für ältere Vorgänge muss vor einer neuen Zuordnung möglicherweise ein kompatibler Typ gewählt werden.',
     },
     hierarchyLevels: {
       title: 'Hierarchieebenen',
@@ -820,6 +836,13 @@ export default {
       changeManifest: 'manifest.json ändern',
       manifestSelected: 'Manifest ausgewählt: {name}',
       registeredRoutes: 'Registrierte Routen',
+      routeAuth_session: 'Sitzung',
+      routeAuth_admin: 'Administrator',
+      routeAuth_none: 'Öffentlich',
+      hostFunctionPermissions: 'Host-Funktionsberechtigungen',
+      permissionGranted: 'Erteilt',
+      permissionDenied: 'Verweigert',
+      permissionsDeniedNote: 'Einige deklarierte Berechtigungen sind nicht wirksam.',
       moduleSettingsNote: 'Änderungen an Moduleinstellungen werden sofort wirksam. Das Deaktivieren eines Moduls blendet es aus der Navigation aus.',
       failedToUpload: 'Hochladen fehlgeschlagen: {error}',
       failedToReload: 'Plugin konnte nicht neu geladen werden: {error}',
@@ -858,7 +881,7 @@ export default {
       mappedStatuses: 'Zugeordnete Status',
       noStatusesSelected: 'Keine Status ausgewählt',
       backlogStatuses: 'Backlog-Status',
-      backlogStatusesHelp: 'Einträge mit diesen Status erscheinen im Backlog',
+      backlogStatusesHelp: 'Vorgänge mit diesen Status erscheinen im Backlog',
       availableStatuses: 'Verfügbare Status',
       dragStatusesToColumns: 'Status in Spalten ziehen, um sie zuzuweisen',
       dropStatusesHere: 'Status hier ablegen',
@@ -907,15 +930,15 @@ export default {
         },
         catch_me_up: {
           name: 'Zusammenfassung',
-          description: 'Zusammenfassung der letzten Aktivitäten eines Arbeitselements',
+          description: 'Zusammenfassung der letzten Aktivitäten eines Vorgangs',
         },
         find_similar: {
           name: 'Ähnliche finden',
-          description: 'Ähnliche Arbeitselemente mittels KI-Analyse finden',
+          description: 'Ähnliche Vorgänge mittels KI-Analyse finden',
         },
         decompose: {
           name: 'Aufteilen',
-          description: 'Arbeitselemente in kleinere Teilaufgaben aufteilen',
+          description: 'Vorgänge in kleinere Teilaufgaben aufteilen',
         },
         release_notes: {
           name: 'Release Notes',
@@ -923,7 +946,7 @@ export default {
         },
         dependency_analysis: {
           name: 'Abhängigkeitsanalyse',
-          description: 'Abhängigkeiten zwischen Elementen analysieren und vorschlagen',
+          description: 'Abhängigkeiten zwischen Vorgängen analysieren und vorschlagen',
         },
         logbook_articles: {
           name: 'Logbuch-Artikel',
@@ -932,18 +955,18 @@ export default {
       },
     },
     workItemStaleness: {
-      title: 'Inaktivität von Arbeitselementen',
-      subtitle: 'Einen Aktivitätsgrenzwert für Arbeitselementdetails und Analysen verwenden',
-      thresholdTitle: 'Grenzwert für unbearbeitete Arbeitselemente',
+      title: 'Inaktivität von Vorgängen',
+      subtitle: 'Einen Aktivitätsgrenzwert für Vorgangsdetails und Analysen verwenden',
+      thresholdTitle: 'Grenzwert für unbearbeitete Vorgänge',
       thresholdDescription:
-        'Ein nicht abgeschlossenes Arbeitselement gilt nach dieser Anzahl voller Tage ohne Kommentare, Änderungen oder andere erfasste Aktivität als inaktiv.',
+        'Ein nicht abgeschlossener Vorgang gilt nach dieser Anzahl voller Tage ohne Kommentare, Änderungen oder andere erfasste Aktivität als inaktiv.',
       daysLabel: 'Tage ohne Aktivität',
       daysHelper: 'Wählen Sie eine ganze Zahl zwischen 1 und 365.',
       impact: 'Diese Änderung gilt systemweit für alle Arbeitsbereiche und wird sofort wirksam.',
       save: 'Grenzwert speichern',
-      saveSuccess: 'Grenzwert für die Inaktivität von Arbeitselementen gespeichert',
-      saveFailed: 'Grenzwert für die Inaktivität von Arbeitselementen konnte nicht gespeichert werden',
-      loadFailed: 'Einstellungen zur Inaktivität von Arbeitselementen konnten nicht geladen werden',
+      saveSuccess: 'Grenzwert für die Inaktivität von Vorgängen gespeichert',
+      saveFailed: 'Grenzwert für die Inaktivität von Vorgängen konnte nicht gespeichert werden',
+      loadFailed: 'Einstellungen zur Inaktivität von Vorgängen konnten nicht geladen werden',
       validation: 'Geben Sie eine ganze Zahl zwischen 1 und 365 Tagen ein.',
     },
 

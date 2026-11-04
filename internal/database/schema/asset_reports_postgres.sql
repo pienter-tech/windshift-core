@@ -21,8 +21,8 @@ CREATE TABLE IF NOT EXISTS asset_reports (
 	updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
 	FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE,
 	FOREIGN KEY (asset_set_id) REFERENCES asset_management_sets(id) ON DELETE CASCADE,
-	FOREIGN KEY (item_type_id) REFERENCES item_types(id) ON DELETE SET NULL,
-	FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE SET NULL
+	FOREIGN KEY (item_type_id) REFERENCES item_types(id) ON DELETE RESTRICT,
+	FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_asset_reports_channel_id ON asset_reports(channel_id);

@@ -172,6 +172,14 @@ export default {
 
   editors: {
     enterText: 'Введите текст…',
+    useProvider: 'Редактировать с помощью {label}',
+    useRichText: 'Использовать визуальный редактор',
+    providerActive: '{label} активен',
+    discardProviderChanges: 'Отменить несохранённые изменения?',
+    discardProviderChangesMessage:
+      'Ваши изменения в {label} не сохранены. При смене редактора они будут потеряны.',
+    discardChanges: 'Отменить',
+    providerError: 'Плагин редактора сообщил об ошибке: {message}',
     selectDate: 'Выберите дату…',
     clickToChangeColor: 'Нажмите, чтобы изменить цвет',
     saveEnter: 'Сохранить (Enter)',
@@ -192,6 +200,7 @@ export default {
     numberedList: 'Нумерованный список',
     insertImage: 'Вставить изображение',
     userNotFound: 'Пользователь не найден',
+    multipleUsersMatch: 'Совпадает несколько пользователей',
     insertDiagram: 'Вставить диаграмму',
     insertPageLink: 'Вставить ссылку на страницу знаний',
     searchPagesToLink: 'Поиск страниц…',
@@ -360,7 +369,7 @@ export default {
     widthTwoThirds: 'Две трети',
     widthFull: 'Полная',
     resizeAriaLabel: 'Изменить размер виджета',
-    resizeColumnsValue: '{count} из 12 столбцов',
+    resizeColumnsValue: '{count} из {total} столбцов',
     rowCount: 'Количество строк',
     density: 'Плотность',
     densityComfortable: 'Обычная',
@@ -372,7 +381,11 @@ export default {
     narrowWidth: 'Узкий (1/3 ширины)',
     mediumWidth: 'Средний (2/3 ширины)',
     fullWidth: 'Полная ширина',
-    chart: { items: 'элементы', noDataAvailable: 'Нет данных' },
+    chart: {
+      items: 'элементы',
+      noDataAvailable: 'Нет данных',
+      otherSlices: 'Прочие ({count} ещё)',
+    },
     completionChart: { title: 'График завершения', emptyMessage: 'Нет данных о завершении' },
     createdChart: { title: 'График создания', emptyMessage: 'Нет данных о создании' },
     recentItems: {

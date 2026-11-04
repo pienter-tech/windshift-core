@@ -1,11 +1,13 @@
 <script>
-  import { ExternalLink, Inbox as InboxIcon } from '@lucide/svelte';
+  import ExternalLink from '@lucide/svelte/icons/external-link';
+  import InboxIcon from '@lucide/svelte/icons/inbox';
   import StateDisplay from '../components/StateDisplay.svelte';
   import { hubStore } from '../stores/hub.svelte.js';
   import { t } from '../stores/i18n.svelte.js';
   import { formatDateShort, formatDateWithOptions } from '../utils/dateFormatter.js';
   import { portalUrl, portalRequestUrl } from '../utils/urls.js';
   import EmptyState from '../components/EmptyState.svelte';
+  import ItemKey from '../components/ItemKey.svelte';
   import PageHeader from '../layout/PageHeader.svelte';
   import Select from '../components/Select.svelte';
   import DataTable from '../components/DataTable.svelte';
@@ -85,8 +87,8 @@
           style="color: inherit;"
         >
           <div class="font-medium text-sm" style="color: var(--ds-text);">{item.title}</div>
-          <div class="text-xs" style="color: var(--ds-text-subtle);">
-            {item.workspace_key}-{item.workspace_item_number}
+          <div class="text-xs">
+            <ItemKey item={item} clickable={false} />
           </div>
         </a>
       {/snippet}

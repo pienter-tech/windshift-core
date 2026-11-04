@@ -336,6 +336,7 @@ func (r *AssetRepository) ListSetsForUser(userID int, isAdmin bool) ([]models.As
 			EXISTS (SELECT 1 FROM user_asset_set_roles WHERE set_id = ams.id AND user_id = ?)
 			OR EXISTS (
 				SELECT 1 FROM group_asset_set_roles gasr
+				JOIN groups g ON g.id = gasr.group_id AND g.is_active = TRUE
 				JOIN group_members gm ON gasr.group_id = gm.group_id
 				WHERE gasr.set_id = ams.id AND gm.user_id = ?
 			)
@@ -728,6 +729,7 @@ func (r *AssetRepository) GetUserSetRole(userID, setID int) (*models.AssetRole, 
 	err = r.db.QueryRow(`
 		SELECT ar.id, ar.name, ar.description, ar.is_system, ar.display_order
 		FROM group_asset_set_roles gasr
+		JOIN groups g ON g.id = gasr.group_id AND g.is_active = TRUE
 		JOIN group_members gm ON gasr.group_id = gm.group_id
 		JOIN asset_roles ar ON gasr.role_id = ar.id
 		WHERE gasr.set_id = ? AND gm.user_id = ?
@@ -907,42 +909,6 @@ func (r *AssetRepository) GetSetUserRoles(setID int) ([]models.UserAssetSetRole,
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("failed to iterate user roles: %w", err)
-	}
-
-	return roles, nil
-}
-
-func (r *AssetRepository) GetSetGroupRoles(setID int) ([]models.GroupAssetSetRole, error) {
-	rows, err := r.db.Query(`
-		SELECT gasr.id, gasr.group_id, gasr.set_id, gasr.role_id, gasr.granted_by, gasr.granted_at,
-		       tg.name as group_name,
-		       ar.name as role_name,
-		       COALESCE(g.first_name || ' ' || g.last_name, g.username, '') as granted_by_name
-		FROM group_asset_set_roles gasr
-		JOIN team_groups tg ON gasr.group_id = tg.id
-		JOIN asset_roles ar ON gasr.role_id = ar.id
-		LEFT JOIN users g ON gasr.granted_by = g.id
-		WHERE gasr.set_id = ?
-		ORDER BY tg.name
-	`, setID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get group roles: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var roles []models.GroupAssetSetRole
-	for rows.Next() {
-		var role models.GroupAssetSetRole
-		var grantedByName sql.NullString
-		if err := rows.Scan(&role.ID, &role.GroupID, &role.SetID, &role.RoleID, &role.GrantedBy, &role.GrantedAt,
-			&role.GroupName, &role.RoleName, &grantedByName); err != nil {
-			return nil, fmt.Errorf("failed to scan group role: %w", err)
-		}
-		role.GrantedByName = grantedByName.String
-		roles = append(roles, role)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("failed to iterate group roles: %w", err)
 	}
 
 	return roles, nil
@@ -1624,6 +1590,56 @@ func (r *AssetRepository) FindAssetTypeFields(typeID int) ([]models.AssetTypeFie
 		return nil, fmt.Errorf("failed to iterate asset type fields: %w", err)
 	}
 	return fields, nil
+}
+
+// FindAssetTypeFieldsForTypes returns the fields of many asset types in one
+// query, grouped by asset type id. Every requested id gets an entry — empty
+// when the type has no fields.
+func (r *AssetRepository) FindAssetTypeFieldsForTypes(typeIDs []int) (map[int][]models.AssetTypeField, error) {
+	grouped := make(map[int][]models.AssetTypeField, len(typeIDs))
+	for _, id := range typeIDs {
+		grouped[id] = make([]models.AssetTypeField, 0)
+	}
+	if len(typeIDs) == 0 {
+		return grouped, nil
+	}
+
+	clause, args := inPlaceholders(typeIDs)
+	rows, err := r.db.Query(`
+		SELECT atf.id, atf.asset_type_id, atf.custom_field_id, atf.is_required, atf.display_order, atf.created_at,
+		       cfd.name as field_name, cfd.field_type, cfd.description as field_description, cfd.options
+		FROM asset_type_fields atf
+		JOIN custom_field_definitions cfd ON atf.custom_field_id = cfd.id
+		WHERE atf.asset_type_id IN (`+clause+`)
+		ORDER BY atf.asset_type_id, atf.display_order, cfd.name
+	`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query asset type fields: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var field models.AssetTypeField
+		var fieldDescription, options sql.NullString
+		if err := rows.Scan(
+			&field.ID, &field.AssetTypeID, &field.CustomFieldID, &field.IsRequired,
+			&field.DisplayOrder, &field.CreatedAt,
+			&field.FieldName, &field.FieldType, &fieldDescription, &options,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan asset type field: %w", err)
+		}
+		if fieldDescription.Valid {
+			field.FieldDescription = fieldDescription.String
+		}
+		if options.Valid {
+			field.Options = options.String
+		}
+		grouped[field.AssetTypeID] = append(grouped[field.AssetTypeID], field)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate asset type fields: %w", err)
+	}
+	return grouped, nil
 }
 
 type AssetTypeFieldAssignment struct {

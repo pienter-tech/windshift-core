@@ -2,12 +2,76 @@
   "schema_version": 1,
   "kind": "windshift.workspace-bundle",
   "payload": {
-    "pages": [
-      {
-        "ref": "helpdesk-guide",
-        "title": "Helpdesk Guide",
-        "content": "# Helpdesk Guide\n\nThis workspace coordinates customer support. Tickets are the customer-facing work items; internal follow-up stays on the ticket's linked items.\n\n## Queue\n\n- New tickets start in **Open**.\n- Pick up work by moving a ticket to **In Progress**.\n- **Pending** means you are waiting on the requester.\n- **Resolved** closes the support loop; **Closed** archives it.\n\n## Intake\n\nEmail intake, request types, and portal settings are configured on the workspace's support channel."
-      }
-    ]
+    "view_settings": {
+      "enabled_views": ["board", "list", "queue", "agents", "analytics", "actions", "pages"]
+    },
+    "slas": {
+      "calendars": [
+        {
+          "ref": "business-hours",
+          "name": "Business Hours",
+          "description": "Monday to Friday, 09:00-17:00",
+          "timezone": "UTC",
+          "weekly_intervals": {
+            "monday": [{ "start": "09:00", "end": "17:00" }],
+            "tuesday": [{ "start": "09:00", "end": "17:00" }],
+            "wednesday": [{ "start": "09:00", "end": "17:00" }],
+            "thursday": [{ "start": "09:00", "end": "17:00" }],
+            "friday": [{ "start": "09:00", "end": "17:00" }],
+            "saturday": [],
+            "sunday": []
+          },
+          "holidays": [],
+          "is_default": true
+        }
+      ],
+      "metrics": [
+        {
+          "name": "First Response",
+          "display_format": "time",
+          "is_active": true,
+          "conditions": [
+            { "phase": "start", "condition_type": "created" },
+            { "phase": "stop", "condition_type": "comment_by_agent" }
+          ],
+          "goals": [
+            {
+              "position": 0,
+              "ql_query": "1 = 1",
+              "targets": [
+                { "priority_name": "Critical", "target_ms": 3600000, "calendar_ref": "business-hours" },
+                { "priority_name": "High", "target_ms": 7200000, "calendar_ref": "business-hours" },
+                { "priority_name": "Medium", "target_ms": 14400000, "calendar_ref": "business-hours" },
+                { "priority_name": "Low", "target_ms": 28800000, "calendar_ref": "business-hours" },
+                { "is_fallback": true, "target_ms": 14400000, "calendar_ref": "business-hours" }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "Time to Resolve",
+          "display_format": "time",
+          "is_active": true,
+          "conditions": [
+            { "phase": "start", "condition_type": "created" },
+            { "phase": "pause", "condition_type": "status_current", "status_names": ["Pending"] },
+            { "phase": "stop", "condition_type": "status_category_entered", "category_names": ["Done"] }
+          ],
+          "goals": [
+            {
+              "position": 0,
+              "ql_query": "1 = 1",
+              "targets": [
+                { "priority_name": "Critical", "target_ms": 14400000, "calendar_ref": "business-hours" },
+                { "priority_name": "High", "target_ms": 28800000, "calendar_ref": "business-hours" },
+                { "priority_name": "Medium", "target_ms": 86400000, "calendar_ref": "business-hours" },
+                { "priority_name": "Low", "target_ms": 144000000, "calendar_ref": "business-hours" },
+                { "is_fallback": true, "target_ms": 86400000, "calendar_ref": "business-hours" }
+              ]
+            }
+          ]
+        }
+      ]
+    }
   }
 }
