@@ -1,4 +1,4 @@
-// Client-side filters for the global milestones page (WCORE-18). The page
+// Client-side filters for the global milestones page. The page
 // loads global milestones plus milestones from every workspace the viewer can
 // access, then narrows the list by workspace, status, and name.
 
@@ -57,7 +57,7 @@ export function filterMilestones(
 
 /**
  * The page's default filters, which "Clear filters" restores: open statuses,
- * every workspace, no search (WCORE-47).
+ * every workspace, no search.
  * @returns {{ statuses: string[], workspaceKeys: string[], search: string }}
  */
 export function defaultMilestoneListFilters() {

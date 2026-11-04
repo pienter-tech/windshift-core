@@ -1,14 +1,23 @@
 <script>
   import { onMount } from 'svelte';
   import StateDisplay from '../components/StateDisplay.svelte';
-  import { Bot, CheckSquare, Puzzle, Upload, RefreshCw, Trash2, ToggleLeft, ToggleRight, Package } from '@lucide/svelte';
+  import Bot from '@lucide/svelte/icons/bot';
+  import CheckSquare from '@lucide/svelte/icons/square-check';
+  import Puzzle from '@lucide/svelte/icons/puzzle';
+  import Upload from '@lucide/svelte/icons/upload';
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
+  import ToggleLeft from '@lucide/svelte/icons/toggle-left';
+  import ToggleRight from '@lucide/svelte/icons/toggle-right';
+  import Package from '@lucide/svelte/icons/package';
   import { moduleSettings } from '../stores/moduleSettings.js';
   import Toggle from '../components/Toggle.svelte';
   import Button from '../components/Button.svelte';
   import PageHeader from '../layout/PageHeader.svelte';
   import AlertBox from '../components/AlertBox.svelte';
   import Panel from '../components/Panel.svelte';
-  import { api, getSecuritySettings, fetchAPI } from '../api.js';
+  import { getSecuritySettings } from '../api/admin.js';
+  import { fetchAPI } from '../api/core.js';
   import { t } from '../stores/i18n.svelte.js';
   import { confirm } from '../composables/useConfirm.js';
   import DescriptionText from '../components/DescriptionText.svelte';
@@ -518,9 +527,21 @@
                       <div class="mt-3">
                         <p class="text-xs font-medium mb-1" style="color: var(--ds-text-subtle);">{t('settings.modules.registeredRoutes')}:</p>
                         <div class="space-y-1">
-                          {#each plugin.routes as route}
+                          {#each plugin.routes as route, routeIndex}
                             <div class="text-xs font-mono rounded px-2 py-1" style="background-color: var(--ds-interactive-subtle); color: var(--ds-text);">
                               <span class="font-semibold">{route.method || 'ANY'}</span> /api/plugins/{plugin.name}{route.path}
+                              {#if route.auth}
+                                <span
+                                  class="ml-2 px-1.5 py-0.5 rounded text-[10px] font-sans font-medium uppercase align-middle"
+                                  data-testid={`plugin-route-auth-${plugin.name}-${routeIndex}`}
+                                  data-auth={route.auth}
+                                  style={route.auth === 'none'
+                                    ? 'background-color: var(--ds-accent-red-subtle); color: var(--ds-accent-red);'
+                                    : 'background-color: var(--ds-background-neutral); color: var(--ds-text-subtle);'}
+                                >
+                                  {t(`settings.modules.routeAuth_${route.auth}`)}
+                                </span>
+                              {/if}
                               {#if route.description}
                                 <span class="ml-2" style="color: var(--ds-text-subtle);">- {route.description}</span>
                               {/if}
@@ -529,8 +550,34 @@
                         </div>
                       </div>
                     {/if}
+
+                    {#if plugin.requested_permissions && plugin.requested_permissions.length > 0}
+                      <div class="mt-3">
+                        <p class="text-xs font-medium mb-1" style="color: var(--ds-text-subtle);">{t('settings.modules.hostFunctionPermissions')}:</p>
+                        <div class="flex flex-wrap gap-1">
+                          {#each plugin.requested_permissions as permission, permissionIndex}
+                            {@const granted = (plugin.effective_permissions || []).includes(permission)}
+                            <span
+                              class="text-xs font-mono rounded px-2 py-1"
+                              data-testid={`plugin-permission-${plugin.name}-${permissionIndex}`}
+                              data-permission={permission}
+                              data-granted={granted}
+                              title={granted ? t('settings.modules.permissionGranted') : t('settings.modules.permissionDenied')}
+                              style={granted
+                                ? 'background-color: var(--ds-background-neutral); color: var(--ds-text);'
+                                : 'background-color: var(--ds-accent-red-subtle); color: var(--ds-accent-red);'}
+                            >
+                              {permission}
+                            </span>
+                          {/each}
+                        </div>
+                        {#if (plugin.effective_permissions || []).length < plugin.requested_permissions.length}
+                          <p class="text-xs mt-1" style="color: var(--ds-accent-red);">{t('settings.modules.permissionsDeniedNote')}</p>
+                        {/if}
+                      </div>
+                    {/if}
                   </div>
-                  
+
                   {#if !pluginsDisabled}
                     <div class="flex items-center gap-2 ml-4">
                       <button

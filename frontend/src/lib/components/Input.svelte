@@ -1,5 +1,6 @@
 <script>
   import { cn } from '../utils/cn.js';
+  import { controlSizeClasses } from '../utils/controlSizes.js';
 
   /**
    * @type {{
@@ -81,11 +82,8 @@
   } = $props();
   export { className as class };
 
-  // Size variants
-  const sizeClasses = $derived(variant === 'ghost' ? '' : ({
-    small: 'px-3 py-1.5 text-sm',
-    medium: 'px-4 py-3'
-  }[size] || 'px-4 py-3'));
+  // Size variants. Ghost inputs are chrome-less, so they skip control padding.
+  const sizeClasses = $derived(variant === 'ghost' ? '' : controlSizeClasses(size));
 
   // Combine all classes
   const allClasses = $derived(cn(

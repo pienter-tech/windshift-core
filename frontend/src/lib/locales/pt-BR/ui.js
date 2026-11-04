@@ -242,6 +242,7 @@ export default {
     numberedList: 'Lista Numerada',
     insertImage: 'Inserir Imagem',
     userNotFound: 'Usuário não encontrado',
+    multipleUsersMatch: 'Vários usuários correspondem',
   },
   dialogs: {
     cancel: 'Cancelar',
@@ -384,7 +385,7 @@ export default {
     widthTwoThirds: 'Dois terços',
     widthFull: 'Cheio',
     resizeAriaLabel: 'Redimensionar widget',
-    resizeColumnsValue: '{count} de 12 colunas',
+    resizeColumnsValue: '{count} de {total} colunas',
     rowCount: 'Número de linhas',
     density: 'Densidade',
     densityComfortable: 'Confortável',

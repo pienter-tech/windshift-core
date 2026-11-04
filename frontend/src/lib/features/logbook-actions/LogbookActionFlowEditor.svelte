@@ -1,5 +1,8 @@
 <script>
-  import { FileText, PlusSquare, Users, HelpCircle } from '@lucide/svelte';
+  import FileText from '@lucide/svelte/icons/file-text';
+  import PlusSquare from '@lucide/svelte/icons/plus-square';
+  import Users from '@lucide/svelte/icons/users';
+  import HelpCircle from '@lucide/svelte/icons/help-circle';
   import Select from '../../components/Select.svelte';
   import Button from '../../components/Button.svelte';
   import Checkbox from '../../components/Checkbox.svelte';
@@ -15,6 +18,7 @@
   import BaseActionFlowEditor from '../actions/shared/BaseActionFlowEditor.svelte';
   import ConditionConfigPanel from '../actions/shared/ConditionConfigPanel.svelte';
   import { logbookActionFlowStore } from '../../stores/logbookActionFlowStore.svelte.js';
+  import { conditionOperatorsWithRegex } from '../actions/conditionOperators.js';
 
   let { action, onSave, onCancel } = $props();
 
@@ -48,15 +52,7 @@
     { value: 'author', label: 'Author' }
   ];
 
-  const conditionOperators = [
-    { value: 'eq', label: 'Equals' },
-    { value: 'ne', label: 'Not Equals' },
-    { value: 'contains', label: 'Contains' },
-    { value: 'not_contains', label: 'Not Contains' },
-    { value: 'starts_with', label: 'Starts With' },
-    { value: 'ends_with', label: 'Ends With' },
-    { value: 'matches', label: 'Matches (Regex)' }
-  ];
+  const conditionOperators = conditionOperatorsWithRegex;
 </script>
 
 <BaseActionFlowEditor

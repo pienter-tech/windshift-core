@@ -245,8 +245,8 @@ func (s *IterationCompletionService) Complete(ctx context.Context, req CompleteI
 				ChangedAt: time.Now(),
 			}}
 			result.Updates = append(result.Updates, UpdateItemResult{OriginalItem: &original, Item: updated, FieldChanges: history})
-			PublishItemChange(updated.ID, ItemChangeUpdated)
-			PublishWorkspaceChange(updated.WorkspaceID, WorkspaceChangeItems)
+			PublishItemChange(updated.ID)
+			PublishWorkspaceChange(updated.WorkspaceID)
 		}
 	}
 	result.DurationMS = time.Since(started).Milliseconds()

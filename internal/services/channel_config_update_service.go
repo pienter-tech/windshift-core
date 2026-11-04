@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/mail"
 	"net/url"
 	"regexp"
@@ -64,6 +65,16 @@ type ChannelConfigUpdateService struct {
 }
 
 var channelSlugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$`)
+
+// channelSecretFields are stored encrypted and scrubbed from read responses.
+// A partial update treats an omitted or blank value as "keep the stored
+// ciphertext" so a form that echoes back an unedited secret cannot delete it.
+// JSON null is the explicit way to clear one.
+var channelSecretFields = []string{"smtp_password", "imap_password", "webhook_secret", "email_oauth_client_secret"}
+
+func isChannelSecretField(key string) bool {
+	return slices.Contains(channelSecretFields, key)
+}
 
 func NewChannelConfigUpdateService(channels *ChannelService, permission *PermissionService) *ChannelConfigUpdateService {
 	return &ChannelConfigUpdateService{channels: channels, permission: permission}
@@ -156,7 +167,45 @@ func (s *ChannelConfigUpdateService) Update(ctx context.Context, actorUserID, ch
 	if s.refresh != nil {
 		s.refresh()
 	}
+	// Provision the portal's system Email request type once it serves a
+	// workspace. Best-effort: email intake heals a missing row lazily.
+	if channel.Type == "portal" {
+		if _, err := EnsureEmailRequestType(s.channels.db, channelID, 0, nil); err != nil {
+			slog.Warn("failed to provision portal email request type",
+				"channel_id", channelID, "error", err)
+		}
+		s.markOrphanedPortalIntakes(ctx, channelID, final.PortalWorkspaceIDs)
+	}
 	return true, nil
+}
+
+// markOrphanedPortalIntakes parks intakes whose linked portal no longer serves
+// their routing workspace, so the admin sees a needs_attention warning instead
+// of a mailbox that keeps polling a target the customer cannot see.
+func (s *ChannelConfigUpdateService) markOrphanedPortalIntakes(ctx context.Context, portalChannelID int, servedWorkspaceIDs []int) {
+	repo := repository.NewIntakeRepository(s.channels.db)
+	intakes, err := repo.ListByPortal(ctx, portalChannelID)
+	if err != nil {
+		slog.Warn("failed to list portal intakes for workspace check", "channel_id", portalChannelID, "error", err)
+		return
+	}
+	served := make(map[int]struct{}, len(servedWorkspaceIDs))
+	for _, id := range servedWorkspaceIDs {
+		served[id] = struct{}{}
+	}
+	reasons := map[int]string{}
+	for _, intake := range intakes {
+		if intake.Status != models.IntakeStatusEnabled {
+			continue
+		}
+		if _, ok := served[intake.WorkspaceID]; ok {
+			continue
+		}
+		reasons[intake.ID] = fmt.Sprintf("Portal no longer serves workspace %d; re-point this intake and re-enable it", intake.WorkspaceID)
+	}
+	if err := repo.MarkNeedsAttention(ctx, reasons); err != nil {
+		slog.Warn("failed to mark orphaned portal intakes", "channel_id", portalChannelID, "error", err)
+	}
 }
 
 // PrepareEnable validates that a channel may transition to "enabled" and
@@ -228,10 +277,11 @@ func (s *ChannelConfigUpdateService) PrepareEnable(ctx context.Context, actorUse
 	return rawConfig, nil
 }
 
-// prepareEmailEnable validates an inbound email channel before activation:
-// the mailbox configuration must be complete, its target workspace must
-// exist, the item type and default priority must be allowed there, and a
-// non-administrator must be able to administer that workspace.
+// prepareEmailEnable validates an inbound email channel before activation: the
+// mailbox connection must be complete and the channel must have at least one
+// intake (folder + target) or legacy routing config. Per-intake target
+// validation happens when the intake is created; the legacy config checks are
+// kept so channels not yet migrated still enable.
 func (s *ChannelConfigUpdateService) prepareEmailEnable(ctx context.Context, actorUserID int, channel *models.Channel, config *models.ChannelConfig, admin bool) error {
 	if s.validateEmail == nil {
 		return channelConfigInvalid("Email channel validation is not configured")
@@ -239,6 +289,27 @@ func (s *ChannelConfigUpdateService) prepareEmailEnable(ctx context.Context, act
 	if err := s.validateEmail(channel, config); err != nil {
 		return channelConfigInvalid(err.Error())
 	}
+
+	intakes, err := repository.NewIntakeRepository(s.channels.db).ListEnabledForMailbox(ctx, channel.ID)
+	if err != nil {
+		return err
+	}
+	hasLegacyRouting := config.EmailWorkspaceID > 0 || config.EmailConnectedPortalID != nil
+	if len(intakes) == 0 && !hasLegacyRouting {
+		return channelConfigInvalid("Email channel has no intake: add at least one intake (folder and target) before enabling")
+	}
+
+	// Routing lives on intakes once any exist, so authorize the actor against
+	// each intake target instead of the stale legacy email_workspace_id field.
+	if len(intakes) > 0 {
+		for _, intake := range intakes {
+			if err := s.validateEmailIntakeEnable(ctx, actorUserID, intake, admin); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
 	if config.EmailWorkspaceID > 0 {
 		bad, err := s.channels.repo.FindBadWorkspaceIDs([]int{config.EmailWorkspaceID})
 		if err != nil {
@@ -258,6 +329,42 @@ func (s *ChannelConfigUpdateService) prepareEmailEnable(ctx context.Context, act
 		}
 		if !canConnect {
 			return channelConfigForbidden("workspace administration permission is required to connect the email target workspace")
+		}
+	}
+	return nil
+}
+
+// validateEmailIntakeEnable checks one enabled intake before the mailbox is
+// activated: its workspace item type must still be valid and, for non-admins,
+// the actor must manage the routing workspace and any linked portal.
+func (s *ChannelConfigUpdateService) validateEmailIntakeEnable(ctx context.Context, actorUserID int, intake models.Intake, admin bool) error {
+	if intake.ItemTypeID == nil || *intake.ItemTypeID <= 0 {
+		return channelConfigInvalid(fmt.Sprintf("Email intake %d has no item type", intake.ID))
+	}
+	allowed, err := s.channels.ItemTypeAllowedInWorkspace(intake.WorkspaceID, *intake.ItemTypeID)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return channelConfigInvalid(fmt.Sprintf("Item type %d is not allowed in workspace %d", *intake.ItemTypeID, intake.WorkspaceID))
+	}
+	if admin {
+		return nil
+	}
+	canAdmin, err := s.permission.HasWorkspacePermission(actorUserID, intake.WorkspaceID, models.PermissionWorkspaceAdmin)
+	if err != nil {
+		return err
+	}
+	if !canAdmin {
+		return channelConfigForbidden("workspace administration permission is required to connect the email intake target workspace")
+	}
+	if intake.PortalChannelID != nil {
+		canManage, err := s.channels.UserCanManage(ctx, actorUserID, *intake.PortalChannelID)
+		if err != nil {
+			return err
+		}
+		if !canManage {
+			return channelConfigForbidden("permission to manage the email intake portal is required")
 		}
 	}
 	return nil
@@ -366,18 +473,35 @@ func mergeChannelConfig(existingJSON string, incoming map[string]any) (map[strin
 	previousProvider, _ := merged["email_oauth_provider_type"].(string)
 	previousClientID, _ := merged["email_oauth_client_id"].(string)
 	previousTenantID, _ := merged["email_oauth_tenant_id"].(string)
+	previousMailbox := effectiveOAuthMailbox(merged)
 	for key, value := range incoming {
+		if isChannelSecretField(key) {
+			if value == nil {
+				delete(merged, key)
+				continue
+			}
+			if secret, ok := value.(string); ok && secret == "" {
+				continue
+			}
+		}
 		merged[key] = value
 	}
 	currentProvider, _ := merged["email_oauth_provider_type"].(string)
 	currentClientID, _ := merged["email_oauth_client_id"].(string)
 	currentTenantID, _ := merged["email_oauth_tenant_id"].(string)
-	if previousProvider != currentProvider || previousClientID != currentClientID || previousTenantID != currentTenantID {
+	currentMailbox := effectiveOAuthMailbox(merged)
+	// Changing any part of the OAuth identity — including the monitored mailbox
+	// — invalidates the stored credentials: a token for the old mailbox cannot
+	// authenticate the new one. The typed mailbox itself is kept so the admin
+	// does not retype it; the verified email is what marks the connection live.
+	if previousProvider != currentProvider || previousClientID != currentClientID || previousTenantID != currentTenantID || previousMailbox != currentMailbox {
 		for _, key := range []string{"email_oauth_access_token", "email_oauth_refresh_token", "email_oauth_expires_at", "email_oauth_email"} {
 			delete(merged, key)
 		}
 		if previousProvider != currentProvider || previousClientID != currentClientID {
-			if _, supplied := incoming["email_oauth_client_secret"]; !supplied {
+			// A blank secret is not a new credential, so an identity change
+			// still discards the secret that belonged to the old client.
+			if secret, _ := incoming["email_oauth_client_secret"].(string); secret == "" {
 				delete(merged, "email_oauth_client_secret")
 			}
 		}
@@ -385,8 +509,20 @@ func mergeChannelConfig(existingJSON string, incoming map[string]any) (map[strin
 	return merged, stored, nil
 }
 
+// effectiveOAuthMailbox is the monitored address a config currently represents:
+// the admin-entered mailbox, or the verified address on channels connected
+// before email_oauth_mailbox existed. Comparing the effective value keeps a
+// legacy reconnect from looking like an identity change.
+func effectiveOAuthMailbox(config map[string]any) string {
+	if mailbox, _ := config["email_oauth_mailbox"].(string); mailbox != "" {
+		return mailbox
+	}
+	email, _ := config["email_oauth_email"].(string)
+	return email
+}
+
 func (s *ChannelConfigUpdateService) encryptSecrets(config map[string]any) error {
-	for _, key := range []string{"smtp_password", "imap_password", "webhook_secret", "email_oauth_client_secret"} {
+	for _, key := range channelSecretFields {
 		value, ok := config[key]
 		if !ok {
 			continue
@@ -426,7 +562,7 @@ func (s *ChannelConfigUpdateService) validate(ctx context.Context, actorID int, 
 		if err := ValidatePortalConfig(config); err != nil {
 			return channelConfigInvalid(err.Error())
 		}
-		if err := s.validateKnowledgeBasePageSources(actorID, config); err != nil {
+		if err := s.validateKnowledgeBasePageSources(actorID, &stored, config); err != nil {
 			return err
 		}
 	} else if _, present := incoming["knowledge_base_page_sources"]; present {
@@ -462,10 +598,21 @@ func (s *ChannelConfigUpdateService) validate(ctx context.Context, actorID int, 
 	return nil
 }
 
+// knowledgeBaseSourceKey identifies a KB page source independent of ordering.
+func knowledgeBaseSourceKey(src models.KnowledgeBasePageSource) string {
+	root := 0
+	if src.RootPageID != nil {
+		root = *src.RootPageID
+	}
+	return fmt.Sprintf("%d:%d", src.WorkspaceID, root)
+}
+
 // validateKnowledgeBasePageSources checks a portal's workspace-pages
 // knowledge-base wiring: bounded count, target workspaces only, live root
-// pages, and workspace-administered disclosure for non-admin actors.
-func (s *ChannelConfigUpdateService) validateKnowledgeBasePageSources(actorID int, config *models.ChannelConfig) error {
+// pages, and workspace-administered disclosure for non-admin actors. Sources
+// that already exist unchanged are not re-authorized, so editing unrelated
+// portal settings cannot be blocked by a source the actor cannot administer.
+func (s *ChannelConfigUpdateService) validateKnowledgeBasePageSources(actorID int, stored, config *models.ChannelConfig) error {
 	sources := config.KnowledgeBasePageSources
 	if len(sources) == 0 {
 		return nil
@@ -476,6 +623,10 @@ func (s *ChannelConfigUpdateService) validateKnowledgeBasePageSources(actorID in
 	admin, err := s.permission.IsSystemAdmin(actorID)
 	if err != nil {
 		return err
+	}
+	unchanged := make(map[string]bool, len(stored.KnowledgeBasePageSources))
+	for _, src := range stored.KnowledgeBasePageSources {
+		unchanged[knowledgeBaseSourceKey(src)] = true
 	}
 	seen := make(map[int]map[int]bool, len(sources))
 	for _, src := range sources {
@@ -499,7 +650,7 @@ func (s *ChannelConfigUpdateService) validateKnowledgeBasePageSources(actorID in
 			return channelConfigInvalid(fmt.Sprintf("workspace %d is wired into the knowledge base more than once", src.WorkspaceID))
 		}
 		seen[src.WorkspaceID][rootKey] = true
-		if admin {
+		if admin || unchanged[knowledgeBaseSourceKey(src)] {
 			continue
 		}
 		allowed, err := s.permission.HasWorkspacePermission(actorID, src.WorkspaceID, models.PermissionWorkspaceAdmin)
@@ -741,12 +892,11 @@ func (s *ChannelConfigUpdateService) validateRequestTypeRoutes(channelID int, ch
 	}
 	invalid := make([]string, 0)
 	for _, route := range routes {
-		workspaceID, routable := requestTypeWorkspace(served, route.WorkspaceID)
-		if !routable || !containsChannelConfigID(served, workspaceID) {
+		if route.WorkspaceID == nil || !containsChannelConfigID(served, *route.WorkspaceID) {
 			invalid = append(invalid, route.Name)
 			continue
 		}
-		allowed, err := s.channels.ItemTypeAllowedInWorkspace(workspaceID, route.ItemTypeID)
+		allowed, err := s.channels.ItemTypeAllowedInWorkspace(*route.WorkspaceID, route.ItemTypeID)
 		if err != nil {
 			return err
 		}
@@ -755,7 +905,7 @@ func (s *ChannelConfigUpdateService) validateRequestTypeRoutes(channelID int, ch
 		}
 	}
 	if len(invalid) > 0 {
-		return channelConfigInvalid(fmt.Sprintf("Request types have missing or incompatible workspace routes: %s. Retarget or update them first.", strings.Join(invalid, ", ")))
+		return channelConfigInvalid(fmt.Sprintf("Request types are pinned to workspaces this channel does not serve: %s. Delete them before removing the workspace.", strings.Join(invalid, ", ")))
 	}
 	return nil
 }
@@ -798,16 +948,6 @@ func validBareEmail(value string) bool {
 	return err == nil && parsed.Address == value
 }
 
-func requestTypeWorkspace(served []int, routeWorkspaceID *int) (int, bool) {
-	if routeWorkspaceID != nil {
-		return *routeWorkspaceID, true
-	}
-	if len(served) == 0 {
-		return 0, false
-	}
-	return served[0], true
-}
-
 func containsChannelConfigID(values []int, target int) bool {
 	for _, value := range values {
 		if value == target {
@@ -821,7 +961,7 @@ func normalizeEmailAuthConfig(config map[string]any) {
 	method, _ := config["email_auth_method"].(string)
 	switch strings.ToLower(method) {
 	case "basic":
-		for _, key := range []string{"email_oauth_provider_type", "email_oauth_client_id", "email_oauth_client_secret", "email_oauth_tenant_id", "email_oauth_access_token", "email_oauth_refresh_token", "email_oauth_expires_at", "email_oauth_email"} {
+		for _, key := range []string{"email_oauth_provider_type", "email_oauth_client_id", "email_oauth_client_secret", "email_oauth_tenant_id", "email_oauth_mailbox", "email_oauth_access_token", "email_oauth_refresh_token", "email_oauth_expires_at", "email_oauth_email"} {
 			delete(config, key)
 		}
 	case "oauth":

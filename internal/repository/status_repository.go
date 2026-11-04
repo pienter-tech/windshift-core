@@ -91,7 +91,7 @@ func NewStatusRepository(db database.Database) *StatusRepository {
 }
 
 const statusJoinedSelect = `
-	SELECT s.id, COALESCE(s.builtin_key, ''), s.name, s.description, s.category_id, s.is_default, s.created_at, s.updated_at,
+	SELECT s.id, COALESCE(s.builtin_key, ''), s.name, COALESCE(s.description, ''), s.category_id, s.is_default, s.created_at, s.updated_at,
 	       sc.name as category_name, COALESCE(sc.builtin_key, ''), sc.color as category_color, sc.is_completed
 	FROM statuses s
 	JOIN status_categories sc ON s.category_id = sc.id`
