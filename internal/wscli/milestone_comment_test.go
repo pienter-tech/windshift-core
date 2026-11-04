@@ -30,7 +30,7 @@ func milestoneCommentServer(t *testing.T, handler func(w http.ResponseWriter, r 
 		mu       sync.Mutex
 		requests []recordedRequest
 	)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		mu.Lock()
 		requests = append(requests, recordedRequest{
@@ -44,7 +44,6 @@ func milestoneCommentServer(t *testing.T, handler func(w http.ResponseWriter, r 
 		mu.Unlock()
 		handler(w, r)
 	}))
-	t.Cleanup(server.Close)
 	return server, func() []recordedRequest {
 		mu.Lock()
 		defer mu.Unlock()
