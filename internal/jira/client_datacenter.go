@@ -7,7 +7,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -22,8 +24,13 @@ type dataCenterClient struct {
 	authHeader     string
 	httpClient     *http.Client
 	limiter        *rate.Limiter
+	throttle       *jiraThrottle
 	retryWait      func(context.Context, time.Duration) error
 	retryAttempts  int
+	// assetsPage caches the page size the legacy Insight AQL endpoint reports.
+	// It is server-chosen and ignores maxResults, so the offset-to-page mapping
+	// needs the observed value rather than the requested one.
+	assetsPage atomic.Int64
 }
 
 // do performs an HTTP request with rate limiting
@@ -31,7 +38,14 @@ type dataCenterClient struct {
 //nolint:unparam // method is always "GET" currently but kept for future flexibility
 func (c *dataCenterClient) do(ctx context.Context, method, reqURL string, body any) (*http.Response, error) {
 	return doReadOnlyJiraRequest(
-		ctx, c.httpClient, c.limiter, c.authHeader, method, reqURL, body,
+		ctx, c.httpClient, c.limiter, c.throttle, c.authHeader, method, reqURL, body,
+		c.retryAttempts, c.retryWait,
+	)
+}
+
+func (c *dataCenterClient) doWithHeaders(ctx context.Context, method, reqURL string, body any, headers map[string]string) (*http.Response, error) {
+	return doReadOnlyJiraRequestWithHeaders(
+		ctx, c.httpClient, c.limiter, c.throttle, c.authHeader, method, reqURL, body, headers,
 		c.retryAttempts, c.retryWait,
 	)
 }
@@ -86,7 +100,7 @@ func (c *dataCenterClient) TestConnection(ctx context.Context) (*JiraInstanceInf
 		URL:         serverInfo.BaseURL,
 	}
 	if info.URL == "" {
-		info.URL = c.baseURL
+		info.URL = jiraSiteURLFromBase(c.baseURL)
 	}
 	if user.DisplayName != "" {
 		info.DisplayName = user.DisplayName
@@ -136,18 +150,23 @@ func (c *dataCenterClient) ListServiceDeskRequestComments(ctx context.Context, i
 	})
 }
 
+// ListServiceDeskOrganizations reads the customer-organization catalog. JSM
+// 5.x marks this read experimental and requires an opt-in header; newer
+// versions accept it as well.
 func (c *dataCenterClient) ListServiceDeskOrganizations(ctx context.Context, serviceDeskID string) ([]JiraServiceDeskOrganization, error) {
-	return jiraServiceDeskValues[JiraServiceDeskOrganization](ctx, c, func(start int) string {
+	return jiraServiceDeskValuesWithHeaders[JiraServiceDeskOrganization](ctx, c, func(start int) string {
 		return fmt.Sprintf("%s/servicedesk/%s/organization?start=%d&limit=100",
 			c.serviceDeskURL, url.PathEscape(serviceDeskID), start)
-	})
+	}, jiraExperimentalHeaders())
 }
 
+// ListServiceDeskOrganizationUsers reads organization members. Like the
+// organization list, JSM 5.x requires the experimental-read opt-in.
 func (c *dataCenterClient) ListServiceDeskOrganizationUsers(ctx context.Context, organizationID string) ([]JiraUser, error) {
-	return jiraServiceDeskValues[JiraUser](ctx, c, func(start int) string {
+	return jiraServiceDeskValuesWithHeaders[JiraUser](ctx, c, func(start int) string {
 		return fmt.Sprintf("%s/organization/%s/user?start=%d&limit=100",
 			c.serviceDeskURL, url.PathEscape(organizationID), start)
-	})
+	}, jiraExperimentalHeaders())
 }
 
 // ================================================================
@@ -241,23 +260,24 @@ func (c *dataCenterClient) GetProjectWorkflowScheme(ctx context.Context, project
 	return jiraProjectWorkflowFromStatuses(projectKey, issueTypeStatuses), nil
 }
 
-// GetProjectWorkflowConfiguration reports that Jira Data Center's standard
-// REST API does not expose the configured workflow graph used by this importer.
-// Status membership remains available through GetProjectIssueTypeStatuses.
-func (c *dataCenterClient) GetProjectWorkflowConfiguration(
-	context.Context,
-	string,
-	[]string,
-) (*JiraProjectWorkflowConfiguration, error) {
-	return nil, ErrWorkflowConfigurationNotAvailable
-}
+// GetProjectWorkflowConfiguration is implemented in workflow_datacenter.go;
+// it reads the configured graph from the admin workflow designer API and
+// returns ErrWorkflowConfigurationNotAvailable when that source is unusable.
 
 func (c *dataCenterClient) GetProjectScreenConfiguration(
-	context.Context,
-	string,
-	string,
-	[]string,
+	ctx context.Context,
+	_ string,
+	projectKey string,
+	_ []string,
 ) (*JiraProjectScreenConfiguration, error) {
+	// Prefer the companion plugin: Data Center's public REST API does not expose
+	// screen schemes, so without it the importer cannot build create/edit/view
+	// screens.
+	if caps, ok := c.companionCapabilities(ctx); ok && companionSupports(caps, "screens") {
+		if config, err := c.companionScreenConfiguration(ctx, projectKey); err == nil && config != nil && len(config.Screens) > 0 {
+			return config, nil
+		}
+	}
 	return nil, ErrScreenConfigurationNotAvailable
 }
 
@@ -357,8 +377,13 @@ func (c *dataCenterClient) SearchIssuesJQL(ctx context.Context, req JQLSearchReq
 	return response, nil
 }
 
-// BulkFetchIssues fetches multiple issues by their IDs or keys
-// Data Center doesn't have /issue/bulkfetch, so we use search with key in (...) JQL
+// BulkFetchIssues fetches multiple issues by their IDs or keys.
+// Data Center doesn't have /issue/bulkfetch, so we use search with key in (...)
+// JQL. The legacy search endpoint can cap a page below the requested
+// maxResults (jira.search.views.default.max and the server's own limit), so a
+// single request would silently drop the rest of the batch. Walk every page
+// using the returned startAt/len offsets and let the caller reconcile any key
+// the server never returned.
 func (c *dataCenterClient) BulkFetchIssues(ctx context.Context, req BulkFetchRequest) (*BulkFetchResponse, error) {
 	if len(req.IssueIdsOrKeys) == 0 {
 		return &BulkFetchResponse{Issues: []JiraIssue{}}, nil
@@ -372,25 +397,56 @@ func (c *dataCenterClient) BulkFetchIssues(ctx context.Context, req BulkFetchReq
 	}
 	jql := "key in (" + strings.Join(quotedKeys, ",") + ")"
 
-	// Fetch in a single request if possible (Data Center typically allows large JQL)
-	result, err := c.searchIssues(ctx, SearchOptions{
-		JQL:        jql,
-		MaxResults: len(req.IssueIdsOrKeys),
-		Fields:     req.Fields,
-		Expand:     req.Expand,
-	})
-	if err != nil {
-		return nil, err
+	requested := len(req.IssueIdsOrKeys)
+	issues := make([]JiraIssue, 0, requested)
+	for startAt := 0; ; {
+		page, err := c.searchIssues(ctx, SearchOptions{
+			JQL:        jql,
+			StartAt:    startAt,
+			MaxResults: requested,
+			Fields:     req.Fields,
+			Expand:     req.Expand,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if page == nil || len(page.Issues) == 0 {
+			break
+		}
+		issues = append(issues, page.Issues...)
+		next := page.StartAt + len(page.Issues)
+		if next <= startAt {
+			// The server did not advance its offset; stop instead of looping.
+			break
+		}
+		if next >= requested || (page.Total > 0 && next >= page.Total) {
+			break
+		}
+		startAt = next
 	}
 
 	return &BulkFetchResponse{
-		Issues: result.Issues,
+		Issues: issues,
 	}, nil
 }
 
 // GetAllIssueKeys retrieves all issue keys matching a JQL query
 func (c *dataCenterClient) GetAllIssueKeys(ctx context.Context, jql string) ([]string, error) {
-	var keys []string
+	refs, err := c.GetAllIssueRefs(ctx, jql)
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		keys = append(keys, ref.Key)
+	}
+	return keys, nil
+}
+
+// GetAllIssueRefs retrieves the numeric id and key of every issue matching a
+// JQL query.
+func (c *dataCenterClient) GetAllIssueRefs(ctx context.Context, jql string) ([]JiraIssueRef, error) {
+	var refs []JiraIssueRef
 	startAt := 0
 	maxResults := 100
 
@@ -402,11 +458,11 @@ func (c *dataCenterClient) GetAllIssueKeys(ctx context.Context, jql string) ([]s
 			Fields:     []string{"key"},
 		})
 		if err != nil {
-			return keys, err
+			return refs, err
 		}
 
 		for _, issue := range result.Issues {
-			keys = append(keys, issue.Key)
+			refs = append(refs, JiraIssueRef{ID: issue.ID, Key: issue.Key})
 		}
 
 		startAt += len(result.Issues)
@@ -415,7 +471,7 @@ func (c *dataCenterClient) GetAllIssueKeys(ctx context.Context, jql string) ([]s
 		}
 	}
 
-	return keys, nil
+	return refs, nil
 }
 
 // ================================================================
@@ -441,9 +497,24 @@ func (c *dataCenterClient) GetBoardConfiguration(ctx context.Context, boardID in
 	return jiraGetBoardConfiguration(ctx, c, c.agileURL, boardID)
 }
 
-// ListFilters lists saved filters associated with a project.
-func (c *dataCenterClient) ListFilters(ctx context.Context, projectKey string) (*FilterSearchResult, error) {
-	return jiraListFilters(ctx, c, c.baseURL, projectKey)
+// ListFilters returns the caller's favorite saved filters. Data Center does
+// not expose Cloud's project filter search, so only favorites are discoverable
+// here; board-referenced filters are resolved separately by ID. The result is
+// marked partial so the importer reports the boundary.
+func (c *dataCenterClient) ListFilters(ctx context.Context, _ string) (*FilterSearchResult, error) {
+	var filters []JiraFilter
+	if err := jiraGetJSON(ctx, c, c.baseURL+"/filter/favourite?expand=jql,description,owner,viewUrl", &filters); err != nil { //nolint:misspell // Atlassian's Data Center route uses the British spelling
+		return nil, err
+	}
+	return &FilterSearchResult{
+		MaxResults:    len(filters),
+		StartAt:       0,
+		Total:         len(filters),
+		IsLast:        true,
+		Values:        filters,
+		Partial:       true,
+		PartialReason: "Data Center only exposes favorite saved filters; non-favorite filters cannot be enumerated through the supported API.",
+	}, nil
 }
 
 // GetFilter gets a saved filter with expanded JQL where available.
@@ -463,9 +534,18 @@ func (c *dataCenterClient) GetBoardSprints(ctx context.Context, boardID int) (*S
 // Attachment Methods
 // ================================================================
 
-// DownloadAttachment downloads an attachment and returns the reader and content type
-func (c *dataCenterClient) DownloadAttachment(ctx context.Context, attachmentURL string) (io.ReadCloser, string, error) {
-	return jiraDownloadAttachment(ctx, c.httpClient, c.limiter, c.authHeader, attachmentURL)
+// DownloadAttachment downloads an attachment and returns the reader and content
+// type. Data Center prefers the API-returned content URL and falls back to the
+// attachment-content endpoint under its base URL.
+func (c *dataCenterClient) DownloadAttachment(ctx context.Context, attachmentID, contentURL string) (io.ReadCloser, string, error) {
+	downloadURL := contentURL
+	if downloadURL == "" && attachmentID != "" {
+		downloadURL = c.baseURL + "/attachment/content/" + url.PathEscape(attachmentID)
+	}
+	if downloadURL == "" {
+		return nil, "", fmt.Errorf("%w: attachment has no download URL", ErrAPIError)
+	}
+	return jiraDownloadAttachment(ctx, c.httpClient, c.limiter, c.throttle, c.authHeader, downloadURL)
 }
 
 // ================================================================
@@ -503,53 +583,164 @@ func (c *dataCenterClient) GetUserEmail(ctx context.Context, accountID string) (
 // Jira Assets (Insight) Methods - Limited support on Data Center
 // ================================================================
 
-// ListObjectSchemas lists all object schemas in Assets
-// Note: Insight/Assets API on Data Center is different and may not be available
-func (c *dataCenterClient) ListObjectSchemas(ctx context.Context) ([]AssetObjectSchema, error) {
-	// Try the Insight API path for Data Center
-	resp, err := c.do(ctx, "GET", strings.TrimSuffix(c.baseURL, "/rest/api/2")+"/rest/insight/1.0/objectschema/list", nil)
+// assetsInsightBase is the legacy Insight REST base that Data Center exposes
+// for Assets. Cloud instead uses a per-workspace gateway base
+// (…/jsm/assets/workspace/{id}/v1), which Data Center has no equivalent of.
+const assetsInsightBase = "/rest/insight/1.0"
+
+// dataCenterAssetsDefaultPageSize is the page size the legacy Insight AQL
+// endpoint applies when the schema has not reported its own. The endpoint
+// ignores maxResults and pages by page number with a server-chosen size, so the
+// adapter must page by the size the server reports.
+const dataCenterAssetsDefaultPageSize = 25
+
+func (c *dataCenterClient) assetsBase() string {
+	return jiraSiteURLFromBase(c.baseURL) + assetsInsightBase
+}
+
+// assetsGetJSON reads a legacy Insight endpoint. A missing endpoint means the
+// instance has no Assets capability, so it maps to ErrAssetsNotAvailable rather
+// than a generic failure and the importer records an explicit finding.
+func (c *dataCenterClient) assetsGetJSON(ctx context.Context, endpoint string, out any) error {
+	resp, err := c.do(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, ErrAssetsNotAvailable
+		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
-
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, ErrAssetsNotAvailable
+		return ErrAssetsNotAvailable
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, ErrAssetsNotAvailable
+		return jiraErrorFromResponse(resp)
 	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
 
-	var result struct {
+// assetsPageSize returns the server page size last observed for this client,
+// falling back to the documented default before the first response.
+func (c *dataCenterClient) assetsPageSize() int {
+	if size := int(c.assetsPage.Load()); size > 0 {
+		return size
+	}
+	return dataCenterAssetsDefaultPageSize
+}
+
+func (c *dataCenterClient) ListObjectSchemas(ctx context.Context) ([]AssetObjectSchema, error) {
+	var payload struct {
 		ObjectSchemas []AssetObjectSchema `json:"objectschemas"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, ErrAssetsNotAvailable
+	if err := c.assetsGetJSON(ctx, c.assetsBase()+"/objectschema/list", &payload); err != nil {
+		return nil, err
 	}
-	return result.ObjectSchemas, nil
+	return payload.ObjectSchemas, nil
 }
 
-// GetObjectSchema gets a single object schema by ID
 func (c *dataCenterClient) GetObjectSchema(ctx context.Context, schemaID string) (*AssetObjectSchema, error) {
-	return nil, ErrAssetsNotAvailable
+	var schema AssetObjectSchema
+	if err := c.assetsGetJSON(ctx, c.assetsBase()+"/objectschema/"+url.PathEscape(schemaID), &schema); err != nil {
+		return nil, err
+	}
+	return &schema, nil
 }
 
-// ListObjectTypes lists all object types in a schema
 func (c *dataCenterClient) ListObjectTypes(ctx context.Context, schemaID string) ([]AssetObjectType, error) {
-	return nil, ErrAssetsNotAvailable
+	var types []AssetObjectType
+	if err := c.assetsGetJSON(ctx, c.assetsBase()+"/objectschema/"+url.PathEscape(schemaID)+"/objecttypes/flat", &types); err != nil {
+		return nil, err
+	}
+	return types, nil
 }
 
-// GetObjectTypeAttributes gets all attributes for an object type
 func (c *dataCenterClient) GetObjectTypeAttributes(ctx context.Context, objectTypeID string) ([]AssetObjectAttribute, error) {
-	return nil, ErrAssetsNotAvailable
+	var attrs []AssetObjectAttribute
+	if err := c.assetsGetJSON(ctx, c.assetsBase()+"/objecttype/"+url.PathEscape(objectTypeID)+"/attributes", &attrs); err != nil {
+		return nil, err
+	}
+	normalizeAssetDefaultTypes(attrs)
+	return attrs, nil
 }
 
-// SearchObjects searches for objects in a schema
+// SearchObjects reads one window of Assets objects from the legacy Insight AQL
+// endpoint. The endpoint paginates by page number with a server-chosen page
+// size and ignores maxResults, so the adapter maps the requested offset onto
+// the page containing it and slices to the exact offset. That keeps the
+// offset contract the importer's walk relies on even when the server returns
+// fewer rows than requested.
 func (c *dataCenterClient) SearchObjects(ctx context.Context, opts ObjectSearchOptions) (*ObjectSearchResult, error) {
-	return nil, ErrAssetsNotAvailable
+	startAt := opts.StartAt
+	if opts.Page > 1 && startAt == 0 {
+		pageSize := opts.PageSize
+		if pageSize < 1 {
+			pageSize = c.assetsPageSize()
+		}
+		startAt = (opts.Page - 1) * pageSize
+	}
+	if startAt < 0 {
+		startAt = 0
+	}
+
+	clauses := []string{"objectSchemaId = " + quoteAssetsAQLID(opts.ObjectSchemaID)}
+	if opts.ObjectTypeID != "" {
+		clauses = append(clauses, "objectTypeId = "+quoteAssetsAQLID(opts.ObjectTypeID))
+	}
+	if strings.TrimSpace(opts.IQL) != "" {
+		clauses = append(clauses, "("+strings.TrimSpace(opts.IQL)+")")
+	}
+
+	serverPageSize := c.assetsPageSize()
+	page := startAt/serverPageSize + 1
+	offsetInPage := startAt % serverPageSize
+
+	query := url.Values{}
+	query.Set("qlQuery", strings.Join(clauses, " AND "))
+	query.Set("page", strconv.Itoa(page))
+	if opts.IncludeAttributes {
+		query.Set("includeAttributes", "true")
+	}
+
+	var current struct {
+		ObjectEntries        []AssetObject          `json:"objectEntries"`
+		ObjectTypeAttributes []AssetObjectAttribute `json:"objectTypeAttributes"`
+		TotalFilterCount     int                    `json:"totalFilterCount"`
+		PageObjectSize       int                    `json:"pageObjectSize"`
+	}
+	if err := c.assetsGetJSON(ctx, c.assetsBase()+"/aql/objects?"+query.Encode(), &current); err != nil {
+		return nil, err
+	}
+	if current.PageObjectSize > 0 {
+		c.assetsPage.Store(int64(current.PageObjectSize))
+	}
+	normalizeAssetDefaultTypes(current.ObjectTypeAttributes)
+
+	entries := current.ObjectEntries
+	if offsetInPage > 0 {
+		if offsetInPage >= len(entries) {
+			entries = nil
+		} else {
+			entries = entries[offsetInPage:]
+		}
+	}
+
+	// The legacy response has no isLast and reports an unreliable toIndex, so
+	// exhaustion is derived from the offset plus the rows actually returned.
+	isLast := len(entries) == 0 || (current.TotalFilterCount > 0 && startAt+len(entries) >= current.TotalFilterCount)
+
+	return &ObjectSearchResult{
+		ObjectEntries:        entries,
+		ObjectTypeAttributes: current.ObjectTypeAttributes,
+		PageNumber:           page,
+		PageSize:             serverPageSize,
+		TotalFilterCount:     current.TotalFilterCount,
+		StartIndex:           startAt,
+		ToIndex:              startAt + len(entries),
+		IsLast:               isLast,
+	}, nil
 }
 
-// GetObjectCount gets the total number of objects in a schema
 func (c *dataCenterClient) GetObjectCount(ctx context.Context, schemaID string) (int, error) {
-	return 0, ErrAssetsNotAvailable
+	schema, err := c.GetObjectSchema(ctx, schemaID)
+	if err != nil {
+		return 0, err
+	}
+	return schema.ObjectCount, nil
 }

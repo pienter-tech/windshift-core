@@ -1,8 +1,32 @@
 <script>
   import { onMount } from 'svelte';
-  import { Pencil, RefreshCw, MessageSquare, Bell, HelpCircle, Database, PlusSquare, Box, Globe, Sparkles, Bot, Milestone, UsersRound, Send, FileText, Tag, X } from '@lucide/svelte';
+  import Pencil from '@lucide/svelte/icons/pencil';
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import MessageSquare from '@lucide/svelte/icons/message-square';
+  import Bell from '@lucide/svelte/icons/bell';
+  import HelpCircle from '@lucide/svelte/icons/help-circle';
+  import PlaceholderFieldLabel from './PlaceholderFieldLabel.svelte';
+  import Database from '@lucide/svelte/icons/database';
+  import PlusSquare from '@lucide/svelte/icons/plus-square';
+  import Box from '@lucide/svelte/icons/box';
+  import Globe from '@lucide/svelte/icons/globe';
+  import IconMessageChatbot from '@tabler/icons-svelte-runes/icons/message-chatbot';
+  import Bot from '@lucide/svelte/icons/bot';
+  import Milestone from '@lucide/svelte/icons/milestone';
+  import UsersRound from '@lucide/svelte/icons/users-round';
+  import Send from '@lucide/svelte/icons/send';
+  import FileText from '@lucide/svelte/icons/file-text';
+  import Tag from '@lucide/svelte/icons/tag';
+  import X from '@lucide/svelte/icons/x';
   import { toHotkeyString, getShortcutDisplay } from '../../utils/keyboardShortcuts.js';
-  import { api } from '../../api.js';
+  import { actionCapabilities } from '../../api/ai.js';
+  import { actions } from '../../api/actions.js';
+  import { milestones as milestonesApi } from '../../api/milestones.js';
+  import { teams as teamsApi } from '../../api/teams.js';
+  import { cannedResponses as cannedResponsesApi, itemTypes as itemTypesApi, linkTypes as linkTypesApi } from '../../api/configuration.js';
+  import { statusCategories as statusCategoriesApi } from '../../api/workflows.js';
+  import { getAssignableUsers } from '../../api/users.js';
+  import { labels } from '../../api/misc.js';
   import FieldSelector from '../../pickers/FieldSelector.svelte';
   import MilestoneCombobox from '../../pickers/MilestoneCombobox.svelte';
   import TriggerNode from './nodes/TriggerNode.svelte';
@@ -39,7 +63,7 @@
   import UserPicker from '../../pickers/UserPicker.svelte';
   import RolePicker from '../../pickers/RolePicker.svelte';
   import { actionFlowStore } from '../../stores/actionFlowStore.svelte.js';
-  import { permissionStore } from '../../stores';
+  import { permissionStore } from '../../stores/permissions.svelte.js';
   import { agentRuns } from '../../stores/agentRuns.svelte.js';
   import { infoToast } from '../../stores/toasts.svelte.js';
 
@@ -159,7 +183,7 @@
     create_asset: PlusSquare,
     http_request: Globe,
     container_run: Box,
-    ai_extract: Sparkles,
+    ai_extract: IconMessageChatbot,
     ai_agent: Bot,
     transition_item: RefreshCw,
     related_items: RefreshCw,
@@ -217,6 +241,7 @@
   function triggerI18nKey(triggerType) {
     switch (triggerType) {
       case 'status_transition': return 'actions.trigger.statusTransition';
+      case 'status_loop': return 'actions.trigger.statusLoop';
       case 'item_created': return 'actions.trigger.itemCreated';
       case 'item_updated': return 'actions.trigger.itemUpdated';
       case 'item_linked': return 'actions.trigger.itemLinked';
@@ -241,7 +266,7 @@
   async function loadCapabilities(type) {
     if (!action?.workspace_id) return;
     try {
-      const list = await api.actionCapabilities.getForWorkspace(action.workspace_id, type);
+      const list = await actionCapabilities.getForWorkspace(action.workspace_id, type);
       capabilitiesByType[type] = list || [];
     } catch (err) {
       console.error(`Failed to load ${type} capabilities for workspace`, err);
@@ -251,7 +276,7 @@
   async function loadCatalog() {
     if (!action?.workspace_id) return;
     try {
-      const catalog = await api.actions.getCatalog(action.workspace_id);
+      const catalog = await actions.getCatalog(action.workspace_id);
       buildPaletteFromCatalog(catalog);
     } catch (err) {
       console.error('Failed to load action catalog; palette will be empty', err);
@@ -261,7 +286,7 @@
   async function loadMilestones() {
     if (!action?.workspace_id) return;
     try {
-      milestones = await api.milestones.getAll({ workspace_id: action.workspace_id, include_global: true }) || [];
+      milestones = await milestonesApi.getAll({ workspace_id: action.workspace_id, include_global: true }) || [];
     } catch (err) {
       console.error('Failed to load milestones for action editor', err);
       milestones = [];
@@ -270,7 +295,7 @@
 
   async function loadTeams() {
     try {
-      teams = await api.teams.getAll() || [];
+      teams = await teamsApi.getAll() || [];
     } catch (err) {
       console.error('Failed to load teams for action editor', err);
       teams = [];
@@ -279,7 +304,7 @@
 
   async function loadLinkTypes() {
     try {
-      linkTypes = await api.linkTypes.getAll() || [];
+      linkTypes = await linkTypesApi.getAll() || [];
     } catch (err) {
       console.error('Failed to load link types for action editor', err);
       linkTypes = [];
@@ -289,7 +314,7 @@
   async function loadItemTypes() {
     if (!action?.workspace_id) return;
     try {
-      itemTypes = await api.itemTypes.getAll({ workspace_id: action.workspace_id }) || [];
+      itemTypes = await itemTypesApi.getAll({ workspace_id: action.workspace_id }) || [];
     } catch (err) {
       console.error('Failed to load item types for action editor', err);
       itemTypes = [];
@@ -298,7 +323,7 @@
 
   async function loadStatusCategories() {
     try {
-      statusCategories = await api.statusCategories.getAll() || [];
+      statusCategories = await statusCategoriesApi.getAll() || [];
     } catch (err) {
       console.error('Failed to load status categories for action editor', err);
       statusCategories = [];
@@ -308,7 +333,7 @@
   async function loadAssignableUsers() {
     if (!action?.workspace_id) return;
     try {
-      assignableUsers = await api.getAssignableUsers(action.workspace_id) || [];
+      assignableUsers = await getAssignableUsers(action.workspace_id) || [];
     } catch (err) {
       console.error('Failed to load users for action editor', err);
       assignableUsers = [];
@@ -318,7 +343,7 @@
   async function loadCannedResponses() {
     if (!action?.workspace_id) return;
     try {
-      const list = await api.cannedResponses.getAll(action.workspace_id, true) || [];
+      const list = await cannedResponsesApi.getAll(action.workspace_id, true) || [];
       cannedResponses = list.filter((response) => response.is_active !== false);
     } catch (err) {
       console.error('Failed to load canned responses for action editor', err);
@@ -329,7 +354,7 @@
   async function loadWorkspaceLabels() {
     if (!action?.workspace_id) return;
     try {
-      workspaceLabels = await api.labels.getAll(action.workspace_id) || [];
+      workspaceLabels = await labels.getAll(action.workspace_id) || [];
     } catch (err) {
       console.error('Failed to load labels for action editor', err);
       workspaceLabels = [];
@@ -358,7 +383,7 @@
     const unsub = agentRuns.subscribe(async () => {
       if (!action?.id) return;
       try {
-        const fresh = await api.actions.get(action.workspace_id, action.id);
+        const fresh = await actions.get(action.workspace_id, action.id);
         actionFlowStore.init(fresh, statuses);
         infoToast(t('actions.aiUpdated', 'Action updated by AI'));
       } catch (err) {
@@ -759,6 +784,28 @@
         />
       </div>
     {/if}
+    {#if (selectedNode.data?.triggerType || action?.trigger_type) === 'status_loop'}
+      <div>
+        <label for="config-loop-status" class="block text-xs font-medium mb-1">{t('actions.config.loopStatus')}</label>
+        <Select
+          id="config-loop-status"
+          options={[{ value: '', label: t('actions.config.anyStatus') }, ...statuses.map(s => ({ value: s.id, label: s.name }))]}
+          value={selectedNode.data?.config?.to_status_id || ''}
+          onchange={(v) => store.updateNodeConfig(selectedNode.id, { to_status_id: v ? parseInt(v) : null })}
+          size="small"
+        />
+      </div>
+      <div>
+        <label for="config-loop-item-type" class="block text-xs font-medium mb-1">Item type</label>
+        <Select
+          id="config-loop-item-type"
+          options={[{ value: '', label: 'Any item type' }, ...itemTypes.map(it => ({ value: it.id, label: it.name }))]}
+          value={selectedNode.data?.config?.item_type_id || ''}
+          onchange={(v) => store.updateNodeConfig(selectedNode.id, { item_type_id: v ? parseInt(v) : null })}
+          size="small"
+        />
+      </div>
+    {/if}
     {#if (selectedNode.data?.triggerType || action?.trigger_type) === 'item_updated'}
       <div>
         <div class="block text-xs font-medium mb-1">{t('actions.config.triggerField')}</div>
@@ -870,16 +917,11 @@
         />
       </div>
       <div>
-        <div class="flex items-center gap-1 mb-1">
-          <label for="config-set-field-value" class="block text-xs font-medium">{t('actions.config.value')}</label>
-          <button
-            onclick={() => showPlaceholderModal = true}
-            class="text-[var(--ds-text-subtlest)] hover:text-[var(--ds-interactive)] transition-colors"
-            title={t('actions.placeholders.showReference')}
-          >
-            <HelpCircle class="w-3.5 h-3.5" />
-          </button>
-        </div>
+        <PlaceholderFieldLabel
+          forId="config-set-field-value"
+          label={t('actions.config.value')}
+          onShowReference={() => (showPlaceholderModal = true)}
+        />
         {#if isMilestoneSetField(selectedNode.data?.config)}
           <MilestoneCombobox
             value={getSetFieldMilestoneIDs(selectedNode.data?.config)}
@@ -922,16 +964,11 @@
       </div>
     {:else if selectedNode.type === 'add_comment'}
       <div>
-        <div class="flex items-center gap-1 mb-1">
-          <label for="config-comment-content" class="block text-xs font-medium">{t('actions.config.commentContent')}</label>
-          <button
-            onclick={() => showPlaceholderModal = true}
-            class="text-[var(--ds-text-subtlest)] hover:text-[var(--ds-interactive)] transition-colors"
-            title={t('actions.placeholders.showReference')}
-          >
-            <HelpCircle class="w-3.5 h-3.5" />
-          </button>
-        </div>
+        <PlaceholderFieldLabel
+          forId="config-comment-content"
+          label={t('actions.config.commentContent')}
+          onShowReference={() => (showPlaceholderModal = true)}
+        />
         <Textarea
           id="config-comment-content"
           rows={4}
@@ -1047,16 +1084,11 @@
         </div>
       {/if}
       <div>
-        <div class="flex items-center gap-1 mb-1">
-          <label for="config-notify-message" class="block text-xs font-medium">{t('actions.config.notifyMessage')}</label>
-          <button
-            onclick={() => showPlaceholderModal = true}
-            class="text-[var(--ds-text-subtlest)] hover:text-[var(--ds-interactive)] transition-colors"
-            title={t('actions.placeholders.showReference')}
-          >
-            <HelpCircle class="w-3.5 h-3.5" />
-          </button>
-        </div>
+        <PlaceholderFieldLabel
+          forId="config-notify-message"
+          label={t('actions.config.notifyMessage')}
+          onShowReference={() => (showPlaceholderModal = true)}
+        />
         <Textarea
           id="config-notify-message"
           rows={4}
@@ -1091,16 +1123,11 @@
         />
       </div>
       <div>
-        <div class="flex items-center gap-1 mb-1">
-          <label for="config-notify-customer-message" class="block text-xs font-medium">{t('actions.config.notifyMessage')}</label>
-          <button
-            onclick={() => showPlaceholderModal = true}
-            class="text-[var(--ds-text-subtlest)] hover:text-[var(--ds-interactive)] transition-colors"
-            title={t('actions.placeholders.showReference')}
-          >
-            <HelpCircle class="w-3.5 h-3.5" />
-          </button>
-        </div>
+        <PlaceholderFieldLabel
+          forId="config-notify-customer-message"
+          label={t('actions.config.notifyMessage')}
+          onShowReference={() => (showPlaceholderModal = true)}
+        />
         <Textarea
           id="config-notify-customer-message"
           data-testid="notify-customer-message"
@@ -1367,16 +1394,11 @@
         />
       </div>
       <div>
-        <div class="flex items-center gap-1 mb-1">
-          <label for="config-http-url" class="block text-xs font-medium">{t('actions.config.urlTemplate')}</label>
-          <button
-            onclick={() => showPlaceholderModal = true}
-            class="text-[var(--ds-text-subtlest)] hover:text-[var(--ds-interactive)] transition-colors"
-            title={t('actions.placeholders.showReference')}
-          >
-            <HelpCircle class="w-3.5 h-3.5" />
-          </button>
-        </div>
+        <PlaceholderFieldLabel
+          forId="config-http-url"
+          label={t('actions.config.urlTemplate')}
+          onShowReference={() => (showPlaceholderModal = true)}
+        />
         <Input
           id="config-http-url"
           type="text"

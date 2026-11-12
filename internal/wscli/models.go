@@ -469,17 +469,24 @@ type ItemTemplateListResponse struct {
 // Comments
 // ============================================
 
+// Comment is one item comment, as returned by
+// /rest/api/v2/items/{item_id}/comments. The server sends the author as flat
+// joined fields (models.Comment); AuthorID is null for portal-customer
+// comments. The author fields are always written so JSON consumers can tell
+// agent comments from human ones without a missing-key default (WCORE-39).
 type Comment struct {
-	ID        int          `json:"id"`
-	ItemID    int          `json:"item_id"`
-	Content   string       `json:"content"`
-	Author    *UserSummary `json:"author,omitempty"`
-	CreatedAt time.Time    `json:"created_at"`
-	UpdatedAt time.Time    `json:"updated_at"`
+	ID         int       `json:"id"`
+	ItemID     int       `json:"item_id"`
+	Content    string    `json:"content"`
+	AuthorID   *int      `json:"author_id"`
+	AuthorName string    `json:"author_name"`
+	IsAgent    bool      `json:"is_agent"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // MilestoneComment is one Markdown comment on a milestone, as returned by
-// /rest/api/v2/milestones/{milestone_id}/comments (WCORE-20).
+// /rest/api/v2/milestones/{milestone_id}/comments.
 type MilestoneComment struct {
 	ID          int       `json:"id"`
 	MilestoneID int       `json:"milestone_id"`
@@ -492,7 +499,7 @@ type MilestoneComment struct {
 }
 
 // MilestonePageLink links a workspace milestone to a page in its workspace,
-// as returned by /rest/api/v2/milestones/{milestone_id}/page-links (WCORE-19).
+// as returned by /rest/api/v2/milestones/{milestone_id}/page-links.
 type MilestonePageLink struct {
 	ID            int       `json:"id"`
 	MilestoneID   int       `json:"milestone_id"`
@@ -888,11 +895,16 @@ type ItemLink struct {
 
 	SourceTitle        string `json:"source_title,omitempty"`
 	SourceWorkspaceKey string `json:"source_workspace_key,omitempty"`
-	SourceStatusName   string `json:"source_status_name,omitempty"`
+	// SourceItemNumber is the workspace-scoped number (the "1927" in
+	// "WI-1927"); SourceID is the global DB id and must not be shown as a key.
+	SourceItemNumber *int   `json:"source_item_number,omitempty"`
+	SourceStatusName string `json:"source_status_name,omitempty"`
 
 	TargetTitle        string `json:"target_title,omitempty"`
 	TargetWorkspaceKey string `json:"target_workspace_key,omitempty"`
-	TargetStatusName   string `json:"target_status_name,omitempty"`
+	// TargetItemNumber: see SourceItemNumber.
+	TargetItemNumber *int   `json:"target_item_number,omitempty"`
+	TargetStatusName string `json:"target_status_name,omitempty"`
 }
 
 // LinkCreateRequest is the body for POST /links.

@@ -52,6 +52,12 @@ export const operatorsByType = {
     { value: 'IN', label: 'is one of' },
     { value: 'NOT IN', label: 'is not one of' },
   ]),
+  multi_milestone: withNullOperators([
+    { value: '=', label: 'is' },
+    { value: '!=', label: 'is not' },
+    { value: 'IN', label: 'is one of' },
+    { value: 'NOT IN', label: 'is not one of' },
+  ]),
   boolean: withNullOperators([{ value: '=', label: 'is' }]),
   user: withNullOperators([
     { value: '=', label: 'is' },
@@ -84,4 +90,15 @@ export function isMultiValueOperator(operator) {
 
 export function isNullOperator(operator) {
   return operator === 'IS NULL' || operator === 'IS NOT NULL';
+}
+
+/**
+ * Whether a builder row expresses a condition that can be applied: it needs a
+ * field, plus either a value (single or multi) or a null operator, which takes
+ * no value.
+ */
+export function isFilterRowActive(row) {
+  if (!row?.field) return false;
+  if (isNullOperator(row.operator)) return true;
+  return Boolean(row.value) || Boolean(row.values?.length);
 }

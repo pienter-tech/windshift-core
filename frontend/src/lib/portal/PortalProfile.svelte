@@ -1,10 +1,16 @@
 <script>
   import { onMount } from 'svelte';
-  import { ArrowLeft, KeyRound, Plus, Trash2, ShieldCheck, X } from '@lucide/svelte';
+  import ArrowLeft from '@lucide/svelte/icons/arrow-left';
+  import Globe from '@lucide/svelte/icons/globe';
+  import KeyRound from '@lucide/svelte/icons/key-round';
+  import Plus from '@lucide/svelte/icons/plus';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
+  import ShieldCheck from '@lucide/svelte/icons/shield-check';
+  import X from '@lucide/svelte/icons/x';
   import { portalCustomizationStore as portalStore } from '../stores/portal.svelte.js';
   import { portalAuthStore } from '../stores/portalAuth.svelte.js';
-  import { t } from '../stores/i18n.svelte.js';
-  import { api } from '../api.js';
+  import { t, i18n, SUPPORTED_LOCALES } from '../stores/i18n.svelte.js';
+  import { portalAuth, portalPasskey } from '../api/portal.js';
   import { confirm } from '../composables/useConfirm.js';
   import { navigate } from '../router.js';
   import {
@@ -16,6 +22,8 @@
   import Button from '../components/Button.svelte';
   import Input from '../components/Input.svelte';
   import AlertBox from '../components/AlertBox.svelte';
+  import FormField from '../components/FormField.svelte';
+  import BasePicker from '../pickers/BasePicker.svelte';
   import ModalBackdrop from '../components/ModalBackdrop.svelte';
   import PageHeader from '../layout/PageHeader.svelte';
   import { formatInstant } from '../utils/dateFormatter.js';
@@ -41,6 +49,39 @@
 
   let slug = $derived(portalStore.currentSlug);
 
+  const languages = SUPPORTED_LOCALES.map((locale) => ({ value: locale.code, label: locale.name }));
+  let selectedLanguage = $state('en');
+  let savingLanguage = $state(false);
+  let languageSaved = $state(false);
+  let languageError = $state('');
+  let hydratedLanguage = '';
+
+  $effect(() => {
+    const customer = $portalAuthStore.customer;
+    const key = `${customer?.id ?? ''}:${customer?.language || i18n.locale || 'en'}`;
+    if (key === hydratedLanguage) return;
+    hydratedLanguage = key;
+    selectedLanguage = customer?.language || i18n.locale || 'en';
+  });
+
+  async function saveLanguage() {
+    if (!slug) return;
+    savingLanguage = true;
+    languageSaved = false;
+    languageError = '';
+    try {
+      const updated = await portalAuth.updateCurrentCustomer(slug, { language: selectedLanguage });
+      const savedLanguage = updated?.language || selectedLanguage;
+      portalAuthStore.patchCustomer({ language: savedLanguage });
+      await i18n.setLocale(savedLanguage);
+      languageSaved = true;
+    } catch (err) {
+      languageError = err?.message || 'Failed to save language';
+    } finally {
+      savingLanguage = false;
+    }
+  }
+
   onMount(async () => {
     await loadCredentials();
   });
@@ -50,7 +91,7 @@
     loadingCredentials = true;
     listError = '';
     try {
-      const result = await api.portalPasskey.list(slug);
+      const result = await portalPasskey.list(slug);
       credentials = Array.isArray(result) ? result : [];
       portalAuthStore.setPasskeyCount(credentials.length);
     } catch (err) {
@@ -87,12 +128,12 @@
     registering = true;
     actionError = '';
     try {
-      const startResponse = await api.portalPasskey.startRegistration(slug, name);
+      const startResponse = await portalPasskey.startRegistration(slug, name);
       const creationOptions = prepareCredentialCreationOptions(startResponse);
       const credential = await navigator.credentials.create(creationOptions);
       if (!credential) throw new Error('No credential returned from authenticator');
       const processed = processCredentialCreationResponse(/** @type {any} */ (credential));
-      await api.portalPasskey.completeRegistration(slug, {
+      await portalPasskey.completeRegistration(slug, {
         sessionId: startResponse.sessionId,
         credentialName: name,
         response: processed,
@@ -116,7 +157,7 @@
     removingId = credential.id;
     actionError = '';
     try {
-      await api.portalPasskey.remove(slug, credential.id);
+      await portalPasskey.remove(slug, credential.id);
       await loadCredentials();
     } catch (err) {
       actionError = err?.message || 'Failed to remove passkey';
@@ -175,6 +216,53 @@
         {t('portal.notSignedIn') || 'Not signed in.'}
       </p>
     {/if}
+  </section>
+
+  <!-- Language preference section -->
+  <section
+    class="pt-8 mt-8 border-t"
+    style="border-color: var(--ds-border);"
+  >
+    <h2 class="text-lg font-semibold flex items-center gap-2 mb-1" style="color: var(--ds-text);">
+      <Globe class="w-5 h-5" />
+      {t('portal.languageTitle') || 'Language'}
+    </h2>
+    <p class="text-sm mb-4" style="color: var(--ds-text-subtle);">
+      {t('portal.languageSubtitle') ||
+        'Choose the language for this portal and the emails you receive.'}
+    </p>
+
+    {#if languageError}
+      <AlertBox variant="error" class="mb-4" message={languageError} />
+    {/if}
+
+    <div class="max-w-sm">
+      <FormField label={t('portal.languageLabel') || 'Language'} id="portal-language">
+        <BasePicker
+          id="portal-language"
+          bind:value={selectedLanguage}
+          items={languages}
+          placeholder={t('portal.languageLabel') || 'Language'}
+          disabled={!$portalAuthStore.customer || savingLanguage}
+          getValue={(item) => item.value}
+          getLabel={(item) => item.label}
+        />
+      </FormField>
+    </div>
+
+    <div class="mt-4 flex items-center gap-4">
+      <Button
+        variant="primary"
+        onclick={saveLanguage}
+        disabled={!$portalAuthStore.customer || savingLanguage}
+        dataTestid="portal-language-save"
+      >
+        {savingLanguage ? t('common.saving') : t('common.save')}
+      </Button>
+      {#if languageSaved}
+        <AlertBox variant="success" message={t('portal.languageSaved') || 'Language updated'} />
+      {/if}
+    </div>
   </section>
 
   <!-- Security / passkeys section -->

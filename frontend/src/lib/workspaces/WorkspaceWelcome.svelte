@@ -1,8 +1,10 @@
 <script>
   import { onDestroy } from 'svelte';
   import { get } from 'svelte/store';
-  import { useDebounce } from 'runed';
-  import { api } from '../api.js';
+  import { useDebouncedAction } from '../composables/useDebouncedAction.svelte.js';
+  import { workspaces } from '../api/workspaces.js';
+  import { statusCategories as statusCategoriesApi, statuses } from '../api/workflows.js';
+  import { items as itemsApi } from '../api/items.js';
   import {
     useGradientStyles,
     loadWorkspaceGradient,
@@ -13,12 +15,19 @@
   } from '../stores/workspaceGradient.svelte.js';
 
   import { getCollection } from '../features/collections/collectionService.js';
-  import { Edit3, Plus, X, LayoutGrid, Pencil, Trash2 } from '@lucide/svelte';
+  import Edit3 from '@lucide/svelte/icons/edit-3';
+  import Plus from '@lucide/svelte/icons/plus';
+  import X from '@lucide/svelte/icons/x';
+  import LayoutGrid from '@lucide/svelte/icons/layout-grid';
+  import Pencil from '@lucide/svelte/icons/pencil';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
   import { t } from '../stores/i18n.svelte.js';
   import { formatDateOnly } from '../utils/dateFormatter.js';
+  import { createId } from '../utils/uuid.js';
   import { errorToast } from '../stores/toasts.svelte.js';
   import { confirm } from '../composables/useConfirm.js';
-  import { draggable, dropTargetForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter';
+  import { createDashboardWidgetDrag } from '../composables/dashboardWidgetDrag.js';
+  import { useDashboardCustomization } from '../composables/useDashboardCustomization.svelte.js';
   import {
     WORKSPACE_WIDGET_GRID_COLUMNS,
     clampWidgetWidth,
@@ -81,7 +90,6 @@
   let isEditMode = $state(false);
   let isCustomizeMode = $state(false);
   let customizationCategory = $state('built-in');
-  let setupCleanups = [];
   let savePending = $state(false);
   let savedWidgetWidths = new Map();
 
@@ -92,18 +100,13 @@
   // Initialize gradient styles from global stores
   const gradientStyles = useGradientStyles();
 
-  // Section editing
-  let editingSectionId = $state(null);
-  let editingSectionTitle = $state('');
-  let editingSectionSubtitle = $state('');
-  let isNewSection = $state(false); // Track if we're creating a new section
   let pendingSaveQueued = false;
 
   // Default section layout
   function getDefaultSections() {
     return [
       {
-        id: crypto.randomUUID(),
+        id: createId(),
         title: t('workspaceDashboard.overview'),
         subtitle: t('workspaceDashboard.overviewDescription'),
         system_key: 'overview',
@@ -111,7 +114,7 @@
         widget_ids: []
       },
       {
-        id: crypto.randomUUID(),
+        id: createId(),
         title: t('workspaceDashboard.progress'),
         subtitle: t('workspaceDashboard.progressDescription'),
         system_key: 'progress',
@@ -128,10 +131,10 @@
 
     if (!section1Id || !section2Id) return [];
 
-    const widget1 = { id: crypto.randomUUID(), type: 'stats', section_id: section1Id, position: 0, width: 3, config: {} };
-    const widget2 = { id: crypto.randomUUID(), type: 'completion-chart', section_id: section2Id, position: 0, width: 2, config: {} };
-    const widget3 = { id: crypto.randomUUID(), type: 'created-chart', section_id: section2Id, position: 1, width: 1, config: {} };
-    const widget4 = { id: crypto.randomUUID(), type: 'milestone-progress', section_id: section2Id, position: 2, width: 3, config: {} };
+    const widget1 = { id: createId(), type: 'stats', section_id: section1Id, position: 0, width: 3, config: {} };
+    const widget2 = { id: createId(), type: 'completion-chart', section_id: section2Id, position: 0, width: 2, config: {} };
+    const widget3 = { id: createId(), type: 'created-chart', section_id: section2Id, position: 1, width: 1, config: {} };
+    const widget4 = { id: createId(), type: 'milestone-progress', section_id: section2Id, position: 2, width: 3, config: {} };
 
     // Update section widget_ids
     sections[0].widget_ids = [widget1.id];
@@ -171,14 +174,33 @@
   });
 
   // Setup drag and drop when in customize mode
+  const dnd = createDashboardWidgetDrag({
+    widgetCardSelector: '[data-widget-card]',
+    dropZoneSelector: '[data-section-drop-zone]',
+    dragType: 'widget-type',
+    setDraggedWidget: (value) => {
+      draggedWidget = value;
+    },
+    setDropZoneState: (sectionId, state) => {
+      dropZoneStates.set(sectionId, state);
+      dropZoneStates = new Map(dropZoneStates);
+    },
+    resetDropZones: () => {
+      dropZoneStates = new Map();
+    },
+    onDropWidget: (sectionId, widgetType) => {
+      addWidgetToSection(sectionId, widgetType);
+    },
+  });
+
   let dragSetupKey = $derived(isCustomizeMode ? customizationCategory : null);
   $effect(() => {
     if (dragSetupKey === null) {
-      cleanupDragAndDrop();
+      dnd.cleanup();
       return;
     }
-    const id = setTimeout(() => setupDragAndDrop(), 350);
-    return () => clearTimeout(id);
+    dnd.schedule();
+    return () => dnd.cleanup();
   });
 
   async function loadData() {
@@ -230,7 +252,7 @@
 
   async function loadWorkspace() {
     try {
-      workspace = await api.workspaces.get(workspaceId);
+      workspace = await workspaces.get(workspaceId);
     } catch (error) {
       console.error('Failed to load workspace:', error);
     }
@@ -238,7 +260,7 @@
 
   async function loadStatusCategories() {
     try {
-      statusCategories = await api.statusCategories.getAll();
+      statusCategories = await statusCategoriesApi.getAll();
     } catch (error) {
       console.error('Failed to load status categories:', error);
     }
@@ -250,7 +272,7 @@
       if (collectionId) {
         params.collection_id = collectionId;
       }
-      const statsData = await api.workspaces.getStats(workspaceId, params);
+      const statsData = await workspaces.getStats(workspaceId, params);
       stats.totalCollections = statsData.total_collections || 0;
       stats.totalItems = statsData.total_items || 0;
       stats.itemsByStatusCategory = statsData.items_by_status_category || {};
@@ -267,9 +289,9 @@
         filters.collection_id = collectionId;
       }
 
-      const itemsResponse = await api.items.getAll(filters);
+      const itemsResponse = await itemsApi.getAll(filters);
       const items = itemsResponse?.data ?? [];
-      const fetchedStatuses = await api.statuses.getAll();
+      const fetchedStatuses = await statuses.getAll();
       const statusList = Array.isArray(fetchedStatuses) ? fetchedStatuses : [];
       const localStatusById = new Map(
         statusList
@@ -381,7 +403,7 @@
         backgroundImageUrl: get(workspaceBackgroundImageUrl) || ''
       };
 
-      await api.workspaces.updateHomepageLayout(workspaceId, attemptedLayout);
+      await workspaces.updateHomepageLayout(workspaceId, attemptedLayout);
       hydrateWorkspaceGradientLayout(workspaceId, attemptedLayout);
       savedWidgetWidths = captureWorkspaceWidgetWidths(attemptedLayout.widgets);
     } catch (error) {
@@ -403,23 +425,30 @@
     }
   }
 
-  const debouncedSave = useDebounce(() => saveHomepageLayout(), 1000);
+  const debouncedSave = useDebouncedAction(() => saveHomepageLayout(), 1000);
+
+  // Section editing. The workspace dashboard keeps its own local state and
+  // debounced save, so persistence is injected.
+  const customization = useDashboardCustomization({
+    updateSection: (sectionId, values) => {
+      sections = sections.map(s => (s.id === sectionId ? { ...s, ...values } : s));
+      debouncedSave();
+    },
+    removeSection: (sectionId) => {
+      sections = sections.filter(s => s.id !== sectionId);
+    },
+    findSection: (sectionId) => sections.find(s => s.id === sectionId),
+    getSectionDisplay: (section) => ({ title: section.title, subtitle: section.subtitle }),
+    getSectionSaveValues: (_section, draft) => draft,
+  });
 
   // Mode toggles
   function toggleEditMode() {
     isEditMode = !isEditMode;
     if (!isEditMode) {
-      // If exiting edit mode while creating a new section, either keep it
-      // (if the user typed a title) or discard it.
-      if (isNewSection && editingSectionId) {
-        if (editingSectionTitle.trim()) {
-          saveSection();
-        } else {
-          sections = sections.filter(s => s.id !== editingSectionId);
-        }
-      }
-      editingSectionId = null;
-      isNewSection = false;
+      // If exiting edit mode while creating a new section, keep it when the
+      // user typed a title and discard it otherwise.
+      customization.commitOrDiscardDraft();
       debouncedSave();
     }
     if (isEditMode && isCustomizeMode) {
@@ -437,57 +466,14 @@
   // Section management
   function addSection() {
     const newSection = {
-      id: crypto.randomUUID(),
+      id: createId(),
       title: t('dashboard.sections.new'),
       subtitle: '',
       display_order: sections.length,
       widget_ids: []
     };
     sections = [...sections, newSection];
-    editingSectionId = newSection.id;
-    editingSectionTitle = newSection.title;
-    editingSectionSubtitle = newSection.subtitle;
-    isNewSection = true; // Mark as new section
-  }
-
-  function startEditingSection(section) {
-    editingSectionId = section.id;
-    editingSectionTitle = section.title;
-    editingSectionSubtitle = section.subtitle || '';
-    isNewSection = false; // Editing existing section
-  }
-
-  function saveSection() {
-    if (!editingSectionId) return;
-
-    sections = sections.map(s =>
-      s.id === editingSectionId
-        ? { ...s, title: editingSectionTitle, subtitle: editingSectionSubtitle }
-        : s
-    );
-    editingSectionId = null;
-    isNewSection = false; // Reset after save
-    debouncedSave();
-  }
-
-  function cancelEditingSection() {
-    // If canceling a new section, remove it from the list
-    if (isNewSection && editingSectionId) {
-      sections = sections.filter(s => s.id !== editingSectionId);
-    }
-
-    editingSectionId = null;
-    isNewSection = false;
-  }
-
-  function handleSectionEditKeydown(event) {
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      saveSection();
-    } else if (event.key === 'Escape') {
-      event.preventDefault();
-      cancelEditingSection();
-    }
+    customization.beginNewSection(newSection);
   }
 
   async function deleteSection(sectionId) {
@@ -512,7 +498,7 @@
   // Widget management
   function addWidgetToSection(sectionId, widgetType) {
     const newWidget = {
-      id: crypto.randomUUID(),
+      id: createId(),
       type: widgetType,
       section_id: sectionId,
       position: widgets.filter(w => w.section_id === sectionId).length,
@@ -573,73 +559,8 @@
     debouncedSave();
   }
 
-  // Drag and drop setup
-  function setupDragAndDrop() {
-    cleanupDragAndDrop();
-
-    // Setup draggable widget cards in sidebar
-    const widgetCards = /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('[data-widget-card]'));
-    widgetCards.forEach(cardElement => {
-      const cleanup = draggable({
-        element: cardElement,
-        getInitialData: () => ({
-          type: 'widget-type',
-          widgetType: cardElement.dataset.widgetType
-        }),
-        onDragStart: () => {
-          const currentType = cardElement.dataset.widgetType;
-          draggedWidget = currentType ? { type: currentType } : null;
-          cardElement.style.opacity = '0.5';
-        },
-        onDrop: () => {
-          draggedWidget = null;
-          cardElement.style.opacity = '';
-          dropZoneStates = new Map();
-        }
-      });
-      setupCleanups.push(cleanup);
-    });
-
-    // Setup drop zones for sections
-    const sectionDropZones = /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('[data-section-drop-zone]'));
-    sectionDropZones.forEach(element => {
-      const sectionId = element.dataset.sectionId;
-
-      dropZoneStates.set(sectionId, { isOver: false });
-
-      const cleanup = dropTargetForElements({
-        element,
-        canDrop: ({ source }) => source.data.type === 'widget-type',
-        onDragEnter: () => {
-          dropZoneStates.set(sectionId, { isOver: true });
-          dropZoneStates = new Map(dropZoneStates);
-        },
-        onDragLeave: () => {
-          dropZoneStates.set(sectionId, { isOver: false });
-          dropZoneStates = new Map(dropZoneStates);
-        },
-        onDrop: ({ source }) => {
-          dropZoneStates.set(sectionId, { isOver: false });
-          dropZoneStates = new Map(dropZoneStates);
-
-          const data = source.data;
-          if (data.type === 'widget-type') {
-            addWidgetToSection(sectionId, data.widgetType);
-          }
-        }
-      });
-
-      setupCleanups.push(cleanup);
-    });
-  }
-
-  function cleanupDragAndDrop() {
-    setupCleanups.forEach(cleanup => cleanup());
-    setupCleanups = [];
-  }
-
   onDestroy(() => {
-    cleanupDragAndDrop();
+    dnd.cleanup();
     debouncedSave.cancel();
   });
 
@@ -679,6 +600,7 @@
   contextVars={gradientStyles.contextVars}
   class="workspace-welcome-wrapper"
   contentClass="workspace-welcome p-6"
+  testid="workspace-welcome"
 >
     {#if loading}
       <div class="flex items-center justify-center h-64">
@@ -701,6 +623,7 @@
             variant={isEditMode ? 'primary' : 'default'}
             icon={isEditMode ? X : Edit3}
             onclick={toggleEditMode}
+            dataTestid="workspace-dashboard-edit-toggle"
           >
             {isEditMode ? t('workspaceDashboard.doneEditing') : t('common.edit')}
           </Button>
@@ -710,6 +633,7 @@
             variant={isCustomizeMode ? 'primary' : 'default'}
             icon={isCustomizeMode ? X : LayoutGrid}
             onclick={toggleCustomizeMode}
+            dataTestid="workspace-dashboard-customize"
           >
             {isCustomizeMode ? t('common.done') : t('workspaceDashboard.customize')}
           </Button>
@@ -730,6 +654,7 @@
           size="small"
           icon={Plus}
           onclick={addSection}
+          dataTestid="workspace-add-section"
         >
           {t('layout.addSection')}
         </Button>
@@ -740,37 +665,38 @@
     <div class="space-y-6">
       {#each sections as section (section.id)}
         {@const sectionWidgets = getWidgetsForSection(section.id)}
-        <Card glass padding="spacious">
+        <Card glass padding="spacious" dataTestid="workspace-section">
           <!-- Section header -->
           <div class="flex items-center justify-between mb-4">
-            {#if editingSectionId === section.id}
+            {#if customization.editingSectionId === section.id}
               <!-- Editing mode -->
               <div class="flex-1 flex items-center gap-2">
                 <Input
                   type="text"
-                  bind:value={editingSectionTitle}
+                  bind:value={customization.editingSectionTitle}
                   class="text-lg font-semibold"
                   placeholder={t('dashboard.sections.titlePlaceholder')}
-                  onkeydown={handleSectionEditKeydown}
+                  onkeydown={customization.handleSectionEditKeydown}
+                  dataTestid="workspace-section-title-input"
                 />
                 <Input
                   type="text"
-                  bind:value={editingSectionSubtitle}
+                  bind:value={customization.editingSectionSubtitle}
                   placeholder={t('dashboard.sections.subtitlePlaceholder')}
-                  onkeydown={handleSectionEditKeydown}
+                  onkeydown={customization.handleSectionEditKeydown}
                   size="small"
                 />
                 <Button
                   variant="primary"
                   size="small"
-                  onclick={saveSection}
+                  onclick={customization.save}
                 >
                   {t('common.save')} <span class="ml-1 opacity-60">⏎</span>
                 </Button>
                 <Button
                   variant="default"
                   size="small"
-                  onclick={cancelEditingSection}
+                  onclick={customization.cancel}
                 >
                   {t('common.cancel')} <span class="ml-1 opacity-60">Esc</span>
                 </Button>
@@ -788,8 +714,9 @@
                 <div class="flex items-center gap-2">
                   <button
                     class="section-edit p-2 rounded"
-                    onclick={() => startEditingSection(section)}
+                    onclick={() => customization.startEditing(section)}
                     title={t('dashboard.sections.rename')}
+                    data-testid="workspace-section-edit"
                   >
                     <Pencil class="h-4 w-4" />
                   </button>

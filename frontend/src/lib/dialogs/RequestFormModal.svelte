@@ -1,7 +1,9 @@
 <script>
-  import { api } from '../api.js';
+  import { portal } from '../api/portal.js';
+  import { requestTypes } from '../api/channels.js';
+  import { customFields } from '../api/configuration.js';
   import StateDisplay from '../components/StateDisplay.svelte';
-  import { authStore } from '../stores';
+  import { authStore } from '../stores/auth.svelte.js';
   import { portalAuthStore } from '../stores/portalAuth.svelte.js';
   import { portalCustomizationStore as portalStore } from '../stores/portal.svelte.js';
   import { iconMap } from '../stores/portalPresentation.js';
@@ -9,8 +11,13 @@
   import Checkbox from '../components/Checkbox.svelte';
   import AlertBox from '../components/AlertBox.svelte';
   import PortalModal from './PortalModal.svelte';
-  import { ChevronLeft, ChevronRight, Package, Paperclip, X } from '@lucide/svelte';
+  import ChevronLeft from '@lucide/svelte/icons/chevron-left';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import Package from '@lucide/svelte/icons/package';
+  import Paperclip from '@lucide/svelte/icons/paperclip';
+  import X from '@lucide/svelte/icons/x';
   import { t } from '../stores/i18n.svelte.js';
+  import { surfaceError } from '../stores/toasts.svelte.js';
   import FormFields from '../features/forms/FormFields.svelte';
   import {
     buildFormSteps,
@@ -18,6 +25,7 @@
     initializeFormValues,
     validateFormStep,
   } from '../features/forms/formModel.js';
+  import { runWithConcurrency } from '../utils/concurrency.js';
 
   let {
     isOpen = $bindable(false),
@@ -113,9 +121,9 @@
       // Load request type fields configuration
       // Use portal API if on portal, otherwise use internal API
       if (portalSlug) {
-        fields = await api.portal.getRequestTypeFields(portalSlug, requestType.id);
+        fields = await portal.getRequestTypeFields(portalSlug, requestType.id);
       } else {
-        fields = await api.requestTypes.getFields(requestType.id);
+        fields = await requestTypes.getFields(requestType.id);
       }
 
       // Calculate steps from field data
@@ -126,9 +134,9 @@
       // Use portal API if on portal (only returns fields used by this portal)
       // Otherwise use internal API (returns all fields)
       if (portalSlug) {
-        customFieldDefinitions = await api.portal.getCustomFields(portalSlug) || [];
+        customFieldDefinitions = await portal.getCustomFields(portalSlug) || [];
       } else {
-        customFieldDefinitions = await api.customFields.getAll();
+        customFieldDefinitions = await customFields.getAll();
       }
 
       const initialValues = initializeFormValues(fields, null, customFieldDefinitions);
@@ -146,8 +154,8 @@
       // be dropped by the submit API anyway.
       applyPrefill(prefillValues);
     } catch (err) {
-      console.error('Failed to load request type fields:', err);
       error = err.message || t('requestForm.failedToLoadFields');
+      surfaceError(err, { context: 'loadRequestTypeFields' });
     } finally {
       loading = false;
     }
@@ -155,7 +163,7 @@
 
   async function applyDraftIfPresent() {
     try {
-      const draft = await api.portal.drafts.getForRequestType(portalSlug, requestType.id);
+      const draft = await portal.drafts.getForRequestType(portalSlug, requestType.id);
       if (!draft) {
         resumedDraft = null;
         return;
@@ -173,7 +181,7 @@
       // A missing draft already returns null; anything that reaches here is a
       // real failure. Log and continue with the empty form — losing the
       // resume is far better than blocking submission.
-      console.warn('Failed to load draft for resume:', err);
+      surfaceError(err, { silent: true, context: 'resumeDraft' });
       resumedDraft = null;
     }
   }
@@ -230,7 +238,7 @@
     savingDraft = true;
     draftJustSaved = false;
     try {
-      const saved = await api.portal.drafts.save(portalSlug, buildDraftPayload());
+      const saved = await portal.drafts.save(portalSlug, buildDraftPayload());
       if (saved) {
         draftJustSaved = true;
         if (draftSavedTimer) clearTimeout(draftSavedTimer);
@@ -240,7 +248,7 @@
         }, 1500);
       }
     } catch (err) {
-      console.warn('Failed to save draft:', err);
+      surfaceError(err, { silent: true, context: 'saveDraft' });
     } finally {
       savingDraft = false;
     }
@@ -249,11 +257,11 @@
   async function startFreshFromDraft() {
     if (!portalSlug || !requestType) return;
     try {
-      await api.portal.drafts.delete(portalSlug, requestType.id);
+      await portal.drafts.delete(portalSlug, requestType.id);
     } catch (err) {
       // 404 (no draft to delete) is fine — the user is starting fresh anyway.
       if (err?.status !== 404) {
-        console.warn('Failed to delete draft:', err);
+        surfaceError(err, { silent: true, context: 'deleteDraft' });
       }
     }
     // Reset form state to a pristine first-step view, but keep the loaded
@@ -335,23 +343,19 @@
         share_with_organisation: canShareWithOrg && shareWithOrganisation
       };
 
-      const result = await api.portal.submit(portalSlug, submissionData);
+      const result = await portal.submit(portalSlug, submissionData);
 
       // Upload staged files to the created request. The request already
       // exists at this point, so per-file failures are reported but never
       // fail the submission — the customer can retry from the timeline.
       if (stagedFiles.length > 0) {
         uploadingFiles = true;
-        const failures = [];
-        for (const file of stagedFiles) {
-          try {
-            await api.portal.addRequestAttachment(portalSlug, result.item_id, file);
-          } catch (err) {
-            console.error('Failed to upload attachment after submit:', err);
-            failures.push(file.name);
-          }
-        }
-        uploadFailures = failures;
+        const results = await runWithConcurrency(stagedFiles, (file) =>
+          portal.addRequestAttachment(portalSlug, result.item_id, file)
+        );
+        uploadFailures = results
+          .filter((entry) => !entry.ok)
+          .map((entry) => entry.item?.name ?? '');
         uploadingFiles = false;
       }
 
@@ -362,9 +366,9 @@
       // submission see a consistent view without depending on backend
       // ordering. Best-effort.
       if (portalSlug) {
-        api.portal.drafts.delete(portalSlug, requestType.id).catch((err) => {
+        portal.drafts.delete(portalSlug, requestType.id).catch((err) => {
           if (err?.status !== 404) {
-            console.warn('Failed to delete draft after submit:', err);
+            surfaceError(err, { silent: true, context: 'deleteDraftAfterSubmit' });
           }
         });
       }
@@ -379,8 +383,8 @@
         uploadFailures.length > 0 ? 6000 : 1500
       );
     } catch (err) {
-      console.error('Failed to submit request:', err);
       error = err.message || t('requestForm.failedToSubmit');
+      surfaceError(err, { context: 'submitRequest' });
     } finally {
       submitting = false;
     }

@@ -27,17 +27,14 @@ func ValidateConfigForEnable(channel *models.Channel, config *models.ChannelConf
 		return nil
 	}
 
-	if config.EmailWorkspaceID == 0 {
-		return fmt.Errorf("%w: email_workspace_id is required", ErrConfigNotReady)
-	}
-	if config.EmailItemTypeID == nil || *config.EmailItemTypeID == 0 {
-		return fmt.Errorf("%w: email_item_type_id is required", ErrConfigNotReady)
-	}
-	if strings.TrimSpace(config.EmailMailbox) == "" {
-		return fmt.Errorf("%w: email_mailbox is required (default \"INBOX\")", ErrConfigNotReady)
-	}
+	// Routing (workspace/portal/item type/folder) lives on intakes since
+	// WI-1644; the channel config only needs a usable connection. Intake
+	// presence is validated by the caller, which has DB access.
 	if config.EmailRateLimitPerHour != nil && *config.EmailRateLimitPerHour < 0 {
 		return fmt.Errorf("%w: email_rate_limit_per_hour must be 0 (unlimited) or a positive number", ErrConfigNotReady)
+	}
+	if !IsValidEmailDisposition(config.EmailProcessingDisposition) {
+		return fmt.Errorf("%w: email_processing_disposition must be leave, mark_read, or delete", ErrConfigNotReady)
 	}
 
 	switch strings.ToLower(config.EmailAuthMethod) {
@@ -56,6 +53,12 @@ func ValidateConfigForEnable(channel *models.Channel, config *models.ChannelConf
 		// up front so the operator sees the issue immediately.
 		if config.EmailOAuthRefreshToken == "" {
 			return fmt.Errorf("%w: OAuth flow not completed (no refresh token)", ErrConfigNotReady)
+		}
+		// A mailbox change clears the tokens, but guard the invariant directly
+		// too: a connection verified for one address must not be enabled for a
+		// different one without reconnecting.
+		if config.EmailOAuthMailbox != "" && !strings.EqualFold(strings.TrimSpace(config.EmailOAuthMailbox), strings.TrimSpace(config.EmailOAuthEmail)) {
+			return fmt.Errorf("%w: the connected mailbox does not match the configured mailbox; reconnect OAuth", ErrConfigNotReady)
 		}
 	case "basic", "":
 		// Empty defaults to basic for back-compat with channels saved before
@@ -82,4 +85,34 @@ func ValidateConfigForEnable(channel *models.Channel, config *models.ChannelConf
 	}
 
 	return nil
+}
+
+// ResolveEmailDisposition returns the effective post-processing action for a
+// channel. The explicit enum wins; an empty value (legacy config) maps the two
+// booleans, with delete taking precedence over mark-read.
+func ResolveEmailDisposition(config *models.ChannelConfig) string {
+	if config == nil {
+		return models.EmailDispositionLeave
+	}
+	if config.EmailProcessingDisposition != "" && IsValidEmailDisposition(config.EmailProcessingDisposition) {
+		return config.EmailProcessingDisposition
+	}
+	if config.EmailDeleteAfterProcess {
+		return models.EmailDispositionDelete
+	}
+	if config.EmailMarkAsRead {
+		return models.EmailDispositionMarkRead
+	}
+	return models.EmailDispositionLeave
+}
+
+// IsValidEmailDisposition reports whether value is a recognized disposition or
+// the empty legacy sentinel.
+func IsValidEmailDisposition(value string) bool {
+	switch value {
+	case "", models.EmailDispositionLeave, models.EmailDispositionMarkRead, models.EmailDispositionDelete:
+		return true
+	default:
+		return false
+	}
 }

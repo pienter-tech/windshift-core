@@ -13,7 +13,7 @@ import (
 )
 
 // MilestoneActivityRepository reads the stored sources of a milestone's
-// Activity feed (WCORE-21):
+// Activity feed:
 //
 //   - milestone comments (milestone_comments)
 //   - description, status, and target-date changes (milestone_history)
@@ -24,7 +24,7 @@ import (
 //     rows whose old and new milestone lists differ on this milestone),
 //     including items that have since left it
 //   - items created directly in the milestone before item creation recorded a
-//     milestones history row (WCORE-27): current members with no milestones
+//     milestones history row: current members with no milestones
 //     history at all, and items whose first milestones history row already
 //     listed the milestone. Their actor and time are the item's creator and
 //     creation time. Newer items start with a milestones row whose old value
@@ -84,27 +84,20 @@ type milestoneActivityRow struct {
 }
 
 // List returns the newest limit entries across the stored sources, newest
-// first, and the total number of entries. Each source reads at most limit
-// rows, so callers paging with an offset pass offset+limit and slice.
-func (r *MilestoneActivityRepository) List(milestoneID int, workspaceIDs []int, limit int) ([]models.MilestoneActivity, int, error) {
+// first. Each source reads at most limit rows, so callers paging with an
+// offset pass offset+limit and slice; asking for one more row than a page
+// needs tells them whether another page follows without counting the
+// history tables.
+func (r *MilestoneActivityRepository) List(milestoneID int, workspaceIDs []int, limit int) ([]models.MilestoneActivity, error) {
 	if limit <= 0 {
-		return []models.MilestoneActivity{}, 0, nil
+		return []models.MilestoneActivity{}, nil
 	}
 	sources := milestoneActivitySources(milestoneID, workspaceIDs)
 	rows := []milestoneActivityRow{}
-	total := 0
 	for _, source := range sources {
-		count, err := r.countSource(source)
-		if err != nil {
-			return nil, 0, err
-		}
-		total += count
-		if count == 0 {
-			continue
-		}
 		sourceRows, err := r.readSource(source, milestoneID, limit)
 		if err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 		rows = append(rows, sourceRows...)
 	}
@@ -122,13 +115,13 @@ func (r *MilestoneActivityRepository) List(milestoneID int, workspaceIDs []int, 
 		rows = rows[:limit]
 	}
 	if err := r.resolveItemStatusNames(rows); err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	result := make([]models.MilestoneActivity, 0, len(rows))
 	for _, row := range rows {
 		result = append(result, row.activity)
 	}
-	return result, total, nil
+	return result, nil
 }
 
 func milestoneActivitySources(milestoneID int, workspaceIDs []int) []milestoneActivitySource {
@@ -248,14 +241,6 @@ func milestoneActivitySources(milestoneID int, workspaceIDs []int) []milestoneAc
 		},
 	)
 	return sources
-}
-
-func (r *MilestoneActivityRepository) countSource(source milestoneActivitySource) (int, error) {
-	var count int
-	if err := r.db.QueryRow("SELECT COUNT(*) FROM ("+source.query+") activity_rows", source.args...).Scan(&count); err != nil {
-		return 0, fmt.Errorf("count milestone activity source %d: %w", source.kind, err)
-	}
-	return count, nil
 }
 
 func (r *MilestoneActivityRepository) readSource(source milestoneActivitySource, milestoneID, limit int) ([]milestoneActivityRow, error) {

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"windshift/internal/customfields"
 	"windshift/internal/database"
 	"windshift/internal/logger"
 	"windshift/internal/models"
@@ -18,6 +19,7 @@ import (
 	"windshift/internal/sanitize"
 	"windshift/internal/services"
 	"windshift/internal/utils"
+	"windshift/internal/validation"
 )
 
 // PortalCustomersHandler handles portal customer management operations
@@ -25,11 +27,12 @@ type PortalCustomersHandler struct {
 	db                    database.Database
 	permService           *services.PermissionService
 	customerOrgPermission *services.CustomerOrganisationPermissionService
+	auditor               *logger.Auditor
 }
 
 // NewPortalCustomersHandler creates a new portal customers handler
 func NewPortalCustomersHandler(db database.Database, permService *services.PermissionService, customerOrgPermission *services.CustomerOrganisationPermissionService) *PortalCustomersHandler {
-	return &PortalCustomersHandler{db: db, permService: permService, customerOrgPermission: customerOrgPermission}
+	return &PortalCustomersHandler{db: db, permService: permService, customerOrgPermission: customerOrgPermission, auditor: logger.NewAuditor(db)}
 }
 
 // parseTimestamp parses a timestamp string from the database
@@ -144,6 +147,27 @@ func scanPortalCustomer(scanner interface{ Scan(...any) error }) (models.PortalC
 	return c, nil
 }
 
+// resolvePortalCustomerCustomFieldKeys rewrites legacy name keys to id keys on
+// a response map so the API contract stays id-keyed (WI-2025).
+func resolvePortalCustomerCustomFieldKeys(c *models.PortalCustomer, index *customfields.CustomFieldNameIndex) {
+	if index == nil || c == nil || len(c.CustomFieldValues) == 0 {
+		return
+	}
+	index.Resolve(c.CustomFieldValues)
+}
+
+// loadPortalCustomerFieldIndex loads the portal-customer name index. A lookup
+// failure is logged and treated as "no normalisation" so a read never fails on
+// it.
+func (h *PortalCustomersHandler) loadPortalCustomerFieldIndex() *customfields.CustomFieldNameIndex {
+	index, err := customfields.LoadCustomFieldNameIndex(h.db, customfields.AppliesToPortalCustomers)
+	if err != nil {
+		slog.Warn("failed to load custom field names for portal customers", slog.String("component", "portal"), slog.Any("error", err))
+		return nil
+	}
+	return index
+}
+
 // loadPortalCustomerWithRoles fetches a single portal customer by ID and loads its roles.
 func (h *PortalCustomersHandler) loadPortalCustomerWithRoles(id int64) (models.PortalCustomer, error) {
 	row := h.db.QueryRow(portalCustomerBaseQuery+" WHERE pc.id = ?", id)
@@ -160,6 +184,7 @@ func (h *PortalCustomersHandler) loadPortalCustomerWithRoles(id int64) (models.P
 		c.Roles = roles
 	}
 
+	resolvePortalCustomerCustomFieldKeys(&c, h.loadPortalCustomerFieldIndex())
 	return c, nil
 }
 
@@ -192,6 +217,11 @@ func (h *PortalCustomersHandler) GetPortalCustomers(w http.ResponseWriter, r *ht
 	if err := rows.Err(); err != nil {
 		respondInternalError(w, r, err)
 		return
+	}
+
+	fieldIndex := h.loadPortalCustomerFieldIndex()
+	for i := range customers {
+		resolvePortalCustomerCustomFieldKeys(&customers[i], fieldIndex)
 	}
 
 	// Batched role lookup avoids the previous N+1 per customer.
@@ -232,6 +262,13 @@ func (h *PortalCustomersHandler) GetPortalCustomer(w http.ResponseWriter, r *htt
 	if err != nil {
 		respondInternalError(w, r, err)
 		return
+	}
+
+	// Customer-data access is audited (WI-1142): every detail view of a
+	// customer record leaves a trail, matching the export/erase events.
+	if user, ok := RequireAuth(w, r); ok {
+		h.auditor.LogWithDetails(r, user, logger.ActionCustomerView,
+			logger.ResourcePortalCustomer, &id, c.Email, nil)
 	}
 
 	respondJSONOK(w, c)
@@ -298,7 +335,9 @@ func (h *PortalCustomersHandler) GetCustomerChannels(w http.ResponseWriter, r *h
 	respondJSONOK(w, channels)
 }
 
-// GetCustomerSubmissions returns all portal submissions by this customer
+// GetCustomerSubmissions returns the portal submissions by this customer that
+// the caller can view. Submissions filed in workspaces the caller cannot view
+// are omitted entirely rather than returned with redacted metadata.
 func (h *PortalCustomersHandler) GetCustomerSubmissions(w http.ResponseWriter, r *http.Request) {
 	user, ok := RequireAuth(w, r)
 	if !ok {
@@ -312,13 +351,18 @@ func (h *PortalCustomersHandler) GetCustomerSubmissions(w http.ResponseWriter, r
 		return
 	}
 
+	accessibleWorkspaceIDs, err := GetAccessibleWorkspaceIDs(user, h.db, h.permService)
+	if err != nil {
+		respondInternalError(w, r, err)
+		return
+	}
+
 	type CustomerSubmission struct {
 		ID                  int    `json:"id"`
 		WorkspaceID         int    `json:"workspace_id"`
 		WorkspaceItemNumber int    `json:"workspace_item_number"`
 		WorkspaceName       string `json:"workspace_name"`
 		WorkspaceKey        string `json:"workspace_key"`
-		CanView             bool   `json:"can_view"`
 		Title               string `json:"title"`
 		Description         string `json:"description"`
 		StatusName          string `json:"status_name"`
@@ -326,38 +370,20 @@ func (h *PortalCustomersHandler) GetCustomerSubmissions(w http.ResponseWriter, r
 		CreatedAt           string `json:"created_at"`
 	}
 
-	rows, err := repository.NewItemRepository(h.db).ListPortalCustomerSubmissions(customerID)
+	rows, err := repository.NewItemRepository(h.db).ListPortalCustomerSubmissions(customerID, accessibleWorkspaceIDs)
 	if err != nil {
 		respondInternalError(w, r, err)
 		return
-	}
-
-	accessibleWorkspaceIDs, err := GetAccessibleWorkspaceIDs(user, h.db, h.permService)
-	if err != nil {
-		respondInternalError(w, r, err)
-		return
-	}
-	workspaceAccess := make(map[int]struct{}, len(accessibleWorkspaceIDs))
-	for _, workspaceID := range accessibleWorkspaceIDs {
-		workspaceAccess[workspaceID] = struct{}{}
 	}
 
 	submissions := make([]CustomerSubmission, len(rows))
 	for i, s := range rows {
-		_, canView := workspaceAccess[s.WorkspaceID]
-		workspaceName, workspaceKey, workspaceItemNumber := "", "", 0
-		if canView {
-			workspaceName = s.WorkspaceName
-			workspaceKey = s.WorkspaceKey
-			workspaceItemNumber = s.WorkspaceItemNumber
-		}
 		submissions[i] = CustomerSubmission{
 			ID:                  s.ID,
 			WorkspaceID:         s.WorkspaceID,
-			WorkspaceItemNumber: workspaceItemNumber,
-			WorkspaceName:       workspaceName,
-			WorkspaceKey:        workspaceKey,
-			CanView:             canView,
+			WorkspaceItemNumber: s.WorkspaceItemNumber,
+			WorkspaceName:       s.WorkspaceName,
+			WorkspaceKey:        s.WorkspaceKey,
 			Title:               s.Title,
 			Description:         s.Description,
 			StatusName:          s.StatusName,
@@ -377,20 +403,20 @@ type portalCustomerInput struct {
 	Email                  string
 	Phone                  string
 	CustomerOrganisationID *int
-	IsPrimary              bool
+	IsPrimary              *bool
 	RoleIDs                []int
 	CustomFieldValuesJSON  *string
 }
 
 // decodePortalCustomerInput decodes, validates, and serializes custom fields for portal customer create/update.
-func decodePortalCustomerInput(w http.ResponseWriter, r *http.Request) (portalCustomerInput, bool) {
+func (h *PortalCustomersHandler) decodePortalCustomerInput(w http.ResponseWriter, r *http.Request) (portalCustomerInput, bool) {
 	//nolint:misspell // API uses British spelling (customer_organisation_id)
 	var requestData struct {
 		Name                   string         `json:"name"`
 		Email                  string         `json:"email"`
 		Phone                  string         `json:"phone"`
 		CustomerOrganisationID *int           `json:"customer_organisation_id"`
-		IsPrimary              bool           `json:"is_primary"`
+		IsPrimary              *bool          `json:"is_primary"`
 		RoleIDs                []int          `json:"role_ids"`
 		CustomFieldValues      map[string]any `json:"custom_field_values"`
 	}
@@ -414,6 +440,22 @@ func decodePortalCustomerInput(w http.ResponseWriter, r *http.Request) (portalCu
 
 	var customFieldValuesJSON *string
 	if len(requestData.CustomFieldValues) > 0 {
+		// Normalise legacy name keys to numeric field ids, then validate and
+		// re-add the unique-name mirror for the downgrade window (WI-2025).
+		index, err := customfields.LoadCustomFieldNameIndex(h.db, customfields.AppliesToPortalCustomers)
+		if err != nil {
+			respondInternalError(w, r, err)
+			return portalCustomerInput{}, false
+		}
+		if err := index.Validate(requestData.CustomFieldValues); err != nil {
+			respondValidationError(w, r, err.Error())
+			return portalCustomerInput{}, false
+		}
+		if err := validation.ValidateAndNormalizeCustomFieldValues(h.db, requestData.CustomFieldValues); err != nil {
+			respondValidationError(w, r, err.Error())
+			return portalCustomerInput{}, false
+		}
+		index.RebuildMirrors(requestData.CustomFieldValues)
 		b, err := json.Marshal(requestData.CustomFieldValues)
 		if err != nil {
 			respondBadRequest(w, r, "Invalid custom field values")
@@ -436,7 +478,7 @@ func decodePortalCustomerInput(w http.ResponseWriter, r *http.Request) (portalCu
 
 // CreatePortalCustomer creates a new portal customer
 func (h *PortalCustomersHandler) CreatePortalCustomer(w http.ResponseWriter, r *http.Request) {
-	input, ok := decodePortalCustomerInput(w, r)
+	input, ok := h.decodePortalCustomerInput(w, r)
 	if !ok {
 		return
 	}
@@ -449,7 +491,7 @@ func (h *PortalCustomersHandler) CreatePortalCustomer(w http.ResponseWriter, r *
 		err := tx.QueryRow(`
 			INSERT INTO portal_customers (name, email, phone, customer_organisation_id, is_primary, custom_field_values, created_via, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING id
-		`, input.Name, input.Email, input.Phone, input.CustomerOrganisationID, input.IsPrimary, input.CustomFieldValuesJSON, models.CustomerCreatedViaAgent).Scan(&customerID)
+		`, input.Name, input.Email, input.Phone, input.CustomerOrganisationID, boolValue(input.IsPrimary), input.CustomFieldValuesJSON, models.CustomerCreatedViaAgent).Scan(&customerID)
 		if err != nil {
 			return err
 		}
@@ -540,7 +582,7 @@ func (h *PortalCustomersHandler) UpdatePortalCustomer(w http.ResponseWriter, r *
 		return
 	}
 
-	input, ok := decodePortalCustomerInput(w, r)
+	input, ok := h.decodePortalCustomerInput(w, r)
 	if !ok {
 		return
 	}
@@ -548,10 +590,13 @@ func (h *PortalCustomersHandler) UpdatePortalCustomer(w http.ResponseWriter, r *
 	// Wrap update + role assignment in a transaction so partial failures
 	// don't leave the customer in a half-updated state.
 	txErr := database.WithTx(h.db, func(tx database.Tx) error {
+		// is_primary is preserved when the request omits it; an explicit value
+		// wins. The detail edit form does not carry the flag, so a metadata save
+		// must not demote the primary contact.
 		//nolint:misspell // customer_organisation_id is a database column name
 		query := `
 			UPDATE portal_customers
-			SET name = ?, email = ?, phone = ?, customer_organisation_id = ?, is_primary = ?, custom_field_values = ?, updated_at = CURRENT_TIMESTAMP
+			SET name = ?, email = ?, phone = ?, customer_organisation_id = ?, is_primary = COALESCE(?, is_primary), custom_field_values = ?, updated_at = CURRENT_TIMESTAMP
 			WHERE id = ? AND erased_at IS NULL
 		`
 		result, err := tx.Exec(query, input.Name, input.Email, input.Phone, input.CustomerOrganisationID, input.IsPrimary, input.CustomFieldValuesJSON, customerID)
@@ -697,8 +742,14 @@ func (h *PortalCustomersHandler) ExportPortalCustomer(w http.ResponseWriter, r *
 		return
 	}
 
+	accessibleWorkspaceIDs, err := GetAccessibleWorkspaceIDs(currentUser, h.db, h.permService)
+	if err != nil {
+		respondInternalError(w, r, err)
+		return
+	}
+
 	actor := services.NewAuditActorFromRequest(r, currentUser, nil, "")
-	export, err := services.ExportCustomerData(h.db, id, actor)
+	export, err := services.ExportCustomerData(h.db, id, actor, accessibleWorkspaceIDs)
 	if err != nil {
 		if se, ok := err.(*services.ServiceError); ok {
 			handleServiceError(w, r, se)
@@ -949,6 +1000,11 @@ func (h *PortalCustomersHandler) GetOrganisationContacts(w http.ResponseWriter, 
 		return
 	}
 
+	fieldIndex := h.loadPortalCustomerFieldIndex()
+	for i := range contacts {
+		resolvePortalCustomerCustomFieldKeys(&contacts[i], fieldIndex)
+	}
+
 	rolesByContact, err := h.loadRolesForCustomers(contactIDs)
 	if err != nil {
 		slog.Warn("failed to batch-load roles for org contacts", slog.String("component", "portal"), slog.Any("error", err))
@@ -1013,16 +1069,13 @@ func (h *PortalCustomersHandler) GetOrganisationTickets(w http.ResponseWriter, r
 		return
 	}
 
-	// Org ACL is the gate; do not intersect with workspace permissions.
-	// Workspace access is still computed so we can scrub workspace_name /
-	// workspace_key for tickets whose workspace the caller can't view —
-	// org membership authorises the ticket itself, but should not double as
-	// "knows the entire workspace catalog".
-	wsAccess := map[int]struct{}{}
-	if wsIDs, err := GetAccessibleWorkspaceIDs(user, h.db, h.permService); err == nil {
-		for _, id := range wsIDs {
-			wsAccess[id] = struct{}{}
-		}
+	// Org ACL authorises reading the org's tickets; workspace visibility then
+	// limits which of those tickets are returned, so an org member never sees a
+	// ticket filed in a workspace they cannot view.
+	accessibleWorkspaceIDs, err := GetAccessibleWorkspaceIDs(user, h.db, h.permService)
+	if err != nil {
+		respondInternalError(w, r, err)
+		return
 	}
 
 	type OrgTicket struct {
@@ -1039,7 +1092,7 @@ func (h *PortalCustomersHandler) GetOrganisationTickets(w http.ResponseWriter, r
 		CreatorContactEmail string `json:"creator_contact_email"`
 	}
 
-	rows, err := repository.NewItemRepository(h.db).ListOrganisationTickets(orgID, nil)
+	rows, err := repository.NewItemRepository(h.db).ListOrganisationTickets(orgID, accessibleWorkspaceIDs)
 	if err != nil {
 		respondInternalError(w, r, err)
 		return
@@ -1047,18 +1100,14 @@ func (h *PortalCustomersHandler) GetOrganisationTickets(w http.ResponseWriter, r
 
 	tickets := make([]OrgTicket, len(rows))
 	for i, t := range rows {
-		name, key := t.WorkspaceName, t.WorkspaceKey
-		if _, ok := wsAccess[t.WorkspaceID]; !ok {
-			name, key = "", ""
-		}
 		tickets[i] = OrgTicket{
 			ID:                  t.ID,
 			WorkspaceID:         t.WorkspaceID,
 			WorkspaceItemNumber: t.WorkspaceItemNumber,
 			Title:               t.Title,
 			CreatedAt:           t.CreatedAt,
-			WorkspaceName:       name,
-			WorkspaceKey:        key,
+			WorkspaceName:       t.WorkspaceName,
+			WorkspaceKey:        t.WorkspaceKey,
 			StatusName:          t.StatusName,
 			StatusColor:         t.StatusColor,
 			CreatorContactName:  t.CreatorContactName,

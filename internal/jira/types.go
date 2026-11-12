@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -266,6 +267,17 @@ const (
 	JiraWorkflowTransitionGlobal   JiraConfiguredWorkflowTransitionType = "GLOBAL"
 )
 
+// JiraWorkflowGuard is one condition or validator attached to a transition.
+// Kind is the normalized view the companion plugin emits for the common
+// built-ins (user_in_group, user_in_role, permission, only_assignee, ...); the
+// raw class and args are retained so unmapped guards are reported faithfully.
+type JiraWorkflowGuard struct {
+	Kind  string
+	Mode  string // "condition" or "validator"
+	Class string
+	Args  map[string]any
+}
+
 // JiraConfiguredWorkflowTransition describes a transition returned by Jira's
 // workflow configuration API. Rule counts are retained so unsupported guarded
 // transitions can be reported and handled conservatively by the importer.
@@ -280,6 +292,9 @@ type JiraConfiguredWorkflowTransition struct {
 	ActionCount    int
 	TriggerCount   int
 	ConditionCount int
+	// Guards carries the actual condition/validator descriptors when the source
+	// exposes them (the DC companion plugin); empty when only counts are known.
+	Guards []JiraWorkflowGuard
 }
 
 // ScreenConfigurationClient is an optional Jira client capability for
@@ -806,12 +821,16 @@ type AssetObjectLinks struct {
 
 // ObjectSearchOptions contains options for searching assets
 type ObjectSearchOptions struct {
-	ObjectSchemaID    string `json:"objectSchemaId"`
-	ObjectTypeID      string `json:"objectTypeId,omitempty"`
-	IQL               string `json:"iql,omitempty"` // Insight Query Language
-	Page              int    `json:"page"`
-	PageSize          int    `json:"pageSize"`
-	IncludeAttributes bool   `json:"includeAttributes"`
+	ObjectSchemaID string `json:"objectSchemaId"`
+	ObjectTypeID   string `json:"objectTypeId,omitempty"`
+	IQL            string `json:"iql,omitempty"` // Insight Query Language
+	// StartAt is an explicit row offset. It takes precedence over Page so
+	// callers can advance by the rows a server-capped page actually returned
+	// instead of by the requested page size.
+	StartAt           int  `json:"startAt,omitempty"`
+	Page              int  `json:"page"`
+	PageSize          int  `json:"pageSize"`
+	IncludeAttributes bool `json:"includeAttributes"`
 }
 
 // ObjectSearchResult represents the result of an object search
@@ -848,6 +867,10 @@ type FilterSearchResult struct {
 	Total      int          `json:"total"`
 	IsLast     bool         `json:"isLast"`
 	Values     []JiraFilter `json:"values"`
+	// Partial marks an enumeration that cannot list every saved filter, such as
+	// Data Center where only favorites are discoverable.
+	Partial       bool   `json:"partial,omitempty"`
+	PartialReason string `json:"partial_reason,omitempty"`
 }
 
 // ================================================================
@@ -948,6 +971,19 @@ type JQLSearchRequest struct {
 	NextPageToken string   `json:"nextPageToken,omitempty"`
 }
 
+// MarshalJSON serializes expand as the comma-delimited string
+// SearchAndReconcileRequestBean expects. Bulk fetch keeps its array shape.
+func (r JQLSearchRequest) MarshalJSON() ([]byte, error) {
+	type alias JQLSearchRequest
+	return json.Marshal(struct {
+		alias
+		Expand string `json:"expand,omitempty"`
+	}{
+		alias:  alias(r),
+		Expand: strings.Join(r.Expand, ","),
+	})
+}
+
 // JQLSearchResponse is the response from POST /rest/api/3/search/jql
 type JQLSearchResponse struct {
 	Issues        []JiraIssue `json:"issues"`
@@ -974,14 +1010,49 @@ type BulkFetchRequest struct {
 	Properties     []string `json:"properties,omitempty"`
 }
 
-// BulkFetchResponse is the response from POST /rest/api/3/issue/bulkfetch
+// BulkFetchResponse is the response from POST /rest/api/3/issue/bulkfetch.
+// Jira answers HTTP 200 with partial success: resolved issues land in Issues
+// and per-issue failures in IssueErrors.
 type BulkFetchResponse struct {
-	Issues []JiraIssue      `json:"issues"`
-	Errors []BulkFetchError `json:"errors,omitempty"`
+	Issues      []JiraIssue      `json:"issues"`
+	IssueErrors []BulkFetchError `json:"issueErrors,omitempty"`
 }
 
-// BulkFetchError represents an error when fetching a specific issue
+// BulkFetchError represents a per-issue failure in a bulk-fetch response. The
+// published Cloud IssueError shape is {id, errorMessage}; the id is the numeric
+// issue id, not the issue key. The legacy issueIdOrKey/errorMessages/errors
+// fields are decoded defensively for older deployments.
 type BulkFetchError struct {
-	IssueIDOrKey string `json:"issueIdOrKey"`
-	ErrorMessage string `json:"errorMessage"`
+	ID            string            `json:"id,omitempty"`
+	ErrorMessage  string            `json:"errorMessage,omitempty"`
+	IssueIDOrKey  string            `json:"issueIdOrKey,omitempty"`
+	ErrorMessages []string          `json:"errorMessages,omitempty"`
+	Errors        map[string]string `json:"errors,omitempty"`
+}
+
+// Message renders the per-issue failure for logs and error accounting.
+func (e BulkFetchError) Message() string {
+	if message := strings.TrimSpace(e.ErrorMessage); message != "" {
+		return message
+	}
+	if len(e.ErrorMessages) > 0 {
+		return strings.Join(e.ErrorMessages, "; ")
+	}
+	if len(e.Errors) > 0 {
+		parts := make([]string, 0, len(e.Errors))
+		for field, message := range e.Errors {
+			parts = append(parts, field+": "+message)
+		}
+		sort.Strings(parts)
+		return strings.Join(parts, "; ")
+	}
+	return "unknown Jira bulk fetch error"
+}
+
+// JiraIssueRef is a stable Jira issue identity: the numeric id plus the
+// human-readable key. Discovery returns both so bulk-fetch IssueError ids can
+// be correlated to requested keys without guessing.
+type JiraIssueRef struct {
+	ID  string
+	Key string
 }

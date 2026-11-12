@@ -21,6 +21,14 @@ export default {
     systemDefault: 'Paramètre système par défaut',
     themeManager: {
       background: 'Arrière-plan', text: 'Texte',
+      brandLayout: 'Marque de la barre latérale',
+      brandLayoutMarkText: 'Symbole + texte',
+      brandLayoutMarkOnly: 'Symbole seul',
+      brandLayoutFullLogo: 'Logo complet',
+      brandLayoutHelp: 'Contrôle la barre latérale développée. La barre latérale réduite affiche toujours le symbole.',
+      brandPreview: 'Aperçu de la barre latérale',
+      brandPreviewExpanded: 'Développée',
+      brandPreviewCollapsed: 'Réduite',
       failedToLoad: 'Échec du chargement des thèmes.', failedToCreate: 'Échec de la création du thème.',
       failedToUpdate: 'Échec de la mise à jour du thème.', failedToDelete: 'Échec de la suppression du thème.',
       failedToActivate: 'Échec de l\'activation du thème.',
@@ -31,6 +39,17 @@ export default {
       },
     },
 
+    generalSettings: {
+      title: 'Général',
+      subtitle: "Configuration à l'échelle de l'instance",
+      siteIdentity: 'Identité du site',
+      siteIdentityDescription:
+        "Le nom du produit affiché dans l'onglet du navigateur, la barre latérale et les écrans de connexion et de configuration.",
+      siteTitle: 'Titre du site',
+      preview: 'Aperçu',
+      saved: 'Paramètres généraux enregistrés',
+    },
+
     // Admin settings
     admin: 'Administration',
     systemSettings: 'Paramètres système',
@@ -39,6 +58,7 @@ export default {
 
     // Admin panel group labels (for Admin.svelte)
     adminGroups: {
+      general: 'Général',
       contentStructure: 'Contenu et structure',
       workflowProcess: 'Flux de travail et processus',
       integrationLinks: 'Intégrations et liens',
@@ -50,6 +70,10 @@ export default {
 
     // Admin panel item labels and descriptions (for Admin.svelte)
     adminItems: {
+      general: {
+        title: 'Général',
+        description: "Configuration à l'échelle de l'instance, comme le titre du site",
+      },
       customFields: { title: 'Champs personnalisés', description: 'Gérer les définitions des champs personnalisés' },
       screens: { title: 'Écrans', description: 'Configurer les écrans de formulaires et les dispositions' },
       hierarchyLevels: {
@@ -103,8 +127,8 @@ export default {
         description: 'Gérer les configurations de notification',
       },
       emailTemplates: {
-        title: 'Modèles de courriel',
-        description: 'Personnaliser l\'objet et le corps des courriels transactionnels',
+        title: 'Modèles d’e-mail',
+        description: 'Personnaliser l\'objet et le corps des e-mails transactionnels',
       },
       channels: {
         title: 'Canaux',
@@ -282,7 +306,7 @@ export default {
       noConfigSets: 'Aucun ensemble de configuration pour le moment',
       previewUnavailable: 'Aucun ensemble de configuration disponible',
       previewUnavailableDescription: 'Créez un ensemble de configuration par défaut pour configurer cet espace de travail.',
-      assignerDescription: 'Sélectionnez l\'ensemble de configuration qui définit le flux de travail et les écrans pour cet espace de travail. Un seul ensemble peut être attribué.',
+      assignerDescription: 'Sélectionnez l\'ensemble de configuration qui définit le flux de travail et les écrans pour créer, modifier et consulter les éléments dans cet espace de travail. Un seul ensemble peut être attribué.',
       migrationRequiresSystemAdmin: 'Passer à cet ensemble de configuration nécessite une migration de données qu\'un administrateur système seul peut exécuter.',
       select: 'Sélectionner un ensemble de configuration',
       updating: 'Mise à jour de la configuration…',
@@ -293,6 +317,10 @@ export default {
       importing: 'Importation en cours…',
       importWarning: 'L\'ensemble de configuration a été importé avec des avertissements.',
       importFailed: 'Échec de l\'importation de l\'ensemble de configuration.',
+      importNameTitle: 'Nommer l\'ensemble importé',
+      importNameDescription:
+        'L\'importation crée une copie. Choisissez un nom pour l\'ensemble importé.',
+      importInvalidFile: 'Ce fichier n\'est pas un modèle d\'ensemble de configuration.',
       unresolvedReferencesHeading: 'L\'importation fait référence à des entités qui n\'existent pas sur cette instance.',
       defaultConflictHeading: 'L\'importation entre en conflit avec une entité par défaut sur cette instance.',
       unresolvedImportTitle: 'Importation : références non résolues',
@@ -547,8 +575,22 @@ export default {
       notConfigured: 'Non configuré',
       callbackUrl: 'URL de rappel (Callback)',
       callbackUrlHelp: 'Configurez cette URL comme URL de redirection dans votre fournisseur d\'identité',
+      baseUrlWarningTitle: 'L\'URL de base du serveur n\'est pas configurée',
+      baseUrlWarningBody:
+        'Windshift utilise {url} par défaut pour les liens et les callbacks OAuth. La connexion SSO enverra donc cette adresse à votre fournisseur d\'identité. Définissez la variable d\'environnement BASE_URL et redémarrez Windshift avant d\'enregistrer l\'URL de rappel.',
       scopes: 'Portées (Scopes)',
       scopesHelp: 'Liste des portées OIDC séparées par des espaces',
+      nameClaimsHelp:
+        "Certains fournisseurs (par exemple Microsoft Entra ID) n'incluent que le nom d'affichage par défaut. Ajoutez given_name et family_name comme revendications facultatives afin que Windshift reçoive le nom structuré au lieu d'analyser le nom d'affichage.",
+      attributeMapping: 'Mappage des attributs',
+      attributeMappingHelp:
+        "Facultatif. Remplacez la revendication lue pour chaque champ lorsque votre fournisseur utilise des noms de revendication non standard. Laissez un champ vide pour utiliser la revendication par défaut indiquée dans l'espace réservé.",
+      attributeEmail: 'Revendication e-mail',
+      attributeEmailVerified: 'Revendication e-mail vérifié',
+      attributeName: 'Revendication nom complet',
+      attributeGivenName: 'Revendication prénom',
+      attributeFamilyName: 'Revendication nom de famille',
+      attributeUsername: "Revendication nom d'utilisateur",
       enabled: 'Activé',
       disabled: 'Désactivé',
       default: 'Par défaut',
@@ -558,13 +600,13 @@ export default {
       autoProvisionUsers: 'Création automatique de comptes',
       autoProvisionUsersDesc: 'Créer automatiquement les comptes lors de la première connexion SSO',
       manualUserCreationOnly: 'Création manuelle d\'utilisateurs uniquement',
-      trustIdpEmailVerification: 'Faire confiance aux courriels vérifiés du fournisseur',
+      trustIdpEmailVerification: 'Faire confiance aux e-mails vérifiés du fournisseur',
       trustIdpEmailVerificationDesc:
-        'Ignorer la vérification de courriel Windshift si le fournisseur omet le statut. Les adresses explicitement non vérifiées nécessiteront toujours une confirmation.',
-      idpVerificationNotEnforced: 'Windshift vérifie les courriels non confirmés',
-      unsafeProvisioningWarningTitle: 'Confiance aux courriels du fournisseur activée',
+        'Ignorer la vérification d’e-mail Windshift si le fournisseur omet le statut. Les adresses explicitement non vérifiées nécessiteront toujours une confirmation.',
+      idpVerificationNotEnforced: 'Windshift vérifie les e-mails non confirmés',
+      unsafeProvisioningWarningTitle: 'Confiance aux e-mails du fournisseur activée',
       unsafeProvisioningWarningBody:
-        "Les utilisateurs dont le fournisseur omet la vérification de courriel peuvent être liés à des comptes existants par leur courriel. N'activez ceci que si le fournisseur gère strictement ces adresses.",
+        "Les utilisateurs dont le fournisseur omet la vérification d’e-mail peuvent être liés à des comptes existants par leur e-mail. N'activez ceci que si le fournisseur gère strictement ces adresses.",
       testConnection: 'Tester la connexion',
       testing: 'Test en cours...',
       connectionSuccessful: 'Connexion réussie',
@@ -623,10 +665,10 @@ export default {
 
     // Email Templates
     emailTemplates: {
-      title: 'Modèles de courriels',
-      subtitle: 'Personnaliser l\'objet et le corps des courriels transactionnels envoyés par Windshift.',
+      title: 'Modèles d’e-mails',
+      subtitle: 'Personnaliser l\'objet et le corps des e-mails transactionnels envoyés par Windshift.',
       loading: 'Chargement…',
-      empty: 'Aucun modèle de courriel trouvé.',
+      empty: 'Aucun modèle d’e-mail trouvé.',
       template: 'Modèle',
       description: 'Description',
       status: 'Statut',
@@ -641,6 +683,14 @@ export default {
       textBody: 'Corps texte brut',
       adminNotes: 'Description (notes d\'administration)',
       activeHint: 'Actif (décocher pour réutiliser la valeur par défaut)',
+      localeLabel: "Langue",
+      defaultLocale: "Par défaut (toutes les langues)",
+      translationHint: "Vous modifiez la version de cette langue. Les autres langues utilisent le modèle par défaut.",
+      translationSaved: "Traduction enregistrée",
+      translationDelete: "Supprimer la traduction",
+      translationDeleted: "Traduction supprimée",
+      translationSaveFailed: "Échec de l'enregistrement de la traduction : {error}",
+      translationDeleteFailed: "Échec de la suppression de la traduction : {error}",
       availableVariables: 'Variables disponibles',
       syntaxHint:
         "Les modèles utilisent la syntaxe html/template de Go. Utilisez {open} .Field {close} pour les valeurs et {open} range .Items {close}…{open} end {close} pour boucler.",
@@ -651,16 +701,18 @@ export default {
       plainTextVersion: 'Version texte brut',
       save: 'Enregistrer',
       cancel: 'Annuler',
-      saved: 'Modèle de courriel enregistré',
-      loadFailed: 'Échec du chargement des modèles de courriels : {error}',
+      saved: 'Modèle d’e-mail enregistré',
+      loadFailed: 'Échec du chargement des modèles d’e-mails : {error}',
       saveFailed: 'Échec de l\'enregistrement : {error}',
       previewFailed: 'Échec de l\'aperçu : {error}',
       labels: {
         magic_link: 'Connexion portail par lien magique',
-        email_verification: 'Vérification de l\'adresse courriel',
+        email_verification: 'Vérification de l\'adresse e-mail',
         invitation: 'Invitation de nouvel utilisateur',
         notification_batch: 'Notifications regroupées',
         portal_reply: 'Réponse client du portail',
+        approval_requested: 'Demande d’approbation du portail',
+        intake_confirmation: 'Accusé de réception e-mail',
       },
     },
 
@@ -789,7 +841,7 @@ export default {
         },
         epic: {
           name: 'Épopée',
-          description: 'Ensemble de travaux pouvant être décomposé en récits utilisateur',
+          description: 'Grand élément de travail pouvant être décomposé en récits utilisateur',
         },
         story: {
           name: 'Récit utilisateur',
@@ -829,6 +881,13 @@ export default {
       changeManifest: 'Changer le fichier manifest.json',
       manifestSelected: 'Manifeste sélectionné : {name}',
       registeredRoutes: 'Routes enregistrées',
+      routeAuth_session: 'Session',
+      routeAuth_admin: 'Administrateur',
+      routeAuth_none: 'Public',
+      hostFunctionPermissions: 'Permissions des fonctions hôtes',
+      permissionGranted: 'Accordée',
+      permissionDenied: 'Refusée',
+      permissionsDeniedNote: 'Certaines permissions déclarées ne sont pas effectives.',
       moduleSettingsNote:
         'Les modifications des paramètres de module prennent effet immédiatement. Désactiver un module le masquera de la navigation.',
       failedToUpload: 'Échec du téléversement : {error}',
@@ -890,11 +949,6 @@ export default {
         dependency_analysis: {
           name: 'Analyse des dépendances',
           description: 'Analyser et suggérer des dépendances entre éléments',
-        },
-        logbook_articles: {
-          name: 'Articles de journal de bord',
-          description:
-            'Classification, nettoyage et génération d\'articles automatisés pour le journal de bord',
         },
       },
     },
@@ -1049,6 +1103,9 @@ export default {
       manageCustomFields: 'Gérer les champs personnalisés',
       createCustomField: 'Créer un champ personnalisé',
       customFieldsGlobalNote: 'Les champs personnalisés sont gérés globalement par un administrateur système.',
+      columnColor: 'Couleur de la colonne',
+      displayOptions: "Options d'affichage",
+      displayOptionsHint: "Contrôlez l'affichage du travail terminé et de la colonne la plus à droite.",
       latestFiftyRightmost: 'Afficher seulement les 50 derniers éléments dans la colonne la plus à droite',
       latestFiftyRightmostHint: 'Utile pour les colonnes "Terminé" très chargées sans limiter le reste du tableau.',
       hideCompletedByAge: 'Masquer les éléments terminés anciens',
@@ -1057,6 +1114,11 @@ export default {
       days: 'jours',
       retentionWindowHint: 'Les éléments terminés sans activité pendant cette période sont masqués.',
       retentionRangeError: 'Saisissez un nombre entier entre 1 et 3650.',
+      completedVisibility: 'Travail terminé',
+      completedVisibilityCustom: 'Personnalisé (utilisez les options ci-dessous)',
+      completedVisibilityHint: 'Définit la quantité de travail terminé chargée par ce tableau. S’applique à tous les lecteurs.',
+      completedLimit: 'Nombre d’éléments terminés',
+      completedLimitHint: 'Afficher au maximum ce nombre d’éléments terminés sur le tableau (1–{max}).',
       backlogSelected: '{count} statuts sélectionnés pour le backlog',
       backlogSelected_one: '{count} statut sélectionné pour le backlog',
       backlogSelected_other: '{count} statuts sélectionnés pour le backlog',
@@ -1064,7 +1126,7 @@ export default {
         status: 'Statut', priority: 'Priorité', milestone: 'Jalon', iteration: 'Itération',
         due_date: 'Date d\'échéance', start_date: 'Date de début', end_date: 'Date de fin', labels: 'Étiquettes',
         created_at: 'Créé le', project: 'Projet', parent: 'Parent', time_in_status: 'Temps dans le statut',
-        story_points: 'Points d’effort', estimate: 'Estimation',
+        story_points: 'Points d’effort', estimate: 'Estimation', sla: 'SLA',
       },
     },
   },

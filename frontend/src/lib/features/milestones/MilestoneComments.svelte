@@ -1,7 +1,8 @@
 <script>
 	import { onMount, tick } from 'svelte';
-	import { api } from '../../api.js';
-	import { authStore } from '../../stores';
+	import { milestones as milestonesApi } from '../../api/milestones.js';
+	import { authStore } from '../../stores/auth.svelte.js';
+	import { workspacePermissions } from '../../stores/workspacePermissions.svelte.js';
 	import MilkdownEditor from '../../editors/LazyMilkdownEditor.svelte';
 	import Button from '../../components/Button.svelte';
 	import Avatar from '../../components/Avatar.svelte';
@@ -10,22 +11,30 @@
 	import { formatRelativeTime } from '../../utils/dateFormatter.js';
 	import { getShortcut, matchesShortcut, getDisplayString } from '../../utils/keyboardShortcuts.js';
 	import { t } from '../../stores/i18n.svelte.js';
+	import { surfaceError } from '../../stores/toasts.svelte.js';
 	import { confirm } from '../../composables/useConfirm.js';
 	import { newestCommentsFirst } from './milestoneCommentOrder.js';
 
-	// Milestone comments (WCORE-20). Anyone who can view the milestone can
-	// comment; authors edit and delete their own. Unlike item comments these
+	// Milestone comments. Local milestones apply their workspace's item
+	// comment permissions; on global ones any viewer comments and authors
+	// change their own (mirrors MilestoneCommentService). Unlike item comments these
 	// send no notifications, so @mentions notify nobody, and milestones have
 	// no attachments, so image upload is off in every editor here.
-	// The thread shows newest first under the composer (WCORE-54); the API
-	// and the CLI keep listing oldest first.
+	// The thread shows newest first under the composer. It pages like the
+	// item comment feed: the newest page first, then Load more follows
+	// next_cursor to older comments.
 	let { milestoneId, workspaceId = null } = $props();
 
 	const submitShortcut = getShortcut('description', 'save');
+	const COMMENT_PAGE_SIZE = 25;
 
 	let comments = $state([]);
 	let loading = $state(true);
 	let error = $state('');
+	let hasMore = $state(false);
+	let isLoadingMore = $state(false);
+	let olderCursor = $state('');
+	let totalCount = $state(0);
 	let newCommentContent = $state('');
 	let isSubmitting = $state(false);
 	let editorRef = $state(null);
@@ -36,8 +45,12 @@
 	let editEditorRef = $state(null);
 
 	const currentUserId = $derived(authStore.currentUser?.id ?? null);
-	// getComments pages through the whole thread, so sorting here orders
-	// every comment, not just one page of them.
+	// comment.edit_others holders may moderate foreign comments on local
+	// milestones. Global milestones (workspaceId null) have no workspace.
+	const canEditOthersComments = $derived(
+		workspaceId != null && workspacePermissions.canEditOthersComments(workspaceId)
+	);
+	// Loaded pages plus comments posted here, newest first.
 	const orderedComments = $derived(newestCommentsFirst(comments));
 
 	onMount(() => {
@@ -48,13 +61,40 @@
 		loading = true;
 		error = '';
 		try {
-			comments = (await api.milestones.getComments(milestoneId)) || [];
+			const response = await milestonesApi.getComments(milestoneId, { limit: COMMENT_PAGE_SIZE });
+			comments = response?.comments || [];
+			hasMore = Boolean(response?.has_more);
+			olderCursor = response?.next_cursor || '';
+			totalCount = Number.isInteger(response?.total) ? response.total : comments.length;
 		} catch (err) {
 			console.error('Failed to load milestone comments:', err);
 			error = t('comments.failedToLoad');
 			comments = [];
+			hasMore = false;
+			totalCount = 0;
 		} finally {
 			loading = false;
+		}
+	}
+
+	async function loadMoreComments() {
+		if (isLoadingMore || !hasMore || !olderCursor) return;
+		isLoadingMore = true;
+		error = '';
+		try {
+			const response = await milestonesApi.getComments(milestoneId, {
+				limit: COMMENT_PAGE_SIZE,
+				cursor: olderCursor
+			});
+			const seen = new Set(comments.map((comment) => comment.id));
+			comments = [...comments, ...(response?.comments || []).filter((comment) => !seen.has(comment.id))];
+			hasMore = Boolean(response?.has_more);
+			olderCursor = response?.next_cursor || '';
+		} catch (err) {
+			console.error('Failed to load older milestone comments:', err);
+			error = t('comments.failedToLoad');
+		} finally {
+			isLoadingMore = false;
 		}
 	}
 
@@ -63,13 +103,14 @@
 		isSubmitting = true;
 		error = '';
 		try {
-			const created = await api.milestones.createComment(milestoneId, newCommentContent);
+			const created = await milestonesApi.createComment(milestoneId, newCommentContent);
+			if (!comments.some((comment) => comment.id === created.id)) totalCount += 1;
 			comments = [...comments.filter((comment) => comment.id !== created.id), created];
 			newCommentContent = '';
 			editorRef?.clear();
 		} catch (err) {
-			console.error('Failed to create milestone comment:', err);
 			error = t('comments.failedToCreate');
+			surfaceError(err, { context: 'createMilestoneComment' });
 		} finally {
 			isSubmitting = false;
 		}
@@ -92,11 +133,12 @@
 		});
 		if (!confirmed) return;
 		try {
-			await api.milestones.deleteComment(milestoneId, commentId);
+			await milestonesApi.deleteComment(milestoneId, commentId);
 			comments = comments.filter((comment) => comment.id !== commentId);
+			totalCount = Math.max(0, totalCount - 1);
 		} catch (err) {
-			console.error('Failed to delete milestone comment:', err);
 			error = t('comments.failedToDelete');
+			surfaceError(err, { context: 'deleteMilestoneComment' });
 		}
 	}
 
@@ -117,12 +159,12 @@
 		isSavingEdit = true;
 		error = '';
 		try {
-			const updated = await api.milestones.updateComment(milestoneId, editingCommentId, editingContent);
+			const updated = await milestonesApi.updateComment(milestoneId, editingCommentId, editingContent);
 			comments = comments.map((comment) => (comment.id === updated.id ? updated : comment));
 			cancelEdit();
 		} catch (err) {
-			console.error('Failed to update milestone comment:', err);
 			error = t('comments.failedToUpdate');
+			surfaceError(err, { context: 'updateMilestoneComment' });
 		} finally {
 			isSavingEdit = false;
 		}
@@ -151,8 +193,8 @@
 >
 	<h2 class="text-lg font-semibold mb-4" style="color: var(--ds-text);">
 		{t('common.comments')}
-		{#if comments.length > 0}
-			<span class="text-sm font-normal" style="color: var(--ds-text-subtle);">({comments.length})</span>
+		{#if totalCount > 0}
+			<span class="text-sm font-normal" style="color: var(--ds-text-subtle);">({totalCount})</span>
 		{/if}
 	</h2>
 
@@ -182,6 +224,7 @@
 							bind:this={editorRef}
 							bind:content={newCommentContent}
 							placeholder={t('comments.writePlaceholder')}
+							ariaLabel={t('comments.comment')}
 							showToolbar={true}
 							hideToolbarUntilFocus={true}
 							compact={true}
@@ -233,7 +276,7 @@
 									<span class="text-xs" style="color: var(--ds-text-subtlest);">({t('comments.edited')})</span>
 								{/if}
 							</div>
-							{#if currentUserId != null && comment.author_id === currentUserId && editingCommentId !== comment.id}
+							{#if currentUserId != null && (comment.author_id === currentUserId || canEditOthersComments) && editingCommentId !== comment.id}
 								<div class="flex items-center space-x-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
 									<button
 										type="button"
@@ -269,6 +312,7 @@
 									bind:this={editEditorRef}
 									bind:content={editingContent}
 									placeholder={t('comments.editPlaceholder')}
+									ariaLabel={t('comments.editComment')}
 									showToolbar={true}
 									compact={true}
 									allowImageUpload={false}
@@ -303,5 +347,19 @@
 				</div>
 			{/each}
 		</div>
+
+		{#if hasMore}
+			<div class="flex justify-center mt-4">
+				<Button
+					variant="secondary"
+					size="small"
+					dataTestid="milestone-comments-load-more"
+					onclick={loadMoreComments}
+					disabled={isLoadingMore}
+				>
+					{isLoadingMore ? t('common.loading') : t('common.loadMore')}
+				</Button>
+			</div>
+		{/if}
 	{/if}
 </section>

@@ -10,12 +10,11 @@ const mocks = vi.hoisted(() => ({
   onAvailable: null,
 }));
 
-vi.mock('../api.js', () => ({ api: { notifications: { getAll: mocks.getAll } } }));
+vi.mock('../api/notifications.js', () => ({ notifications: { getAll: mocks.getAll } }));
 vi.mock('../router.js', () => ({ navigate: vi.fn() }));
 vi.mock('../utils/dateFormatter.js', () => ({ formatDateSimple: (d) => String(d) }));
 vi.mock('../utils/isTauri.js', () => ({ isTauri: () => false }));
-vi.mock('./activityStore.svelte.js', () => ({ activityStore: { isIdle: false } }));
-vi.mock('./toasts.svelte.js', () => ({ addToast: mocks.addToast }));
+vi.mock('./toasts.svelte.js', () => ({ addToast: mocks.addToast, surfaceError: vi.fn() }));
 vi.mock('../utils/backgroundSync.js', () => ({
   canRunBackgroundSync: () => mocks.canSync.value,
   isExpectedBackgroundSyncError: () => false,
@@ -111,7 +110,7 @@ describe('notification toasts after a page load', () => {
     mocks.getAll.mockResolvedValue(existing);
 
     startNotificationPoller();
-    // Hidden tab: the poller skips its initial load, the stream still connects.
+    // Hidden tab: the store skips its initial load, the stream still connects.
     await vi.advanceTimersByTimeAsync(0);
     expect(mocks.getAll).not.toHaveBeenCalled();
 
@@ -120,21 +119,42 @@ describe('notification toasts after a page load', () => {
     expect(mocks.addToast).not.toHaveBeenCalled();
     expectExistingListedUnchanged();
 
-    // The tab becomes visible: the resumed load still toasts nothing old.
+    // The tab becomes visible: the resumed reconcile still toasts nothing old.
     mocks.canSync.value = true;
     mocks.onAvailable();
-    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(300);
     expect(mocks.addToast).not.toHaveBeenCalled();
     expectExistingListedUnchanged();
 
     // A genuinely new assignment toasts exactly once.
     mocks.getAll.mockResolvedValue([notification(4, 'assignment'), ...existing]);
-    await streamEvent('notifications');
-    await streamEvent('notifications');
+    await streamEvent('changed');
+    await streamEvent('changed');
     expect(toastedTitles()).toEqual(['Title 4']);
   });
 
-  it('does not toast existing notifications after a failed first load and a stream reconcile', async () => {
+  it('does not toast existing notifications when an unseeded hidden tab receives a read/seen change', async () => {
+    mocks.canSync.value = false;
+    // The connect reconcile fails, so the tab is still unseeded when the server
+    // reports a change made elsewhere (read, seen, clear).
+    mocks.getAll.mockRejectedValueOnce(new Error('boom')).mockResolvedValue(existing);
+
+    startNotificationPoller();
+    await streamEvent('connected');
+    expect(mocks.getAll).toHaveBeenCalledTimes(1);
+    expect(get(notifications)).toEqual([]);
+
+    await streamEvent('changed');
+    expect(mocks.getAll).toHaveBeenCalledTimes(2);
+    expect(mocks.addToast).not.toHaveBeenCalled();
+    expectExistingListedUnchanged();
+
+    mocks.getAll.mockResolvedValue([notification(8, 'mention'), ...existing]);
+    await streamEvent('changed');
+    expect(toastedTitles()).toEqual(['Title 8']);
+  });
+
+  it('does not toast existing notifications after a failed first load and a stream change', async () => {
     mocks.getAll.mockRejectedValueOnce(new Error('boom')).mockResolvedValue(existing);
 
     startNotificationPoller();
@@ -142,31 +162,61 @@ describe('notification toasts after a page load', () => {
     expect(mocks.getAll).toHaveBeenCalledTimes(1);
     expect(get(notifications)).toEqual([]);
 
+    // The first snapshot was issued after the stream opened, so the first
+    // connection does not reconcile; the next change does.
     await streamEvent('connected');
+    await streamEvent('changed');
     expect(mocks.getAll).toHaveBeenCalledTimes(2);
     expect(mocks.addToast).not.toHaveBeenCalled();
     expectExistingListedUnchanged();
 
     mocks.getAll.mockResolvedValue([notification(5, 'mention'), ...existing]);
-    await streamEvent('notifications');
+    await streamEvent('changed');
     expect(toastedTitles()).toEqual(['Title 5']);
     expect(get(notifications).find((n) => n.id === 5)?.read).toBe(false);
   });
 
-  it('does not toast existing notifications after a failed first load and a poll', async () => {
+  it('does not toast existing notifications after a failed first load and a resume', async () => {
     vi.stubGlobal('EventSource', undefined);
     mocks.getAll.mockRejectedValueOnce(new Error('boom')).mockResolvedValue(existing);
 
     startNotificationPoller();
     await vi.advanceTimersByTimeAsync(0);
-    await vi.advanceTimersByTimeAsync(30_000);
+    expect(mocks.getAll).toHaveBeenCalledTimes(1);
+
+    // Background sync becomes available again (tab refocus, back online).
+    mocks.onAvailable();
+    await vi.advanceTimersByTimeAsync(0);
     expect(mocks.getAll).toHaveBeenCalledTimes(2);
     expect(mocks.addToast).not.toHaveBeenCalled();
     expectExistingListedUnchanged();
 
     mocks.getAll.mockResolvedValue([notification(6, 'assignment'), ...existing]);
-    await vi.advanceTimersByTimeAsync(30_000);
+    mocks.onAvailable();
+    await vi.advanceTimersByTimeAsync(300);
     expect(toastedTitles()).toEqual(['Title 6']);
+  });
+
+  it('seeds from the in-flight first load before a queued change reconciles', async () => {
+    let resolveFirst;
+    mocks.getAll.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveFirst = resolve;
+        })
+    );
+
+    startNotificationPoller();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // A new notification arrives while the first snapshot is still in flight.
+    mocks.getAll.mockResolvedValue([notification(9, 'assignment'), ...existing]);
+    await streamEvent('changed');
+    resolveFirst(existing);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(mocks.getAll).toHaveBeenCalledTimes(2);
+    expect(toastedTitles()).toEqual(['Title 9']);
   });
 
   it('toasts a new assignment once after a normal visible start', async () => {
@@ -179,8 +229,8 @@ describe('notification toasts after a page load', () => {
     expectExistingListedUnchanged();
 
     mocks.getAll.mockResolvedValue([notification(7, 'assignment'), ...existing]);
-    await streamEvent('notifications');
-    await streamEvent('reload');
+    await streamEvent('changed');
+    await streamEvent('changed');
     expect(toastedTitles()).toEqual(['Title 7']);
   });
 });

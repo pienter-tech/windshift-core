@@ -23,6 +23,14 @@ type JiraConnectResponse struct {
 	InstanceInfo *jira.JiraInstanceInfo `json:"instance_info"`
 }
 
+// JiraConnectionUpdateRequest replaces the credentials of an existing
+// connection. The instance URL and deployment type identify the tenant and
+// cannot change through this endpoint.
+type JiraConnectionUpdateRequest struct {
+	Email    string `json:"email"`
+	APIToken string `json:"api_token"`
+}
+
 // JiraProjectInfo contains information about a Jira project for display.
 // IssueCount is a pointer so the JSON omits it when the caller hasn't asked
 // for counts — distinguishes "not loaded yet" from "zero issues" on the
@@ -66,6 +74,7 @@ type JiraAnalysisResult struct {
 	Versions                  []JiraVersionInfo                      `json:"versions"`
 	AssetSchemas              []JiraAssetSchemaInfo                  `json:"asset_schemas,omitempty"`
 	ServiceManagementProjects []JiraServiceManagementProjectAnalysis `json:"service_management_projects,omitempty"`
+	MappingTargets            jiraimport.MappingTargets              `json:"mapping_targets"`
 	Xray                      JiraXrayAnalysis                       `json:"xray"`
 	TotalIssues               int                                    `json:"total_issues"`
 	TotalAssets               int                                    `json:"total_assets"`
@@ -133,16 +142,21 @@ type JiraReadinessReport struct {
 	Extrapolated    bool                   `json:"extrapolated"`
 	AttachmentBytes int64                  `json:"attachment_bytes_sampled"`
 	OpenIssuesOnly  bool                   `json:"open_issues_only"`
+	// AssessmentComplete is false when any project's issue sample could not be
+	// fully read, so the score reflects only the issues that were sampled.
+	AssessmentComplete bool `json:"assessment_complete"`
 }
 
 // JiraProjectReadiness is the per-project slice of the readiness assessment.
 type JiraProjectReadiness struct {
-	Key           string         `json:"key"`
-	Name          string         `json:"name"`
-	TotalIssues   int            `json:"total_issues"`
-	SampledIssues int            `json:"sampled_issues"`
-	Score         int            `json:"score"`
-	Findings      []jira.Finding `json:"findings"`
+	Key                string         `json:"key"`
+	Name               string         `json:"name"`
+	TotalIssues        int            `json:"total_issues"`
+	SampledIssues      int            `json:"sampled_issues"`
+	Score              int            `json:"score"`
+	Findings           []jira.Finding `json:"findings"`
+	AssessmentComplete bool           `json:"assessment_complete"`
+	AssessmentError    string         `json:"assessment_error,omitempty"`
 }
 
 // JiraProjectAnalysis contains analysis for a single project
@@ -208,6 +222,11 @@ type StartImportRequest struct {
 	Mappings       ImportMappings    `json:"mappings"`
 	Xray           XrayImportOptions `json:"xray"`
 	ForceReimport  bool              `json:"force_reimport,omitempty"`
+	// AssetSchemaIDs is the operator's explicit Jira Assets selection. Assets
+	// import is opt-in: an empty selection imports no inventory, so a
+	// project-scoped import cannot silently ingest every schema the Jira token
+	// can see.
+	AssetSchemaIDs []string `json:"asset_schema_ids,omitempty"`
 }
 
 // XrayImportOptions contains the operator's conditional Xray choice. Cloud

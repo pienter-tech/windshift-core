@@ -73,10 +73,9 @@ type PackApplyReport struct {
 	Conformance      *ConfigSetConformanceReport `json:"conformance,omitempty"`
 }
 
-// PackApplyTarget selects the workspace an pack applies to: an existing
-// workspace by ID, or a workspace by name (created when missing).
+// PackApplyTarget names the new workspace a pack provisions. Framework packs
+// only apply to new workspaces, so there is no existing-workspace target.
 type PackApplyTarget struct {
-	WorkspaceID   int
 	WorkspaceName string
 }
 
@@ -127,7 +126,8 @@ func (s *PackApplyService) Verify(ctx context.Context, req PackApplyRequest) (*P
 	return report, nil
 }
 
-// Apply installs the pack into the target workspace.
+// Apply provisions a new workspace from the pack. Framework packs only apply
+// to new workspaces: the target name must not already exist.
 func (s *PackApplyService) Apply(ctx context.Context, req PackApplyRequest) (*PackApplyReport, error) {
 	report, err := s.newReport(req)
 	if err != nil {
@@ -143,18 +143,15 @@ func (s *PackApplyService) Apply(ctx context.Context, req PackApplyRequest) (*Pa
 	}
 	s.appendStage(report, PackStagePlugins, PackStageStatusOK, "plugin requirements satisfied")
 
-	// Stage 2: create-or-target the workspace.
-	workspaceID, created, err := s.resolveWorkspace(ctx, req)
+	// Stage 2: create the workspace. A name that already exists is refused, so
+	// an apply can never modify a workspace that already exists.
+	workspaceID, err := s.resolveWorkspace(ctx, req)
 	if err != nil {
 		return s.failReport(report, PackStageWorkspace, err.Error())
 	}
 	report.WorkspaceID = workspaceID
-	report.WorkspaceCreated = created
-	if created {
-		s.appendStage(report, PackStageWorkspace, PackStageStatusOK, fmt.Sprintf("created workspace %q", req.Target.WorkspaceName))
-	} else {
-		s.appendStage(report, PackStageWorkspace, PackStageStatusOK, "targeting existing workspace")
-	}
+	report.WorkspaceCreated = true
+	s.appendStage(report, PackStageWorkspace, PackStageStatusOK, fmt.Sprintf("created workspace %q", req.Target.WorkspaceName))
 
 	return s.applyWorkspaceStages(ctx, req, report)
 }
@@ -217,7 +214,9 @@ func (s *PackApplyService) applyWorkspaceStages(ctx context.Context, req PackApp
 				fmt.Sprintf("content bundle reported %d failed entity(ies): %s", len(failed), strings.Join(failed, "; ")))
 		}
 		s.appendStage(report, PackStageContent, PackStageStatusOK,
-			fmt.Sprintf("pages %d, items %d, links %d", result.PagesImported, result.ItemsImported, result.ItemLinksImported))
+			fmt.Sprintf("pages %d, items %d, links %d, calendars %d, metrics %d, views %t",
+				result.PagesImported, result.ItemsImported, result.ItemLinksImported,
+				result.CalendarsImported, result.MetricsImported, result.ViewsApplied))
 	} else {
 		s.appendStage(report, PackStageContent, PackStageStatusSkipped, "pack declares no content bundle")
 	}
@@ -337,30 +336,21 @@ func (s *PackApplyService) checkPlugins(refs []PackPluginRef) (checks []PackPlug
 	return checks, satisfied
 }
 
-// resolveWorkspace finds the target by ID or by name, creating it when the
-// caller addressed the pack by workspace name.
-func (s *PackApplyService) resolveWorkspace(ctx context.Context, req PackApplyRequest) (workspaceID int, created bool, err error) {
-	if req.Target.WorkspaceID > 0 {
-		var exists bool
-		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ?)`, req.Target.WorkspaceID).Scan(&exists); err != nil {
-			return 0, false, err
-		}
-		if !exists {
-			return 0, false, fmt.Errorf("target workspace %d does not exist", req.Target.WorkspaceID)
-		}
-		return req.Target.WorkspaceID, false, nil
-	}
+// resolveWorkspace creates the workspace a pack provisions. Framework packs
+// only apply to new workspaces, so a name that already exists is refused
+// instead of reused.
+func (s *PackApplyService) resolveWorkspace(ctx context.Context, req PackApplyRequest) (int, error) {
 	name := strings.TrimSpace(req.Target.WorkspaceName)
 	if name == "" {
-		return 0, false, errors.New("either workspace_id or workspace_name is required")
+		return 0, errors.New("workspace_name is required")
 	}
-	var id int
-	scanErr := s.db.QueryRowContext(ctx, `SELECT id FROM workspaces WHERE LOWER(name) = LOWER(?)`, name).Scan(&id)
-	if scanErr == nil {
-		return id, false, nil
-	}
-	if !errors.Is(scanErr, sql.ErrNoRows) {
-		return 0, false, scanErr
+	var existing int
+	scanErr := s.db.QueryRowContext(ctx, `SELECT id FROM workspaces WHERE LOWER(name) = LOWER(?)`, name).Scan(&existing)
+	switch {
+	case scanErr == nil:
+		return 0, fmt.Errorf("workspace %q already exists; framework packs only apply to new workspaces", name)
+	case !errors.Is(scanErr, sql.ErrNoRows):
+		return 0, scanErr
 	}
 	workspace, createErr := s.workspaces.Create(ctx, req.Actor, CreateWorkspaceParams{
 		Name:        name,
@@ -368,14 +358,9 @@ func (s *PackApplyService) resolveWorkspace(ctx context.Context, req PackApplyRe
 		Description: fmt.Sprintf("Workspace provisioned by pack %s %s", req.Archive.Manifest.Name, req.Archive.Manifest.Version),
 	})
 	if createErr != nil {
-		// A concurrent apply may have created it in between; converge.
-		var again int
-		if lookupErr := s.db.QueryRowContext(ctx, `SELECT id FROM workspaces WHERE LOWER(name) = LOWER(?)`, name).Scan(&again); lookupErr == nil {
-			return again, false, nil
-		}
-		return 0, false, fmt.Errorf("create workspace %q: %w", name, createErr)
+		return 0, fmt.Errorf("create workspace %q: %w", name, createErr)
 	}
-	return workspace.ID, true, nil
+	return workspace.ID, nil
 }
 
 // adoptOrImportConfigurationSet converges on one configuration set for the

@@ -6,11 +6,10 @@
 *.zip
 *.wasm
 *.dylib
-windshift
+/windshift
 .dev-windshift
 cx
 /ws
-/logbook
 # Local build of scripts/openapi-v2-generate.
 /openapi-v2-generate
 
@@ -35,19 +34,23 @@ cx
 !/internal/handlers/scm_item_links_delete_test.go
 !/internal/middleware/csrf_scm_webhooks_test.go
 !/internal/services/planning_milestones_release_test.go
-!/internal/database/milestone_comments_schema_test.go
+!/internal/database/milestone_schema_test.go
 !/internal/repository/milestone_comment_repository_test.go
 !/internal/repository/scm_workspace_repository_test.go
 !/internal/services/milestone_comment_service_test.go
 !/internal/services/milestone_page_link_service_test.go
-!/internal/database/milestone_activity_schema_test.go
 !/internal/services/milestone_activity_service_test.go
-!/internal/services/planning_milestone_last_updated_test.go
+!/internal/services/milestone_last_activity_test.go
 !/internal/services/milestone_membership_history_test.go
 !/internal/utils/repository_path_test.go
+!/internal/wscli/comment_test.go
 !/internal/wscli/milestone_comment_test.go
 !/internal/wscli/milestone_page_test.go
+!/internal/wscli/milestone_test.go
 !/internal/wscli/root_test.go
+!/internal/restapi/v2/item_scm_links_test.go
+!/internal/wscli/task_set_milestone_test.go
+!/internal/wscli/testserver_test.go
 *_test.sh
 *.test.js
 *.test.ts
@@ -55,6 +58,9 @@ cx
 *.spec.ts
 
 # Public regression coverage for the locale runtime ships with the implementation.
+!frontend/src/lib/stores/calendar.spec.js
+!internal/services/calendar_preferences_test.go
+!internal/restapi/v2/calendar_preferences_test.go
 !frontend/src/lib/stores/i18n-utils.spec.js
 !frontend/src/lib/mobile/mobile-i18n.spec.js
 !frontend/scripts/hardcoded-i18n-ast.spec.js
@@ -66,6 +72,7 @@ cx
 !frontend/src/lib/features/milestones/milestoneListSort.spec.js
 !frontend/src/lib/features/milestones/milestoneEditForm.spec.js
 !frontend/src/lib/features/milestones/MilestonePages.spec.js
+!frontend/src/lib/dialogs/LinkItemModal.spec.js
 !frontend/src/lib/features/milestones/milestoneCommentOrder.spec.js
 !frontend/src/lib/features/milestones/MilestoneComments.spec.js
 !frontend/src/lib/components/dataTableSort.spec.js
@@ -207,7 +214,6 @@ windshift.dsl
 endpoints.txt
 RELEASE_NOTES.md
 .dev-windshift-pg
-releases/v0.3.2.md
 .crush
 .jscpd-frontend-report
 .jscpd-report
@@ -219,6 +225,10 @@ scripts/*
 !scripts/report-handler-db-access.sh
 !scripts/check-schema-migration-pairing.sh
 !scripts/check-sql-boolean-literals.mjs
+!scripts/check-audit-literals.mjs
+!scripts/check-vulnerabilities.sh
+!scripts/generate-i18n-catalog.mjs
+!scripts/check-deprecated-v1-api.sh
 !scripts/audit_coverage_inventory.py
 !scripts/.layering-baseline
 !scripts/.handler-db-access-allowlist

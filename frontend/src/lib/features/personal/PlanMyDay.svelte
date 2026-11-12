@@ -1,15 +1,22 @@
 <script>
   import { onMount } from 'svelte';
   import ColorDot from '../../components/ColorDot.svelte';
-  import { api, fetchAPI } from '../../api.js';
-  import { Sparkles, CalendarPlus, RotateCcw, CheckCircle, AlertCircle } from '@lucide/svelte';
-  import { authStore } from '../../stores';
+  import { ai, llmProviders } from '../../api/ai.js';
+  import { fetchAPI } from '../../api/core.js';
+  import IconMessageChatbot from '@tabler/icons-svelte-runes/icons/message-chatbot';
+  import CalendarPlus from '@lucide/svelte/icons/calendar-plus';
+  import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
+  import CheckCircle from '@lucide/svelte/icons/check-circle';
+  import AlertCircle from '@lucide/svelte/icons/alert-circle';
+  import { authStore } from '../../stores/auth.svelte.js';
   import { navigate } from '../../router.js';
   import PageHeader from '../../layout/PageHeader.svelte';
   import Card from '../../components/Card.svelte';
   import Button from '../../components/Button.svelte';
   import Select from '../../components/Select.svelte';
   import DescriptionText from '../../components/DescriptionText.svelte';
+  import ItemKey from '../../components/ItemKey.svelte';
+  import { formatDurationMinutes } from '../../utils/timeUtils.js';
 
   let loading = $state(false);
   let scheduling = $state(false);
@@ -22,7 +29,7 @@
 
   onMount(async () => {
     try {
-      const enabledConnections = await api.llmProviders.getEnabled();
+      const enabledConnections = await llmProviders.getEnabled();
       connections = Array.isArray(enabledConnections) ? enabledConnections : [];
       const def = connections.find(c => c.is_default);
       if (def) selectedConnectionId = def.id;
@@ -37,7 +44,7 @@
     scheduleErrors = [];
 
     try {
-      plan = await api.ai.planMyDay(selectedConnectionId);
+      plan = await ai.planMyDay(selectedConnectionId);
     } catch (err) {
       console.error('Plan My Day failed:', err);
       error = err.message || 'Failed to generate plan. Is the LLM service running?';
@@ -47,12 +54,7 @@
   }
 
   function formatDuration(minutes) {
-    if (minutes >= 60) {
-      const h = Math.floor(minutes / 60);
-      const m = minutes % 60;
-      return m > 0 ? `${h}h ${m}m` : `${h}h`;
-    }
-    return `${minutes}m`;
+    return formatDurationMinutes(minutes);
   }
 
   async function addToCalendar() {
@@ -114,7 +116,7 @@
   data-testid="plan-my-day-view"
 >
   <PageHeader
-    icon={Sparkles}
+    icon={IconMessageChatbot}
     title="Plan My Day"
     subtitle="AI-powered daily planning based on your assigned items"
   />
@@ -125,7 +127,7 @@
       <Card variant="raised" padding="default">
         <div class="flex flex-col items-center py-8 gap-4">
           <div class="rounded-full p-4" style="background-color: var(--ds-surface-sunken);">
-            <Sparkles size={32} style="color: var(--ds-text-subtle);" />
+            <IconMessageChatbot size={32} style="color: var(--ds-text-subtle);" />
           </div>
           <p class="text-sm" style="color: var(--ds-text-subtle);">
             Generate a prioritized daily schedule from your open work items.
@@ -211,7 +213,7 @@
                 <!-- Content -->
                 <div class="flex-1 min-w-0 pb-1">
                   <div class="flex items-center gap-2 flex-wrap">
-                    <span class="text-xs font-mono px-1.5 py-0.5 rounded" style="background-color: var(--ds-surface-sunken); color: var(--ds-text-subtle);">{activity.item_key}</span>
+                    <ItemKey itemKey={activity.item_key} variant="badge" />
                     <span class="text-sm font-medium truncate" style="color: var(--ds-text);">{activity.title}</span>
                   </div>
                   {#if activity.reason}

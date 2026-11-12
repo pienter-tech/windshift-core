@@ -1,10 +1,11 @@
 import { derived, writable } from 'svelte/store';
-import { api } from '../api.js';
+import { portal, portalAuth, portalPasskey } from '../api/portal.js';
 import {
   isWebAuthnSupported,
   prepareCredentialRequestOptions,
   processCredentialRequestResponse,
 } from '../utils/webauthn-utils.js';
+import { i18n } from './i18n.svelte.js';
 import { clearStores, getStoreValue } from './storeUtils.js';
 
 /**
@@ -125,7 +126,7 @@ function createPortalAuthStore() {
       error.set(null);
 
       try {
-        const response = await api.portal.getUserBootstrap(slug);
+        const response = await portal.getUserBootstrap(slug);
         userBootstrap.set(response);
         if (response.authenticated) {
           if (response.is_internal) {
@@ -177,14 +178,14 @@ function createPortalAuthStore() {
       loading.set(true);
       error.set(null);
       try {
-        const startResponse = await api.portalPasskey.startLogin(slug);
+        const startResponse = await portalPasskey.startLogin(slug);
         const requestOptions = prepareCredentialRequestOptions(startResponse);
         const credential = await navigator.credentials.get(requestOptions);
         if (!credential) {
           throw new Error('No credential returned from authenticator');
         }
         const processed = processCredentialRequestResponse(/** @type {any} */ (credential));
-        const completeResponse = await api.portalPasskey.completeLogin(slug, {
+        const completeResponse = await portalPasskey.completeLogin(slug, {
           sessionId: startResponse.sessionId,
           response: processed,
         });
@@ -215,7 +216,7 @@ function createPortalAuthStore() {
      */
     async dismissPasskeyPrompt(slug) {
       try {
-        await api.portalPasskey.dismissPrompt(slug);
+        await portalPasskey.dismissPrompt(slug);
       } catch (err) {
         console.warn('Failed to persist passkey prompt dismissal:', err);
       }
@@ -239,17 +240,28 @@ function createPortalAuthStore() {
     },
 
     /**
+     * Merge fields into the cached customer without a /auth/me round-trip.
+     * Used after the profile updates the customer's own language/timezone.
+     */
+    patchCustomer(patch) {
+      const c = getStoreValue(customer);
+      if (!c) return;
+      customer.set({ ...c, ...patch });
+    },
+
+    /**
      * Request a magic link email
      * @param {string} slug - Portal slug
      * @param {string} email - Customer email
+     * @param {string} [next] - Same-portal path to resume after sign-in
      */
-    async requestMagicLink(slug, email) {
+    async requestMagicLink(slug, email, next) {
       loading.set(true);
       error.set(null);
       emailSent.set(false);
 
       try {
-        await api.portalAuth.requestMagicLink(slug, email);
+        await portalAuth.requestMagicLink(slug, email, next, i18n.locale);
         // Always show success (prevents email enumeration)
         emailSent.set(true);
         return { success: true };
@@ -271,7 +283,7 @@ function createPortalAuthStore() {
       error.set(null);
 
       try {
-        const response = await api.portalAuth.verifyMagicLink(slug, token);
+        const response = await portalAuth.verifyMagicLink(slug, token);
         if (response.success) {
           // The caller dismisses the one-time-token UI before checkAuth updates
           // reactive auth state. Updating it here can remount the verifier and
@@ -311,7 +323,7 @@ function createPortalAuthStore() {
       loading.set(true);
 
       try {
-        await api.portalAuth.logout(slug);
+        await portalAuth.logout(slug);
       } catch (err) {
         console.warn('Logout API call failed:', err);
       }

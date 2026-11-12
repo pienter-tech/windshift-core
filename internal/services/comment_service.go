@@ -45,6 +45,11 @@ type HandleCommentParams struct {
 	PortalCustomerID *int
 	Content          string
 	IsPrivate        bool
+	// SourceKind and ActorKind identify the write path that created the
+	// comment. The reply service never emails comments written by a historical
+	// import, whichever field carries the import marker.
+	SourceKind string
+	ActorKind  string
 }
 
 const (
@@ -112,6 +117,7 @@ type CommentService struct {
 	emailReplyService   EmailReplyHandler
 	agentMentionTrigger AgentMentionTrigger
 	issueSync           CommentIssueSync
+	reactionCache       commentReactionCache
 }
 
 type CaptureComment struct {
@@ -168,6 +174,7 @@ type CreateCommentParams struct {
 	CreatedAt             *time.Time // Optional: override created_at (e.g. for imports preserving original timestamps)
 	UpdatedAt             *time.Time // Optional: override updated_at (imports preserving original timestamps); defaults to created_at
 	SuppressNotifications bool       // Skip notifications, mentions, webhooks, and email replies (e.g. plugin-created comments)
+	SuppressActionEvents  bool       // Skip the comment_created automation trigger (WI-1142 loop guard for automation-authored comments)
 	EventMetadata         itemevents.Metadata
 }
 
@@ -393,7 +400,7 @@ func (s *CommentService) UpdateImported(params UpdateImportedCommentParams) erro
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit imported comment update: %w", err)
 	}
-	PublishItemChange(params.ItemID, ItemChangeUpdated)
+	PublishItemChange(params.ItemID)
 	return nil
 }
 
@@ -405,14 +412,27 @@ func (s *CommentService) UpdateImported(params UpdateImportedCommentParams) erro
 // themselves after they commit. authorID == 0 inserts a system (NULL author)
 // comment.
 func (s *CommentService) CreateInTx(ctx context.Context, tx database.Tx, itemID, authorID int, content string, createdAt time.Time, eventMetadata ...itemevents.Metadata) (int64, error) {
+	return s.CreateImportedInTx(ctx, tx, itemID, authorID, content, createdAt, createdAt, eventMetadata...)
+}
+
+// CreateImportedInTx inserts an imported comment inside an existing
+// transaction, preserving the source's created_at and updated_at. It is the
+// in-transaction counterpart of CreateImported for importers that must write a
+// comment atomically with their own rows, and it records the canonical
+// comment-created fact with side effects suppressed. authorID == 0 inserts a
+// system (NULL author) comment.
+func (s *CommentService) CreateImportedInTx(ctx context.Context, tx database.Tx, itemID, authorID int, content string, createdAt, updatedAt time.Time, eventMetadata ...itemevents.Metadata) (int64, error) {
 	content = normalizeImportedCommentSource(content)
 	var author any
 	if authorID != 0 {
 		author = authorID
 	}
 	var id int64
-	err := tx.QueryRowContext(ctx, insertCommentAuthorSQL, itemID, author, content, false, createdAt, createdAt).Scan(&id)
+	err := tx.QueryRowContext(ctx, insertCommentAuthorSQL, itemID, author, content, false, createdAt, updatedAt).Scan(&id)
 	if err != nil {
+		return 0, err
+	}
+	if err := repository.TouchItemMilestoneActivity(tx, itemID, createdAt); err != nil {
 		return 0, err
 	}
 	var workspaceID int
@@ -449,20 +469,34 @@ func (s *CommentService) UpdateContentInTx(ctx context.Context, tx database.Tx, 
 }
 
 func (s *CommentService) Create(params CreateCommentParams) (*CreateCommentResult, error) {
+	return s.CreateContext(context.Background(), params)
+}
+
+// CreateContext is Create with cancellation propagated into the comment
+// transaction. Callers with a per-request budget (email intake) use it so a
+// slow database cannot outlive the caller's deadline.
+func (s *CommentService) CreateContext(ctx context.Context, params CreateCommentParams) (*CreateCommentResult, error) {
 	if err := validateCommentSource(params.Content); err != nil {
 		return nil, err
 	}
-	return s.create(params)
+	return s.create(ctx, params)
 }
 
 // CreateImported creates a comment from an external system without rejecting
 // the surrounding import when its source needs UTF-8 repair or truncation.
+// Imported comments are historical, so live side effects (notifications,
+// mentions, webhooks, automation, customer email, per-comment audit, and
+// activity tracking) are suppressed; the canonical fact and the support
+// first-response metric are still recorded so imported history stays accurate.
+// (GH #439)
 func (s *CommentService) CreateImported(params CreateCommentParams) (*CreateCommentResult, error) {
 	params.Content = normalizeImportedCommentSource(params.Content)
 	if params.EventMetadata.SourceKind == "" {
 		params.EventMetadata.SourceKind = "import"
 	}
-	return s.create(params)
+	params.SuppressNotifications = true
+	params.SuppressActionEvents = true
+	return s.create(context.Background(), params)
 }
 
 // isPublicAgentComment reports whether a comment counts as the
@@ -472,7 +506,10 @@ func isPublicAgentComment(isPrivate bool, authorID int, portalCustomerID *int) b
 	return !isPrivate && authorID > 0 && portalCustomerID == nil
 }
 
-func (s *CommentService) create(params CreateCommentParams) (*CreateCommentResult, error) {
+func (s *CommentService) create(ctx context.Context, params CreateCommentParams) (*CreateCommentResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	// 2. Get item details for notifications and the webhook payload
 	item, err := repository.NewItemRepository(s.db).FindByIDWithDetails(params.ItemID)
 	if err != nil {
@@ -497,7 +534,7 @@ func (s *CommentService) create(params CreateCommentParams) (*CreateCommentResul
 		updatedAt = *params.UpdatedAt
 	}
 
-	tx, err := s.db.Begin()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin comment transaction: %w", err)
 	}
@@ -524,6 +561,9 @@ func (s *CommentService) create(params CreateCommentParams) (*CreateCommentResul
 	if err := repository.NewItemRepository(s.db).TouchActivity(tx, params.ItemID, now); err != nil {
 		return nil, fmt.Errorf("failed to record comment activity: %w", err)
 	}
+	if err := repository.TouchItemMilestoneActivity(tx, params.ItemID, now); err != nil {
+		return nil, fmt.Errorf("failed to record comment activity: %w", err)
+	}
 	fallback := itemevents.System("application")
 	var authorID *int
 	switch {
@@ -539,7 +579,11 @@ func (s *CommentService) create(params CreateCommentParams) (*CreateCommentResul
 	}
 	fallback.OccurredAt = now
 	metadata := mergeItemEventMetadata(params.EventMetadata, fallback)
-	if _, err := itemevents.NewRecorder(s.db).CommentCreated(context.Background(), tx, item.WorkspaceID, itemevents.CommentCreatedV1{
+	// Imported comments are historical. They keep the canonical fact and the
+	// support first-response metric, but must not drive live operational side
+	// effects such as per-comment audit entries or presence tracking.
+	importOrigin := itemevents.IsImportOrigin(metadata.ActorKind, metadata.SourceKind)
+	if _, err := itemevents.NewRecorder(s.db).CommentCreated(ctx, tx, item.WorkspaceID, itemevents.CommentCreatedV1{
 		ItemID: params.ItemID, CommentID: commentID, AuthorID: authorID,
 		PortalCustomerID: params.PortalCustomerID, IsPrivate: params.IsPrivate,
 		SuppressSideEffects: params.SuppressNotifications,
@@ -555,8 +599,24 @@ func (s *CommentService) create(params CreateCommentParams) (*CreateCommentResul
 		return nil, fmt.Errorf("failed to commit comment: %w", err)
 	}
 
-	// 4. Track activity (if activityTracker != nil)
-	if s.activityTracker != nil {
+	// Agent replies on customer-facing tickets are the helpdesk communication
+	// history (WI-1142); internal notes, internal items, and portal replies
+	// are not audited here. Imported comments are historical and are recorded
+	// by the import job's own audit entry instead.
+	if !importOrigin &&
+		isPublicAgentComment(params.IsPrivate, params.AuthorID, params.PortalCustomerID) &&
+		(item.ChannelID != nil || item.CreatorPortalCustomerID != nil) {
+		commentID := int(commentID)
+		emitServiceAudit(s.db, AuditActor{UserID: params.ActorUserID, Username: ""},
+			logger.ActionCommentCreate, logger.ResourceComment, &commentID, "", map[string]any{
+				"item_id": params.ItemID,
+				"kind":    "customer_reply",
+			})
+	}
+
+	// 4. Track activity (if activityTracker != nil). Imports do not make their
+	// historical authors look currently active.
+	if s.activityTracker != nil && !importOrigin {
 		if err := s.activityTracker.TrackItemActivity(params.ActorUserID, params.ItemID, ActivityComment); err != nil {
 			// Don't fail the request if activity tracking fails, just log it
 			slog.Warn("failed to track comment activity",
@@ -680,7 +740,10 @@ func (s *CommentService) create(params CreateCommentParams) (*CreateCommentResul
 
 		// 7b. Dispatch the comment_created automation trigger (WI-1132).
 		// Admission outlives the request; failures never block comments.
-		if s.actionEvents != nil {
+		// Automation-authored comments never re-enter the trigger: a rule
+		// that posts an agent comment must not be able to trigger itself or
+		// its siblings, which is the one unbounded helpdesk loop (WI-1142).
+		if s.actionEvents != nil && !params.SuppressActionEvents {
 			fromCustomer := params.PortalCustomerID != nil
 			s.actionEvents.EmitActionEvent(&models.ActionEvent{
 				EventType:   models.ActionTriggerCommentCreated,
@@ -715,6 +778,8 @@ func (s *CommentService) create(params CreateCommentParams) (*CreateCommentResul
 				PortalCustomerID: params.PortalCustomerID,
 				Content:          params.Content,
 				IsPrivate:        params.IsPrivate,
+				SourceKind:       metadata.SourceKind,
+				ActorKind:        metadata.ActorKind,
 			}); err != nil {
 				slog.Warn("failed to handle email reply for comment",
 					slog.String("component", "comment_service"),
@@ -727,9 +792,10 @@ func (s *CommentService) create(params CreateCommentParams) (*CreateCommentResul
 
 	// Live-update publish (WI-483): the comment row is committed. Refresh the
 	// item's comment list for anyone viewing it.
-	PublishItemChange(params.ItemID, ItemChangeComment)
+	PublishItemChange(params.ItemID)
 
 	if s.issueSync != nil && !params.IsPrivate && !params.SuppressNotifications && params.AuthorID > 0 {
+		//nolint:gosec // The GitHub push intentionally outlives the request.
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
@@ -1155,7 +1221,7 @@ func (s *CommentService) Update(commentID int, content string, userID int) (*mod
 	}
 
 	// Live-update publish (WI-483): the comment edit committed.
-	PublishItemChange(comment.ItemID, ItemChangeComment)
+	PublishItemChange(comment.ItemID)
 
 	return &comment, nil
 }
@@ -1235,8 +1301,11 @@ func (s *CommentService) Delete(commentID int) error {
 		return fmt.Errorf("failed to commit comment deletion: %w", err)
 	}
 
+	// The comment and its reactions are gone; drop any memoized groups.
+	s.reactionCache.invalidate(commentID)
+
 	// Live-update publish (WI-483): the delete committed.
-	PublishItemChange(itemID, ItemChangeComment)
+	PublishItemChange(itemID)
 
 	return nil
 }

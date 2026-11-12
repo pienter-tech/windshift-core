@@ -1,6 +1,13 @@
 <script>
-  import { Bot, Code, Copy, Key, MoreHorizontal, Pencil, Plus, Trash2 } from '@lucide/svelte';
-  import { api } from '../api.js';
+  import Bot from '@lucide/svelte/icons/bot';
+  import Code from '@lucide/svelte/icons/code';
+  import Copy from '@lucide/svelte/icons/copy';
+  import Key from '@lucide/svelte/icons/key';
+  import MoreHorizontal from '@lucide/svelte/icons/more-horizontal';
+  import Pencil from '@lucide/svelte/icons/pencil';
+  import Plus from '@lucide/svelte/icons/plus';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
+  import { createApiToken, createMyAgent, deleteMyAgent, getApiTokens, getMyAgents, revokeApiToken, updateMyAgent } from '../api/users.js';
   import Button from '../components/Button.svelte';
   import DescriptionText from '../components/DescriptionText.svelte';
   import Input from '../components/Input.svelte';
@@ -10,6 +17,7 @@
   import ModalHeader from '../dialogs/ModalHeader.svelte';
   import DropdownMenu from '../layout/DropdownMenu.svelte';
   import { t } from '../stores/i18n.svelte.js';
+  import { surfaceError } from '../stores/toasts.svelte.js';
   import { copyToClipboard } from '../utils/clipboard.js';
   import { formatAuthenticatedInstant } from '../utils/authenticatedDateFormatter.js';
 
@@ -47,11 +55,11 @@
     const version = ++loadVersion;
     loading = true;
     try {
-      const result = await api.getMyAgents();
+      const result = await getMyAgents();
       if (version === loadVersion) agents = result || [];
     } catch (err) {
       if (version === loadVersion) agents = [];
-      console.error('Failed to load agents:', err);
+      surfaceError(err, { context: 'loadAgents' });
     } finally {
       if (version === loadVersion) loading = false;
     }
@@ -65,10 +73,10 @@
     expandedAgent = agentId;
     ensureMintState(agentId);
     try {
-      tokensByAgent[agentId] = await api.getApiTokens(agentId);
+      tokensByAgent[agentId] = await getApiTokens(agentId);
     } catch (err) {
       tokensByAgent[agentId] = [];
-      console.error('Failed to load agent tokens:', err);
+      surfaceError(err, { context: 'loadAgentTokens' });
     }
   }
 
@@ -82,7 +90,7 @@
     state.error = '';
     state.minting = true;
     try {
-      const result = await api.createApiToken({
+      const result = await createApiToken({
         name: state.name,
         user_id: agentId,
         expires_on: state.expiresAt || null,
@@ -90,7 +98,7 @@
       state.token = result?.token || result?.api_token?.token || '';
       state.name = '';
       state.expiresAt = '';
-      tokensByAgent[agentId] = await api.getApiTokens(agentId);
+      tokensByAgent[agentId] = await getApiTokens(agentId);
     } catch (err) {
       state.error = err?.message || t('users.agents.tokenCreateFailed');
     } finally {
@@ -108,10 +116,10 @@
     });
     if (!confirmed) return;
     try {
-      await api.revokeApiToken(tokenId);
-      tokensByAgent[agentId] = await api.getApiTokens(agentId);
+      await revokeApiToken(tokenId);
+      tokensByAgent[agentId] = await getApiTokens(agentId);
     } catch (err) {
-      console.error('Failed to revoke token:', err);
+      surfaceError(err, { context: 'revokeAgentToken' });
     }
   }
 
@@ -124,7 +132,7 @@
     }
     creating = true;
     try {
-      const created = await api.createMyAgent({
+      const created = await createMyAgent({
         username: newAgent.username,
         first_name: newAgent.first_name,
         last_name: newAgent.last_name,
@@ -149,10 +157,10 @@
     });
     if (!confirmed) return;
     try {
-      await api.deleteMyAgent(agentId);
+      await deleteMyAgent(agentId);
       agents = agents.filter((agent) => agent.id !== agentId);
     } catch (err) {
-      console.error('Failed to delete agent:', err);
+      surfaceError(err, { context: 'deleteAgent' });
     }
   }
 
@@ -178,7 +186,7 @@
     renaming = true;
     renameError = '';
     try {
-      const updated = await api.updateMyAgent(editingAgent.id, { name });
+      const updated = await updateMyAgent(editingAgent.id, { name });
       agents = agents.map((agent) => (agent.id === updated.id ? updated : agent));
       editingAgent = null;
       editingName = '';

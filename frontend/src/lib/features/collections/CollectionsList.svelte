@@ -1,12 +1,16 @@
 <script>
   import { onMount } from 'svelte';
   import { useEventListener } from 'runed';
-  import { api } from '../../api.js';
+  import { collections as collectionsApi } from '../../api/collections.js';
   import { navigate, currentRoute } from '../../router.js';
   import { t } from '../../stores/i18n.svelte.js';
   import { errorToast } from '../../stores/toasts.svelte.js';
   import { confirm } from '../../composables/useConfirm.js';
-  import { FolderOpen, Plus, Eye, Pencil, Trash2 } from '@lucide/svelte';
+  import FolderOpen from '@lucide/svelte/icons/folder-open';
+  import Plus from '@lucide/svelte/icons/plus';
+  import Eye from '@lucide/svelte/icons/eye';
+  import Pencil from '@lucide/svelte/icons/pencil';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
   import Button from '../../components/Button.svelte';
   import DataTable from '../../components/DataTable.svelte';
   import CategoryModal from '../../dialogs/CategoryModal.svelte';
@@ -14,7 +18,8 @@
   import { collectionCategoriesStore } from '../../stores/collectionCategories.js';
   import { formatDate } from '../../utils/dateFormatter.js';
   import { toHotkeyString } from '../../utils/keyboardShortcuts.js';
-  import { workspacesStore } from '../../stores';
+  import { workspacesStore } from '../../stores/workspaces.svelte.js';
+  import { authStore } from '../../stores/auth.svelte.js';
   import WorkspaceSelector from '../../workspaces/WorkspaceSelector.svelte';
   import ColorDot from '../../components/ColorDot.svelte';
   import Badge from '../../components/Badge.svelte';
@@ -139,7 +144,7 @@
   async function loadCollections() {
     try {
       loading = true;
-      collections = await api.collections.getAll() || [];
+      collections = await collectionsApi.getAll() || [];
     } catch (error) {
       console.error('Failed to load collections:', error);
       collections = [];
@@ -173,7 +178,7 @@
     if (!confirmed) return;
 
     try {
-      await api.collections.delete(collection.id);
+      await collectionsApi.delete(collection.id);
       await loadCollections();
     } catch (error) {
       console.error('Failed to delete collection:', error);
@@ -189,17 +194,29 @@
     }
   }
 
+  let currentUserId = $derived(authStore.currentUser?.id ?? null);
+
+  function canManageCollection(collection) {
+    return collection.created_by != null && String(collection.created_by) === String(currentUserId);
+  }
+
   function buildCollectionActions(collection) {
-    return [
+    /** @type {Array<Record<string, any>>} */
+    const actions = [
       {
         id: 'view',
+        testid: 'collection-action-view',
         type: 'regular',
         icon: Eye,
         title: t('collections.viewCollection'),
         onClick: () => viewCollection(collection)
-      },
+      }
+    ];
+    if (!canManageCollection(collection)) return actions;
+    actions.push(
       {
         id: 'edit',
+        testid: 'collection-action-edit',
         type: 'regular',
         icon: Pencil,
         title: t('collections.editCollection'),
@@ -208,6 +225,7 @@
       { type: 'divider' },
       {
         id: 'delete',
+        testid: 'collection-action-delete',
         type: 'regular',
         icon: Trash2,
         title: t('common.delete'),
@@ -215,7 +233,8 @@
         hoverClass: 'hover-danger',
         onClick: () => deleteCollection(collection)
       }
-    ];
+    );
+    return actions;
   }
 
   // Category management functions
@@ -284,6 +303,7 @@
         emptyDescription={t('collections.noCollectionsFound')}
         emptyIcon={FolderOpen}
         actionItems={buildCollectionActions}
+        actionTriggerTestid={(collection) => `collection-actions-${collection.id}`}
         onRowClick={(collection) => viewCollection(collection)}
         rowAttrs={(collection) => ({ 'data-testid': `collection-row-${collection.id}` })}
       >
@@ -294,7 +314,9 @@
           <a href={href} class="block no-underline" style="color: inherit;">
             <div class="flex items-center gap-2">
               <div style="color: var(--ds-text);">{collection.name}</div>
-              {#if collection.is_public}
+              {#if collection.is_private}
+                <Badge variant="default">{t('collections.private')}</Badge>
+              {:else if collection.is_public}
                 <Badge variant="info">{t('collections.public')}</Badge>
               {/if}
             </div>
