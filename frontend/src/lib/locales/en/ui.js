@@ -216,6 +216,14 @@ export default {
 
     // Approval Set Picker
     selectApprovalSet: 'Select approval set',
+
+    // Date Picker
+    datePicker: {
+      previousMonth: 'Previous month',
+      nextMonth: 'Next month',
+      openCalendar: 'Open calendar',
+      selectDate: 'Select date...',
+    },
   },
 
   editors: {
@@ -559,6 +567,7 @@ export default {
   },
 
   recurrence: {
+    gregorianRuleHint: 'Monthly and yearly recurrence rules use the Gregorian calendar.',
     title: 'Recurrence',
     description: 'Manage recurring task rules',
     frequency: 'Frequency',

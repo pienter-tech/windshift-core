@@ -37,6 +37,7 @@
   import CollectionLevelFilter from './CollectionLevelFilter.svelte';
   import CollectionHierarchyLoadMore from './CollectionHierarchyLoadMore.svelte';
   import ItemKey from '../../components/ItemKey.svelte';
+  import { resolveParentKey } from '../../utils/parentReference.js';
   import { useListColumnConfig } from './listColumnConfig.svelte.js';
   import { useCollectionHierarchy } from '../../composables/useCollectionHierarchy.svelte.js';
 
@@ -213,11 +214,16 @@
   // (parent filtered out). Replaces the old synthetic ancestor row (GH #271).
   function parentReference(item) {
     if (item.parent_id == null || loadedItemIds.has(item.parent_id)) return null;
+    // Prefer the server's permission-checked parent key; derive it only for the
+    // older hydrated shape. A masked parent has neither, so it renders nothing.
+    const itemKey = resolveParentKey(item);
+    if (!itemKey) return null;
     return {
       id: item.parent_id,
       workspace_id: item.workspace_id,
       workspace_key: item.workspace_key,
       workspace_item_number: item.parent_workspace_item_number,
+      item_key: itemKey,
       title: item.parent_title,
     };
   }
@@ -443,6 +449,7 @@
       href="#view-test-case"
       onClick={(e) => handleTestCaseClick(e, item.id, item.testCaseData?.workspaceId)}
       class="block text-left w-full text-sm transition-colors truncate cursor-pointer text-ds-text-accent-green hover:opacity-80"
+      dir="auto"
     >
       {item.title}
     </LinkComponent>
@@ -477,7 +484,7 @@
       <div class="flex items-center justify-between mb-6">
         <div class="flex items-center gap-4">
           <SubFilterBar {workspaceId} {collectionId} />
-          <CollectionLevelFilter {workspaceId} {collectionId} view="tree" />
+          <CollectionLevelFilter {workspaceId} {collectionId} />
         </div>
         <div class="flex items-center gap-2">
           <ColumnSelector
@@ -501,6 +508,7 @@
         <div class="flex justify-between items-center mb-4">
           <div class="flex items-center gap-2">
             <button
+              data-testid="tree-expand-toggle"
               class="flex items-center gap-2 px-3 py-2 text-sm border rounded-md transition-colors"
               style="{styles.glassStyle(12)} {styles.glassTextStyle}"
               onclick={toggleExpandCollapse}
@@ -517,6 +525,8 @@
             <!-- Test Case Toggle Button (only show if module enabled) -->
             {#if $moduleSettings.test_management_enabled}
               <button
+                data-testid="tree-show-tests"
+                aria-pressed={showTestCases}
                 class="flex items-center gap-2 px-3 py-2 text-sm border rounded-md transition-colors"
                 style="{styles.glassStyle(12)} {showTestCases ? 'color: var(--ds-accent-green);' : styles.glassTextStyle}"
                 onclick={toggleShowTestCases}

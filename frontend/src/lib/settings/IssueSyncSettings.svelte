@@ -20,7 +20,7 @@
   import X from '@lucide/svelte/icons/x';
   import Layers from '@lucide/svelte/icons/layers';
   import Tag from '@lucide/svelte/icons/tag';
-  import { successToast, errorToast } from '../stores/toasts.svelte.js';
+  import { successToast, errorToast, surfaceError } from '../stores/toasts.svelte.js';
   import { t } from '../stores/i18n.svelte.js';
   import { confirm } from '../composables/useConfirm.js';
   import ChipPicker from '../pickers/ChipPicker.svelte';
@@ -316,7 +316,8 @@
       repoLabelsStatus = 'ready';
     }).catch((error) => {
       if (cancelled) return;
-      console.error('Failed to load repository labels:', error);
+      // The label mapping section shows the failure inline.
+      surfaceError(error, { context: 'issueSync.repoLabels', silent: true });
       repoLabels = [];
       repoLabelsStatus = 'error';
     });
@@ -334,7 +335,8 @@
       repoMilestonesStatus = 'ready';
     }).catch((error) => {
       if (cancelled) return;
-      console.error('Failed to load repository milestones:', error);
+      // The milestone mapping section shows the failure inline.
+      surfaceError(error, { context: 'issueSync.repoMilestones', silent: true });
       repoMilestones = [];
       repoMilestonesStatus = 'error';
     });

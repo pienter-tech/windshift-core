@@ -37,6 +37,10 @@
   import CalendarClock from '@lucide/svelte/icons/calendar-clock';
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
   import { getVisibleColor } from '../../utils/colorUtils.js';
+  import { formatDateWithOptions } from '../../utils/dateFormatter.js';
+  import { calendarDate as toCalendarDate, calendarMonthStart, calendarMonthPosition, calendarDateAtPosition, civilDays } from './roadmapCalendar.js';
+  import { getAppLocale } from '../../stores/appLocale.svelte.js';
+  import { resolveCalendar } from '../../stores/calendar.svelte.js';
   import ItemTypeIcon from '../../components/ItemTypeIcon.svelte';
   import ItemKey from '../../components/ItemKey.svelte';
   import { SYSTEM_FIELDS } from '../../stores/fieldConfig.js';
@@ -270,15 +274,16 @@
   // Snap granularity in days: week/month zoom → 1 day, quarter zoom → 7 days
   let snapDays = $derived(zoom === 'quarter' ? 7 : 1);
 
+  function calendarDate(date) { return toCalendarDate(date, resolveCalendar(getAppLocale())); }
+  function monthStart(date, offset = 0) { return calendarMonthStart(date, resolveCalendar(getAppLocale()), offset); }
+
   // Reference date (start of visible range)
   let referenceDate = $derived.by(() => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const d = new Date(today);
     if (zoom === 'quarter') {
-      d.setDate(1);
-      d.setMonth(d.getMonth() + scrollOffset);
-      return d;
+      return monthStart(d, scrollOffset);
     }
     d.setDate(d.getDate() + scrollOffset * zoomConfig.columnDays);
     if (zoom === 'week' || zoom === 'month') {
@@ -315,7 +320,7 @@
     for (let i = -prependCount; i < rightCount; i++) {
       const d = new Date(referenceDate);
       if (zoom === 'quarter') {
-        d.setMonth(referenceDate.getMonth() + i);
+        d.setTime(monthStart(referenceDate, i).getTime());
       } else {
         d.setDate(d.getDate() + i * zoomConfig.columnDays);
       }
@@ -336,7 +341,7 @@
     const last = columns[columns.length - 1];
     const d = new Date(last);
     if (zoom === 'quarter') {
-      d.setMonth(d.getMonth() + 1);
+      d.setTime(monthStart(d, 1).getTime());
     } else {
       d.setDate(d.getDate() + zoomConfig.columnDays);
     }
@@ -346,18 +351,9 @@
   // Convert a date to a column position (fractional column index)
   function dateToColPos(date) {
     if (zoom === 'quarter') {
-      const refYear = referenceDate.getFullYear();
-      const refMonth = referenceDate.getMonth();
-      const year = date.getFullYear();
-      const month = date.getMonth();
-      const monthOffset = (year - refYear) * 12 + (month - refMonth);
-      const monthStart = new Date(year, month, 1);
-      const nextMonth = new Date(year, month + 1, 1);
-      const daysInMonth = (nextMonth.getTime() - monthStart.getTime()) / (1000 * 60 * 60 * 24);
-      const dayInMonth = (date.getTime() - monthStart.getTime()) / (1000 * 60 * 60 * 24);
-      return monthOffset + dayInMonth / daysInMonth;
+      return calendarMonthPosition(referenceDate, date, resolveCalendar(getAppLocale()));
     }
-    return (date.getTime() - referenceDate.getTime()) / (1000 * 60 * 60 * 24) / zoomConfig.columnDays;
+    return civilDays(date, referenceDate) / zoomConfig.columnDays;
   }
 
   // Today column index
@@ -371,17 +367,15 @@
   let monthBoundaries = $derived.by(() => {
     if (zoom !== 'month' || columns.length === 0) return [];
     const boundaries = [];
-    const refTime = referenceDate.getTime();
-    const msPerDay = 1000 * 60 * 60 * 24;
     // Find all month-starts within the visible range
     const first = columns[0];
     const last = columns[columns.length - 1];
-    const d = new Date(first.getFullYear(), first.getMonth(), 1);
-    if (d < first) d.setMonth(d.getMonth() + 1);
+    const d = monthStart(first);
+    if (d < first) d.setTime(monthStart(d, 1).getTime());
     while (d <= last) {
-      const colPos = (d.getTime() - refTime) / msPerDay / zoomConfig.columnDays;
-      boundaries.push({ px: (colPos + gridOffset) * colWidth, label: d.toLocaleDateString(undefined, { month: 'short' }) });
-      d.setMonth(d.getMonth() + 1);
+      const colPos = civilDays(d, referenceDate) / zoomConfig.columnDays;
+      boundaries.push({ px: (colPos + gridOffset) * colWidth, label: formatDateWithOptions(d, { month: 'short' }) });
+      d.setTime(monthStart(d, 1).getTime());
     }
     return boundaries;
   });
@@ -390,24 +384,24 @@
   let headerLabels = $derived.by(() => {
     if (zoom === 'week') {
       return columns.map(d => ({
-        label: String(d.getDate()),
-        weekday: d.toLocaleDateString(undefined, { weekday: 'short' }),
+        label: formatDateWithOptions(d, { day: 'numeric' }),
+        weekday: formatDateWithOptions(d, { weekday: 'short' }),
         sublabel: '',
         date: d
       }));
     }
     if (zoom === 'month') {
       return columns.map(d => ({
-        label: `${d.getDate()}`,
+        label: formatDateWithOptions(d, { day: 'numeric' }),
         weekday: '',
-        sublabel: d.toLocaleDateString(undefined, { month: 'short' }),
+        sublabel: formatDateWithOptions(d, { month: 'short' }),
         date: d
       }));
     }
     return columns.map(d => ({
-      label: d.toLocaleDateString(undefined, { month: 'short' }),
+      label: formatDateWithOptions(d, { month: 'short' }),
       weekday: '',
-      sublabel: String(d.getFullYear()),
+      sublabel: formatDateWithOptions(d, { year: 'numeric' }),
       date: d
     }));
   });
@@ -417,24 +411,22 @@
     const groups = [];
     if (zoom === 'month' && columns.length > 0) {
       // Use actual calendar month boundaries for pixel-accurate positioning
-      const refTime = referenceDate.getTime();
-      const msPerDay = 1000 * 60 * 60 * 24;
       const totalPx = columns.length * colWidth;
 
       const lastCol = columns[columns.length - 1];
       const endVisible = new Date(lastCol);
       endVisible.setDate(endVisible.getDate() + zoomConfig.columnDays);
 
-      let d = new Date(columns[0].getFullYear(), columns[0].getMonth(), 1);
+      let d = monthStart(columns[0]);
       while (d <= endVisible) {
-        const nextMonth = new Date(d.getFullYear(), d.getMonth() + 1, 1);
-        const leftDays = (d.getTime() - refTime) / msPerDay;
-        const rightDays = (nextMonth.getTime() - refTime) / msPerDay;
+        const nextMonth = monthStart(d, 1);
+        const leftDays = civilDays(d, referenceDate);
+        const rightDays = civilDays(nextMonth, referenceDate);
         const leftPx = Math.max(0, (leftDays / zoomConfig.columnDays + gridOffset) * colWidth);
         const rightPx = Math.min(totalPx, (rightDays / zoomConfig.columnDays + gridOffset) * colWidth);
         if (rightPx > leftPx) {
           groups.push({
-            label: d.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }),
+            label: formatDateWithOptions(d, { month: 'long', year: 'numeric' }),
             leftPx,
             widthPx: rightPx - leftPx,
           });
@@ -447,8 +439,8 @@
       for (let i = 0; i < columns.length; i++) {
         const d = columns[i];
         const key = zoom === 'quarter'
-          ? `Q${Math.floor(d.getMonth() / 3) + 1} ${d.getFullYear()}`
-          : d.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+          ? `Q${Math.floor((calendarDate(d).month - 1) / 3) + 1} ${calendarDate(d).year}`
+          : formatDateWithOptions(d, { month: 'long', year: 'numeric' });
         if (key !== currentMonth) {
           groups.push({ label: key, leftPx: i * colWidth, widthPx: colWidth });
           currentMonth = key;
@@ -601,7 +593,8 @@
         const source = itemMap.get(link.source_id);
         const target = itemMap.get(link.target_id);
         if (source && target) {
-          arrows.push({ source, target });
+          // "Depends On" links run from the dependent (source) to its blocker (target).
+          arrows.push({ blocker: target, dependent: source });
         }
       }
     }
@@ -656,9 +649,10 @@
 
   // Sync collection name and load links when items change
   $effect(() => {
+    const dependencyLinkTypeId = roadmapConfig.dependency_link_type_id;
     if (!collectionStore.loading) {
       currentCollectionName = collectionStore.collectionName;
-      untrack(() => loadLinksForItems(allItemsSorted));
+      if (dependencyLinkTypeId) untrack(() => loadLinksForItems(allItemsSorted));
     }
   });
 
@@ -739,6 +733,7 @@
       }
     } catch (e) {
       console.error('Failed to save roadmap config:', e);
+      errorToast(t('dialogs.alerts.failedToSave', { error: e?.message || e }));
     }
   }
 
@@ -811,11 +806,14 @@
   function onDragMove(e) {
     if (!dragInfo) return;
     const dx = e.clientX - dragInfo.startX;
-    const pxPerDay = zoom === 'quarter'
-      ? colWidth / 30
-      : colWidth / zoomConfig.columnDays;
-    const rawDays = dx / pxPerDay;
-    dragInfo.daysDelta = Math.round(rawDays / snapDays) * snapDays;
+    if (zoom === 'quarter') {
+      const anchor = dragInfo.mode === 'resize-right' ? dragInfo.origEnd : dragInfo.origStart;
+      const position = (anchor + gridOffset) * colWidth;
+      dragInfo.daysDelta = civilDays(dateAtTimelineX(position + dx), dateAtTimelineX(position));
+    } else {
+      const rawDays = dx / (colWidth / zoomConfig.columnDays);
+      dragInfo.daysDelta = Math.round(rawDays / snapDays) * snapDays;
+    }
   }
 
   async function onDragEnd() {
@@ -918,15 +916,20 @@
     return { startOffset: 0, endOffset: 0 };
   }
 
-  // SVG arrow path between two items (using treeData indices)
-  function getArrowPath(source, target, sourceIndex, targetIndex) {
-    const x1 = (source.barEnd + gridOffset) * colWidth;
-    const y1 = sourceIndex * ROW_HEIGHT + ROW_HEIGHT / 2;
-    const x2 = (target.barStart + gridOffset) * colWidth;
-    const y2 = targetIndex * ROW_HEIGHT + ROW_HEIGHT / 2;
-
+  // Connect the facing bar ends, with direction from blocker to dependent.
+  function getArrowGeometry(blocker, dependent, blockerIndex, dependentIndex) {
+    const forward = blocker.barStart + blocker.barEnd <= dependent.barStart + dependent.barEnd;
+    const x1 = ((forward ? blocker.barEnd : blocker.barStart) + gridOffset) * colWidth;
+    const y1 = blockerIndex * ROW_HEIGHT + ROW_HEIGHT / 2;
+    const x2 = ((forward ? dependent.barStart : dependent.barEnd) + gridOffset) * colWidth;
+    const y2 = dependentIndex * ROW_HEIGHT + ROW_HEIGHT / 2;
     const midX = (x1 + x2) / 2;
-    return `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`;
+    return {
+      path: `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`,
+      head: forward
+        ? `${x2},${y2} ${x2 - 6},${y2 - 4} ${x2 - 6},${y2 + 4}`
+        : `${x2},${y2} ${x2 + 6},${y2 - 4} ${x2 + 6},${y2 + 4}`,
+    };
   }
 
   // --- Panel resize handlers ---
@@ -953,13 +956,7 @@
     const dayOffset = timelineX / colWidth - gridOffset;
     const date = new Date(referenceDate);
     if (zoom === 'quarter') {
-      const monthOffset = Math.floor(dayOffset);
-      const frac = dayOffset - monthOffset;
-      date.setMonth(date.getMonth() + monthOffset);
-      const nextMonth = new Date(date.getFullYear(), date.getMonth() + 1, 1);
-      const monthStart = new Date(date.getFullYear(), date.getMonth(), 1);
-      const daysInMonth = (nextMonth.getTime() - monthStart.getTime()) / (1000 * 60 * 60 * 24);
-      date.setDate(1 + Math.floor(frac * daysInMonth / snapDays) * snapDays);
+      return calendarDateAtPosition(referenceDate, dayOffset, resolveCalendar(getAppLocale()), snapDays);
     } else {
       const days = Math.floor(dayOffset * zoomConfig.columnDays / snapDays) * snapDays;
       date.setDate(date.getDate() + days);
@@ -1222,7 +1219,7 @@
       <div class="relative z-40 flex items-center mb-4">
       <div class="flex items-center gap-4">
         <SubFilterBar {workspaceId} {collectionId} />
-        <CollectionLevelFilter {workspaceId} {collectionId} view="roadmap" />
+        <CollectionLevelFilter {workspaceId} {collectionId} />
       </div>
       </div>
 
@@ -1397,7 +1394,7 @@
                       {/if}
 
                       <!-- Title -->
-                      <span class="text-sm truncate flex-1 group-hover/tree-row:underline" style="color: var(--ds-text);">{item.title}</span>
+                      <span class="text-sm truncate flex-1 group-hover/tree-row:underline" dir="auto" style="color: var(--ds-text);">{item.title}</span>
 
                       <!-- Scheduled indicator -->
                       {#if scheduled}
@@ -1515,7 +1512,7 @@
                             {@const visibleColor = getVisibleColor(roadmapItem.statusColor)}
 
                             {#if roadmapItem.isMilestone && !roadmapConfig.end_field_id}
-                              <!-- Diamond milestone (no end field configured, can't expand) -->
+                              <!-- Diamond milestone when no end field is configured -->
                               <RoadmapItemPreview
                                 item={roadmapItem}
                                 workspace={workspace}
@@ -1607,8 +1604,8 @@
                             {/if}
                           {:else if schedulePreview?.itemId === item.id}
                             {@const previewColor = getVisibleColor(statuses.find(s => s.id === item.status_id)?.color || '#6b7280')}
-                            {@const previewStart = schedulePreview.start.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
-                            {@const previewEnd = schedulePreview.end?.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                            {@const previewStart = formatDateWithOptions(schedulePreview.start, { month: 'short', day: 'numeric' })}
+                            {@const previewEnd = formatDateWithOptions(schedulePreview.end, { month: 'short', day: 'numeric' })}
                             <div
                               data-testid="roadmap-schedule-preview-{item.id}"
                               data-start-date={formatDateValue(schedulePreview.start)}
@@ -1631,21 +1628,20 @@
                       style="left: 0; top: 0; width: {totalWidth}px; height: {treeData.length * ROW_HEIGHT}px; z-index: 20;"
                     >
                       {#each dependencyArrows as arrow}
-                        {@const sourceIdx = treeData.findIndex(i => i.id === arrow.source.id)}
-                        {@const targetIdx = treeData.findIndex(i => i.id === arrow.target.id)}
-                        {#if sourceIdx !== -1 && targetIdx !== -1}
+                        {@const blockerIdx = treeData.findIndex(i => i.id === arrow.blocker.id)}
+                        {@const dependentIdx = treeData.findIndex(i => i.id === arrow.dependent.id)}
+                        {@const geometry = getArrowGeometry(arrow.blocker, arrow.dependent, blockerIdx, dependentIdx)}
+                        {#if blockerIdx !== -1 && dependentIdx !== -1}
                           <path
-                            d={getArrowPath(arrow.source, arrow.target, sourceIdx, targetIdx)}
+                            d={geometry.path}
                             fill="none"
                             stroke="var(--ds-text-subtle)"
                             stroke-width="1.5"
                             stroke-dasharray="4,3"
                             opacity="0.6"
                           />
-                          {@const tx = (arrow.target.barStart + gridOffset) * colWidth}
-                          {@const ty = targetIdx * ROW_HEIGHT + ROW_HEIGHT / 2}
                           <polygon
-                            points="{tx},{ty} {tx - 6},{ty - 4} {tx - 6},{ty + 4}"
+                            points={geometry.head}
                             fill="var(--ds-text-subtle)"
                             opacity="0.6"
                           />

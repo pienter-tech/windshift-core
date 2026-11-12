@@ -700,6 +700,14 @@ export default {
       textBody: 'Corpo in testo semplice',
       adminNotes: 'Descrizione (note dell’amministratore)',
       activeHint: 'Attivo (deseleziona per tornare al modello predefinito integrato)',
+      localeLabel: "Lingua",
+      defaultLocale: "Predefinito (tutte le lingue)",
+      translationHint: "Stai modificando la versione per questa lingua. Le altre lingue usano il modello predefinito.",
+      translationSaved: "Traduzione salvata",
+      translationDelete: "Rimuovi traduzione",
+      translationDeleted: "Traduzione rimossa",
+      translationSaveFailed: "Impossibile salvare la traduzione: {error}",
+      translationDeleteFailed: "Impossibile rimuovere la traduzione: {error}",
       availableVariables: 'Variabili disponibili',
       syntaxHint:
         'I modelli usano la sintassi html/template di Go. Usa {open} .Field {close} per i valori e {open} range .Items {close}…{open} end {close} per iterare.',
@@ -965,11 +973,6 @@ export default {
         dependency_analysis: {
           name: 'Analisi delle dipendenze',
           description: 'Analizza e suggerisce dipendenze tra elementi',
-        },
-        logbook_articles: {
-          name: 'Articoli del logbook',
-          description:
-            'Classificazione dei documenti, pulizia e generazione di articoli per il logbook con l’IA',
         },
       },
     },

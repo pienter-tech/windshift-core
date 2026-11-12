@@ -87,6 +87,7 @@ func RegisterChannelRoutes(deps *Deps) {
 	api.HandleH("GET /notifications/events", auth(http.HandlerFunc(deps.Channels.Notification.NotificationEvents)))
 	api.HandleH("POST /notifications", auth(http.HandlerFunc(deps.Channels.Notification.CreateNotification)))
 	api.HandleH("DELETE /notifications", auth(http.HandlerFunc(deps.Channels.Notification.ClearNotifications)))
+	api.HandleH("DELETE /notifications/{id}", auth(http.HandlerFunc(deps.Channels.Notification.DeleteNotification)))
 	api.HandleH("PATCH /notifications/read-all", auth(http.HandlerFunc(deps.Channels.Notification.MarkAllNotificationsAsRead)))
 	api.HandleH("PATCH /notifications/{id}/read", auth(http.HandlerFunc(deps.Channels.Notification.MarkNotificationAsRead)))
 	api.HandleH("PATCH /notifications/seen-all", auth(http.HandlerFunc(deps.Channels.Notification.MarkAllNotificationsAsSeen)))
@@ -97,6 +98,8 @@ func RegisterChannelRoutes(deps *Deps) {
 	api.HandleH("GET /email-templates", admin(http.HandlerFunc(deps.Channels.EmailTemplate.List)))
 	api.HandleH("GET /email-templates/{id}", admin(http.HandlerFunc(deps.Channels.EmailTemplate.Get)))
 	api.HandleH("PUT /email-templates/{id}", admin(http.HandlerFunc(deps.Channels.EmailTemplate.Update)))
+	api.HandleH("PUT /email-templates/{id}/translations/{locale}", admin(http.HandlerFunc(deps.Channels.EmailTemplate.UpdateTranslation)))
+	api.HandleH("DELETE /email-templates/{id}/translations/{locale}", admin(http.HandlerFunc(deps.Channels.EmailTemplate.DeleteTranslation)))
 	api.HandleH("POST /email-templates/preview", admin(http.HandlerFunc(deps.Channels.EmailTemplate.Preview)))
 
 	// Webhook manual trigger endpoints
