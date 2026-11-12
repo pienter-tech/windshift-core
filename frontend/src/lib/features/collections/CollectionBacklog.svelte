@@ -14,8 +14,8 @@
   import Plus from '@lucide/svelte/icons/plus';
   import EmptyState from '../../components/EmptyState.svelte';
   import Toggle from '../../components/Toggle.svelte';
-  import { draggable, dropTargetForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter';
-  import { attachClosestEdge, extractClosestEdge } from '@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge';
+  import { dropTargetForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter';
+  import { registerReorderable } from '../../composables/reorderableDrag.js';
   import ViewHeader from '../../layout/ViewHeader.svelte';
   import StaticViewBackground from '../../layout/StaticViewBackground.svelte';
   import SubFilterBar from './SubFilterBar.svelte';
@@ -35,6 +35,8 @@
   import CompleteIterationDialog from '../../dialogs/CompleteIterationDialog.svelte';
   import { formatItemCount } from '../../utils/itemCount.js';
   import { isSystemFieldAvailableInEffectiveConfig } from '../../utils/screenFields.js';
+  import BacklogFieldSelector from './BacklogFieldSelector.svelte';
+  import { DEFAULT_BACKLOG_FIELDS, normalizeBacklogFields } from './backlogFields.js';
 
   let { workspaceId, collectionId = null } = $props();
 
@@ -64,6 +66,7 @@
   let sectionDropHighlight = $state(new Map()); // iterationId|'unassigned' -> boolean
   let pendingActionItemIds = $state(new Set());
   let pendingStoryPointsItemIds = $state(new Set());
+  let visibleFields = $state([...DEFAULT_BACKLOG_FIELDS]);
 
   // --- Complete Iteration dialog state ---
   let completeIterationShow = $state(false);
@@ -116,12 +119,27 @@
     if (typeof storedShowCompleted === 'boolean') {
       showCompletedIterations = storedShowCompleted;
     }
+
+    const storedVisibleFields = collectionPreferences.viewStateValue(
+      workspaceId,
+      collectionId,
+      'backlog',
+      'visible_fields'
+    );
+    visibleFields = normalizeBacklogFields(storedVisibleFields);
   }
 
   function setShowCompletedIterations(value) {
     showCompletedIterations = value;
     collectionPreferences.patchViewState(workspaceId, collectionId, 'backlog', {
       show_completed_iterations: value,
+    });
+  }
+
+  function setVisibleFields(fields) {
+    visibleFields = normalizeBacklogFields(fields);
+    collectionPreferences.patchViewState(workspaceId, collectionId, 'backlog', {
+      visible_fields: visibleFields,
     });
   }
 
@@ -279,12 +297,12 @@
       const membership = await resolveCreatedItemMembership(newItem, {
         workspaceId,
         collectionId,
-        subFilterQL: collectionStore.subFilterQL ? collectionStore.effectiveSubFilterQL : '',
+        subFilterQL: collectionStore.effectiveBacklogSubFilterQL,
       });
       if (membership === 'member') {
-        // insertCreatedItem deduplicates by id so a repeated create event cannot
-        // append the same backlog row twice.
-        collectionStore.insertCreatedItem(newItem, { backlog: true });
+        // Backlog membership also depends on configured statuses, so let the
+        // authoritative backlog request decide whether the new item belongs.
+        scheduleCollectionReconciliation();
       } else if (membership === 'unknown') {
         scheduleCollectionReconciliation();
       }
@@ -318,11 +336,10 @@
       } catch (error) {
         console.error('Failed to load iterations:', error);
       }
-
-      restorePersistedState();
     } else {
       await workspaceDataStore.initializeGlobal();
     }
+    restorePersistedState();
     loading = false;
   });
 
@@ -374,6 +391,7 @@
       successToast(t('iterations.iterationStarted', { name: iteration.name }));
     } catch (error) {
       console.error('Failed to start iteration:', error);
+      errorToast(error?.message || t('iterations.failedToSaveIteration'));
     }
   }
 
@@ -404,6 +422,7 @@
       reloadCollection();
     } catch (error) {
       console.error('Failed to complete iteration:', error);
+      errorToast(error?.message || t('iterations.failedToSaveIteration'));
     }
   }
 
@@ -437,7 +456,7 @@
       const boundaryItem = await items.getBacklogBoundary(
         workspaceId,
         collectionId,
-        collectionStore.effectiveSubFilterQL,
+        collectionStore.effectiveBacklogSubFilterQL,
         boundary,
       );
       if (!boundaryItem || boundaryItem.id === item.id) return;
@@ -497,75 +516,54 @@
   function registerBacklogItem(element, itemId) {
     dragState.set(itemId, { isDragging: false, closestEdge: null });
 
-    const draggableCleanup = draggable({
+    const cleanup = registerReorderable({
       element,
-      getInitialData: () => {
+      getDragData: () => {
         const item = backlogItemsById.get(itemId);
         return { item, type: 'work-item', sectionId: item?.iteration_id || 'unassigned' };
       },
-      onDragStart: () => {
-        element.style.opacity = '0.5';
-        document.body.classList.add('is-dragging');
-        const state = dragState.get(itemId) || {};
-        const next = new Map(dragState);
-        next.set(itemId, { ...state, isDragging: true });
-        dragState = next;
-      },
-      onDrop: () => {
-        element.style.opacity = '';
-        document.body.classList.remove('is-dragging');
-        dragState = new Map([...dragState].map(([id]) => [id, { isDragging: false, closestEdge: null }]));
-        sectionDropHighlight = new Map();
-      }
-    });
-
-    const dropTargetCleanup = dropTargetForElements({
-      element,
+      getDropData: () => ({ sectionId: element.dataset.sectionId || 'unassigned' }),
       canDrop: ({ source }) => {
         const data = /** @type {any} */ (source.data);
         return data.type === 'work-item' && data.item?.id !== itemId &&
           !isSectionClosed(element.dataset.sectionId || 'unassigned');
       },
-      getData: ({ input, element: targetElement }) => attachClosestEdge(
-        { sectionId: element.dataset.sectionId || 'unassigned' },
-        { input, element: targetElement, allowedEdges: ['top', 'bottom'] }
-      ),
-      onDragEnter: ({ self, source }) => {
+      onDragStart: () => {
+        document.body.classList.add('is-dragging');
+        dragState.set(itemId, { ...(dragState.get(itemId) || {}), isDragging: true });
+        dragState = new Map(dragState);
+      },
+      onDragEnd: () => {
+        document.body.classList.remove('is-dragging');
+        dragState = new Map([...dragState].map(([id]) => [id, { isDragging: false, closestEdge: null }]));
+        sectionDropHighlight = new Map();
+      },
+      onEnter: (closestEdge, source) => {
         const data = /** @type {any} */ (source.data);
         if (data.type !== 'work-item' || data.item?.id === itemId) return;
-        const next = new Map(dragState);
-        next.set(itemId, {
-          ...(dragState.get(itemId) || {}),
-          closestEdge: extractClosestEdge(self.data),
-        });
-        dragState = next;
+        dragState.set(itemId, { ...(dragState.get(itemId) || {}), closestEdge });
+        dragState = new Map(dragState);
       },
-      onDragLeave: () => {
-        const next = new Map(dragState);
-        next.set(itemId, { ...(dragState.get(itemId) || {}), closestEdge: null });
-        dragState = next;
+      onLeave: () => {
+        dragState.set(itemId, { ...(dragState.get(itemId) || {}), closestEdge: null });
+        dragState = new Map(dragState);
       },
-      onDrop: ({ self, source }) => {
+      onDrop: ({ source, closestEdge }) => {
         const data = /** @type {any} */ (source.data);
         const item = backlogItemsById.get(itemId);
-        const closestEdge = extractClosestEdge(self.data);
         if (item && data.type === 'work-item' && closestEdge) {
           handleEdgeBasedDrop(data.item, item, closestEdge, {
             sectionId: element.dataset.sectionId || 'unassigned',
           });
         }
-      }
+      },
+      onCleanup: () => {
+        document.body.classList.remove('is-dragging');
+        dragState.delete(itemId);
+      },
     });
 
-    return {
-      destroy() {
-        element.style.opacity = '';
-        document.body.classList.remove('is-dragging');
-        draggableCleanup();
-        dropTargetCleanup();
-        dragState.delete(itemId);
-      }
-    };
+    return { destroy: cleanup };
   }
 
   function registerBacklogSection(element, iterationId) {
@@ -657,6 +655,7 @@
       reloadCollection();
     } catch (error) {
       console.error('Failed to handle section drop:', error);
+      errorToast(error?.message || t('common.error'));
     } finally {
       setTimeout(() => pendingDrops.delete(dropId), 500);
     }
@@ -721,6 +720,7 @@
       <!-- Controls Bar -->
       <div class="flex flex-wrap items-center gap-3 mb-6">
         <SubFilterBar {workspaceId} {collectionId} showCompletionToggle={false} />
+        <BacklogFieldSelector fields={visibleFields} onchange={setVisibleFields} />
         <Toggle
           checked={showCompletedIterations}
           onchange={setShowCompletedIterations}
@@ -755,6 +755,7 @@
               {backlogRowGap}
               {assignableIterations}
               {pendingActionItemIds}
+              {visibleFields}
               isGlobalAdded={addedGlobalIds.has(section.iteration.id)}
               sectionHighlight={sectionDropHighlight.get(String(section.iteration.id)) || false}
               onToggleCollapse={toggleCollapse}
@@ -786,6 +787,7 @@
             {backlogRowGap}
             {assignableIterations}
             {pendingActionItemIds}
+            {visibleFields}
             sectionHighlight={sectionDropHighlight.get('unassigned') || false}
             onToggleCollapse={toggleCollapse}
             onOpenItem={openItem}

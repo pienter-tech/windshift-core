@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strconv"
 	"strings"
@@ -77,6 +78,10 @@ type ItemApplicationService struct {
 	matrix     *TransitionMatrixService
 	bulk       *ItemUpdateService
 	mentions   *MentionService
+	comments   *CommentService
+	// assetPerm gates asset titles in history; nil means asset references are
+	// left unresolved rather than leaking a title the viewer cannot see.
+	assetPerm AssetPermissionChecker
 	// clock is the SLA evaluation clock. Reporting must share it so an
 	// ongoing-breach snapshot matches the engine's "now"; nil means wall time.
 	clock sla.Clock
@@ -139,6 +144,20 @@ func (s *ItemApplicationService) WithMutationEffects(mentions *MentionService) *
 	return s
 }
 
+// WithComments wires the comment service used to persist the optional comment
+// collected by a transition screen.
+func (s *ItemApplicationService) WithComments(comments *CommentService) *ItemApplicationService {
+	s.comments = comments
+	return s
+}
+
+// WithAssetPermissions lets history resolve asset references only for viewers
+// who can see the asset's set.
+func (s *ItemApplicationService) WithAssetPermissions(checker AssetPermissionChecker) *ItemApplicationService {
+	s.assetPerm = checker
+	return s
+}
+
 type ItemWatchStatus struct {
 	ItemID       int  `json:"item_id"`
 	Watching     bool `json:"watching"`
@@ -170,6 +189,19 @@ type ItemTransitionOption struct {
 	Name          string `json:"name"`
 	Value         string `json:"value"`
 	CategoryColor string `json:"category_color,omitempty"`
+	// Screen is the transition screen the client must open before calling the
+	// transition endpoint, or nil when the move has no screen (WI-1835).
+	Screen *ItemTransitionScreen `json:"screen,omitempty"`
+}
+
+// ItemTransitionScreen is the screen summary attached to an available
+// transition so the client can decide whether to open the screen modal before
+// calling the transition endpoint.
+type ItemTransitionScreen struct {
+	ID                 int    `json:"id"`
+	Name               string `json:"name"`
+	FieldCount         int    `json:"field_count"`
+	RequiredFieldCount int    `json:"required_field_count"`
 }
 
 type ItemTransitionSummary struct {
@@ -1104,8 +1136,8 @@ func (s *ItemApplicationService) UpdateRank(ctx context.Context, actor AuditActo
 	return s.Get(ctx, actor.UserID, itemID, false)
 }
 
-func (s *ItemApplicationService) Transition(ctx context.Context, actor AuditActor, itemID, statusID int) (*ItemTransitionResult, error) {
-	result, err := s.transitionItem(ctx, actor, itemID, statusID)
+func (s *ItemApplicationService) Transition(ctx context.Context, actor AuditActor, itemID, statusID int, fields map[string]any) (*ItemTransitionResult, error) {
+	result, err := s.transitionItem(ctx, actor, itemID, statusID, fields)
 	if err != nil {
 		return nil, err
 	}
@@ -1118,8 +1150,11 @@ func (s *ItemApplicationService) Transition(ctx context.Context, actor AuditActo
 }
 
 // transitionItem runs one workflow transition without enriching the returned
-// item, so bulk callers can reuse it without paying for N detail loads.
-func (s *ItemApplicationService) transitionItem(ctx context.Context, actor AuditActor, itemID, statusID int) (*ItemTransitionResult, error) {
+// item, so bulk callers can reuse it without paying for N detail loads. The
+// governing transition's screen is always enforced; callers that cannot
+// collect field values (bulk) pass nil fields and receive a screen_required
+// rejection per item.
+func (s *ItemApplicationService) transitionItem(ctx context.Context, actor AuditActor, itemID, statusID int, fields map[string]any) (*ItemTransitionResult, error) {
 	item, err := s.items.FindByID(itemID)
 	if err != nil {
 		return nil, err
@@ -1130,8 +1165,15 @@ func (s *ItemApplicationService) transitionItem(ctx context.Context, actor Audit
 	if s.activity != nil {
 		_ = s.activity.TrackItemActivity(actor.UserID, itemID, ActivityEdit)
 	}
+	applyFields := func(ctx context.Context, tx database.Tx, locked *models.Item) error {
+		if err := s.bulk.ApplyFieldsInTx(ctx, tx, locked.ID, screenUpdateData(fields), actor.UserID); err != nil {
+			return err
+		}
+		return s.applyTransitionLabels(ctx, tx, locked, actor, fields)
+	}
 	result, err := NewWorkflowService(s.db).PerformTransition(ctx, PerformTransitionRequest{
 		ItemID: itemID, ToStatusID: statusID, ActorUserID: actor.UserID, Modes: []string{"validator", "condition"},
+		Fields: fields, EnforceScreen: true, ApplyFields: applyFields,
 	}, s.items, s.conditions, s.approvals)
 	if err != nil {
 		return nil, err
@@ -1140,9 +1182,66 @@ func (s *ItemApplicationService) transitionItem(ctx context.Context, actor Audit
 		s.events.EmitStatusChanged(result.Item, result.OldStatusID, result.NewStatusID, actor.UserID, actor.Username)
 	}
 	s.syncStatus(ctx, result.Item.ID, result.NewStatusID, result.NoOp)
+	s.recordTransitionComment(itemID, actor.UserID, fields)
 	return &ItemTransitionResult{
 		Item: result.Item, OldStatusID: result.OldStatusID, NewStatusID: result.NewStatusID, NoOp: result.NoOp,
 	}, nil
+}
+
+// applyTransitionLabels replaces the item's label set inside the transition
+// transaction when the screen submitted label_ids. The label-change fact is
+// recorded in the same transaction so the swap and its history commit together.
+func (s *ItemApplicationService) applyTransitionLabels(ctx context.Context, tx database.Tx, item *models.Item, actor AuditActor, fields map[string]any) error {
+	labelIDs, present, err := transitionLabelIDs(fields)
+	if err != nil {
+		return err
+	}
+	if !present {
+		return nil
+	}
+	labels := repository.NewLabelRepository(s.db)
+	for _, labelID := range labelIDs {
+		if _, err := labels.GetByID(labelID); err != nil {
+			if errors.Is(err, repository.ErrNotFound) {
+				return NewServiceError(400, fmt.Sprintf("label %d was not found", labelID))
+			}
+			return err
+		}
+	}
+	before, err := labels.ListForItemTx(tx, item.ID)
+	if err != nil {
+		return err
+	}
+	if err := labels.ReplaceItemLabelsTx(ctx, tx, item.ID, labelIDs); err != nil {
+		return err
+	}
+	after, err := labels.ListForItemTx(tx, item.ID)
+	if err != nil {
+		return err
+	}
+	if !labelSetsDiffer(before, after) {
+		return nil
+	}
+	return recordLabelChangeFact(s.db, tx, item, before, after, actor)
+}
+
+// recordTransitionComment persists the optional comment collected by a
+// transition screen. The move already committed, so a comment failure is
+// logged rather than reported as a failed transition.
+func (s *ItemApplicationService) recordTransitionComment(itemID, authorID int, fields map[string]any) {
+	if s.comments == nil {
+		return
+	}
+	content, ok := fields["comment"].(string)
+	if !ok || strings.TrimSpace(content) == "" {
+		return
+	}
+	if _, err := s.comments.Create(CreateCommentParams{
+		ItemID: itemID, AuthorID: authorID, ActorUserID: authorID, Content: content,
+	}); err != nil {
+		slog.Error("failed to persist transition comment",
+			slog.String("component", "items"), slog.Int("item_id", itemID), slog.Any("error", err))
+	}
 }
 
 // ItemBulkTransitionFailure records one selected item a bulk transition could
@@ -1162,11 +1261,34 @@ type ItemBulkTransitionResult struct {
 	Failures          []ItemBulkTransitionFailure `json:"failures"`
 }
 
+// BulkScreenBlockedItem names one item a bulk transition refused because its
+// target transition carries a screen with unsatisfied required fields.
+type BulkScreenBlockedItem struct {
+	ItemID int    `json:"item_id"`
+	Key    string `json:"key,omitempty"`
+}
+
+// BulkTransitionScreenRequiredError refuses an entire bulk transition when at
+// least one selected item needs screen input a bulk caller cannot supply. A
+// screen is a limitation of the bulk mechanism, not a per-item business rule,
+// so the batch is refused instead of partially applied and the client may retry
+// without the blocked items.
+type BulkTransitionScreenRequiredError struct {
+	Blocked []BulkScreenBlockedItem
+}
+
+func (e *BulkTransitionScreenRequiredError) Error() string {
+	return "bulk transition requires transition screen input for some items"
+}
+
 // BulkTransition applies one target status to every requested item in a single
 // server-side request, so the client never fans out one transition call per
 // item. Workflow validity, conditions, and approvals are enforced per item,
-// matching the single-item endpoint. The operation is best-effort: items that
-// cannot transition are returned in Failures while the rest commit.
+// matching the single-item endpoint, and those rejections are best-effort:
+// items that cannot transition are returned in Failures while the rest commit.
+// A transition screen is different: the bulk caller cannot collect field values,
+// so if any selected item needs screen input the whole request is refused with
+// BulkTransitionScreenRequiredError and nothing is applied.
 func (s *ItemApplicationService) BulkTransition(ctx context.Context, actor AuditActor, itemIDs []int, toStatusID int) (ItemBulkTransitionResult, error) {
 	ids := uniquePositiveSortedIDs(itemIDs)
 	if len(ids) == 0 {
@@ -1178,9 +1300,16 @@ func (s *ItemApplicationService) BulkTransition(ctx context.Context, actor Audit
 	if toStatusID <= 0 {
 		return ItemBulkTransitionResult{}, &validation.ValidationError{Field: "to_status_id", Message: "to_status_id is required"}
 	}
+	blocked, err := s.screenBlockedItems(ids, toStatusID)
+	if err != nil {
+		return ItemBulkTransitionResult{}, err
+	}
+	if len(blocked) > 0 {
+		return ItemBulkTransitionResult{}, &BulkTransitionScreenRequiredError{Blocked: blocked}
+	}
 	result := ItemBulkTransitionResult{RequestedCount: len(ids), Failures: []ItemBulkTransitionFailure{}}
 	for _, id := range ids {
-		transition, err := s.transitionItem(ctx, actor, id, toStatusID)
+		transition, err := s.transitionItem(ctx, actor, id, toStatusID, nil)
 		if err != nil {
 			failure, expected := bulkTransitionFailure(id, err)
 			if !expected {
@@ -1204,6 +1333,57 @@ func (s *ItemApplicationService) BulkTransition(ctx context.Context, actor Audit
 		"to_status_id": toStatusID,
 	})
 	return result, nil
+}
+
+// screenBlockedItems reports the selected items whose target transition needs
+// screen input, so BulkTransition can refuse the batch before applying any of
+// it. A screen blocks only when a required field is unsatisfied by the item's
+// stored state, matching per-item enforcement exactly: optional fields and
+// already-satisfied required fields never block a bulk move.
+func (s *ItemApplicationService) screenBlockedItems(itemIDs []int, toStatusID int) ([]BulkScreenBlockedItem, error) {
+	workflow := NewWorkflowService(s.db)
+	transitions := repository.NewTransitionRepository(s.db)
+	var blocked []BulkScreenBlockedItem
+	for _, id := range itemIDs {
+		item, err := s.items.FindByIDWithDetails(id)
+		if err != nil {
+			// Missing items are reported per item by the apply loop.
+			if errors.Is(err, repository.ErrNotFound) {
+				continue
+			}
+			return nil, err
+		}
+		if item.StatusID == nil {
+			continue
+		}
+		transitionID, err := workflow.resolveGoverningTransitionID(item.WorkspaceID, item.ItemTypeID, int64(*item.StatusID), int64(toStatusID))
+		if err != nil {
+			return nil, err
+		}
+		if transitionID == 0 {
+			continue
+		}
+		fields, err := transitions.GetScreenFields(transitionID)
+		if err != nil {
+			return nil, err
+		}
+		if len(fields) == 0 {
+			continue
+		}
+		missing, err := workflow.validateTransitionScreenFields(item, fields, nil)
+		if err != nil {
+			return nil, err
+		}
+		if len(missing) == 0 {
+			continue
+		}
+		key := ""
+		if item.WorkspaceKey != "" && item.WorkspaceItemNumber > 0 {
+			key = fmt.Sprintf("%s-%d", item.WorkspaceKey, item.WorkspaceItemNumber)
+		}
+		blocked = append(blocked, BulkScreenBlockedItem{ItemID: id, Key: key})
+	}
+	return blocked, nil
 }
 
 func bulkTransitionFailure(itemID int, err error) (ItemBulkTransitionFailure, bool) {
@@ -1356,9 +1536,21 @@ func (s *ItemApplicationService) AvailableTransitions(ctx context.Context, userI
 		}
 	}
 	seen := map[int]bool{*item.StatusID: true}
+	transitionIDs := make([]int, 0, len(options))
+	for _, option := range options {
+		transitionIDs = append(transitionIDs, option.TransitionID)
+	}
+	screens, err := repository.NewTransitionRepository(s.db).ScreensForTransitions(transitionIDs)
+	if err != nil {
+		return ItemTransitionSummary{}, err
+	}
 	for _, option := range options {
 		if !seen[option.StatusID] {
-			response.AvailableTransitions = append(response.AvailableTransitions, itemTransitionOption(option))
+			entry := itemTransitionOption(option)
+			if screen, ok := screens[option.TransitionID]; ok {
+				entry.Screen = &ItemTransitionScreen{ID: screen.ID, Name: screen.Name, FieldCount: screen.FieldCount, RequiredFieldCount: screen.RequiredFieldCount}
+			}
+			response.AvailableTransitions = append(response.AvailableTransitions, entry)
 			seen[option.StatusID] = true
 		}
 	}
@@ -1702,9 +1894,15 @@ func (s *ItemApplicationService) History(ctx context.Context, userID, itemID int
 	if err != nil {
 		return nil, err
 	}
-	allowedProjects := s.allowedProjectIDs(userID)
+	resolution := &historyResolution{
+		userID:          userID,
+		allowedProjects: s.allowedProjectIDs(userID),
+		// One cache per history read: a long feed repeats the same workspace,
+		// status, or user id across rows, and each miss is a database round trip.
+		names: map[string]string{},
+	}
 	for i := range history {
-		s.resolveHistory(&history[i], allowedProjects)
+		s.resolveHistory(&history[i], resolution)
 	}
 	return history, nil
 }
@@ -2087,20 +2285,43 @@ func (s *ItemApplicationService) allowedProjectIDs(userID int) map[int]struct{} 
 	return allowed
 }
 
-func (s *ItemApplicationService) resolveHistory(entry *models.ItemHistory, allowedProjects map[int]struct{}) {
+func (s *ItemApplicationService) resolveHistory(entry *models.ItemHistory, res *historyResolution) {
+	if name := s.resolveHistoryFieldName(entry.FieldName, res); name != "" {
+		entry.ResolvedFieldName = &name
+	}
 	if entry.OldValue != nil && *entry.OldValue != "" {
-		if value := s.resolveHistoryValue(entry.FieldName, *entry.OldValue, allowedProjects); value != "" {
+		if value := s.resolveHistoryValue(entry.FieldName, *entry.OldValue, res); value != "" {
 			entry.ResolvedOldValue = &value
 		}
 	}
 	if entry.NewValue != nil && *entry.NewValue != "" {
-		if value := s.resolveHistoryValue(entry.FieldName, *entry.NewValue, allowedProjects); value != "" {
+		if value := s.resolveHistoryValue(entry.FieldName, *entry.NewValue, res); value != "" {
 			entry.ResolvedNewValue = &value
 		}
 	}
 }
 
-func (s *ItemApplicationService) resolveHistoryValue(field, value string, allowedProjects map[int]struct{}) string {
+func (s *ItemApplicationService) resolveHistoryFieldName(field string, res *historyResolution) string {
+	cacheKey := "name\x00" + field
+	if name, ok := res.names[cacheKey]; ok {
+		return name
+	}
+	name := s.resolveHistoryFieldNameUncached(field, res)
+	res.names[cacheKey] = name
+	return name
+}
+
+func (s *ItemApplicationService) resolveHistoryValue(field, value string, res *historyResolution) string {
+	cacheKey := field + "\x00" + value
+	if resolved, ok := res.names[cacheKey]; ok {
+		return resolved
+	}
+	resolved := s.resolveHistoryValueUncached(field, value, res)
+	res.names[cacheKey] = resolved
+	return resolved
+}
+
+func (s *ItemApplicationService) resolveHistoryValueUncached(field, value string, res *historyResolution) string {
 	if field == "milestones" {
 		names := make([]string, 0)
 		for _, part := range strings.Split(value, ",") {
@@ -2112,13 +2333,23 @@ func (s *ItemApplicationService) resolveHistoryValue(field, value string, allowe
 		}
 		return strings.Join(names, ", ")
 	}
+	if name := s.resolveCustomFieldValue(field, value, res); name != "" {
+		return name
+	}
+	if name := s.resolveVirtualFieldValue(field, value, res); name != "" {
+		return name
+	}
 	id, err := strconv.Atoi(value)
 	if err != nil {
 		return ""
 	}
 	switch field {
-	case "assignee_id":
+	case "assignee_id", "creator_id", "reporter_id":
 		return s.resolver.ResolveUserName(id)
+	case "creator_portal_customer_id":
+		return s.resolver.ResolvePortalCustomerName(id)
+	case "workspace_id":
+		return s.resolver.ResolveWorkspaceName(id)
 	case "team_id":
 		return s.resolver.ResolveTeamName(id)
 	case "priority_id":
@@ -2127,9 +2358,14 @@ func (s *ItemApplicationService) resolveHistoryValue(field, value string, allowe
 		return s.resolver.ResolveStatusName(id)
 	case "parent_id", "merged_into_item_id", "merged_item_id", "split_item_id":
 		return s.resolver.ResolveItemKey(id)
-	case "project_id":
-		if allowedProjects != nil {
-			if _, allowed := allowedProjects[id]; !allowed {
+	case "related_work_item_id":
+		if !s.relatedItemVisible(res.userID, id) {
+			return ""
+		}
+		return s.resolver.ResolveItemKey(id)
+	case "project_id", "time_project_id":
+		if res.allowedProjects != nil {
+			if _, allowed := res.allowedProjects[id]; !allowed {
 				return ""
 			}
 		}
@@ -2138,9 +2374,25 @@ func (s *ItemApplicationService) resolveHistoryValue(field, value string, allowe
 		return s.resolver.ResolveMilestoneName(id)
 	case "item_type_id":
 		return s.resolver.ResolveItemTypeName(id)
+	case "iteration_id":
+		return s.resolver.ResolveIterationName(id)
 	default:
 		return ""
 	}
+}
+
+// relatedItemVisible reports whether the viewer can see a related work item,
+// so history never reveals the key of an item in an inaccessible workspace.
+func (s *ItemApplicationService) relatedItemVisible(userID, itemID int) bool {
+	workspaceID, err := s.items.GetWorkspaceID(itemID)
+	if err != nil {
+		return false
+	}
+	allowed, err := s.perm.HasWorkspacePermission(userID, workspaceID, models.PermissionItemView)
+	if err != nil {
+		return false
+	}
+	return allowed
 }
 
 func (s *ItemApplicationService) enrich(ctx context.Context, userID int, items []models.Item) error {

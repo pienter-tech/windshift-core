@@ -421,6 +421,7 @@ export default {
     "canvasComfortable": "Utiliser une largeur de lecture confortable",
     "canvasWide": "Utiliser toute la largeur",
     "collapseAllAria": "Tout réduire",
+    "contentLabel": "Contenu de la page",
     "discardCancel": "Continuer la modification",
     "discardConfirm": "Ignorer",
     "discardMessage": "La page actuelle comporte des modifications non enregistrées. Elles seront perdues si vous changez de page.",

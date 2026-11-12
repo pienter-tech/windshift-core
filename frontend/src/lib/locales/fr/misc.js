@@ -498,6 +498,8 @@ export default {
 
     // Image preview
     failedToDownload: 'Échec du téléchargement du fichier',
+    hideFromCustomer: 'Masquer au client',
+    showToCustomer: 'Afficher au client',
     editDiagram: 'Modifier le schéma',
     untitledDiagram: 'Schéma sans titre',
     diagram: 'schéma',
@@ -880,5 +882,14 @@ export default {
     selectProvider: 'Sélectionner un fournisseur',
     page: 'Page',
     database: 'Base de données',
+  },
+  transitionScreen: {
+    title: 'Écran de transition',
+    moveTo: 'Déplacer vers {status}',
+    comment: 'Commentaire',
+    commentPlaceholder: 'Ajouter un commentaire (facultatif)',
+    confirm: 'Déplacer',
+    failed: 'Impossible de terminer la transition.',
+    missingFields: 'Renseignez les champs obligatoires pour continuer :',
   },
 };

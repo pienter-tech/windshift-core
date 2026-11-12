@@ -190,6 +190,7 @@ export default {
     clientIdRequired: 'Укажите ID клиента OAuth',
     clientSecret: 'Секрет клиента',
     clientSecretRequired: 'Укажите секрет клиента OAuth',
+    secretSaved: 'Секрет клиента сохранён. Оставьте поле пустым, чтобы сохранить его.',
     leaveBlankToKeep: 'Оставьте пустым, чтобы сохранить текущее значение',
     tenantId: 'ID тенанта Microsoft',
     tenantIdHelp:
@@ -558,6 +559,10 @@ export default {
     orSignInWithEmail: 'или войти по электронной почте',
     profileAndSecurity: 'Профиль и безопасность',
     profileTitle: 'Профиль',
+    languageTitle: "Язык",
+    languageSubtitle: "Выберите язык этого портала и писем, которые вы получаете.",
+    languageLabel: "Язык",
+    languageSaved: "Язык обновлён",
     profileSubtitle: 'Управление способами входа на портал.',
     profileSection: 'Учётная запись',
     passkeysTitle: 'Ключи доступа',

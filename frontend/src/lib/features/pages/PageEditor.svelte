@@ -19,6 +19,7 @@
   <PluginEditorHost
     bind:content
     placeholder={t('pages.editorPlaceholder')}
+    ariaLabel={t('pages.contentLabel')}
     showToolbar={true}
     {readonly}
     entityType="page"

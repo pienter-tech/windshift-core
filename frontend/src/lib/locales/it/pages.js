@@ -50,6 +50,7 @@ export default {
     emptyPaneDescription: 'Seleziona una pagina dall’albero oppure creane una per iniziare.',
     titlePlaceholder: 'Senza titolo',
     editorPlaceholder: 'Inizia a scrivere…',
+    contentLabel: 'Contenuto della pagina',
     tocHeading: 'In questa pagina',
     tocAriaLabel: 'Indice',
 
