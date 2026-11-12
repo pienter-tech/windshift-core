@@ -2080,6 +2080,7 @@ func (s *Server) initialize() error {
 		ItemTemplates:                services.NewItemTemplateApplicationService(s.db, v2Access),
 		Labels:                       services.NewLabelApplicationService(s.db),
 		Participants:                 participantService,
+		SCMLinks:                     scmWorkspaceRepo,
 		Items:                        repository.NewItemRepository(s.db),
 		Access:                       v2Access,
 		Preferences:                  userPreferencesService,
