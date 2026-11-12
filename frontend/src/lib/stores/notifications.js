@@ -26,6 +26,8 @@ const NOTIFICATION_PAGE_SIZE = 100;
 // Load notifications from API
 let loadPromise = null;
 let pollerGeneration = 0;
+// True once an inbox load has succeeded in this session (see _dispatchNew).
+let inboxLoaded = false;
 // The poller opens the stream before requesting the first snapshot, so that
 // snapshot already covers everything up to the subscription. Track that
 // ordering so the first healthy connection does not reconcile a second time.
@@ -74,6 +76,7 @@ function loadNotifications() {
         actionUrl: notification.action_url, // Convert snake_case to camelCase
       }));
       notifications.set(processedNotifications);
+      inboxLoaded = true;
       return processedNotifications;
     })
     .catch((error) => {
@@ -281,6 +284,16 @@ function _toastFor(n) {
 }
 
 function _dispatchNew(items) {
+  // The first successful inbox load only records what already exists, so a
+  // page load never re-announces old notifications. That load can come from
+  // the stream's reconcile (the poller skips its initial load in a hidden tab);
+  // after a failed load the list is not the inbox yet, so wait for a good one.
+  if (!_seeded) {
+    if (!inboxLoaded) return;
+    for (const n of items) _seenIds.add(n.id);
+    _seeded = true;
+    return;
+  }
   // Add oldest first: addToast prepends, so the newest notification must be
   // added last to land on top of the stack. Iterating newest-first would bury
   // the newest toast under the older ones (and past the visible stack).
@@ -360,10 +373,7 @@ function _loadInitialNotifications(generation) {
   initialLoadIssuedAfterStreamOpen = streamOpened;
   loadNotifications().then(() => {
     if (!_pollerStarted || generation !== pollerGeneration) return;
-    if (!_seeded) {
-      for (const n of get(notifications)) _seenIds.add(n.id);
-      _seeded = true;
-    }
+    if (!_seeded) _dispatchNew(get(notifications));
   });
 }
 
@@ -378,8 +388,9 @@ function _resumeNotificationStream() {
 
 /**
  * Start the shared notification poller. Safe to call multiple times; only
- * the first call takes effect. Seeds lastSeen from the initial load so the
- * first tick doesn't toast the entire inbox.
+ * the first call takes effect. The first successful inbox load (initial load
+ * or stream reconcile) seeds the seen set, so nothing that existed before the
+ * page loaded is toasted.
  */
 export function startNotificationPoller() {
   if (_pollerStarted) return;
@@ -406,6 +417,7 @@ export function stopNotificationPoller() {
   _stopReconnectListener?.();
   _stopReconnectListener = null;
   loadPromise = null;
+  inboxLoaded = false;
   streamOpened = false;
   initialLoadIssuedAfterStreamOpen = false;
   streamEverConnected = false;
