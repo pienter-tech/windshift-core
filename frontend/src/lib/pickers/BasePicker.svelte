@@ -98,6 +98,13 @@
     onOpen = () => {},
     onClose = () => {},
     onSelect = () => {},
+    // onCancel is not Escape-only. It runs on Escape while the dropdown is
+    // open (in the field or the popover search field), and again whenever a
+    // single-select dropdown closes while Melt's own selection is empty:
+    // Escape, Tab, a click outside, and a keyboard pick (only a mouse pick
+    // sets Melt's selection). One Escape can therefore call it twice. Escape
+    // on a closed picker never reaches it: the key bubbles up instead, so an
+    // enclosing dialog closes.
     onCancel = () => {},
     onChange = () => {}
   } = $props();
