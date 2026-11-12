@@ -1,4 +1,6 @@
 <script>
+  import { controlSizeClasses } from '../utils/controlSizes.js';
+
   let {
     value = $bindable(''),
     placeholder = '',
@@ -7,6 +9,7 @@
     autofocus = false,
     spellcheck = undefined,
     rows = 3,
+    dir = 'auto',
     size = 'medium',
     id = undefined,
     class: className = '',
@@ -25,10 +28,10 @@
   export { className as class };
 
   // Size variants
-  const sizeClasses = $derived({
-    small: 'px-3 py-2.5 text-sm',
-    medium: 'px-4 py-3'
-  }[size] || 'px-4 py-3');
+  const sizeClasses = $derived(controlSizeClasses(size));
+
+  /** @type {'ltr' | 'rtl' | 'auto'} */
+  const dirValue = $derived(/** @type {any} */ (dir));
 
   // Combine all classes
   const allClasses = $derived([
@@ -51,6 +54,7 @@
   {autofocus}
   {spellcheck}
   {rows}
+  dir={dirValue}
   class={allClasses}
   style="background-color: var(--ds-background-input); border-color: var(--ds-border); color: var(--ds-text); {style}"
   data-testid={dataTestid}

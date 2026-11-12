@@ -1,11 +1,12 @@
 <script>
   import { onMount } from 'svelte';
   import { currentRoute, initRouter, isMobileRoute, navigate } from './lib/router.js';
-  import { authStore } from './lib/stores';
+  import { authStore } from './lib/stores/auth.svelte.js';
+  import { portalAuthStore } from './lib/stores/portalAuth.svelte.js';
   import { moduleSettings } from './lib/stores/moduleSettings.js';
-  import { api } from './lib/api.js';
-  import { APP_NAME } from './lib/constants.js';
+  import { setup, themes } from './lib/api/admin.js';
   import { themeStore } from './lib/stores/theme.svelte.js';
+  import { brandStore } from './lib/stores/brand.svelte.js';
   import { i18n, SUPPORTED_LOCALES, t } from './lib/stores/i18n.svelte.js';
   import { safeLoginReturnPath } from './lib/utils/loginReturnPath.js';
   import { consumeOAuthReturnURL } from './lib/utils/oauthReturn.js';
@@ -15,6 +16,7 @@
     loadAuthenticatedShellUI,
     resetAuthenticatedShellUILoad,
   } from './lib/services/authenticatedShellUI.js';
+  import { installAppShellHandlers } from './lib/services/appShellHandlers.js';
   import BrandedLoader from './lib/components/BrandedLoader.svelte';
   import Button from './lib/components/Button.svelte';
   import LazyRootDialog from './lib/components/LazyRootDialog.svelte';
@@ -76,6 +78,9 @@
   }
 
   onMount(() => {
+    // Wire the API, service-worker and cross-tab side effects here rather than
+    // in main.js so store, API and router edits stay hot updates.
+    installAppShellHandlers();
     initRouter();
     themeStore.init();
     void initializeApp();
@@ -94,9 +99,17 @@
     }, SLOW_START_MS);
 
     try {
-      // Initialize i18n (loads user's preferred locale)
-      await withBootstrapDeadline(i18n.init());
+      // Initialize i18n (loads user's preferred locale) and instance branding
+      // (public, no auth). Branding drives the browser tab title and the
+      // sidebar text on every surface, including pre-auth.
+      await Promise.all([
+        withBootstrapDeadline(i18n.init()),
+        brandStore.load({ timeout: BOOTSTRAP_TIMEOUT_MS }),
+      ]);
       i18nReady = true;
+      if (typeof document !== 'undefined') {
+        document.title = brandStore.siteTitle;
+      }
 
       // Check setup status first
       await checkSetupStatus();
@@ -245,6 +258,18 @@
     }
   });
 
+  // Sync i18n locale with the authenticated portal customer's saved language.
+  // Detection seeds the value on first contact; once set, this keeps the portal
+  // UI in the customer's language across devices.
+  $effect(() => {
+    const customerLang = $portalAuthStore.customer?.language;
+    if ($portalAuthStore.isAuthenticated && !$portalAuthStore.isInternal && customerLang) {
+      if (SUPPORTED_LOCALES.some(l => l.code === customerLang) && i18n.locale !== customerLang) {
+        i18n.setLocale(customerLang);
+      }
+    }
+  });
+
   // Update document direction when locale changes (for RTL support)
   $effect(() => {
     if (typeof document !== 'undefined') {
@@ -327,7 +352,7 @@
     // flag survives backend/DB swaps under the same origin (e.g. dev worktrees
     // behind the vite proxy), making a fresh, unconfigured instance look
     // already set up and silently skipping the setup wizard.
-    const status = await api.setup.getStatus({ timeout: BOOTSTRAP_TIMEOUT_MS });
+    const status = await setup.getStatus({ timeout: BOOTSTRAP_TIMEOUT_MS });
     setupCompleted = status.setup_completed;
     if (!status.setup_completed) {
       showWelcomeAssistant = true;
@@ -353,7 +378,7 @@
     }
 
     try {
-      const activeTheme = await api.themes.getActive({ timeout: BOOTSTRAP_TIMEOUT_MS });
+      const activeTheme = await themes.getActive({ timeout: BOOTSTRAP_TIMEOUT_MS });
       if (generation !== themeLoadGeneration) return;
       // Store the active theme in the theme store
       themeStore.setActiveTheme(activeTheme);
@@ -399,9 +424,9 @@
   {#if startupError}
     <div class="min-h-screen flex items-center justify-center w-full px-6" data-testid="startup-error">
       <div class="text-center max-w-sm">
-        <img src="windshift-3.svg" alt={APP_NAME} width="64" height="64" class="w-16 h-16 mx-auto mb-4 opacity-75" />
+        <img src="windshift-3.svg" alt={brandStore.siteTitle} width="64" height="64" class="w-16 h-16 mx-auto mb-4 opacity-75" />
         <h1 class="text-xl font-semibold mb-2">
-          {getStartupCopy('errors.failedToLoad', i18nReady, t)} Windshift
+          {getStartupCopy('errors.failedToLoad', i18nReady, t)} {brandStore.siteTitle}
         </h1>
         <p class="text-ds-text-subtle mb-5">{getStartupCopy(startupError, i18nReady, t)}</p>
         <Button variant="primary" size="large" class="min-h-11" onclick={() => initializeApp()} dataTestid="startup-retry">
@@ -502,8 +527,8 @@
       {:else if showLoginDialog}
         <!-- Login dialog will show, but we can show a minimal background -->
         <div class="text-center">
-          <img src="windshift-3.svg" alt="Windshift" width="64" height="64" class="w-16 h-16 mx-auto mb-4 opacity-50" />
-          <h1 class="text-2xl font-bold text-ds-text-subtlest mb-2">Windshift</h1>
+          <img src="windshift-3.svg" alt={brandStore.siteTitle} width="64" height="64" class="w-16 h-16 mx-auto mb-4 opacity-50" />
+          <h1 class="text-2xl font-bold text-ds-text-subtlest mb-2">{brandStore.siteTitle}</h1>
           <p class="text-ds-text-subtle">{t('footer.platformName')}</p>
         </div>
       {/if}

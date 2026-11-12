@@ -22,6 +22,11 @@ const (
 	MaxBulkCleanupBatch          = 1000
 	DefaultBulkCleanupBatchLimit = 200
 	MaxBulkCleanupAgeDays        = 100000
+	// MaxBulkCleanupScan bounds how many candidates one run inspects. The erase
+	// target alone does not bound work: a table full of ticket-holding customers
+	// makes every candidate cost a transaction and a footprint query, so without
+	// a scan budget a single request can walk the whole table.
+	MaxBulkCleanupScan = 2000
 	// cleanupScanPageSize is the id-cursor page size of the candidate scan
 	// (WI-1556). Pages advance past skipped candidates so a run can reach
 	// eligible rows behind a block of ticket holders.
@@ -58,6 +63,10 @@ type CustomerBulkCleanupResult struct {
 	Skipped      []CustomerBulkCleanupSkipped `json:"skipped"`
 	Failed       []CustomerBulkCleanupSkipped `json:"failed"`
 	ScannedCount int                          `json:"scanned_count"`
+	// Truncated is true when the run stopped at the scan budget or the request
+	// deadline before exhausting the candidate set. Repeating the call continues
+	// the drain.
+	Truncated bool `json:"truncated"`
 }
 
 // ErasedCount reports how many customers this run erased.
@@ -115,12 +124,13 @@ func CleanupAutoCreatedCustomers(db database.Database, actor AuditActor, input C
 
 	// Cursor-paginated scan (WI-1556): pages advance by pc.id so skipped
 	// candidates never stall the run — a page full of ticket holders is
-	// simply left behind and the next page is scanned. The run stops when
-	// the erase target is reached or the table is exhausted; erasures stay
-	// bounded by the target, the scan by the table size.
+	// simply left behind and the next page is scanned. The run stops when the
+	// erase target is reached, the scan budget is exhausted, or the table ends;
+	// the budget keeps a table full of ticket holders from costing a
+	// transaction per row across the whole table.
 	eraseTarget := limit
 	lastID := 0
-	for result.ErasedCount() < eraseTarget {
+	for result.ErasedCount() < eraseTarget && result.ScannedCount < MaxBulkCleanupScan {
 		page, err := selectCleanupCandidates(ctx, db, input.CreatedVia, cutoff, lastID, cleanupScanPageSize)
 		if err != nil {
 			return result, err
@@ -130,6 +140,12 @@ func CleanupAutoCreatedCustomers(db database.Database, actor AuditActor, input C
 		}
 
 		for _, candidate := range page {
+			// Stop before starting another per-customer transaction once the scan
+			// budget or the request deadline is exhausted.
+			if result.ScannedCount >= MaxBulkCleanupScan || ctx.Err() != nil {
+				result.Truncated = true
+				break
+			}
 			lastID = candidate.ID
 			result.ScannedCount++
 
@@ -158,9 +174,16 @@ func CleanupAutoCreatedCustomers(db database.Database, actor AuditActor, input C
 			result.Erased = append(result.Erased, CustomerBulkCleanupErased{ID: candidate.ID, Email: candidate.Email})
 		}
 
+		if result.Truncated {
+			break
+		}
 		if len(page) < cleanupScanPageSize {
 			break
 		}
+	}
+
+	if result.ScannedCount >= MaxBulkCleanupScan {
+		result.Truncated = true
 	}
 
 	// One audit event for the whole batch, mirroring the WI-1550 erasure
@@ -169,6 +192,8 @@ func CleanupAutoCreatedCustomers(db database.Database, actor AuditActor, input C
 		"created_via":      input.CreatedVia,
 		"older_than_days":  input.OlderThanDays,
 		"erased_count":     len(result.Erased),
+		"scanned_count":    result.ScannedCount,
+		"truncated":        result.Truncated,
 		"erased_customers": eraseListDetails(result.Erased),
 		"skipped":          skippedListDetails(result.Skipped),
 		"failed":           skippedListDetails(result.Failed),

@@ -1,37 +1,40 @@
 <script>
-  import { untrack } from 'svelte';
-  import { useEventListener } from 'runed';
   import { t } from '../../stores/i18n.svelte.js';
   import { errorToast } from '../../stores/toasts.svelte.js';
-  import { api } from '../../api.js';
-  import { navigate } from '../../router.js';
-  import { applyCollectionItem, collectionStore, reloadCollection } from '../../stores/collectionContext.js';
+  import { onWorkItemRefresh } from '../../stores/workItemRefresh.js';
+  import {
+    applyCollectionItem,
+    collectionStore,
+    reloadCollection,
+    scheduleCollectionReconciliation,
+  } from '../../stores/collectionContext.js';
+  import { useCollectionEventStream } from '../../composables/useCollectionEventStream.svelte.js';
+  import { useCollectionSearch } from '../../composables/useCollectionSearch.svelte.js';
+  import { useCollectionEditorOptionsPrime } from '../../composables/useCollectionEditorOptionsPrime.svelte.js';
   import { createDeleteItemHandler, createItemActionsBuilder } from '../../utils/workItemTableHelpers.js';
   import {
-    buildListColumnConfiguration,
-    DEFAULT_LIST_COLUMNS,
     getListColumnLabel,
-    listColumnsFromConfig,
     listGridMinWidth,
     listGridTemplateColumns,
   } from '../../utils/workItemListColumns.js';
   import { useGradientStyles } from '../../stores/workspaceGradient.svelte.js';
   import { workspacePermissions } from '../../stores/workspacePermissions.svelte.js';
-  import { collectionEditorOptions, collectionFieldLinks, workspaceDataStore } from '../../stores/index.js';
-  import { MoreHorizontal, ArrowUp, ArrowDown, ArrowUpDown } from '@lucide/svelte';
-  import { draggable } from '@atlaskit/pragmatic-drag-and-drop/element/adapter';
+  import { collectionFieldLinks } from '../../stores/collectionFieldLinks.svelte.js';
+  import { itemModalStore } from '../../stores/itemModalStore.svelte.js';
+  import { workspaceDataStore } from '../../stores/workspaceDataStore.svelte.js';
+  import ArrowUp from '@lucide/svelte/icons/arrow-up';
+  import ArrowDown from '@lucide/svelte/icons/arrow-down';
+  import ArrowUpDown from '@lucide/svelte/icons/arrow-up-down';
   import SearchInput from '../../components/SearchInput.svelte';
-  import DropdownMenu from '../../layout/DropdownMenu.svelte';
-  import Pagination from '../../components/Pagination.svelte';
   import ViewHeader from '../../layout/ViewHeader.svelte';
   import StaticViewBackground from '../../layout/StaticViewBackground.svelte';
   import EmptyState from '../../components/EmptyState.svelte';
   import TableHeaderBar from '../../components/TableHeaderBar.svelte';
-  import ListCellRenderer from './ListCellRenderer.svelte';
+  import WorkItemListRow from './WorkItemListRow.svelte';
+  import WorkItemListFooter from './WorkItemListFooter.svelte';
   import ColumnSelector from './ColumnSelector.svelte';
   import SubFilterBar from './SubFilterBar.svelte';
-  import LazyRender from '../../components/LazyRender.svelte';
-  import { checkItemVisibility } from './collectionService.js';
+  import { useListColumnConfig } from './listColumnConfig.svelte.js';
 
   let { workspaceId, collectionId = null } = $props();
 
@@ -51,15 +54,14 @@
   let workItems = $derived(collectionStore.items);
   let itemsPagination = $derived(collectionStore.itemsPagination);
 
-  // Board configuration for list columns
-  let boardConfig = $state(null);
-  let listColumns = $state([]);
+  // List columns from the board configuration (shared with the tree view)
+  const columnConfig = useListColumnConfig(() => ({ workspaceId, collectionId }));
+  let listColumns = $derived(columnConfig.columns);
 
   let loading = $state(true);
   let loadingItems = $state(false);
   let currentCollectionName = $state('Default');
   let currentView = $state('list');
-  let searchQuery = $state('');
   let currentPage = $state(1);
   let itemsPerPage = $state(50);
   let sortKey = $state(null);
@@ -81,32 +83,14 @@
   // Centralized gradient styling
   const styles = useGradientStyles();
 
-  // Computed: Check if user can configure columns (workspace admin)
-  let canConfigureColumns = $derived(workspacePermissions.canAdminWorkspace(workspaceId));
-
   // A workspace-scoped list already has these option sets in the shared
   // workspace store. Prime the row-editor cache so opening a cell does not
   // repeat those requests. Global collections deliberately skip this: their
   // rows can belong to different workspaces and must resolve independently.
-  $effect(() => {
-    const id = Number(workspaceId);
-    if (
-      !Number.isInteger(id) ||
-      id <= 0 ||
-      !workspaceDataStore.initialized ||
-      Number(workspaceDataStore.workspaceId) !== id
-    ) {
-      return;
-    }
-
-    collectionEditorOptions.prime(id, {
-      statuses,
-      users,
-      milestones,
-      iterations,
-      projects,
-    });
-  });
+  useCollectionEditorOptionsPrime(
+    () => workspaceId,
+    () => ({ statuses, users, milestones, iterations, projects })
+  );
 
   // Computed: Generate grid-template-columns CSS via the shared list grid
   // helpers (also used by the support queue's list-shaped table).
@@ -114,28 +98,26 @@
 
   let gridMinWidth = $derived(listGridMinWidth(listColumns));
 
-  useEventListener(() => window, 'refresh-work-items', async (/** @type {CustomEvent} */ event) => {
-    const item = event.detail?.item;
-    if (!item) {
-      reloadCollection();
-      return;
-    }
-    const belongsToView = collectionId
-      ? await checkItemVisibility(item.id, { collection_id: collectionId })
-      : Number(item.workspace_id) === Number(workspaceId);
-    if (belongsToView) applyCollectionItem(item);
-  });
+  $effect(() =>
+    onWorkItemRefresh((detail) => {
+      const item = detail?.item;
+      // Workspace-scoped views can apply the item immediately as a display
+      // optimization. Collection membership is verified by the store's
+      // coalesced reconciliation instead of one query per event.
+      if (item && !collectionId && Number(item.workspace_id) === Number(workspaceId)) {
+        applyCollectionItem(item);
+      }
+      scheduleCollectionReconciliation();
+    })
+  );
 
-  // Board config depends only on the viewed collection/workspace, not on the
-  // item set or load state — fetch it when the view changes, not every time
-  // the collection reloads (which toggles collectionStore.loading).
-  let viewSignature = $derived(`${collectionId ?? ''}|${workspaceId ?? ''}`);
-  $effect(() => {
-    viewSignature;
-    if (collectionId || workspaceId) {
-      untrack(() => loadBoardConfiguration());
-    }
-  });
+  // Scoped SSE invalidations (WI-1624): any frame runs the existing delta fetch,
+  // and a reconnect reconciles. Without this the list kept showing items that
+  // were deleted from the item detail modal, unlike the board views.
+  useCollectionEventStream(
+    () => (collectionId ? { kind: 'collection', id: collectionId } : { kind: 'workspace', id: workspaceId }),
+    { onInvalidate: () => scheduleCollectionReconciliation() }
+  );
 
   // Sync collection name + clear local loading from the central store.
   $effect(() => {
@@ -144,52 +126,6 @@
       loading = false;
     }
   });
-
-  async function loadBoardConfiguration() {
-    try {
-      const config = await collectionStore.getBoardConfiguration(workspaceId, collectionId);
-      boardConfig = config;
-      listColumns = listColumnsFromConfig(config);
-    } catch (error) {
-      boardConfig = null;
-      listColumns = [...DEFAULT_LIST_COLUMNS];
-    }
-  }
-
-  async function saveBoardConfiguration(newColumns) {
-    try {
-      const configData = buildListColumnConfiguration(boardConfig, newColumns);
-
-      if (boardConfig?.id) {
-        // Update existing config
-        const updated = await api.collections.updateBoardConfiguration(
-          collectionId,
-          boardConfig.id,
-          configData,
-          workspaceId
-        );
-        boardConfig = updated;
-        listColumns = listColumnsFromConfig(updated);
-      } else {
-        // Create new config - pass raw collectionId so API can detect workspace-level config
-        const created = await api.collections.createBoardConfiguration(
-          collectionId,
-          workspaceId,
-          configData
-        );
-        boardConfig = created;
-        listColumns = listColumnsFromConfig(created);
-      }
-    } catch (error) {
-      console.error('Failed to save board configuration:', error);
-      errorToast(t('dialogs.alerts.failedToSave', { error: error.message || error }));
-    }
-  }
-
-  function handleColumnChange(data) {
-    const { columns: newColumns } = data;
-    saveBoardConfiguration(newColumns);
-  }
 
   async function loadWorkItems(page = 1, limit = itemsPerPage) {
     currentPage = page;
@@ -206,19 +142,12 @@
     await loadWorkItems(event.detail.page, event.detail.itemsPerPage);
   }
 
-  // Client-side search filtering on current page of items
-  let filteredItems = $derived.by(() => {
-    if (!searchQuery.trim()) return workItems;
-    const query = searchQuery.toLowerCase();
-    return workItems.filter(item => {
-      if (item.title.toLowerCase().includes(query)) return true;
-      if (item.description && item.description.toLowerCase().includes(query)) return true;
-      const itemKey = `${item.workspace_key || ''}-${item.workspace_item_number}`.toLowerCase();
-      if (itemKey.includes(query)) return true;
-      return false;
-    });
-  });
-  let filteredItemsById = $derived(new Map(filteredItems.map((item) => [item.id, item])));
+  // Server-side search shared with the board: a query spans every page of the
+  // collection instead of filtering the loaded page (GH #328).
+  const search = useCollectionSearch(
+    () => `${workspaceId ?? ''}|${collectionId ?? ''}|${collectionStore.effectiveSubFilterQL}`
+  );
+  let filteredItems = $derived(search.items);
 
   // Resolve only the assignees the visible rows reference instead of waiting
   // for the whole directory before the list can render.
@@ -226,28 +155,6 @@
     const ids = filteredItems.map((item) => item.assignee_id).filter(Boolean);
     if (ids.length > 0) void workspaceDataStore.hydrateUsers(ids);
   });
-
-  function registerListRow(element, itemId) {
-    const cleanup = draggable({
-      element,
-      getInitialData: () => ({
-        item: filteredItemsById.get(itemId),
-        type: 'work-item'
-      }),
-      onDragStart: () => {
-        element.style.opacity = '0.5';
-      },
-      onDrop: () => {
-        element.style.opacity = '';
-      }
-    });
-    return {
-      destroy() {
-        element.style.opacity = '';
-        cleanup();
-      }
-    };
-  }
 
   // Linking fields live in item_links rather than custom_field_values. Hydrate
   // all visible rows through the bounded batch endpoint so adding one linking
@@ -268,11 +175,7 @@
   });
 
   function viewItem(item) {
-    const wsId = workspaceId || item.workspace_id;
-    const url = collectionId && workspaceId
-      ? `/workspaces/${workspaceId}/collections/${collectionId}/items/${item.id}`
-      : `/workspaces/${wsId}/items/${item.id}`;
-    navigate(url);
+    itemModalStore.open(item.id, item.workspace_id ?? workspaceId);
   }
 
   const deleteItem = createDeleteItemHandler({
@@ -321,10 +224,11 @@
         <div class="flex items-center gap-4">
           <!-- Search -->
           <SearchInput
-            bind:value={searchQuery}
+            bind:value={search.query}
             placeholder={t('common.search')}
+            dataTestid="list-search-input"
           />
-          <SubFilterBar {workspaceId} />
+          <SubFilterBar {workspaceId} {collectionId} />
         </div>
 
         <div class="flex items-center gap-2">
@@ -332,11 +236,21 @@
           <ColumnSelector
             columns={listColumns}
             {customFieldDefinitions}
-            canConfigure={canConfigureColumns}
-            onchange={handleColumnChange}
+            canConfigure={columnConfig.canConfigure}
+            onchange={({ columns }) => columnConfig.save(columns)}
           />
         </div>
       </div>
+
+      {#if search.active && (search.debouncing || collectionStore.searchLoading)}
+        <p class="-mt-2 mb-4 text-sm" style="color: var(--ctx-text-subtle, var(--ds-text-subtle));" data-testid="list-search-status">
+          {t('common.searching')}
+        </p>
+      {:else if search.active && collectionStore.searchError}
+        <p class="-mt-2 mb-4 text-sm" style="color: var(--ds-text-danger);" data-testid="list-search-error">
+          {t('common.error')}
+        </p>
+      {/if}
 
       <!-- Work Items Table -->
       {#if loadingItems}
@@ -376,7 +290,7 @@
                   {:else if sortKey === column.field_identifier && sortDirection === 'desc'}
                     <ArrowDown class="w-3.5 h-3.5" style="color: var(--ds-text-subtle);" />
                   {:else}
-                    <ArrowUpDown class="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity" style="color: var(--ds-text-subtlest);" />
+                    <ArrowUpDown class="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100 transition-opacity" style="color: var(--ds-text-subtlest);" />
                   {/if}
                 </button>
               {:else}
@@ -389,65 +303,62 @@
           <!-- Table Body -->
           <div>
             {#each filteredItems as item (item.id)}
-              <div use:registerListRow={item.id} class="px-4 py-3 list-row transition-colors" style="border-top: 1px solid var(--ds-border);" data-item-row data-item-id={item.id} data-testid={`workspace-item-row-${item.id}`}>
-                <LazyRender>
-                  {#snippet children()}
-                    <div
-                      class="grid gap-4 items-center"
-                      style="grid-template-columns: {gridTemplateColumns}; min-width: {gridMinWidth};"
-                    >
-                      {#each listColumns as column (column.field_identifier)}
-                        <div class="min-w-0 overflow-hidden">
-                          <ListCellRenderer
-                            {item}
-                            {column}
-                            {workspace}
-                            {collectionId}
-                            canEdit={workspacePermissions.canEdit(item.workspace_id)}
-                            {statuses}
-                            {statusCategories}
-                            {priorities}
-                            {milestones}
-                            {iterations}
-                            {users}
-                            {projects}
-                            {itemTypes}
-                            {customFieldDefinitions}
-                            onitemUpdated={handleItemUpdated}
-                            onupdateError={handleUpdateError}
-                          />
-                        </div>
-                      {/each}
-
-                      <!-- Actions -->
-                      <div>
-                        <DropdownMenu
-                          triggerText=""
-                          triggerIcon={MoreHorizontal}
-                          triggerClass="p-2 rounded action-btn transition-colors"
-                          items={buildItemActions(item)}
-                        />
-                      </div>
-                    </div>
-                  {/snippet}
-                </LazyRender>
-              </div>
+              <WorkItemListRow
+                {item}
+                columns={listColumns}
+                {gridTemplateColumns}
+                {gridMinWidth}
+                {workspace}
+                canEdit={workspacePermissions.canEdit(item.workspace_id)}
+                {statuses}
+                {statusCategories}
+                {priorities}
+                {milestones}
+                {iterations}
+                {users}
+                {projects}
+                {itemTypes}
+                {customFieldDefinitions}
+                actions={buildItemActions(item)}
+                onitemUpdated={handleItemUpdated}
+                onupdateError={handleUpdateError}
+                draggable
+                rowTestid={`workspace-item-row-${item.id}`}
+              />
             {/each}
           </div>
         </div>
 
-        <!-- Pagination -->
-        {#if itemsPagination && itemsPagination.total_items > 0 && workItems.length > 0}
-          <div class="mt-6">
-            <Pagination
-              currentPage={itemsPagination.page}
-              totalItems={itemsPagination.total_items}
-              itemsPerPage={itemsPagination.limit}
-              maxItems={10000}
-              onpageChange={handlePageChange}
-              onpageSizeChange={handlePageSizeChange}
-            />
-          </div>
+        <!-- Search results page on the server, so they use load-more instead of
+             the page control that drives the unfiltered list. -->
+        {#if search.active}
+          {#if search.hasMore}
+            <div class="mt-6 text-center">
+              <button
+                data-testid="list-search-load-more"
+                onclick={() => search.loadMore()}
+                disabled={search.loadingMore}
+                class="px-4 py-2 text-sm rounded-lg border transition-colors"
+                style="border-color: var(--ctx-border, var(--ds-border)); color: var(--ds-text);"
+              >
+                {search.loadingMore ? t('common.loading') : t('common.loadMore')}
+                {#if search.remainingCount > 0}
+                  ({search.remainingCount} {t('common.remaining')})
+                {/if}
+              </button>
+            </div>
+          {:else}
+            <div class="mt-4 text-sm text-center" style="color: var(--ctx-text-subtle, var(--ds-text-subtle));" data-testid="list-search-summary">
+              {t('collections.showingWorkItems', { count: filteredItems.length })}
+            </div>
+          {/if}
+        {:else if itemsPagination && itemsPagination.total_items > 0 && workItems.length > 0}
+          <WorkItemListFooter
+            pagination={itemsPagination}
+            itemCount={workItems.length}
+            onpageChange={handlePageChange}
+            onpageSizeChange={handlePageSizeChange}
+          />
         {:else}
           <!-- Results Summary for legacy/non-paginated responses -->
           <div class="mt-4 text-sm  text-center" style="color: var(--ctx-text-subtle, var(--ds-text-subtle));">
@@ -465,10 +376,6 @@
 {/if}
 
 <style>
-  .list-row:hover {
-    background-color: var(--ds-background-neutral-hovered);
-  }
-
   :global(.item-key:hover) {
     background-color: var(--ds-background-neutral-hovered) !important;
   }

@@ -1,10 +1,15 @@
 <script>
-  import { IconArrowLeft, IconPlus, IconEdit, IconTrash, IconClipboardList, IconX } from '@tabler/icons-svelte-runes';
-  import { api } from '../../api.js';
+  import IconPlus from '@tabler/icons-svelte-runes/icons/plus';
+  import IconEdit from '@tabler/icons-svelte-runes/icons/edit';
+  import IconTrash from '@tabler/icons-svelte-runes/icons/trash';
+  import IconClipboardList from '@tabler/icons-svelte-runes/icons/clipboard-list';
+  import IconX from '@tabler/icons-svelte-runes/icons/x';
+  import { tests } from '../../api/tests/index.js';
   import MilkdownEditor from '../../editors/LazyMilkdownEditor.svelte';
   import { navigate, currentRoute } from '../../router.js';
   import { confirm } from '../../composables/useConfirm.js';
   import Button from '../../components/Button.svelte';
+  import BackButton from '../../components/BackButton.svelte';
   import Label from '../../components/Label.svelte';
   import StateDisplay from '../../components/StateDisplay.svelte';
   import AlertBox from '../../components/AlertBox.svelte';
@@ -16,6 +21,12 @@
   import { errorToast } from '../../stores/toasts.svelte.js';
 
   let { workspaceId = null } = $props();
+  const uid = $props.id();
+  const stepLabelIds = {
+    action: `${uid}-action-label`,
+    data: `${uid}-data-label`,
+    expected: `${uid}-expected-label`,
+  };
 
   let testCase = $state(null);
   let testSteps = $state([]);
@@ -73,7 +84,7 @@
 
   async function loadTestCase(id) {
     try {
-      testCase = await api.tests.testCases.get(workspaceId, id);
+      testCase = await tests.testCases.get(workspaceId, id);
     } catch (err) {
       console.error('Failed to load test case:', err);
       throw err;
@@ -82,7 +93,7 @@
 
   async function loadTestSteps(id = testCaseId) {
     try {
-      testSteps = await api.tests.testCases.steps.getAll(workspaceId, id) || [];
+      testSteps = await tests.testCases.steps.getAll(workspaceId, id) || [];
     } catch (err) {
       console.error('Failed to load test steps:', err);
       throw err;
@@ -134,9 +145,9 @@
     
     try {
       if (editingStep) {
-        await api.tests.testCases.steps.update(workspaceId, testCaseId, editingStep.id, stepFormData);
+        await tests.testCases.steps.update(workspaceId, testCaseId, editingStep.id, stepFormData);
       } else {
-        await api.tests.testCases.steps.create(workspaceId, testCaseId, stepFormData);
+        await tests.testCases.steps.create(workspaceId, testCaseId, stepFormData);
       }
       
       await loadTestSteps();
@@ -156,7 +167,7 @@
     });
     if (!ok) return;
     try {
-      await api.tests.testCases.steps.delete(workspaceId, testCaseId, stepId);
+      await tests.testCases.steps.delete(workspaceId, testCaseId, stepId);
       await loadTestSteps();
     } catch (error) {
       console.error('Failed to delete test step:', error);
@@ -219,9 +230,7 @@
     <PageHeader title={t('testing.testStepsFor', { title: testCase.title })} marginClass="mb-4">
       {#snippet actions()}
         <div class="flex items-center gap-3">
-          <Button onclick={goBack} variant="ghost" icon={IconArrowLeft} dataTestid="test-steps-back">
-            {t('testing.backToTestCases')}
-          </Button>
+          <BackButton onclick={goBack} testid="test-steps-back" label={t('testing.backToTestCases')} />
           {#if !showStepForm}
             <Button
               variant="primary"
@@ -260,11 +269,12 @@
           <div class="grid grid-cols-3 gap-4">
             <!-- Action Column -->
             <div>
-              <Label color="default" class="mb-2" required>{t('testing.action')}</Label>
+              <Label id={stepLabelIds.action} color="default" class="mb-2" required>{t('testing.action')}</Label>
               <div id="step-action-input" data-testid="test-step-action" class="border rounded overflow-hidden" style="border-color: var(--ds-border); min-height: 80px;">
                 <MilkdownEditor
                   bind:content={stepFormData.action}
                   testId="test-step-action-editor"
+                  ariaLabelledBy={stepLabelIds.action}
                   placeholder={t('testing.actionPlaceholder')}
                   showToolbar={true}
                   entityType="test_case"
@@ -275,11 +285,12 @@
 
             <!-- Data Column -->
             <div>
-              <Label color="default" class="mb-2">{t('testing.data')}</Label>
+              <Label id={stepLabelIds.data} color="default" class="mb-2">{t('testing.data')}</Label>
               <div data-testid="test-step-data" class="border rounded overflow-hidden" style="border-color: var(--ds-border); min-height: 80px;">
                 <MilkdownEditor
                   bind:content={stepFormData.data}
                   testId="test-step-data-editor"
+                  ariaLabelledBy={stepLabelIds.data}
                   placeholder={t('testing.dataPlaceholder')}
                   showToolbar={true}
                   entityType="test_case"
@@ -290,11 +301,12 @@
 
             <!-- Expected Result Column -->
             <div>
-              <Label color="default" class="mb-2" required>{t('testing.expectedResult')}</Label>
+              <Label id={stepLabelIds.expected} color="default" class="mb-2" required>{t('testing.expectedResult')}</Label>
               <div data-testid="test-step-expected" class="border rounded overflow-hidden" style="border-color: var(--ds-border); min-height: 80px;">
                 <MilkdownEditor
                   bind:content={stepFormData.expected}
                   testId="test-step-expected-editor"
+                  ariaLabelledBy={stepLabelIds.expected}
                   placeholder={t('testing.expectedPlaceholder')}
                   showToolbar={true}
                   entityType="test_case"

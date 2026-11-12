@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte';
-  import { Tag, FolderOpen } from '@lucide/svelte';
+  import Tag from '@lucide/svelte/icons/tag';
+  import FolderOpen from '@lucide/svelte/icons/folder-open';
   import { navigate, currentRoute } from '../../router.js';
   import { t } from '../../stores/i18n.svelte.js';
   import NavigationSidebar from '../../layout/NavigationSidebar.svelte';
@@ -88,17 +89,4 @@
 
 
 <style>
-  .nav-link {
-    color: var(--ds-text-subtle);
-  }
-
-  .nav-link:hover:not(.active) {
-    background: var(--ds-background-neutral-hovered);
-    color: var(--ds-text);
-  }
-
-  .nav-link.active {
-    background: var(--ds-surface-selected);
-    color: var(--ds-text);
-  }
 </style>

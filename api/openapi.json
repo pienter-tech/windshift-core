@@ -1507,6 +1507,9 @@
           "resource_type": {
             "type": "string"
           },
+          "source": {
+            "type": "string"
+          },
           "success": {
             "type": "boolean"
           },
@@ -2941,6 +2944,9 @@
           "color": {
             "type": "string"
           },
+          "customer_builtin_key": {
+            "type": "string"
+          },
           "customer_id": {
             "type": "integer"
           },
@@ -3013,6 +3019,9 @@
           "created_at": {
             "type": "integer"
           },
+          "customer_builtin_key": {
+            "type": "string"
+          },
           "customer_id": {
             "type": "integer"
           },
@@ -3080,6 +3089,9 @@
       },
       "health.readinessResponse": {
         "properties": {
+          "attachments": {
+            "type": "string"
+          },
           "database": {
             "type": "string"
           },
@@ -3278,7 +3290,10 @@
           "http_request",
           "transition_item",
           "related_items",
-          "create_milestone"
+          "create_milestone",
+          "insert_canned_response",
+          "notify_customer",
+          "adjust_labels"
         ],
         "type": "string",
         "x-enum-varnames": [
@@ -3297,7 +3312,10 @@
           "ActionNodeHTTPRequest",
           "ActionNodeTransitionItem",
           "ActionNodeRelatedItems",
-          "ActionNodeCreateMilestone"
+          "ActionNodeCreateMilestone",
+          "ActionNodeInsertCannedResponse",
+          "ActionNodeNotifyCustomer",
+          "ActionNodeAdjustLabels"
         ]
       },
       "models.ActionTriggerType": {
@@ -3307,12 +3325,15 @@
           "item_updated",
           "item_linked",
           "manual",
+          "status_loop",
           "sla_breached",
           "sla_warning",
           "scm_tag_created",
           "scm_release_branch_created",
           "scm_pr_linked",
-          "scm_pr_merged"
+          "scm_pr_merged",
+          "comment_created",
+          "item_inactive"
         ],
         "type": "string",
         "x-enum-varnames": [
@@ -3321,12 +3342,15 @@
           "ActionTriggerItemUpdated",
           "ActionTriggerItemLinked",
           "ActionTriggerManual",
+          "ActionTriggerStatusLoop",
           "ActionTriggerSLABreached",
           "ActionTriggerSLAWarning",
           "ActionTriggerSCMTagCreated",
           "ActionTriggerSCMReleaseBranchCreated",
           "ActionTriggerSCMPRLinked",
-          "ActionTriggerSCMPRMerged"
+          "ActionTriggerSCMPRMerged",
+          "ActionTriggerCommentCreated",
+          "ActionTriggerItemInactive"
         ]
       },
       "models.ActiveTimer": {
@@ -3334,6 +3358,9 @@
           "created_at": {
             "description": "Unix timestamp",
             "type": "integer"
+          },
+          "customer_builtin_key": {
+            "type": "string"
           },
           "customer_name": {
             "type": "string"
@@ -3397,6 +3424,10 @@
           },
           "id": {
             "type": "integer"
+          },
+          "is_internal": {
+            "description": "IsInternal hides an attachment from portal customers (for example a\nfile attached to an agent-only JSM note). Internal workspace members\nstill see it.",
+            "type": "boolean"
           },
           "item_id": {
             "type": "integer"
@@ -3652,6 +3683,13 @@
           "created_at": {
             "type": "string"
           },
+          "creator_customer_organisation_id": {
+            "description": "Customer organisation of the portal-customer creator, for the ticket\ncustomer-context panel. Empty for internal creators.",
+            "type": "integer"
+          },
+          "creator_customer_organisation_name": {
+            "type": "string"
+          },
           "creator_email": {
             "description": "Email of creator (internal user or portal customer)",
             "type": "string"
@@ -3709,6 +3747,10 @@
             "description": "Manual sorting field",
             "type": "string"
           },
+          "has_children": {
+            "description": "HasChildren is set only by list reads that opt into hierarchy support. It\nis true when at least one child exists in a workspace the caller can view.",
+            "type": "boolean"
+          },
           "id": {
             "type": "integer"
           },
@@ -3723,11 +3765,21 @@
             "description": "If true, ProjectID is ignored and the parent item's effective project is used",
             "type": "boolean"
           },
+          "intake_id": {
+            "description": "Email intake that created this item",
+            "type": "integer"
+          },
           "is_task": {
             "description": "Flag to mark this item as a task (checklist item)",
             "type": "boolean"
           },
           "item_type_builtin_key": {
+            "type": "string"
+          },
+          "item_type_color": {
+            "type": "string"
+          },
+          "item_type_icon": {
             "type": "string"
           },
           "item_type_id": {
@@ -3782,11 +3834,9 @@
             "description": "Parent's workspace-scoped number, for rendering the parent key",
             "type": "integer"
           },
-          "personal_labels": {
-            "items": {
-              "$ref": "#/components/schemas/models.PersonalLabel"
-            },
-            "type": "array"
+          "portal_org_shared": {
+            "description": "Creator opted to share the request with their organisation",
+            "type": "boolean"
           },
           "priority_builtin_key": {
             "type": "string"
@@ -4241,6 +4291,10 @@
             "description": "false=local to workspace, true=global (shared)",
             "type": "boolean"
           },
+          "last_activity_at": {
+            "description": "LastActivityAt is the time of the newest milestone Activity entry; nil\nuntil the first activity.",
+            "type": "string"
+          },
           "latest_release": {
             "$ref": "#/components/schemas/models.MilestoneRelease"
           },
@@ -4393,30 +4447,6 @@
           },
           "principal_type": {
             "type": "string"
-          }
-        },
-        "type": "object"
-      },
-      "models.PersonalLabel": {
-        "properties": {
-          "color": {
-            "type": "string"
-          },
-          "created_at": {
-            "type": "string"
-          },
-          "id": {
-            "type": "integer"
-          },
-          "name": {
-            "type": "string"
-          },
-          "updated_at": {
-            "type": "string"
-          },
-          "user_id": {
-            "description": "NULL for global labels, user_id for user-specific labels",
-            "type": "integer"
           }
         },
         "type": "object"
@@ -5404,6 +5434,9 @@
             "description": "\"passed\", \"failed\", \"blocked\", \"skipped\", \"not_run\"",
             "type": "string"
           },
+          "test_case_format": {
+            "type": "string"
+          },
           "test_case_id": {
             "type": "integer"
           },
@@ -5538,7 +5571,7 @@
   },
   "info": {
     "contact": {},
-    "description": "Public API reference for Windshift. REST operations use the `/rest/api/v1` base path and bearer tokens (`Authorization: Bearer crw_*`). Operational health and metrics endpoints are unauthenticated and use root-level paths.",
+    "description": "Public API reference for the deprecated v1 API. REST operations use the `/rest/api/v1` base path and bearer tokens (`Authorization: Bearer crw_*`). Superseded by v2 (`/rest/api/v2`, contract at `/rest/api/v2/openapi.json`); new integrations must not use v1. Operational health and metrics endpoints are unauthenticated and use root-level paths.",
     "title": "Windshift HTTP API",
     "version": "1"
   },
@@ -12967,7 +13000,7 @@
     },
     "/metrics": {
       "get": {
-        "description": "Returns Go runtime, process, database, HTTP, agent, webhook, and SCM metrics. Public; no authentication required. Restrict access at the reverse proxy or network boundary when metrics should not be publicly reachable.",
+        "description": "Returns Go runtime, process, database, HTTP, agent, webhook, and SCM metrics. Public when WINDSHIFT_METRICS_TOKEN is unset; when set, requires an \"Authorization: Bearer \u003ctoken\u003e\" header. Restrict access at the reverse proxy or network boundary when metrics should not be publicly reachable.",
         "responses": {
           "200": {
             "content": {
@@ -12983,6 +13016,21 @@
               }
             },
             "description": "Prometheus or OpenMetrics text exposition"
+          },
+          "401": {
+            "content": {
+              "application/openmetrics-text": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Missing or invalid bearer token"
           }
         },
         "summary": "Read Prometheus metrics",
@@ -13986,7 +14034,7 @@
     },
     "/readyz": {
       "get": {
-        "description": "Reports whether Windshift can serve requests and reach its database. Public; no authentication required.",
+        "description": "Reports whether Windshift can serve requests, reach its database, and reach attachment storage. Public; no authentication required.",
         "responses": {
           "200": {
             "content": {

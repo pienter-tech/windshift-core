@@ -119,25 +119,6 @@ export default {
       "missingHistory": "{count} los elementos actualmente completados se excluyeron porque falta su historial de finalización."
     }
   },
-  "users": {
-    "labels": {
-      "tabLabel": "Etiquetas",
-      "tabDescription": "Administre sus etiquetas personales.",
-      "searchPlaceholder": "Buscar etiquetas",
-      "new": "Nueva etiqueta",
-      "createTitle": "Crear etiqueta",
-      "editTitle": "Editar etiqueta",
-      "namePlaceholder": "p.e. urgente",
-      "mine": "Mis etiquetas",
-      "empty": "Aún no hay etiquetas",
-      "emptyHint": "Crea tu primera etiqueta para organizar artículos.",
-      "created": "Etiqueta creada",
-      "updated": "Etiqueta actualizada",
-      "deleted": "Etiqueta eliminada",
-      "deleteTitle": "¿Eliminar etiqueta?",
-      "deleteMessage": "¿Eliminar \"{name}\"? Esto lo eliminará de cualquier elemento al que esté adjunto."
-    }
-  },
   "channel": {
     "channelConfigCorrupted": "La configuración del canal está dañada y no se puede editar de forma segura. Por favor contacte a un administrador.",
     "portalSlugInvalid": "Slug debe tener entre 1 y 40 letras minúsculas, números o guiones, y no puede comenzar ni terminar con un guión ni contener guiones consecutivos.",
@@ -228,6 +209,10 @@ export default {
     "orSignInWithEmail": "o inicie sesión con el correo electrónico",
     "profileAndSecurity": "Perfil y seguridad",
     "profileTitle": "Perfil",
+    "languageTitle": "Idioma",
+    "languageSubtitle": "Elige el idioma de este portal y de los correos que recibes.",
+    "languageLabel": "Idioma",
+    "languageSaved": "Idioma actualizado",
     "profileSubtitle": "Administre cómo inicia sesión en este portal.",
     "profileSection": "Cuenta",
     "passkeysTitle": "Claves de acceso",
@@ -369,11 +354,6 @@ export default {
     "libCharmbracelet": "Acceso TUI y SSH (Bubble Tea, Wish)"
   },
   "testing": {
-    "generateWithAI": "Generar con AI",
-    "overwriteDescriptionTitle": "¿Sobrescribir descripción?",
-    "overwriteDescriptionConfirm": "¿Reemplazar la descripción existente con un resumen generado por IA?",
-    "overwrite": "Sobrescribir",
-    "generateFailed": "No se pudo generar la descripción.",
     "actualResult": "Resultado real",
     "editTestPlan": "Editar plan de prueba",
     "execute": "Ejecutar",
@@ -443,7 +423,8 @@ export default {
   },
   "widgets": {
     "chart": {
-      "noDataAvailable": "No hay datos disponibles"
+      "noDataAvailable": "No hay datos disponibles",
+      "otherSlices": "Otros ({count} más)",
     },
     "completionChart": {
       "title": "Gráfico completo"

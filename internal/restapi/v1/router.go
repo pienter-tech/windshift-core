@@ -1,4 +1,11 @@
-// Package v1 provides scoped bearer-token REST endpoints.
+// Package v1 provides the deprecated scoped bearer-token REST endpoints.
+//
+// Deprecated: the v1 API (/rest/api/v1) is superseded by v2. Bearer clients must
+// use /rest/api/v2 and session clients /api/v2; the v2 contract is served at
+// /rest/api/v2/openapi.json. Every v1 response carries `Deprecation: true` and a
+// `Link: </rest/api/v2/openapi.json>; rel="successor-version"` header. Do not add
+// routes here or build new integrations against v1 — extend v2 instead. v1 is
+// kept only so existing bearer tokens keep working.
 //
 // Only /rest/api/v1 accepts crw_* bearer tokens; /api uses session auth and
 // /api/internal uses the sidecar secret. Routes must enforce token scope and
@@ -10,6 +17,7 @@ import (
 	"net/http"
 
 	"windshift/internal/auth"
+	"windshift/internal/logger"
 	coremiddleware "windshift/internal/middleware"
 	"windshift/internal/objecttranslation"
 	"windshift/internal/repository"
@@ -39,9 +47,9 @@ func RegisterRoutes(deps restapi.Deps) {
 		objectTranslationService = objecttranslation.NewService(db)
 	}
 
-	bearerAuth := v1middleware.NewBearerAuthWithPermissions(tokenManager, permissionService)
+	bearerAuth := v1middleware.NewBearerAuthWithPermissions(tokenManager, permissionService, logger.NewAuditor(db))
 
-	rateLimiter := v1middleware.NewRateLimiter(1000)
+	rateLimiter := v1middleware.NewRateLimiter(1000, deps.IPExtractor)
 
 	// Reuse the fully wired comment service so v1 comments retain side effects.
 
@@ -64,7 +72,7 @@ func RegisterRoutes(deps restapi.Deps) {
 	collectionHandler := handlers.NewCollectionHandler(db, permissionService)
 	actionHandler := handlers.NewActionHandler(db, permissionService, deps.ActionService)
 	actionHandler.SetAssetService(deps.AssetService)
-	attachmentHandler := handlers.NewAttachmentHandler(db, permissionService, deps.AttachmentPath)
+	attachmentHandler := handlers.NewAttachmentHandler(db, permissionService, deps.Storage)
 	pagePermissionService := services.NewPagePermissionService(db, permissionService)
 	pageApplicationService := deps.PageApplicationService
 	if pageApplicationService == nil {
@@ -79,7 +87,7 @@ func RegisterRoutes(deps restapi.Deps) {
 	if pageDiagramService == nil {
 		pageDiagramService = services.NewPageDiagramService(
 			db,
-			deps.AttachmentPath,
+			deps.Storage,
 			pageApplicationService,
 			pagePermissionService,
 			permissionService,
@@ -100,11 +108,11 @@ func RegisterRoutes(deps restapi.Deps) {
 
 	pageAttachmentUploadHandler := handlers.NewPageAttachmentUploadHandler(
 		handlers.NewBaseHandler(db, permissionService),
-		services.NewPageAttachmentUploadService(db, deps.AttachmentPath, permissionService, pagePermissionService),
+		services.NewPageAttachmentUploadService(db, deps.Storage, permissionService, pagePermissionService),
 	)
 	itemAttachmentHandler := handlers.NewItemAttachmentHandler(
 		handlers.NewBaseHandler(db, permissionService),
-		services.NewItemAttachmentService(db, deps.AttachmentPath, permissionService),
+		services.NewItemAttachmentService(db, deps.Storage, permissionService),
 	)
 
 	timePermService := services.NewTimePermissionService(db, permissionService)
@@ -123,7 +131,7 @@ func RegisterRoutes(deps restapi.Deps) {
 		deprecationHeaders,
 		v1middleware.RequestID,
 		coremiddleware.LimitJSONRequestBody(restapi.DefaultJSONRequestBodyLimit),
-		rateLimiter.Middleware,
+		rateLimiter.Limit,
 	)
 	publicV1.Handle("GET /openapi.json", handlers.OpenAPISpecJSON)
 
@@ -134,7 +142,7 @@ func RegisterRoutes(deps restapi.Deps) {
 		v1middleware.RequestID,
 		coremiddleware.LimitJSONRequestBody(restapi.DefaultJSONRequestBodyLimit),
 		bearerAuth.RequireAuth,
-		rateLimiter.Middleware,
+		rateLimiter.Limit,
 	)
 
 	v1.HandleWithMiddleware("GET /items", itemHandler.List, bearerAuth.RequirePermission("items:read"))

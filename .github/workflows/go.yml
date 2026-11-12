@@ -42,6 +42,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
         working-directory: frontend
+        env:
+          OPENUI_TELEMETRY_DISABLED: '1'
+          DO_NOT_TRACK: '1'
 
       - name: Build frontend
         run: npm run build
@@ -58,6 +61,9 @@ jobs:
 
       - name: Run Go lint and architecture guards
         run: make lint
+
+      - name: Run preference and calendar tests
+        run: go test ./internal/services ./internal/repository ./internal/restapi/v2 ./internal/i18n
 
   govulncheck:
     name: Go Vulnerability Check
@@ -76,7 +82,7 @@ jobs:
         run: make install-govulncheck
 
       - name: Run govulncheck
-        run: govulncheck ./...
+        run: bash scripts/check-vulnerabilities.sh
 
   openapi:
     name: OpenAPI Spec Freshness

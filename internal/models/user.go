@@ -93,8 +93,13 @@ type UserPermissionCache struct {
 	RoleAssignments      map[int][]int             `json:"role_assignments"`      // workspace_id -> role_ids
 	DirectPermissions    map[int][]string          `json:"direct_permissions"`    // workspace_id -> permission_keys (direct assignments)
 	PermissionSources    map[int]map[string]string `json:"permission_sources"`    // workspace_id -> permission_key -> source (role/direct/group)
-	CachedAt             time.Time                 `json:"cached_at"`
-	ExpiresAt            time.Time                 `json:"expires_at"`
+	// UsesSharedEveryone marks a snapshot whose Everyone fallback is served by
+	// the process-wide everyone table rather than an embedded WorkspaceEveryone
+	// map. Snapshots that leave it false keep the embedded map as the only
+	// source, which is what white-box fixtures rely on.
+	UsesSharedEveryone bool      `json:"uses_shared_everyone,omitempty"`
+	CachedAt           time.Time `json:"cached_at"`
+	ExpiresAt          time.Time `json:"expires_at"`
 }
 
 // UserPreferences represents user-specific preferences stored as JSON
@@ -108,10 +113,21 @@ type UserPreferences struct {
 
 // UserPreferencesData represents the parsed preferences JSON structure
 type UserPreferencesData struct {
+	Calendar        string               `json:"calendar,omitempty"`
 	ColorMode       string               `json:"color_mode,omitempty"` // "light", "dark", or "system"
 	ThemeID         *int                 `json:"theme_id,omitempty"`
 	DashboardLayout *UserDashboardLayout `json:"dashboard_layout,omitempty"`
 	TUI             *UserTUIPreferences  `json:"tui,omitempty"`
+	// ViewState holds per-user collection view configuration keyed by scope id
+	// ("collection-<id>" or "workspace-<id>") and then view id. The values are
+	// opaque client-owned JSON. Keeping it here instead of localStorage makes
+	// the setting follow the user across devices.
+	ViewState map[string]map[string]any `json:"view_state,omitempty"`
+	// SavedFilters holds the user's personal named filters keyed by scope id.
+	SavedFilters map[string]any `json:"saved_filters,omitempty"`
+	// CommentSortOrder is the user's preferred comment thread order, either
+	// "oldest" or "newest". Empty means the default (oldest first).
+	CommentSortOrder string `json:"comment_sort_order,omitempty"`
 }
 
 // UserTUIPreferences is the SSH TUI's persisted state sub-document. Pointer
@@ -143,9 +159,11 @@ type UserDashboardWidget struct {
 
 // UserDashboardLayout represents the complete personal dashboard layout
 type UserDashboardLayout struct {
-	GridColumns int                    `json:"grid_columns,omitempty"`
-	Sections    []UserDashboardSection `json:"sections"`
-	Widgets     []UserDashboardWidget  `json:"widgets"`
+	GridColumns        int                    `json:"grid_columns,omitempty"`
+	Gradient           int                    `json:"gradient,omitempty"`             // Selected gradient index (0 = none, 1+ = gradient index)
+	BackgroundImageURL string                 `json:"background_image_url,omitempty"` // Preset background image URL (takes priority over gradient)
+	Sections           []UserDashboardSection `json:"sections"`
+	Widgets            []UserDashboardWidget  `json:"widgets"`
 }
 
 // TeamGroup represents a user group for access control and organization
@@ -219,6 +237,23 @@ type TeamGroupMembershipResponse struct {
 	Groups []TeamGroup `json:"groups"`
 }
 
+// Brand layout values for Theme.BrandLayout: how the sidebar lockup renders.
+const (
+	BrandLayoutMarkText = "mark_text"
+	BrandLayoutMarkOnly = "mark_only"
+	BrandLayoutFullLogo = "full_logo"
+)
+
+// IsValidBrandLayout reports whether layout is a supported brand layout.
+func IsValidBrandLayout(layout string) bool {
+	switch layout {
+	case BrandLayoutMarkText, BrandLayoutMarkOnly, BrandLayoutFullLogo:
+		return true
+	default:
+		return false
+	}
+}
+
 // Theme represents the application's visual theme settings
 type Theme struct {
 	ID                 int    `json:"id"`
@@ -237,8 +272,16 @@ type Theme struct {
 	NavTextColorDark       string `json:"nav_text_color_dark"`       // CSS color value (hex, rgb, etc.)
 	// Optional company logo shown instead of the product mark. LogoURL is the
 	// default/light logo; LogoURLDark overrides it in dark mode when set.
-	LogoURL     string    `json:"logo_url,omitempty"`
-	LogoURLDark string    `json:"logo_url_dark,omitempty"`
+	LogoURL     string `json:"logo_url,omitempty"`
+	LogoURLDark string `json:"logo_url_dark,omitempty"`
+	// Optional full/wordmark logo for the expanded sidebar, with the same
+	// light/dark fallback as the mark.
+	LogoFullURL     string `json:"logo_full_url,omitempty"`
+	LogoFullURLDark string `json:"logo_full_url_dark,omitempty"`
+	// BrandLayout selects what the expanded sidebar lockup renders:
+	// mark_text (mark + site title), mark_only, or full_logo. The collapsed
+	// sidebar always renders the mark.
+	BrandLayout string    `json:"brand_layout"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
@@ -253,6 +296,9 @@ type ThemeCreateRequest struct {
 	NavTextColorDark        string `json:"nav_text_color_dark"`
 	LogoURL                 string `json:"logo_url"`
 	LogoURLDark             string `json:"logo_url_dark"`
+	LogoFullURL             string `json:"logo_full_url"`
+	LogoFullURLDark         string `json:"logo_full_url_dark"`
+	BrandLayout             string `json:"brand_layout"`
 }
 
 // ThemeUpdateRequest represents the payload for updating a theme
@@ -265,5 +311,8 @@ type ThemeUpdateRequest struct {
 	NavTextColorDark        string `json:"nav_text_color_dark"`
 	LogoURL                 string `json:"logo_url"`
 	LogoURLDark             string `json:"logo_url_dark"`
+	LogoFullURL             string `json:"logo_full_url"`
+	LogoFullURLDark         string `json:"logo_full_url_dark"`
+	BrandLayout             string `json:"brand_layout"`
 	IsActive                bool   `json:"is_active"`
 }

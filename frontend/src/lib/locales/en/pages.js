@@ -55,6 +55,7 @@ export default {
     emptyPaneDescription: 'Select a page from the tree, or create one to get started.',
     titlePlaceholder: 'Untitled',
     editorPlaceholder: 'Start writing…',
+    contentLabel: 'Page content',
     tocHeading: 'On this page',
     tocAriaLabel: 'Table of contents',
 

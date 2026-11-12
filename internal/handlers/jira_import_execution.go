@@ -18,6 +18,8 @@ import (
 	"windshift/internal/repository"
 	"windshift/internal/services"
 	"windshift/internal/xray"
+
+	"uuid"
 )
 
 const (
@@ -25,13 +27,21 @@ const (
 	jiraIssueKeyFieldName     = "Jira Key"
 )
 
-// executeImport runs the actual import process in the background
+// executeImport runs the actual import process in the background.
 func (h *JiraImportHandler) executeImport(jobID string, req StartImportRequest) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	ctx, cancel := h.jiraImportContext(context.Background())
 	defer cancel()
 
-	// Update job status to running
-	h.updateJobStatus(jobID, "running", "initializing", nil, "")
+	// Claim the job with a per-run ownership token. A job another worker already
+	// recovered or cleaned up cannot be claimed, so a stale worker never starts.
+	token := uuid.New().String()
+	if err := h.imports.ClaimJob(jobID, token); err != nil {
+		slog.Warn("Jira import job could not be claimed; skipping run",
+			slog.String("component", "jira"), slog.String("job_id", jobID), slog.Any("error", err))
+		return
+	}
+	h.setJobToken(jobID, token)
+	defer h.clearJobToken(jobID)
 
 	// Look up the user who initiated this job so imported workspaces can grant
 	// them admin access. Without this the importer would create workspaces with
@@ -83,6 +93,16 @@ func (h *JiraImportHandler) executeImport(jobID string, req StartImportRequest) 
 	h.executeImportWithClientContext(ctx, jobID, req, client, createdByID)
 }
 
+// jiraImportContext applies the operator-configured overall import limit. With
+// no limit (the default) it only derives a cancellable context, because
+// per-request HTTP timeouts and the worker lease already bound the import.
+func (h *JiraImportHandler) jiraImportContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if h.importMaxDuration > 0 {
+		return context.WithTimeout(parent, h.importMaxDuration)
+	}
+	return context.WithCancel(parent)
+}
+
 func jiraIssueImportJQL(projectKey string, openIssuesOnly, rankOrdered bool) string {
 	statusClause := ""
 	if openIssuesOnly {
@@ -98,25 +118,29 @@ func jiraIssueImportJQL(projectKey string, openIssuesOnly, rankOrdered bool) str
 	return fmt.Sprintf("project = %s%s ORDER BY %s", projectKey, statusClause, orderBy)
 }
 
+// getJiraIssueKeysInImportOrder lists a project's issue keys in Rank order and
+// returns an id→key correlation for the same issues so bulk-fetch errors can be
+// attributed without guessing.
 func getJiraIssueKeysInImportOrder(
 	ctx context.Context,
 	client jira.Client,
 	projectKey string,
 	openIssuesOnly bool,
-) ([]string, error) {
+) (keys []string, keysByID map[string]string, err error) {
 	rankedJQL := jiraIssueImportJQL(projectKey, openIssuesOnly, true)
-	keys, err := client.GetAllIssueKeys(ctx, rankedJQL)
+	refs, err := client.GetAllIssueRefs(ctx, rankedJQL)
 	if err == nil {
-		return keys, nil
+		keys, keysByID = jiraIssueRefMaps(refs)
+		return keys, keysByID, nil
 	}
 
 	// Jira Core-only/Data Center installations may not expose the Jira
 	// Software Rank field. Preserve import availability with the previous
 	// chronological order while making the degraded ordering visible in logs.
 	fallbackJQL := jiraIssueImportJQL(projectKey, openIssuesOnly, false)
-	fallbackKeys, fallbackErr := client.GetAllIssueKeys(ctx, fallbackJQL)
+	fallbackRefs, fallbackErr := client.GetAllIssueRefs(ctx, fallbackJQL)
 	if fallbackErr != nil {
-		return nil, fmt.Errorf(
+		return nil, nil, fmt.Errorf(
 			"list Jira issues by rank: %v; chronological fallback also failed: %w",
 			err,
 			fallbackErr,
@@ -126,7 +150,25 @@ func getJiraIssueKeysInImportOrder(
 		slog.String("component", "jira"),
 		slog.String("project", projectKey),
 		slog.Any("error", err))
-	return fallbackKeys, nil
+	keys, keysByID = jiraIssueRefMaps(fallbackRefs)
+	return keys, keysByID, nil
+}
+
+// jiraIssueRefMaps splits discovery refs into the ordered key list and the
+// numeric-id→key correlation used for bulk-fetch error attribution.
+func jiraIssueRefMaps(refs []jira.JiraIssueRef) (keys []string, keysByID map[string]string) {
+	keys = make([]string, 0, len(refs))
+	keysByID = make(map[string]string, len(refs))
+	for _, ref := range refs {
+		if ref.Key == "" {
+			continue
+		}
+		keys = append(keys, ref.Key)
+		if ref.ID != "" {
+			keysByID[ref.ID] = ref.Key
+		}
+	}
+	return keys, keysByID
 }
 
 func sortJiraIssuesByRequestedKeyOrder(issues []jira.JiraIssue, orderedKeys []string) {
@@ -154,27 +196,127 @@ func sortJiraIssuesByRequestedKeyOrder(issues []jira.JiraIssue, orderedKeys []st
 	})
 }
 
-func recordJiraBulkFetchErrors(
-	projectKey string,
-	bulkErrors []jira.BulkFetchError,
-	xrayPlan *xrayImportPlan,
-	progress *ImportProgress,
-) {
-	for _, fetchError := range bulkErrors {
-		slog.Error("Failed to fetch Jira issue",
-			slog.String("component", "jira"),
-			slog.String("issue", fetchError.IssueIDOrKey),
-			slog.String("error", fetchError.ErrorMessage))
-		if xrayPlan.isTest(projectKey, fetchError.IssueIDOrKey) {
-			progress.FailedTests++
-		} else {
-			progress.FailedIssues++
+// jiraImportLeaseRenewInterval is how often a running import refreshes its
+// job lease. It is well under jiraimport.JiraImportLeaseDuration so a brief
+// stall does not look like a dead worker.
+const jiraImportLeaseRenewInterval = 30 * time.Second
+
+func (h *JiraImportHandler) renewJiraImportLease(ctx context.Context, jobID string, onLost func()) {
+	ticker := time.NewTicker(jiraImportLeaseRenewInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			renewed, err := h.imports.RenewLease(jobID, h.jobToken(jobID))
+			if err != nil {
+				slog.Warn("Failed to renew Jira import lease",
+					slog.String("component", "jira"),
+					slog.String("job_id", jobID),
+					slog.Any("error", err))
+				continue
+			}
+			if !renewed {
+				slog.Warn("Jira import lease lost; stopping import",
+					slog.String("component", "jira"),
+					slog.String("job_id", jobID))
+				onLost()
+				return
+			}
 		}
 	}
 }
 
+// recordJiraBulkFetchResults accounts for every requested key exactly once.
+// Jira returns HTTP 200 with partial success: resolved issues land in Issues,
+// per-issue failures in IssueErrors, and a requested key can be absent from
+// both. Any key missing from both lists is counted as a failure so a
+// hydration response can never silently drop an issue.
+func recordJiraBulkFetchResults(
+	projectKey string,
+	requestedKeys []string,
+	result *jira.BulkFetchResponse,
+	keysByID map[string]string,
+	xrayPlan *xrayImportPlan,
+	progress *ImportProgress,
+) {
+	returned := make(map[string]bool)
+	if result != nil {
+		for _, issue := range result.Issues {
+			if issue.Key != "" {
+				returned[issue.Key] = true
+			}
+		}
+	}
+
+	failed := make(map[string]bool)
+	// Errors whose numeric id could not be correlated to a requested key. They
+	// are paired with missing requested keys below so each failure is counted
+	// once while keeping the upstream diagnostic.
+	var unattributed []jira.BulkFetchError
+	if result != nil {
+		for _, fetchError := range result.IssueErrors {
+			key := fetchError.IssueIDOrKey
+			if key == "" {
+				key = keysByID[fetchError.ID]
+			}
+			if key == "" {
+				unattributed = append(unattributed, fetchError)
+				continue
+			}
+			if returned[key] || failed[key] {
+				continue
+			}
+			failed[key] = true
+			slog.Error("Failed to fetch Jira issue",
+				slog.String("component", "jira"),
+				slog.String("issue", key),
+				slog.String("source_id", fetchError.ID),
+				slog.String("error", fetchError.Message()))
+			recordJiraBulkFetchFailure(projectKey, key, xrayPlan, progress)
+		}
+	}
+
+	for _, key := range requestedKeys {
+		if key == "" || returned[key] || failed[key] {
+			continue
+		}
+		failed[key] = true
+		if len(unattributed) > 0 {
+			fetchError := unattributed[0]
+			unattributed = unattributed[1:]
+			slog.Error("Failed to fetch Jira issue",
+				slog.String("component", "jira"),
+				slog.String("issue", key),
+				slog.String("source_id", fetchError.ID),
+				slog.String("error", fetchError.Message()))
+		} else {
+			slog.Error("Jira bulk fetch omitted requested issue",
+				slog.String("component", "jira"),
+				slog.String("issue", key))
+		}
+		recordJiraBulkFetchFailure(projectKey, key, xrayPlan, progress)
+	}
+
+	// More errors than missing keys (an id that is not part of this batch).
+	// Count them so a reported failure is never lost.
+	for range unattributed {
+		progress.FailedIssues++
+	}
+}
+
+func recordJiraBulkFetchFailure(projectKey, key string, xrayPlan *xrayImportPlan, progress *ImportProgress) {
+	if xrayPlan.isTest(projectKey, key) {
+		progress.FailedTests++
+		return
+	}
+	progress.FailedIssues++
+}
+
 func jiraImportTerminalOutcome(progress *ImportProgress) (status, phase, errorMessage string) {
-	failures := progress.FailedProjects + progress.FailedIssues + progress.FailedTests + progress.FailedLinks
+	failures := progress.FailedProjects + progress.FailedIssues + progress.FailedTests +
+		progress.FailedLinks + progress.FailedComments + progress.FailedWorklogs + progress.FailedAttachments
 	if failures == 0 {
 		return "completed", "completed", ""
 	}
@@ -182,17 +324,58 @@ func jiraImportTerminalOutcome(progress *ImportProgress) (status, phase, errorMe
 		return "completed_with_errors", "completed_with_errors", ""
 	}
 	return "failed", "failed", fmt.Sprintf(
-		"No Jira issues or Xray tests were imported (%d project, %d issue, %d test, and %d issue-link failures).",
+		"No Jira issues or Xray tests were imported (%d project, %d issue, %d test, %d issue-link, %d comment, %d worklog, and %d attachment failures).",
 		progress.FailedProjects,
 		progress.FailedIssues,
 		progress.FailedTests,
 		progress.FailedLinks,
+		progress.FailedComments,
+		progress.FailedWorklogs,
+		progress.FailedAttachments,
 	)
+}
+
+// jiraImportTimedOutOutcome describes an import stopped by the operator's
+// configured time limit. It is separate from jiraImportTerminalOutcome so a
+// limit reads as a partial stop with resume instructions rather than as a
+// generic completion with per-item errors.
+func jiraImportTimedOutOutcome(ctx context.Context, progress *ImportProgress) (status, phase, errorMessage string, timedOut bool) {
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return "", "", "", false
+	}
+	imported := progress.ImportedIssues + progress.ImportedTests
+	total := progress.TotalIssues + progress.TotalTests
+	return "timed_out", "timed_out", fmt.Sprintf(
+		"Import stopped at the configured time limit after importing %d of %d items. Re-run the import mapped onto the same workspace to continue; items are matched by their Jira ID and already-imported data is reused.",
+		imported, total,
+	), true
+}
+
+// finishTimedOutJiraImport writes the terminal state for an import that hit the
+// configured limit. It reports whether the job was stopped by that limit.
+func (h *JiraImportHandler) finishTimedOutJiraImport(ctx context.Context, jobID string, progress *ImportProgress) bool {
+	status, phase, errorMessage, timedOut := jiraImportTimedOutOutcome(ctx, progress)
+	if !timedOut {
+		return false
+	}
+	progress.Phase = phase
+	h.persistJiraImportResult(jobID, progress)
+	h.updateJobStatus(jobID, status, phase, progress, errorMessage)
+	return true
 }
 
 func (h *JiraImportHandler) executeImportWithClientContext(ctx context.Context, jobID string, req StartImportRequest, client jira.Client, createdByUserID int) {
 	h.clearMappingFailure(jobID)
 	defer h.clearMappingFailure(jobID)
+
+	// Cancel the import if the lease is lost so a recovered or cleaned-up worker
+	// stops making progress.
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+	leaseCtx, stopLease := context.WithCancel(ctx)
+	defer stopLease()
+	go h.renewJiraImportLease(leaseCtx, jobID, cancelRun)
+	ctx = runCtx
 
 	progress := &ImportProgress{
 		Phase:         "initializing",
@@ -211,6 +394,9 @@ func (h *JiraImportHandler) executeImportWithClientContext(ctx context.Context, 
 
 	xrayPlan, err := prepareXrayImport(ctx, client, req.Xray, req.ProjectKeys, req.OpenIssuesOnly)
 	if err != nil {
+		if h.finishTimedOutJiraImport(ctx, jobID, progress) {
+			return
+		}
 		h.updateJobStatus(jobID, "failed", "", progress, fmt.Sprintf("Failed to prepare Xray import: %v", err))
 		return
 	}
@@ -224,6 +410,7 @@ func (h *JiraImportHandler) executeImportWithClientContext(ctx context.Context, 
 
 	global, aborted := h.prepareJiraGlobalModel(ctx, jobID, req, client, createdByUserID, progress)
 	if aborted {
+		h.finishTimedOutJiraImport(ctx, jobID, progress)
 		return
 	}
 
@@ -245,6 +432,7 @@ func (h *JiraImportHandler) executeImportWithClientContext(ctx context.Context, 
 
 		skip, aborted := h.importJiraIssueBatches(ctx, im, projectKey, global, req.OpenIssuesOnly, xrayPlan)
 		if aborted {
+			h.finishTimedOutJiraImport(ctx, jobID, progress)
 			return
 		}
 		if skip {
@@ -277,6 +465,9 @@ func (h *JiraImportHandler) executeImportWithClientContext(ctx context.Context, 
 	if issueLinkImportErr != nil {
 		progress.FailedLinks = 1
 	}
+	if h.finishTimedOutJiraImport(ctx, jobID, progress) {
+		return
+	}
 	status, phase, errorMessage := jiraImportTerminalOutcome(progress)
 	progress.Phase = phase
 	h.persistJiraImportResult(jobID, progress)
@@ -296,6 +487,7 @@ func (h *JiraImportHandler) prepareJiraGlobalModel(
 ) (model *jiraGlobalModel, aborted bool) {
 	model = &jiraGlobalModel{
 		issueKeysByProject:        make(map[string][]string),
+		issueKeysByIDByProject:    make(map[string]map[string]string),
 		applicableFieldsByProject: make(map[string]map[string]bool),
 	}
 
@@ -312,16 +504,17 @@ func (h *JiraImportHandler) prepareJiraGlobalModel(
 	}
 	model.itemTypeMap = itemTypeMap
 
-	h.importJiraAssets(ctx, jobID, client, createdByUserID)
+	h.importJiraAssets(ctx, jobID, client, createdByUserID, req.AssetSchemaIDs)
 	if h.failOnMappingFailure(jobID, progress) {
 		return model, true
 	}
 
 	fieldConfigurations := loadJiraCustomFieldConfigurations(ctx, client, req.Mappings.CustomFields)
-	issueKeysByProject, assetFieldSetIDs, applicableFieldsByProject, choiceLabelsByField := h.preflightJiraCustomFields(
+	issueKeysByProject, issueKeysByIDByProject, assetFieldSetIDs, applicableFieldsByProject, choiceLabelsByField := h.preflightJiraCustomFields(
 		ctx, jobID, client, req.ProjectKeys, req.OpenIssuesOnly, req.Mappings.CustomFields,
 	)
 	model.issueKeysByProject = issueKeysByProject
+	model.issueKeysByIDByProject = issueKeysByIDByProject
 	model.applicableFieldsByProject = applicableFieldsByProject
 	mergeJiraConfiguredChoiceLabels(choiceLabelsByField, fieldConfigurations)
 	customFieldIDMap, choiceOptionIDs, err := h.ensureCustomFields(
@@ -349,6 +542,19 @@ func (h *JiraImportHandler) prepareJiraGlobalModel(
 		slog.Error("Failed to ensure Affects Version custom field", slog.String("component", "jira"), slog.Any("error", err))
 	}
 	model.affectsVersionField = affectsVersionField
+
+	// Resolve service-desk customer identities once across every selected
+	// project. Data Center group membership spans projects, so a customer
+	// referenced while importing a non-service-desk project must still be
+	// classified as a customer rather than an internal user (WI-2075).
+	customerIdentities := map[string]struct{}{}
+	for _, projectKey := range req.ProjectKeys {
+		for identity := range resolveJiraServiceDeskCustomerIdentities(ctx, projectKey, client) {
+			customerIdentities[identity] = struct{}{}
+		}
+	}
+	model.customerIdentities = customerIdentities
+
 	if h.failOnMappingFailure(jobID, progress) {
 		return model, true
 	}
@@ -402,6 +608,7 @@ func (h *JiraImportHandler) setupJiraProject(
 		workspaceID:         workspaceID,
 		statusMap:           global.statusMap,
 		itemTypeMap:         global.itemTypeMap,
+		priorityMap:         make(map[string]int),
 		customFieldIDMap:    global.customFieldIDMap,
 		choiceOptionIDs:     global.choiceOptionIDs,
 		customFieldMappings: req.Mappings.CustomFields,
@@ -409,6 +616,7 @@ func (h *JiraImportHandler) setupJiraProject(
 		userMap:             make(map[string]int),
 		usernameMap:         make(map[string]string),
 		portalCustomerMap:   make(map[string]int),
+		customerIdentities:  global.customerIdentities,
 	}
 
 	jsmImport, err := h.prepareJiraServiceManagementImport(
@@ -427,6 +635,10 @@ func (h *JiraImportHandler) setupJiraProject(
 	if h.failOnMappingFailure(jobID, progress) {
 		return nil, false
 	}
+
+	// Import Jira groups and project roles so workflow guards that reference
+	// them resolve to real Windshift principals before workflows are built.
+	h.importJiraGroupsAndRoles(ctx, im, projectKey)
 
 	// Create workflows and configuration set for this project
 	if err := h.ensureWorkflowsAndConfigSet(ctx, jobID, projectKey, workspaceID, global.statusMap, global.itemTypeMap, client); err != nil {
@@ -474,7 +686,7 @@ func (h *JiraImportHandler) setupJiraProject(
 	}
 	im.iterationMap = iterationMap
 
-	h.importJiraBoardsAndFilters(ctx, jobID, projectKey, workspaceID, global.statusMap, client, createdByUserID)
+	h.importJiraBoardsAndFilters(ctx, jobID, projectKey, workspaceID, jiraWorkspaceProjectKeys(req.Mappings.Workspaces, projectKey, workspaceID), global.statusMap, client, createdByUserID)
 
 	timeProjectID, err := h.ensureJiraTimeProject(jobID, workspaceID, projectKey, wsMapping.NewWorkspaceName)
 	if err != nil {
@@ -502,9 +714,10 @@ func (h *JiraImportHandler) importJiraIssueBatches(
 	xrayPlan *xrayImportPlan,
 ) (skip, abort bool) {
 	issueKeys, prefetched := global.issueKeysByProject[projectKey]
+	keysByID := global.issueKeysByIDByProject[projectKey]
 	if !prefetched {
 		var err error
-		issueKeys, err = getJiraIssueKeysInImportOrder(ctx, im.client, projectKey, openIssuesOnly)
+		issueKeys, keysByID, err = getJiraIssueKeysInImportOrder(ctx, im.client, projectKey, openIssuesOnly)
 		if err != nil {
 			slog.Error("Failed to get issue keys", slog.String("component", "jira"), slog.String("project", projectKey), slog.Any("error", err))
 			im.progress.FailedProjects++
@@ -533,6 +746,21 @@ func (h *JiraImportHandler) importJiraIssueBatches(
 
 	batchSize := 100
 	for j := 0; j < len(issueKeys); j += batchSize {
+		// A configured time limit (or a lost lease) stops the import before the
+		// next batch. Checking here keeps unprocessed issues out of the failure
+		// counts; the caller reports the limit as a partial stop.
+		if ctx.Err() != nil {
+			return false, true
+		}
+		// Stop before persisting a batch once the lease is lost: a recovered or
+		// cleaned-up job must not have its data resurrected by a stale worker.
+		if err := h.imports.CheckJobOwnership(im.jobID, h.jobToken(im.jobID)); err != nil {
+			slog.Warn("Jira import lease lost; stopping import",
+				slog.String("component", "jira"),
+				slog.String("job_id", im.jobID),
+				slog.Any("error", err))
+			return false, true
+		}
 		end := j + batchSize
 		if end > len(issueKeys) {
 			end = len(issueKeys)
@@ -556,7 +784,7 @@ func (h *JiraImportHandler) importJiraIssueBatches(
 			}
 			continue
 		}
-		recordJiraBulkFetchErrors(projectKey, fetchResult.Errors, xrayPlan, im.progress)
+		recordJiraBulkFetchResults(projectKey, batch, fetchResult, keysByID, xrayPlan, im.progress)
 		// Bulk fetch is a set-oriented API and does not guarantee request
 		// ordering. Restore the Rank-ordered key sequence so CreateItem's
 		// append-only fractional index generation preserves Jira order.
@@ -582,17 +810,28 @@ func (h *JiraImportHandler) importJiraIssueBatches(
 // comment/worklog page in issue payloads; fetching the rest here lets author
 // mapping include every referenced user.
 func (h *JiraImportHandler) completeJiraBatchSubresources(ctx context.Context, im *jiraImportContext, projectKey string, issues []jira.JiraIssue, xrayPlan *xrayImportPlan) {
-	for idx := range issues {
+	// Each issue's subresource work is independent, so run it concurrently and
+	// fold the failure counts back into the shared progress on this goroutine.
+	type subresourceFailures struct {
+		comments int
+		worklogs int
+	}
+	failures := make([]subresourceFailures, len(issues))
+	jiraParallel(ctx, h.importConcurrency, len(issues), func(ctx context.Context, idx int) {
 		if xrayPlan.isTest(projectKey, issues[idx].Key) {
-			continue
+			return
 		}
-		if err := h.completePagedIssueContainers(ctx, &issues[idx], im.client); err != nil {
+		comments, worklogs, err := h.completeJiraIssueSubresources(ctx, &issues[idx], im.client)
+		if err != nil {
 			slog.Warn("Failed to complete paged Jira issue containers",
 				slog.String("component", "jira"),
 				slog.String("issue", issues[idx].Key),
 				slog.Any("error", err))
 		}
-		h.completeIssueWatchers(ctx, &issues[idx], im.client)
+		failures[idx] = subresourceFailures{comments: comments, worklogs: worklogs}
+		if h.importWatchers {
+			h.completeIssueWatchers(ctx, &issues[idx], im.client)
+		}
 		if im.jsmImport != nil {
 			if err := h.annotateJiraServiceDeskCommentVisibility(ctx, &issues[idx], im.client); err != nil {
 				slog.Warn("Failed to load Jira Service Management comment visibility",
@@ -601,6 +840,10 @@ func (h *JiraImportHandler) completeJiraBatchSubresources(ctx context.Context, i
 					slog.Any("error", err))
 			}
 		}
+	})
+	for _, failure := range failures {
+		im.progress.FailedComments += failure.comments
+		im.progress.FailedWorklogs += failure.worklogs
 	}
 }
 
@@ -628,8 +871,10 @@ func (h *JiraImportHandler) collectJiraBatchUsers(im *jiraImportContext, project
 		addJiraUserSummaryFromUser(issue.Fields.Assignee, knownIdentityMap, &usersToProcess, usersSeen)
 		addJiraUserSummaryFromUser(issue.Fields.Reporter, knownIdentityMap, &usersToProcess, usersSeen)
 		addJiraUserSummaryFromUser(issue.Fields.Creator, knownIdentityMap, &usersToProcess, usersSeen)
-		for watcherIdx := range issue.Fields.Watchers {
-			addJiraUserSummaryFromUser(&issue.Fields.Watchers[watcherIdx], knownIdentityMap, &usersToProcess, usersSeen)
+		if h.importWatchers {
+			for watcherIdx := range issue.Fields.Watchers {
+				addJiraUserSummaryFromUser(&issue.Fields.Watchers[watcherIdx], knownIdentityMap, &usersToProcess, usersSeen)
+			}
 		}
 		if issue.Fields.Votes != nil {
 			for voterIdx := range issue.Fields.Votes.Voters {
@@ -685,21 +930,23 @@ func (h *JiraImportHandler) ensureJiraBatchUsers(ctx context.Context, im *jiraIm
 	}
 	internalUsers := usersToProcess
 	var portalCustomers []JiraUserSummary
-	if im.jsmImport != nil {
-		internalUsers, portalCustomers = splitJiraImportUsers(usersToProcess)
+	if len(im.customerIdentities) > 0 {
+		internalUsers, portalCustomers = splitJiraImportUsers(usersToProcess, im.customerIdentities)
 	}
-	newUserMappings, newUsernameMappings, err := h.ensureUsers(ctx, im.jobID, internalUsers, im.client)
-	if err != nil {
-		slog.Error("Failed to ensure users", slog.String("component", "jira"), slog.Any("error", err))
+	if len(internalUsers) > 0 {
+		newUserMappings, newUsernameMappings, err := h.ensureUsers(ctx, im.jobID, internalUsers, im.client)
+		if err != nil {
+			slog.Error("Failed to ensure users", slog.String("component", "jira"), slog.Any("error", err))
+		}
+		// Merge new mappings into userMap and usernameMap
+		for k, v := range newUserMappings {
+			im.userMap[k] = v
+		}
+		for k, v := range newUsernameMappings {
+			im.usernameMap[k] = v
+		}
 	}
-	// Merge new mappings into userMap and usernameMap
-	for k, v := range newUserMappings {
-		im.userMap[k] = v
-	}
-	for k, v := range newUsernameMappings {
-		im.usernameMap[k] = v
-	}
-	if len(portalCustomers) > 0 {
+	if len(portalCustomers) > 0 && im.jsmImport != nil {
 		newPortalMappings, portalErr := h.ensurePortalCustomers(
 			im.jobID, im.jsmImport.ChannelID, portalCustomers, im.jsmImport.CustomerOrganizations,
 		)
@@ -783,6 +1030,25 @@ func (h *JiraImportHandler) persistJiraImportResult(jobID string, progress *Impo
 		Metadata   map[string]any `json:"metadata"`
 	}
 	planFingerprint, configurationDrift, previousImports := h.jiraImportPlanResult(jobID)
+	findings := h.jiraImportFidelityFindings(jobID)
+	if progress.FailedAttachments > 0 {
+		findings = append(findings, jiraImportFidelityFinding{
+			Code:        "jira_attachments_failed",
+			Severity:    "error",
+			Disposition: "failed",
+			Summary:     "Some Jira attachments could not be downloaded or stored and are missing from the imported items.",
+			Count:       progress.FailedAttachments,
+		})
+	}
+	if progress.SkippedAttachments > 0 {
+		findings = append(findings, jiraImportFidelityFinding{
+			Code:        "jira_attachments_skipped",
+			Severity:    "info",
+			Disposition: "skipped",
+			Summary:     "Attachment import was skipped, either because attachment storage is disabled or the source file had no download URL.",
+			Count:       progress.SkippedAttachments,
+		})
+	}
 	result := struct {
 		Summary            *ImportProgress             `json:"summary"`
 		PlanFingerprint    string                      `json:"plan_fingerprint,omitempty"`
@@ -800,7 +1066,7 @@ func (h *JiraImportHandler) persistJiraImportResult(jobID string, progress *Impo
 		CustomFields:       []configurationEntity{},
 		Workflows:          []configurationEntity{},
 		Screens:            []configurationEntity{},
-		Findings:           h.jiraImportFidelityFindings(jobID),
+		Findings:           findings,
 	}
 	records, err := h.imports.ConfigurationRecords(jobID)
 	if err != nil {
@@ -834,7 +1100,7 @@ func (h *JiraImportHandler) persistJiraImportResult(jobID string, progress *Impo
 			slog.Any("error", err))
 		return
 	}
-	if err := h.imports.UpdateJobResult(jobID, data); err != nil {
+	if err := h.imports.UpdateJobResult(jobID, h.jobToken(jobID), data); err != nil {
 		slog.Warn("Failed to persist Jira import configuration result",
 			slog.String("component", "jira"),
 			slog.String("job_id", jobID),
@@ -980,7 +1246,7 @@ func (h *JiraImportHandler) jiraImportFidelityFindings(jobID string) []jiraImpor
 			Code:        "jira_datetime_editing_lossy",
 			Severity:    "warning",
 			Disposition: "lossy",
-			Summary:     "Jira datetime values retain their timestamp text, but Windshift currently edits them through a date-only field model.",
+			Summary:     "Jira datetime values are stored as calendar dates and their original timestamp text is retained in item metadata, but Windshift edits them through a date-only field model.",
 			Count:       dateTimeCount,
 		})
 	}
@@ -1125,11 +1391,13 @@ func (h *JiraImportHandler) preflightJiraCustomFields(
 	mappings []CustomFieldMapping,
 ) (
 	issueKeysByProject map[string][]string,
+	issueKeysByIDByProject map[string]map[string]string,
 	resolved map[string]int,
 	applicableFieldsByProject map[string]map[string]bool,
 	choiceLabelsByField map[string][]string,
 ) {
 	issueKeysByProject = make(map[string][]string, len(projectKeys))
+	issueKeysByIDByProject = make(map[string]map[string]string, len(projectKeys))
 	applicableFieldsByProject = make(map[string]map[string]bool, len(projectKeys))
 	assetMappings := make([]CustomFieldMapping, 0)
 	choiceMappings := make([]CustomFieldMapping, 0)
@@ -1168,7 +1436,7 @@ func (h *JiraImportHandler) preflightJiraCustomFields(
 				}
 			}
 		}
-		keys, err := getJiraIssueKeysInImportOrder(ctx, client, projectKey, openIssuesOnly)
+		keys, keysByID, err := getJiraIssueKeysInImportOrder(ctx, client, projectKey, openIssuesOnly)
 		if err != nil {
 			slog.Warn("Jira custom-field preflight could not list issue keys",
 				slog.String("component", "jira"),
@@ -1177,9 +1445,10 @@ func (h *JiraImportHandler) preflightJiraCustomFields(
 			continue
 		}
 		issueKeysByProject[projectKey] = keys
+		issueKeysByIDByProject[projectKey] = keysByID
 	}
 	if len(fieldIDs) == 0 {
-		return issueKeysByProject, map[string]int{}, applicableFieldsByProject, map[string][]string{}
+		return issueKeysByProject, issueKeysByIDByProject, map[string]int{}, applicableFieldsByProject, map[string][]string{}
 	}
 
 	setCandidates := make(map[string]map[int]struct{}, len(assetMappings))
@@ -1271,7 +1540,7 @@ func (h *JiraImportHandler) preflightJiraCustomFields(
 		})
 		choiceLabelsByField[fieldID] = labels
 	}
-	return issueKeysByProject, resolved, applicableFieldsByProject, choiceLabelsByField
+	return issueKeysByProject, issueKeysByIDByProject, resolved, applicableFieldsByProject, choiceLabelsByField
 }
 
 func (h *JiraImportHandler) bindJiraImportFieldsToWorkspace(
@@ -1308,18 +1577,23 @@ func (h *JiraImportHandler) bindJiraImportFieldsToWorkspace(
 	return h.imports.BindFieldsToWorkspace(workspaceID, projectKey, fieldIDs)
 }
 
-func (h *JiraImportHandler) completePagedIssueContainers(ctx context.Context, issue *jira.JiraIssue, client jira.Client) error {
+// completeJiraIssueSubresources completes one issue's paginated comment and
+// worklog containers. It reports the failure counts instead of mutating the
+// shared progress so it can run concurrently across a batch.
+func (h *JiraImportHandler) completeJiraIssueSubresources(ctx context.Context, issue *jira.JiraIssue, client jira.Client) (failedComments, failedWorklogs int, err error) {
 	if issue == nil || issue.Key == "" {
-		return nil
+		return 0, 0, nil
 	}
 	var errs []error
 	if err := h.completeIssueComments(ctx, issue, client); err != nil {
+		failedComments = 1
 		errs = append(errs, err)
 	}
 	if err := h.completeIssueWorklogs(ctx, issue, client); err != nil {
+		failedWorklogs = 1
 		errs = append(errs, err)
 	}
-	return errors.Join(errs...)
+	return failedComments, failedWorklogs, errors.Join(errs...)
 }
 
 func (h *JiraImportHandler) completeIssueWatchers(ctx context.Context, issue *jira.JiraIssue, client jira.Client) {
@@ -1375,10 +1649,13 @@ func (h *JiraImportHandler) completeIssueComments(ctx context.Context, issue *ji
 	for startAt := len(comments); startAt < container.Total; startAt = len(comments) {
 		page, err := client.GetIssueComments(ctx, issue.Key, startAt, maxResults)
 		if err != nil {
+			// Keep the pages already fetched and report the incomplete fetch.
+			container.Comments = comments
 			return fmt.Errorf("fetch comments page startAt=%d: %w", startAt, err)
 		}
 		if page == nil || len(page.Comments) == 0 {
-			break
+			container.Comments = comments
+			return fmt.Errorf("comments page startAt=%d returned no rows before total %d", startAt, container.Total)
 		}
 		comments = append(comments, page.Comments...)
 		if page.Total > 0 {
@@ -1429,18 +1706,47 @@ func (h *JiraImportHandler) completeIssueWorklogs(ctx context.Context, issue *ji
 	for startAt := len(worklogs); startAt < container.Total; startAt = len(worklogs) {
 		page, err := client.GetIssueWorklogs(ctx, issue.Key, startAt, maxResults)
 		if err != nil {
+			// Keep the pages already fetched and report the incomplete fetch.
+			container.Worklogs = worklogs
 			return fmt.Errorf("fetch worklogs page startAt=%d: %w", startAt, err)
 		}
 		if page == nil || len(page.Worklogs) == 0 {
-			break
+			container.Worklogs = worklogs
+			return fmt.Errorf("worklogs page startAt=%d returned no rows before total %d", startAt, container.Total)
 		}
-		worklogs = append(worklogs, page.Worklogs...)
+		// Data Center ignores startAt and returns the complete worklog list, so
+		// the page can repeat rows already embedded on the issue. Deduplicate by
+		// source worklog id instead of appending duplicates.
+		worklogs = mergeJiraWorklogs(worklogs, page.Worklogs)
 		if page.Total > 0 {
 			container.Total = page.Total
 		}
 	}
 	container.Worklogs = worklogs
 	return nil
+}
+
+// mergeJiraWorklogs merges incoming worklogs into existing, keeping the first
+// occurrence of each source worklog id and preserving order. Worklogs without
+// an id are always appended because they cannot be correlated.
+func mergeJiraWorklogs(existing, incoming []jira.JiraWorklog) []jira.JiraWorklog {
+	seen := make(map[string]bool, len(existing))
+	for _, worklog := range existing {
+		if worklog.ID != "" {
+			seen[worklog.ID] = true
+		}
+	}
+	merged := existing
+	for _, worklog := range incoming {
+		if worklog.ID != "" {
+			if seen[worklog.ID] {
+				continue
+			}
+			seen[worklog.ID] = true
+		}
+		merged = append(merged, worklog)
+	}
+	return merged
 }
 
 type jiraImportWorkflowGroup struct {
@@ -1454,7 +1760,6 @@ type jiraImportWorkflowGroup struct {
 	authoritative       bool
 	rulesComplete       bool
 	guardedTransitions  int
-	unsupportedLoops    int
 	unsupportedActions  int
 	unsupportedTriggers int
 }
@@ -1470,6 +1775,7 @@ type jiraImportWorkflowEdge struct {
 	fromStatusID *int
 	toStatusID   int
 	reviewLocked bool
+	guards       []jiraimport.WorkflowGuard
 }
 
 // ensureWorkflowsAndConfigSet fetches Jira's configured graph when the client
@@ -1562,6 +1868,7 @@ func (h *JiraImportHandler) ensureWorkflowsAndConfigSet(
 	}
 
 	definitions := make([]jiraimport.WorkflowDefinition, 0, len(groups))
+	principals := h.loadJiraGuardPrincipals()
 	for groupIndex := range groups {
 		group := &groups[groupIndex]
 		workflowName := group.name
@@ -1570,7 +1877,7 @@ func (h *JiraImportHandler) ensureWorkflowsAndConfigSet(
 		}
 		var edges []jiraImportWorkflowEdge
 		if group.authoritative {
-			edges = authoritativeJiraWorkflowEdges(group, statusMap)
+			edges = authoritativeJiraWorkflowEdges(group, statusMap, principals)
 		} else {
 			initialStatusID, initialErr := h.conservativeJiraInitialStatus(group.statusIDs)
 			if initialErr != nil {
@@ -1581,7 +1888,8 @@ func (h *JiraImportHandler) ensureWorkflowsAndConfigSet(
 		serviceEdges := make([]jiraimport.WorkflowEdge, 0, len(edges))
 		for _, edge := range edges {
 			serviceEdges = append(serviceEdges, jiraimport.WorkflowEdge{
-				FromStatusID: edge.fromStatusID, ToStatusID: edge.toStatusID, ReviewLocked: edge.reviewLocked,
+				FromStatusID: edge.fromStatusID, ToStatusID: edge.toStatusID,
+				ReviewLocked: edge.reviewLocked, Guards: edge.guards,
 			})
 		}
 		fidelity := "authoritative_graph"
@@ -1592,18 +1900,21 @@ func (h *JiraImportHandler) ensureWorkflowsAndConfigSet(
 		if sourceID == "" {
 			sourceID = fmt.Sprintf("fallback-%s-%d", projectKey, groupIndex)
 		}
+		metadata := map[string]any{
+			"fidelity": fidelity, "transition_count": len(edges),
+			"transition_rules_complete":       group.rulesComplete,
+			"guarded_transition_count":        group.guardedTransitions,
+			"review_locked_transition_count":  countReviewLockedJiraEdges(edges),
+			"unsupported_transition_actions":  group.unsupportedActions,
+			"unsupported_transition_triggers": group.unsupportedTriggers,
+		}
+		for key, value := range jiraGuardMetadata(serviceEdges) {
+			metadata[key] = value
+		}
 		definitions = append(definitions, jiraimport.WorkflowDefinition{
 			SourceID: sourceID, Name: workflowName, Description: group.description,
 			Edges: serviceEdges, ItemTypeIDs: group.itemTypeIDs,
-			Metadata: map[string]any{
-				"fidelity": fidelity, "transition_count": len(edges),
-				"transition_rules_complete":         group.rulesComplete,
-				"guarded_transition_count":          group.guardedTransitions,
-				"unsupported_loop_transition_count": group.unsupportedLoops,
-				"review_locked_transition_count":    countReviewLockedJiraEdges(edges),
-				"unsupported_transition_actions":    group.unsupportedActions,
-				"unsupported_transition_triggers":   group.unsupportedTriggers,
-			},
+			Metadata: metadata,
 		})
 	}
 	configSetID, err := h.imports.CreateDetailedWorkflowConfiguration(ctx, jobID, projectKey, workspaceID, definitions)
@@ -1733,21 +2044,32 @@ func fallbackJiraWorkflowGroups(
 func authoritativeJiraWorkflowEdges(
 	group *jiraImportWorkflowGroup,
 	statusMap map[string]int,
+	principals jiraGuardPrincipals,
 ) []jiraImportWorkflowEdge {
 	edgesByKey := make(map[string]jiraImportWorkflowEdge)
-	addEdge := func(fromStatusID *int, toStatusID int, reviewLocked bool) {
+	seenGuards := make(map[string]map[string]bool)
+	addEdge := func(fromStatusID *int, toStatusID int, reviewLocked bool, guards []jiraimport.WorkflowGuard) {
 		key := "initial:" + strconv.Itoa(toStatusID)
 		if fromStatusID != nil {
-			if *fromStatusID == toStatusID {
-				group.unsupportedLoops++
-				return
-			}
+			// A same-status (loop) transition is valid in Windshift, so import it
+			// like any other edge instead of dropping it.
 			key = strconv.Itoa(*fromStatusID) + ":" + strconv.Itoa(toStatusID)
 		}
 		edge := edgesByKey[key]
 		edge.fromStatusID = fromStatusID
 		edge.toStatusID = toStatusID
 		edge.reviewLocked = edge.reviewLocked || reviewLocked
+		if seenGuards[key] == nil {
+			seenGuards[key] = map[string]bool{}
+		}
+		for _, guard := range guards {
+			dedupe := guard.Kind + "|" + guard.Mode + "|" + guard.ConditionType
+			if seenGuards[key][dedupe] {
+				continue
+			}
+			seenGuards[key][dedupe] = true
+			edge.guards = append(edge.guards, guard)
+		}
 		edgesByKey[key] = edge
 	}
 
@@ -1761,24 +2083,27 @@ func authoritativeJiraWorkflowEdges(
 		// Do not turn incomplete source visibility into a synthetic deny rule.
 		// Only a guard that Jira explicitly reports should require review.
 		reviewLocked := explicitlyGuarded
+		guards := mapJiraWorkflowGuards(transition.Guards, principals)
 		toStatusID, ok := statusMap[transition.ToStatusID]
 		if !ok {
 			continue
 		}
 		switch transition.Type {
 		case jira.JiraWorkflowTransitionInitial:
-			addEdge(nil, toStatusID, false)
+			// The initial transition is never review-locked; that would block
+			// creating items.
+			addEdge(nil, toStatusID, false, nil)
 		case jira.JiraWorkflowTransitionDirected:
 			for _, jiraFromStatusID := range transition.FromStatusIDs {
 				if fromStatusID, exists := statusMap[jiraFromStatusID]; exists {
 					fromID := fromStatusID
-					addEdge(&fromID, toStatusID, reviewLocked)
+					addEdge(&fromID, toStatusID, reviewLocked, guards)
 				}
 			}
 		case jira.JiraWorkflowTransitionGlobal:
 			for _, fromStatusID := range group.statusIDs {
 				fromID := fromStatusID
-				addEdge(&fromID, toStatusID, reviewLocked)
+				addEdge(&fromID, toStatusID, reviewLocked, guards)
 			}
 		}
 	}
@@ -2103,11 +2428,35 @@ func (h *JiraImportHandler) ensureJiraTimeProject(jobID string, workspaceID int,
 	return h.imports.EnsureTimeProject(jobID, workspaceID, projectKey, projectName)
 }
 
-// ensureWorkspace creates a dedicated workspace for an imported Jira project.
-// createdByUserID grants the import initiator workspace admin access; pass 0 if unknown.
+// ensureWorkspace resolves the target workspace for an imported Jira project.
+// It either reuses an existing workspace (recording reuse provenance so cleanup
+// never deletes it) or creates a dedicated workspace. createdByUserID grants
+// the import initiator workspace admin access on creation; pass 0 if unknown.
 func (h *JiraImportHandler) ensureWorkspace(ctx context.Context, jobID string, mapping *WorkspaceMapping, createdByUserID int) (int, error) {
-	if !mapping.CreateNew || mapping.WindshiftID != nil {
-		return 0, fmt.Errorf("jira project %s must create a new workspace; existing workspaces cannot be reused", mapping.JiraKey)
+	if !mapping.CreateNew {
+		if mapping.WindshiftID == nil {
+			return 0, fmt.Errorf("jira project %s must choose a target workspace", mapping.JiraKey)
+		}
+		target, err := h.imports.WorkspaceImportTarget(*mapping.WindshiftID)
+		if err != nil {
+			return 0, fmt.Errorf("load reused workspace for %s: %w", mapping.JiraKey, err)
+		}
+		if target == nil {
+			return 0, fmt.Errorf("jira project %s references a workspace that cannot be imported into", mapping.JiraKey)
+		}
+		// Downstream setup (time project, boards) reads the name/key.
+		mapping.NewWorkspaceName = target.Name
+		mapping.NewWorkspaceKey = target.Key
+		if err := h.recordMapping(jobID, "workspace", mapping.JiraKey, mapping.JiraKey, target.ID, map[string]any{
+			"action":      "reuse_existing",
+			"was_created": false,
+		}); err != nil {
+			return 0, fmt.Errorf("record Jira workspace mapping: %w", err)
+		}
+		return target.ID, nil
+	}
+	if mapping.WindshiftID != nil {
+		return 0, fmt.Errorf("jira project %s cannot both create a new workspace and reuse an existing one", mapping.JiraKey)
 	}
 
 	workspaceSvc := services.NewWorkspaceService(h.db)

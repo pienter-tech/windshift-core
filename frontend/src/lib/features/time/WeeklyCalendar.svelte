@@ -1,16 +1,25 @@
 <script>
   import { onMount } from 'svelte';
   import { useEventListener } from 'runed';
-  import { ChevronLeft, ChevronRight, Calendar, CheckSquare, X, Download, MoreHorizontal } from '@lucide/svelte';
-  import { api, fetchAPI } from '../../api.js';
+  import ChevronLeft from '@lucide/svelte/icons/chevron-left';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import Calendar from '@lucide/svelte/icons/calendar';
+  import CheckSquare from '@lucide/svelte/icons/square-check';
+  import X from '@lucide/svelte/icons/x';
+  import Download from '@lucide/svelte/icons/download';
+  import MoreHorizontal from '@lucide/svelte/icons/more-horizontal';
+  import { items } from '../../api/items.js';
+  import { statuses } from '../../api/workflows.js';
+  import { fetchAPI } from '../../api/core.js';
   import PageHeader from '../../layout/PageHeader.svelte';
   import PersonalTaskDetail from '../personal/PersonalTaskDetail.svelte';
   import DropdownMenu from '../../layout/DropdownMenu.svelte';
   import { exportTasksToICS } from '../../utils/icsExport.js';
-  import { authStore, workspacesStore } from '../../stores';
+  import { authStore } from '../../stores/auth.svelte.js';
+  import { workspacesStore } from '../../stores/workspaces.svelte.js';
   import { getStatusStyleFromStatuses } from '../../utils/statusColors.js';
   import { t } from '../../stores/i18n.svelte.js';
-  import { errorToast, infoToast } from '../../stores/toasts.svelte.js';
+  import { infoToast, surfaceError } from '../../stores/toasts.svelte.js';
   import { navigate } from '../../router.js';
   import { publicBaseURL } from '../../runtime/contextPath.js';
   import { dateOnlyKey, formatDate, formatDateOnly, formatDateWithOptions } from '../../utils/dateFormatter.js';
@@ -22,7 +31,7 @@
   // Get current date and week
   let currentDate = $state(new Date());
   let currentWeekStart = $state(new Date());
-  let weekDays = $state([]);
+  let weekDays = $derived(generateWeekDays(currentWeekStart));
   let workItems = $state({}); // Store scheduled work items for each day
   let showTasksSidebar = $state(false);
   let assignedWorkItems = $state([]); // Real work items assigned to user
@@ -136,7 +145,7 @@
 
       // Load items from TWO sources:
       // 1. Items assigned to user (from any workspace)
-      const assignedResponse = await api.items.getAll({
+      const assignedResponse = await items.getAll({
         assignee_id: user.id,
         limit: 50
       });
@@ -145,7 +154,7 @@
       // 2. Items from personal workspace (regardless of assignee)
       let personalItems = [];
       if (workspace && workspace.id) {
-        const personalResponse = await api.items.getAll({
+        const personalResponse = await items.getAll({
           workspace_id: workspace.id,
           limit: 50
         });
@@ -160,10 +169,10 @@
       assignedWorkItems = Array.from(itemMap.values());
 
       // Load available statuses
-      const statusResponse = await api.statuses.getAll();
+      const statusResponse = await statuses.getAll();
       availableStatuses = statusResponse || [];
     } catch (error) {
-      console.error('Failed to load work items:', error);
+      surfaceError(error, { context: 'loadAssignedWorkItems' });
       assignedWorkItems = [];
       availableStatuses = [];
     }
@@ -214,14 +223,14 @@
         workItems = { ...workItems };
       }
     } catch (error) {
-      console.error('Failed to toggle personal task:', error);
+      surfaceError(error, { context: 'togglePersonalTask' });
     }
   }
 
   // Update work item status
   async function updateWorkItemStatus(item, newStatusId) {
     try {
-      await api.items.transition(item.id, newStatusId);
+      await items.transition(item.id, newStatusId);
 
       // Update local state
       const index = assignedWorkItems.findIndex(i => i.id === item.id);
@@ -230,7 +239,7 @@
         assignedWorkItems = [...assignedWorkItems];
       }
     } catch (error) {
-      console.error('Failed to update work item status:', error);
+      surfaceError(error, { context: 'updateWorkItemStatus' });
     }
   }
 
@@ -295,9 +304,9 @@
       days.push({
         date: new Date(date),
         dayName: formatDateWithOptions(date, { weekday: 'short' }),
-        dayNumber: date.getDate(),
+        dayNumber: formatDateWithOptions(date, { day: 'numeric' }),
         isToday: isToday(date),
-        isCurrentMonth: date.getMonth() === currentDate.getMonth(),
+        isCurrentMonth: formatDateWithOptions(date, { year: 'numeric', month: 'numeric' }) === formatDateWithOptions(currentDate, { year: 'numeric', month: 'numeric' }),
         dateKey: formatDateKey(date)
       });
     }
@@ -334,7 +343,6 @@
     const newWeekStart = new Date(currentWeekStart);
     newWeekStart.setDate(currentWeekStart.getDate() + (direction * 7));
     currentWeekStart = newWeekStart;
-    weekDays = generateWeekDays(currentWeekStart);
     loadScheduledItems();
   }
 
@@ -368,7 +376,7 @@
         assignee_id: user.id
       };
 
-      const newItem = await api.items.create(itemData);
+      const newItem = await items.create(itemData);
 
       // Schedule it for the selected date with time
       await scheduleItemToCalendar(newItem, dateKey, scheduledTime, DEFAULT_DURATION);
@@ -399,8 +407,10 @@
       // Reload assigned work items to stay in sync
       await loadAssignedWorkItems();
     } catch (error) {
-      console.error('Failed to create calendar task:', error);
-      errorToast(t('time.calendar.failedToCreateTask') + ': ' + error.message);
+      surfaceError(error, {
+        context: 'createCalendarTask',
+        message: t('time.calendar.failedToCreateTask') + ': ' + error.message,
+      });
     }
   }
 
@@ -422,7 +432,7 @@
           const { scheduledDate, scheduledTime, durationMinutes, ...originalItem } = workItem;
           assignedWorkItems = [...assignedWorkItems, originalItem];
         } catch (error) {
-          console.error('Failed to unschedule item:', error);
+          surfaceError(error, { context: 'unscheduleItem' });
         }
       }
     }
@@ -541,7 +551,7 @@
       assignedWorkItems = assignedWorkItems.filter(item => !scheduledItemIds.has(item.id));
 
     } catch (error) {
-      console.error('Failed to load scheduled items:', error);
+      surfaceError(error, { context: 'loadScheduledItems' });
     }
   }
 
@@ -615,7 +625,7 @@
         try {
           await updateItemSchedule(item.id, dateKey, item.scheduledTime, item.durationMinutes);
         } catch (error) {
-          console.error('Failed to save resize:', error);
+          surfaceError(error, { context: 'saveResize' });
         }
       }
     }
@@ -1009,7 +1019,7 @@
                       }
                     }
                   } catch (error) {
-                    console.error('Failed to drop item:', error);
+                    surfaceError(error, { context: 'dropItem' });
                   }
                 }}
               >

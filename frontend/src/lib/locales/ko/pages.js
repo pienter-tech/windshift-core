@@ -38,6 +38,7 @@ export default {
     "emptyPaneDescription": "트리에서 페이지를 선택하거나 새로 만들어 시작하세요.",
     "titlePlaceholder": "제목 없음",
     "editorPlaceholder": "작성 시작…",
+    "contentLabel": "페이지 내용",
     "tocHeading": "이 페이지의 내용",
     "tocAriaLabel": "목차",
     "save": "저장",

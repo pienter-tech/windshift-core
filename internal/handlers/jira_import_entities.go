@@ -12,12 +12,14 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"windshift/internal/itemevents"
 	"windshift/internal/jira"
+	"windshift/internal/jiraimport"
 	"windshift/internal/models"
 	"windshift/internal/repository"
 	"windshift/internal/sanitize"
@@ -566,6 +568,15 @@ func extractCustomFieldValueWithOptions(
 			return strings.Join(values, "\n"), true
 		}
 	case "text", "textarea":
+		// Rich-text custom fields carry ADF documents. Render them as Markdown
+		// instead of JSON-marshaling the document so the field reads naturally;
+		// an explicit PreserveRaw mapping keeps the JSON above.
+		if jira.IsADFDocument(value) {
+			if s := strings.TrimSpace(jira.ConvertADFToMarkdown(value, nil, nil)); s != "" {
+				return s, true
+			}
+			return nil, false
+		}
 		if s := customFieldDisplayValue(value); s != "" {
 			return s, true
 		}
@@ -583,6 +594,22 @@ func unresolvedJiraCustomFieldRawValue(
 	typedValueResolved bool,
 	choiceOptionIDs map[string]int,
 ) (any, bool) {
+	// A datetime mapped to a Windshift date resolves to a calendar date but
+	// drops time-of-day and offset. Preserve the original Jira timestamp text
+	// in item metadata so the source precision is retained separately and the
+	// import-time loss is reportable.
+	if typedValueResolved && mapping.WindshiftType == "date" && jiraMappingIsDateTime(mapping) {
+		if mapping.Action == "skip" || mapping.PreserveRaw {
+			return nil, false
+		}
+		if fields == nil || fields.CustomFields == nil {
+			return nil, false
+		}
+		if raw, exists := fields.CustomFields[mapping.JiraID]; exists && raw != nil {
+			return raw, true
+		}
+		return nil, false
+	}
 	if typedValueResolved && mapping.WindshiftType != "multiselect" {
 		return nil, false
 	}
@@ -611,6 +638,13 @@ func unresolvedJiraCustomFieldRawValue(
 		}
 	}
 	return nil, false
+}
+
+// jiraMappingIsDateTime reports whether a Jira custom field carries a
+// datetime value, which a Windshift date field can only store as a calendar
+// date.
+func jiraMappingIsDateTime(mapping CustomFieldMapping) bool {
+	return strings.Contains(strings.ToLower(mapping.JiraType), "datetime")
 }
 
 func preserveUnresolvedJiraCustomField(
@@ -926,7 +960,10 @@ func affectedVersionOptionValues(issue *jira.JiraIssue, field *jiraAffectsVersio
 // before watchers and labels reference the item, and attachments must import
 // before the description re-render links media to them.
 func (h *JiraImportHandler) importIssue(ctx context.Context, im *jiraImportContext, issue *jira.JiraIssue) error {
-	refs := h.resolveJiraIssueReferences(im, issue)
+	refs, err := h.resolveJiraIssueReferences(im, issue)
+	if err != nil {
+		return err
+	}
 	resolver := im.mentionResolver()
 	rawDescription, description := convertJiraIssueDescription(issue, resolver)
 
@@ -935,7 +972,7 @@ func (h *JiraImportHandler) importIssue(ctx context.Context, im *jiraImportConte
 		return err
 	}
 
-	itemID, previous, err := h.upsertJiraIssueItem(im, issue, refs, description, customFieldValuesJSON)
+	itemID, previous, forked, err := h.upsertJiraIssueItem(im, issue, refs, description, customFieldValuesJSON)
 	if err != nil {
 		return err
 	}
@@ -944,12 +981,69 @@ func (h *JiraImportHandler) importIssue(ctx context.Context, im *jiraImportConte
 		return err
 	}
 
-	return h.importJiraIssueSubresources(ctx, im, issue, itemID, rawDescription, description, resolver)
+	return h.importJiraIssueSubresources(ctx, im, issue, itemID, rawDescription, description, resolver, forked)
+}
+
+// previousSubresourceMapping returns the previous mapping a re-import may
+// reuse. A fork (changed project→workspace mapping) deliberately leaves the
+// old workspace's item and its comments, attachments, and worklogs intact, so
+// forked imports never reuse a previous mapping and always create new rows.
+// Even when the item is reused, a prior mapping is only reusable when the
+// resource it points at is owned by the destination item; otherwise a partial
+// fork retry would move the original workspace's resource instead of copying
+// it.
+func (h *JiraImportHandler) previousSubresourceMapping(jobID, entityType, jiraID string, itemID int, forked bool) (*previousJiraImportMapping, error) {
+	if forked {
+		return nil, nil
+	}
+	previous, err := h.findPreviousJiraImportMapping(jobID, entityType, jiraID)
+	if err != nil || previous == nil {
+		return previous, err
+	}
+	owned, err := h.imports.SubresourceBelongsToItem(entityType, previous.WindshiftID, itemID)
+	if err != nil {
+		return nil, err
+	}
+	if !owned {
+		return nil, nil
+	}
+	return previous, nil
+}
+
+// ensurePriority resolves a Jira priority onto a Windshift catalog priority.
+// Known Jira names collapse onto the canonical catalog priorities; custom names
+// are created on demand. Results are cached for the rest of the import.
+func (h *JiraImportHandler) ensurePriority(im *jiraImportContext, jiraPriorityName string) (*int, error) {
+	name := strings.TrimSpace(jiraPriorityName)
+	if name == "" {
+		return nil, nil
+	}
+	cacheKey := strings.ToLower(name)
+	if im.priorityMap == nil {
+		im.priorityMap = make(map[string]int)
+	}
+	if id, ok := im.priorityMap[cacheKey]; ok {
+		return &id, nil
+	}
+	target, _ := jira.PriorityMappingTarget(name)
+	priority, created, err := h.imports.EnsureImportedPriority(
+		im.workspaceID, target, jiraimport.ImportedPriorityIcon, jiraimport.ImportedPriorityColor,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("resolve Jira priority %q: %w", name, err)
+	}
+	if created {
+		slog.Info("Created Windshift priority for custom Jira priority",
+			slog.String("component", "jira"), slog.String("jira_priority", name),
+			slog.String("windshift_priority", target), slog.Int("priority_id", priority.ID))
+	}
+	im.priorityMap[cacheKey] = priority.ID
+	return &priority.ID, nil
 }
 
 // resolveJiraIssueReferences maps the issue's direct Jira fields onto
 // Windshift identities through the import context's reference maps.
-func (h *JiraImportHandler) resolveJiraIssueReferences(im *jiraImportContext, issue *jira.JiraIssue) *jiraIssueReferences {
+func (h *JiraImportHandler) resolveJiraIssueReferences(im *jiraImportContext, issue *jira.JiraIssue) (*jiraIssueReferences, error) {
 	refs := &jiraIssueReferences{}
 
 	if issue.Fields.Status != nil {
@@ -1018,11 +1112,15 @@ func (h *JiraImportHandler) resolveJiraIssueReferences(im *jiraImportContext, is
 		}
 	}
 
-	// Map priority through the synonym table so Jira-only names (Highest, Lowest,
-	// Blocker, Major, Minor, Trivial) land on canonical Windshift priorities
-	// instead of falling back to the workspace default.
-	if issue.Fields.Priority != nil && issue.Fields.Priority.Name != "" {
-		refs.priorityName = jira.SuggestPriorityMapping(issue.Fields.Priority.Name)
+	// Known Jira priority names collapse onto Windshift's canonical catalog;
+	// custom names are preserved and created on demand so no source value is
+	// silently flattened to the default.
+	if issue.Fields.Priority != nil && strings.TrimSpace(issue.Fields.Priority.Name) != "" {
+		priorityID, err := h.ensurePriority(im, issue.Fields.Priority.Name)
+		if err != nil {
+			return nil, err
+		}
+		refs.priorityID = priorityID
 	}
 
 	if issue.Fields.DueDate != "" {
@@ -1048,16 +1146,17 @@ func (h *JiraImportHandler) resolveJiraIssueReferences(im *jiraImportContext, is
 	refs.iterationID = extractSprintIterationID(&issue.Fields, im.customFieldMappings, im.iterationMap)
 	refs.storyPoints = importedStoryPoints(im.customFieldMappings, &issue.Fields)
 
-	return refs
+	return refs, nil
 }
 
-// convertJiraIssueDescription renders the ADF description to markdown without
-// a media resolver (media nodes become placeholders); once attachments are
+// convertJiraIssueDescription renders the description to Markdown without a
+// media resolver (media references become placeholders); once attachments are
 // imported, the subresource stage re-renders with a resolver that links them.
+// ADF (Cloud) and wiki markup (Data Center) are dispatched by value shape.
 func convertJiraIssueDescription(issue *jira.JiraIssue, resolver jira.MentionResolver) (rawDescription any, markdown string) {
 	rawDescription = issue.Fields.Description
 	if rawDescription != nil {
-		markdown = jira.ConvertADFToMarkdown(rawDescription, resolver, nil)
+		markdown = jira.ConvertJiraRichText(rawDescription, resolver, nil)
 	}
 	return rawDescription, markdown
 }
@@ -1133,9 +1232,11 @@ func (h *JiraImportHandler) collectJiraTrackingMetadata(issue *jira.JiraIssue, c
 	if issue.Fields.Watches != nil {
 		customFieldValues["_jira_watcher_count"] = issue.Fields.Watches.WatchCount
 	}
-	customFieldValues["_jira_watcher_identities_available"] = issue.Fields.WatcherIdentitiesAvailable
-	if issue.Fields.WatcherFetchError != "" {
-		customFieldValues["_jira_watcher_fetch_error"] = issue.Fields.WatcherFetchError
+	if h.importWatchers {
+		customFieldValues["_jira_watcher_identities_available"] = issue.Fields.WatcherIdentitiesAvailable
+		if issue.Fields.WatcherFetchError != "" {
+			customFieldValues["_jira_watcher_fetch_error"] = issue.Fields.WatcherFetchError
+		}
 	}
 }
 
@@ -1151,7 +1252,7 @@ func (h *JiraImportHandler) collectJiraIdentityMetadata(im *jiraImportContext, i
 	if assignee := jiraUserIdentityMetadata(issue.Fields.Assignee); len(assignee) > 0 {
 		customFieldValues["_jira_assignee"] = assignee
 	}
-	if len(issue.Fields.Watchers) > 0 {
+	if h.importWatchers && len(issue.Fields.Watchers) > 0 {
 		watchers := make([]map[string]any, 0, len(issue.Fields.Watchers))
 		for idx := range issue.Fields.Watchers {
 			if identity := jiraUserIdentityMetadata(&issue.Fields.Watchers[idx]); len(identity) > 0 {
@@ -1285,7 +1386,7 @@ func (h *JiraImportHandler) applyJiraCustomFieldMappings(im *jiraImportContext, 
 // bookkeeping.
 // upsertJiraIssueItem creates the Windshift item, or updates the previously
 // imported item when reimporting the same issue into the same workspace.
-func (h *JiraImportHandler) upsertJiraIssueItem(im *jiraImportContext, issue *jira.JiraIssue, refs *jiraIssueReferences, description, customFieldValuesJSON string) (itemID int64, previous *previousJiraImportMapping, err error) {
+func (h *JiraImportHandler) upsertJiraIssueItem(im *jiraImportContext, issue *jira.JiraIssue, refs *jiraIssueReferences, description, customFieldValuesJSON string) (itemID int64, previous *previousJiraImportMapping, forked bool, err error) {
 	// The summary gets the same title sanitize the normal item-create path applies.
 	itemParams := services.ItemCreationParams{
 		WorkspaceID:             im.workspaceID,
@@ -1293,7 +1394,7 @@ func (h *JiraImportHandler) upsertJiraIssueItem(im *jiraImportContext, issue *ji
 		Description:             description,
 		StatusID:                refs.statusID,
 		ItemTypeID:              refs.itemTypeID,
-		Priority:                refs.priorityName,
+		PriorityID:              refs.priorityID,
 		DueDate:                 refs.dueDate,
 		AssigneeID:              refs.assigneeID,
 		ReporterID:              refs.reporterID,
@@ -1319,31 +1420,81 @@ func (h *JiraImportHandler) upsertJiraIssueItem(im *jiraImportContext, issue *ji
 	if im.forceReimport && issue.ID != "" {
 		previousItemMapping, err = h.findPreviousJiraImportMapping(im.jobID, "item", issue.ID)
 		if err != nil {
-			return 0, nil, fmt.Errorf("find previous Jira item mapping: %w", err)
+			return 0, nil, false, fmt.Errorf("find previous Jira item mapping: %w", err)
 		}
 		if previousItemMapping != nil {
 			previousWorkspaceID, lookupErr := h.imports.ItemWorkspaceID(previousItemMapping.WindshiftID)
 			if lookupErr != nil {
 				if !errors.Is(lookupErr, sql.ErrNoRows) {
-					return 0, nil, fmt.Errorf("load previous Jira item: %w", lookupErr)
+					return 0, nil, false, fmt.Errorf("load previous Jira item: %w", lookupErr)
 				}
 				previousItemMapping = nil
 			} else if previousWorkspaceID != im.workspaceID {
 				// A changed project→workspace mapping is a deliberate fork, not
-				// an update of the old workspace's item.
+				// an update of the old workspace's item. Leave the previous item
+				// and its subresources intact.
 				previousItemMapping = nil
+				forked = true
 			}
 		}
 	}
 	if previousItemMapping != nil {
 		itemID, err = h.updateImportedJiraItem(previousItemMapping.WindshiftID, itemParams)
 	} else {
+		// Preserve the Jira key's numeric suffix so commit and PR mentions keep
+		// resolving. A number already used or retired in the target workspace
+		// falls back to the next free number, reported as a fidelity finding.
+		var pinned services.PinnedItemNumberOutcome
+		if number, ok := jiraIssueNumber(issue.Key); ok {
+			itemParams.PinnedItemNumber = &number
+			itemParams.PinnedItemNumberResult = &pinned
+		}
 		itemID, err = services.CreateItem(h.db, itemParams)
+		if err == nil && itemParams.PinnedItemNumber != nil && pinned.FellBack {
+			h.recordJiraIssueNumberFallback(im, issue, pinned)
+		}
 	}
 	if err != nil {
-		return 0, nil, fmt.Errorf("failed to create or update item: %w", err)
+		return 0, nil, false, fmt.Errorf("failed to create or update item: %w", err)
 	}
-	return itemID, previousItemMapping, nil
+	return itemID, previousItemMapping, forked, nil
+}
+
+// jiraIssueNumber parses the numeric suffix of a Jira issue key
+// (`EXPL-30` -> 30). Keys are PROJECT-N, so split on the last hyphen.
+func jiraIssueNumber(key string) (int, bool) {
+	separator := strings.LastIndex(key, "-")
+	if separator < 0 || separator == len(key)-1 {
+		return 0, false
+	}
+	number, err := strconv.Atoi(key[separator+1:])
+	if err != nil || number <= 0 {
+		return 0, false
+	}
+	return number, true
+}
+
+// recordJiraIssueNumberFallback reports that a Jira key could not be pinned in
+// the target workspace, so the imported item carries a different number and
+// source-key mentions no longer resolve to it.
+func (h *JiraImportHandler) recordJiraIssueNumberFallback(im *jiraImportContext, issue *jira.JiraIssue, outcome services.PinnedItemNumberOutcome) {
+	meta := map[string]any{
+		"code":             "jira_issue_number_taken",
+		"severity":         "warning",
+		"disposition":      "renumbered",
+		"source_count":     1,
+		"resolved_count":   0,
+		"requested_number": outcome.Requested,
+		"assigned_number":  outcome.Assigned,
+		"jira_issue_key":   issue.Key,
+	}
+	summary := fmt.Sprintf("Jira key %s could not keep its number in the target workspace", issue.Key)
+	if err := h.recordMapping(im.jobID, "fidelity_finding", "item-number:"+issue.Key, summary, outcome.Assigned, meta); err != nil {
+		slog.Warn("Failed to record Jira issue-number fallback finding",
+			slog.String("component", "jira"),
+			slog.String("issue", issue.Key),
+			slog.Any("error", err))
+	}
 }
 
 func (h *JiraImportHandler) recordJiraIssueMapping(im *jiraImportContext, issue *jira.JiraIssue, refs *jiraIssueReferences, previous *previousJiraImportMapping, itemID int64) error {
@@ -1412,9 +1563,11 @@ func (h *JiraImportHandler) recordJiraIssueMapping(im *jiraImportContext, issue 
 // importJiraIssueSubresources imports the issue's dependent records in
 // contractual order: watchers, labels, attachments, description media
 // re-render, comments, and worklogs.
-func (h *JiraImportHandler) importJiraIssueSubresources(ctx context.Context, im *jiraImportContext, issue *jira.JiraIssue, itemID int64, rawDescription any, description string, mentionResolver jira.MentionResolver) error {
-	if err := h.importIssueWatchers(im.jobID, int(itemID), issue, im.userMap); err != nil {
-		return fmt.Errorf("import Jira issue watchers: %w", err)
+func (h *JiraImportHandler) importJiraIssueSubresources(ctx context.Context, im *jiraImportContext, issue *jira.JiraIssue, itemID int64, rawDescription any, description string, mentionResolver jira.MentionResolver, forked bool) error {
+	if h.importWatchers {
+		if err := h.importIssueWatchers(im.jobID, int(itemID), issue, im.userMap); err != nil {
+			return fmt.Errorf("import Jira issue watchers: %w", err)
+		}
 	}
 
 	// Attach Jira labels (top-level Fields.Labels, distinct from labels-typed
@@ -1428,7 +1581,8 @@ func (h *JiraImportHandler) importJiraIssueSubresources(ctx context.Context, im 
 	// Import attachments for this issue before comments/description media
 	// linking so the Jira attachment ids are mapped to Windshift attachments,
 	// letting ADF media nodes reference the imported files.
-	mediaRefs, err := h.importAttachments(ctx, im.jobID, int(itemID), issue, im.userMap, im.client, im.progress)
+	internalAttachmentIDs := jiraInternalAttachmentIDs(issue, rawDescription, im.jsmImport != nil)
+	mediaRefs, err := h.importAttachments(ctx, im.jobID, int(itemID), issue, im.userMap, im.client, internalAttachmentIDs, im.progress, forked)
 	if err != nil {
 		return fmt.Errorf("import Jira attachments: %w", err)
 	}
@@ -1437,10 +1591,25 @@ func (h *JiraImportHandler) importJiraIssueSubresources(ctx context.Context, im 
 		mediaResolver = jira.NewMediaResolver(mediaRefs)
 	}
 
+	// ADF media nodes carry Media Services ids rather than Jira attachment ids,
+	// so a Cloud media reference normally cannot resolve to an imported file.
+	// Report it instead of silently rendering a broken link.
+	if unresolved := jiraUnresolvedMediaIDs(issue, rawDescription, mediaRefs); len(unresolved) > 0 {
+		_ = h.recordMapping(im.jobID, "fidelity_finding", "media:"+issue.ID,
+			"Jira media references could not be mapped to imported attachments, so the inline media was preserved as raw text instead of linked.",
+			0, map[string]any{
+				"code":             "jira_media_reference_unresolved",
+				"severity":         "warning",
+				"disposition":      "preserved_raw",
+				"unresolved_count": len(unresolved),
+				"media_ids":        unresolved,
+			})
+	}
+
 	// Re-render the description now that attachments are available so media
 	// nodes link to the imported attachments instead of placeholders.
 	if mediaResolver != nil && rawDescription != nil {
-		linked := jira.ConvertADFToMarkdown(rawDescription, mentionResolver, mediaResolver)
+		linked := jira.ConvertJiraRichText(rawDescription, mentionResolver, mediaResolver)
 		if linked != "" && linked != description {
 			if err := h.imports.UpdateItemDescription(int(itemID), linked, itemevents.Import(im.jobID)); err != nil {
 				slog.Warn("Failed to update item description with linked media",
@@ -1451,14 +1620,14 @@ func (h *JiraImportHandler) importJiraIssueSubresources(ctx context.Context, im 
 		}
 	}
 
-	if err := h.importComments(im.jobID, int(itemID), issue, im.userMap, im.portalCustomerMap, mentionResolver, mediaResolver, im.progress); err != nil {
+	if err := h.importComments(im.jobID, int(itemID), issue, im.userMap, im.portalCustomerMap, mentionResolver, mediaResolver, im.progress, forked); err != nil {
 		return fmt.Errorf("import Jira comments: %w", err)
 	}
 
 	// Import Jira worklogs into Windshift time tracking when the project has a
 	// time-project target. Jira exposes only the first page in the issue payload;
 	// import what we have and log if pagination would be needed.
-	if err := h.importWorklogs(im.jobID, int(itemID), issue, im.userMap, mentionResolver, im.timeProjectID, im.progress); err != nil {
+	if err := h.importWorklogs(im.jobID, int(itemID), issue, im.userMap, mentionResolver, im.timeProjectID, im.progress, forked); err != nil {
 		return fmt.Errorf("import Jira worklogs: %w", err)
 	}
 
@@ -1577,7 +1746,7 @@ func (h *JiraImportHandler) linkParents(jobID string) {
 // ================================================================
 
 // importComments imports comments from a Jira issue into Windshift
-func (h *JiraImportHandler) importComments(jobID string, itemID int, issue *jira.JiraIssue, userMap, portalCustomerMap map[string]int, mentionResolver jira.MentionResolver, mediaResolver jira.MediaResolver, progress *ImportProgress) error {
+func (h *JiraImportHandler) importComments(jobID string, itemID int, issue *jira.JiraIssue, userMap, portalCustomerMap map[string]int, mentionResolver jira.MentionResolver, mediaResolver jira.MediaResolver, progress *ImportProgress, forked bool) error {
 	if issue.Fields.Comment == nil || len(issue.Fields.Comment.Comments) == 0 {
 		return nil
 	}
@@ -1616,7 +1785,7 @@ func (h *JiraImportHandler) importComments(jobID string, itemID int, issue *jira
 		if progress != nil {
 			progress.TotalComments++
 		}
-		content := jira.ConvertADFToMarkdown(comment.Body, mentionResolver, mediaResolver)
+		content := jira.ConvertJiraRichText(comment.Body, mentionResolver, mediaResolver)
 		if content == "" {
 			continue
 		}
@@ -1641,7 +1810,7 @@ func (h *JiraImportHandler) importComments(jobID string, itemID int, issue *jira
 		var importErr error
 		var previousMapping *previousJiraImportMapping
 		if comment.ID != "" {
-			previousMapping, _ = h.findPreviousJiraImportMapping(jobID, "comment", comment.ID)
+			previousMapping, _ = h.previousSubresourceMapping(jobID, "comment", comment.ID, itemID, forked)
 		}
 		if previousMapping != nil {
 			if !h.imports.CommentExists(previousMapping.WindshiftID) {
@@ -1683,6 +1852,9 @@ func (h *JiraImportHandler) importComments(jobID string, itemID int, issue *jira
 				slog.String("issue", issue.Key),
 				slog.String("commentID", comment.ID),
 				slog.Any("error", importErr))
+			if progress != nil {
+				progress.FailedComments++
+			}
 			continue
 		}
 
@@ -1894,7 +2066,7 @@ func (h *JiraImportHandler) ensureLinkType(typeName string, linkData map[string]
 // Phase 6: Worklog Import
 // ================================================================
 
-func (h *JiraImportHandler) importWorklogs(jobID string, itemID int, issue *jira.JiraIssue, userMap map[string]int, mentionResolver jira.MentionResolver, timeProjectID *int, progress *ImportProgress) error {
+func (h *JiraImportHandler) importWorklogs(jobID string, itemID int, issue *jira.JiraIssue, userMap map[string]int, mentionResolver jira.MentionResolver, timeProjectID *int, progress *ImportProgress, forked bool) error {
 	if issue.Fields.Worklog == nil || len(issue.Fields.Worklog.Worklogs) == 0 || timeProjectID == nil {
 		return nil
 	}
@@ -1904,16 +2076,6 @@ func (h *JiraImportHandler) importWorklogs(jobID string, itemID int, issue *jira
 			slog.String("issue", issue.Key),
 			slog.Int("visible", len(issue.Fields.Worklog.Worklogs)),
 			slog.Int("total", issue.Fields.Worklog.Total))
-	}
-
-	customerID, err := h.imports.TimeProjectCustomerID(*timeProjectID)
-	if err != nil {
-		slog.Error("Failed to resolve time project customer for Jira worklogs",
-			slog.String("component", "jira"),
-			slog.String("issue", issue.Key),
-			slog.Int("timeProjectID", *timeProjectID),
-			slog.Any("error", err))
-		return nil
 	}
 
 	for _, worklog := range issue.Fields.Worklog.Worklogs {
@@ -1940,7 +2102,7 @@ func (h *JiraImportHandler) importWorklogs(jobID string, itemID int, issue *jira
 		end := started.Add(time.Duration(worklog.TimeSpentSeconds) * time.Second)
 		date := time.Date(started.Year(), started.Month(), started.Day(), 0, 0, 0, 0, started.Location())
 
-		description := strings.TrimSpace(jira.ConvertADFToMarkdownWithUsers(worklog.Comment, mentionResolver))
+		description := strings.TrimSpace(jira.ConvertJiraRichText(worklog.Comment, mentionResolver, nil))
 		if description == "" {
 			description = strings.TrimSpace(worklog.TimeSpent)
 		}
@@ -1964,7 +2126,7 @@ func (h *JiraImportHandler) importWorklogs(jobID string, itemID int, issue *jira
 			updatedAt = updated.Unix()
 		}
 
-		previousMapping, lookupErr := h.findPreviousJiraImportMapping(jobID, "worklog", worklog.ID)
+		previousMapping, lookupErr := h.previousSubresourceMapping(jobID, "worklog", worklog.ID, itemID, forked)
 		if lookupErr != nil {
 			slog.Warn("Failed to find prior Jira worklog mapping",
 				slog.String("component", "jira"),
@@ -1974,7 +2136,6 @@ func (h *JiraImportHandler) importWorklogs(jobID string, itemID int, issue *jira
 		}
 		worklogID, err := h.imports.UpsertImportedWorklog(repository.ImportedWorklog{
 			ProjectID:       *timeProjectID,
-			CustomerID:      customerID,
 			UserID:          userID,
 			ItemID:          itemID,
 			Description:     description,
@@ -1991,6 +2152,9 @@ func (h *JiraImportHandler) importWorklogs(jobID string, itemID int, issue *jira
 				slog.String("issue", issue.Key),
 				slog.String("worklogID", worklog.ID),
 				slog.Any("error", err))
+			if progress != nil {
+				progress.FailedWorklogs++
+			}
 			continue
 		}
 
@@ -2022,37 +2186,146 @@ func (h *JiraImportHandler) importWorklogs(jobID string, itemID int, issue *jira
 // Phase 7: Attachment Import
 // ================================================================
 
+// jiraUnresolvedMediaIDs returns the ADF media ids referenced by an issue's
+// bodies that have no imported attachment. Cloud media nodes carry Media
+// Services ids, not Jira attachment ids, so these normally cannot resolve;
+// recording them keeps the limitation explicit rather than inventing a match.
+func jiraUnresolvedMediaIDs(issue *jira.JiraIssue, rawDescription any, mediaRefs map[string]jira.MediaAttachment) []string {
+	if issue == nil {
+		return nil
+	}
+	referenced := jira.CollectADFMediaIDs(rawDescription)
+	if issue.Fields.Comment != nil {
+		for _, comment := range issue.Fields.Comment.Comments {
+			for id := range jira.CollectADFMediaIDs(comment.Body) {
+				referenced[id] = true
+			}
+		}
+	}
+	var unresolved []string
+	for id := range referenced {
+		if _, ok := mediaRefs[id]; !ok {
+			unresolved = append(unresolved, id)
+		}
+	}
+	sort.Strings(unresolved)
+	return unresolved
+}
+
+// jiraInternalAttachmentIDs returns the Jira attachment ids that must be
+// hidden from portal customers. JSM lets agents attach files to internal
+// notes, but the issue payload carries no visibility flag on the file itself,
+// so an attachment is treated as customer-visible only when it is referenced
+// from a body the customer can see: the request description or a public
+// comment. Non-JSM imports have no portal exposure and stay visible.
+//
+// Cloud bodies reference attachments by ADF media id; Data Center bodies are
+// wiki strings that name files, so a filename only counts when it identifies
+// exactly one attachment. Everything unresolved stays internal.
+func jiraInternalAttachmentIDs(issue *jira.JiraIssue, rawDescription any, serviceDeskImport bool) map[string]bool {
+	if !serviceDeskImport || issue == nil {
+		return nil
+	}
+	visibleMediaIDs := jira.CollectADFMediaIDs(rawDescription)
+	visibleFilenames := make(map[string]bool)
+	collectVisible := func(body any) {
+		for id := range jira.CollectADFMediaIDs(body) {
+			visibleMediaIDs[id] = true
+		}
+		if text, ok := body.(string); ok {
+			for _, name := range jira.WikiReferencedFilenames(text) {
+				visibleFilenames[name] = true
+			}
+		}
+	}
+	collectVisible(rawDescription)
+	if issue.Fields.Comment != nil {
+		for _, comment := range issue.Fields.Comment.Comments {
+			if comment.ServiceDeskPublic != nil && !*comment.ServiceDeskPublic {
+				continue
+			}
+			collectVisible(comment.Body)
+		}
+	}
+
+	// A filename shared by several attachments cannot identify the file a
+	// customer sees, so it must not make any of them visible.
+	filenameCounts := make(map[string]int)
+	for _, attachment := range issue.Fields.Attachment {
+		if name := strings.TrimSpace(attachment.Filename); name != "" {
+			filenameCounts[name]++
+		}
+	}
+
+	internal := make(map[string]bool)
+	for _, attachment := range issue.Fields.Attachment {
+		if attachment.ID == "" {
+			continue
+		}
+		if visibleMediaIDs[attachment.ID] {
+			continue
+		}
+		name := strings.TrimSpace(attachment.Filename)
+		if name != "" && visibleFilenames[name] && filenameCounts[name] == 1 {
+			continue
+		}
+		internal[attachment.ID] = true
+	}
+	return internal
+}
+
+// errJiraAttachmentDownloadSkipped marks a staged attachment that the download
+// pool never reached because the import context was canceled. It keeps an
+// un-attempted entry from being written as a record with an empty file path.
+var errJiraAttachmentDownloadSkipped = errors.New("attachment download skipped because the import stopped")
+
+// jiraAttachmentDownload is one attachment staged for download. The concurrent
+// phase fills the stored fields; the record-writing phase consumes them in
+// attachment order.
+type jiraAttachmentDownload struct {
+	attachment     jira.JiraAttachment
+	storedPath     string
+	storedFilename string
+	mimeType       string
+	fileSize       int64
+	err            error
+}
+
 // importAttachments downloads and stores attachments from a Jira issue. It
 // returns a map from Jira attachment id → the Windshift attachment reference
 // (id, mime type, original filename) so ADF media nodes can be linked to the
-// imported attachment instead of left as a placeholder.
-func (h *JiraImportHandler) importAttachments(ctx context.Context, jobID string, itemID int, issue *jira.JiraIssue, userMap map[string]int, client jira.Client, progress *ImportProgress) (map[string]jira.MediaAttachment, error) {
+// imported attachment instead of left as a placeholder. Attachments listed in
+// internalIDs are stored as internal so portal customers cannot list or
+// download them.
+func (h *JiraImportHandler) importAttachments(ctx context.Context, jobID string, itemID int, issue *jira.JiraIssue, userMap map[string]int, client jira.Client, internalIDs map[string]bool, progress *ImportProgress, forked bool) (map[string]jira.MediaAttachment, error) {
 	if len(issue.Fields.Attachment) == 0 {
 		return nil, nil
 	}
 
-	// Get attachment storage path from settings.
-	attachmentPath, ok := h.imports.AttachmentPath()
-	if !ok {
-		slog.Warn("Attachment settings not configured, skipping attachment import",
+	progress.TotalAttachments += len(issue.Fields.Attachment)
+
+	if !h.storage.Enabled() {
+		// Intentionally disabled storage: count these separately from a failed
+		// attempted download so the terminal outcome is not misread as success.
+		progress.SkippedAttachments += len(issue.Fields.Attachment)
+		slog.Warn("Attachment storage not configured, skipping attachment import",
 			slog.String("component", "jira"), slog.String("issue", issue.Key))
 		return jiraNoAttachmentMediaRefs()
 	}
-	if err := ensureJiraAttachmentStorage(attachmentPath); err != nil {
-		slog.Error("Failed to prepare attachment storage",
-			slog.String("component", "jira"), slog.String("issue", issue.Key), slog.Any("error", err))
-		return map[string]jira.MediaAttachment{}, nil
-	}
 
 	mediaRefs := make(map[string]jira.MediaAttachment)
+
+	// Reuse prior mappings and collect the attachments that still need a
+	// download. Downloads run concurrently below; record writes stay on this
+	// goroutine so mapping order and DB access remain deterministic.
+	var downloads []*jiraAttachmentDownload
 	for _, attachment := range issue.Fields.Attachment {
-		if attachment.Content == "" {
+		if attachment.ID == "" && attachment.Content == "" {
+			progress.SkippedAttachments++
 			continue
 		}
 
-		progress.TotalAttachments++
-
-		previousMapping, lookupErr := h.findPreviousJiraImportMapping(jobID, "attachment", attachment.ID)
+		previousMapping, lookupErr := h.previousSubresourceMapping(jobID, "attachment", attachment.ID, itemID, forked)
 		if lookupErr != nil {
 			slog.Warn("Failed to find prior Jira attachment mapping",
 				slog.String("component", "jira"),
@@ -2061,7 +2334,7 @@ func (h *JiraImportHandler) importAttachments(ctx context.Context, jobID string,
 			previousMapping = nil
 		}
 		if previousMapping != nil {
-			mimeType, originalFilename, exists := h.imports.ReassignAttachment(previousMapping.WindshiftID, itemID)
+			mimeType, originalFilename, exists := h.imports.ReassignAttachment(previousMapping.WindshiftID, itemID, internalIDs[attachment.ID])
 			if !exists {
 				previousMapping = nil
 			} else {
@@ -2085,45 +2358,34 @@ func (h *JiraImportHandler) importAttachments(ctx context.Context, jobID string,
 			}
 		}
 
-		reader, _, err := client.DownloadAttachment(ctx, attachment.Content)
-		if err != nil {
-			slog.Error("Failed to download attachment",
+		// Seed the error so an entry the pool never reaches is not mistaken for a
+		// successful download with an empty path.
+		downloads = append(downloads, &jiraAttachmentDownload{
+			attachment: attachment,
+			err:        errJiraAttachmentDownloadSkipped,
+		})
+	}
+
+	jiraParallel(ctx, h.importConcurrency, len(downloads), func(ctx context.Context, i int) {
+		download := downloads[i]
+		download.storedPath, download.storedFilename, download.mimeType, download.fileSize, download.err =
+			h.storeJiraAttachment(ctx, download.attachment, client)
+	})
+
+	for _, download := range downloads {
+		attachment := download.attachment
+		if errors.Is(download.err, errJiraAttachmentDownloadSkipped) {
+			progress.FailedAttachments++
+			continue
+		}
+		if download.err != nil {
+			progress.FailedAttachments++
+			slog.Error("Failed to store Jira attachment",
 				slog.String("component", "jira"),
 				slog.String("issue", issue.Key),
 				slog.String("filename", attachment.Filename),
-				slog.Any("error", err))
+				slog.Any("error", download.err))
 			continue
-		}
-
-		storedFilename := fmt.Sprintf("%s_%s", uuid.New().String(), filepath.Base(attachment.Filename))
-		filePath := filepath.Join(attachmentPath, storedFilename)
-
-		file, err := os.Create(filePath) //nolint:gosec // G304 — filePath from attachmentPath + UUID + filename
-		if err != nil {
-			_ = reader.Close()
-			slog.Error("Failed to create attachment file",
-				slog.String("component", "jira"),
-				slog.String("path", filePath),
-				slog.Any("error", err))
-			continue
-		}
-
-		written, err := io.Copy(file, reader)
-		_ = file.Close()
-		_ = reader.Close()
-		if err != nil {
-			_ = os.Remove(filePath) //nolint:gosec // G703 — filePath from attachmentPath + UUID + filepath.Base(filename)
-			slog.Error("Failed to write attachment file",
-				slog.String("component", "jira"),
-				slog.String("path", filePath),
-				slog.Any("error", err))
-			continue
-		}
-
-		// Use actual written size if Jira didn't report one
-		fileSize := attachment.Size
-		if fileSize == 0 {
-			fileSize = written
 		}
 
 		var uploadedBy *int
@@ -2133,28 +2395,20 @@ func (h *JiraImportHandler) importAttachments(ctx context.Context, jobID string,
 			}
 		}
 
-		// SECURITY: do not trust the remote-declared Content-Type. A malicious
-		// or compromised Jira source controls attachment.MimeType, and the
-		// download handler uses the stored MIME to decide inline rendering.
-		// Detect the type from the actual bytes so a remote source cannot get a
-		// script-capable document served inline in the app origin (stored XSS).
-		mimeType := detectStoredMimeType(filePath)
-		if mimeType == "" {
-			mimeType = "application/octet-stream"
-		}
-
 		attachmentSvc := services.NewAttachmentService(h.db)
 		attachmentID, err := attachmentSvc.CreateRecord(services.CreateAttachmentParams{
 			ItemID:           itemID,
 			EntityType:       "item",
-			Filename:         storedFilename,
+			Filename:         download.storedFilename,
 			OriginalFilename: attachment.Filename,
-			FilePath:         filePath,
-			MimeType:         mimeType,
-			FileSize:         fileSize,
+			FilePath:         download.storedPath,
+			MimeType:         download.mimeType,
+			FileSize:         download.fileSize,
 			UploadedBy:       uploadedBy,
+			IsInternal:       internalIDs[attachment.ID],
 		})
 		if err != nil {
+			progress.FailedAttachments++
 			slog.Error("Failed to insert attachment record",
 				slog.String("component", "jira"),
 				slog.String("issue", issue.Key),
@@ -2166,8 +2420,8 @@ func (h *JiraImportHandler) importAttachments(ctx context.Context, jobID string,
 		attachmentMeta := map[string]any{
 			"filename":  attachment.Filename,
 			"content":   attachment.Content,
-			"mime_type": mimeType,
-			"size":      fileSize,
+			"mime_type": download.mimeType,
+			"size":      download.fileSize,
 		}
 		if attachment.Thumbnail != "" {
 			attachmentMeta["thumbnail"] = attachment.Thumbnail
@@ -2197,7 +2451,7 @@ func (h *JiraImportHandler) importAttachments(ctx context.Context, jobID string,
 		if attachment.ID != "" {
 			mediaRefs[attachment.ID] = jira.MediaAttachment{
 				ID:               int(attachmentID),
-				MimeType:         mimeType,
+				MimeType:         download.mimeType,
 				OriginalFilename: attachment.Filename,
 			}
 		}
@@ -2209,28 +2463,75 @@ func jiraNoAttachmentMediaRefs() (map[string]jira.MediaAttachment, error) {
 	return nil, nil
 }
 
-func ensureJiraAttachmentStorage(attachmentPath string) error {
-	if err := os.MkdirAll(attachmentPath, 0o750); err != nil {
-		return fmt.Errorf("create attachment directory: %w", err)
+// sniffAttachmentMimeType reads the first 512 bytes from f, rewinds it, and
+// returns the detected Content-Type. The caller still owns f.
+//
+// SECURITY: the remote-declared Content-Type is not trusted. A malicious or
+// compromised Jira source controls attachment.MimeType, and the download
+// handler uses the stored MIME to decide inline rendering. Sniffing the actual
+// bytes keeps a script-capable document out of the app origin (stored XSS).
+func sniffAttachmentMimeType(f *os.File) (string, error) {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return "", err
 	}
-	return nil
+	head := make([]byte, 512)
+	n, err := io.ReadFull(f, head)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return "", err
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
+	if n == 0 {
+		return "application/octet-stream", nil
+	}
+	return http.DetectContentType(head[:n]), nil
 }
 
-// detectStoredMimeType sniffs the Content-Type of an already-written file from
-// its leading bytes via http.DetectContentType, so the stored MIME reflects the
-// actual content rather than a remote-declared value. Returns "" if the file
-// cannot be read (caller falls back to application/octet-stream).
-func detectStoredMimeType(path string) string {
-	f, err := os.Open(path) //nolint:gosec // G304 — path is attachmentPath + UUID + filepath.Base(filename)
+// storeJiraAttachment downloads attachment, streams it to a temp file, sniffs
+// the MIME type, and stores it through the configured blob backend. The temp
+// file is always removed. Returns the stored path, stored filename, detected
+// MIME type, and size.
+func (h *JiraImportHandler) storeJiraAttachment(ctx context.Context, attachment jira.JiraAttachment, client jira.Client) (storedPath, storedFilename, mimeType string, size int64, err error) {
+	reader, _, err := client.DownloadAttachment(ctx, attachment.ID, attachment.Content)
 	if err != nil {
-		return ""
+		return "", "", "", 0, fmt.Errorf("download: %w", err)
 	}
-	defer func() { _ = f.Close() }()
+	defer func() { _ = reader.Close() }()
 
-	buf := make([]byte, 512)
-	n, err := f.Read(buf)
-	if err != nil && n == 0 {
-		return ""
+	// Stream to a local temp file so a large attachment never has to fit in
+	// memory; the blob store then consumes the file.
+	tmp, err := os.CreateTemp("", "windshift-jira-attachment-*")
+	if err != nil {
+		return "", "", "", 0, fmt.Errorf("create staging file: %w", err)
 	}
-	return http.DetectContentType(buf[:n])
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	written, err := io.Copy(tmp, reader)
+	if err != nil {
+		_ = tmp.Close()
+		return "", "", "", 0, fmt.Errorf("stage attachment: %w", err)
+	}
+	mimeType, err = sniffAttachmentMimeType(tmp)
+	if err != nil {
+		_ = tmp.Close()
+		return "", "", "", 0, fmt.Errorf("detect content type: %w", err)
+	}
+
+	storedFilename = fmt.Sprintf("%s_%s", uuid.New().String(), filepath.Base(attachment.Filename))
+	storedPath = h.storage.Path(storedFilename)
+	if err := h.storage.Put(ctx, storedPath, tmp, written, mimeType); err != nil {
+		_ = tmp.Close()
+		return "", "", "", 0, fmt.Errorf("store: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", "", "", 0, fmt.Errorf("close staging file: %w", err)
+	}
+
+	size = attachment.Size
+	if size == 0 {
+		size = written
+	}
+	return storedPath, storedFilename, mimeType, size, nil
 }

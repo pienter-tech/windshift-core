@@ -20,6 +20,14 @@ export default {
     systemDefault: 'Системная тема',
     themeManager: {
       background: 'Фон', text: 'Текст',
+      brandLayout: 'Бренд в боковой панели',
+      brandLayoutMarkText: 'Знак + текст',
+      brandLayoutMarkOnly: 'Только знак',
+      brandLayoutFullLogo: 'Полный логотип',
+      brandLayoutHelp: 'Управляет развёрнутой боковой панелью. В свёрнутой панели всегда отображается знак.',
+      brandPreview: 'Предпросмотр боковой панели',
+      brandPreviewExpanded: 'Развёрнутая',
+      brandPreviewCollapsed: 'Свёрнутая',
       failedToLoad: 'Не удалось загрузить темы.', failedToCreate: 'Не удалось создать тему.',
       failedToUpdate: 'Не удалось обновить тему.', failedToDelete: 'Не удалось удалить тему.',
       failedToActivate: 'Не удалось включить тему.', failedToUploadLogo: 'Не удалось загрузить логотип.',
@@ -30,12 +38,24 @@ export default {
       },
     },
 
+    generalSettings: {
+      title: 'Общие',
+      subtitle: 'Общесистемные настройки',
+      siteIdentity: 'Идентичность сайта',
+      siteIdentityDescription:
+        'Название продукта, отображаемое на вкладке браузера, в боковой панели, а также на экранах входа и настройки.',
+      siteTitle: 'Название сайта',
+      preview: 'Предпросмотр',
+      saved: 'Общие настройки сохранены',
+    },
+
     admin: 'Администрирование',
     systemSettings: 'Системные настройки',
     organizationSettings: 'Настройки организации',
     workspaceSettings: 'Настройки рабочего пространства',
 
     adminGroups: {
+      general: 'Общие',
       contentStructure: 'Содержимое и структура',
       workflowProcess: 'Рабочие процессы',
       integrationLinks: 'Интеграции и связи',
@@ -46,6 +66,10 @@ export default {
     },
 
     adminItems: {
+      general: {
+        title: 'Общие',
+        description: 'Общесистемные настройки, например название сайта',
+      },
       customFields: {
         title: 'Настраиваемые поля',
         description: 'Создание и настройка дополнительных полей',
@@ -210,11 +234,9 @@ export default {
       apply: 'Применить',
       verify: 'Проверить',
       cancel: 'Отмена',
-      targetExisting: 'Существующее рабочее пространство',
       targetNew: 'Новое рабочее пространство',
-      selectWorkspace: 'Выберите рабочее пространство',
       newWorkspaceName: 'Название нового рабочего пространства',
-      targetRequired: 'Сначала выберите целевое рабочее пространство',
+      targetRequired: 'Сначала введите название нового рабочего пространства',
       reportTitle: 'Отчёт о применении',
       reportStatus: 'Статус',
       stagePlugins: 'Плагины',
@@ -387,6 +409,10 @@ export default {
       importing: 'Импорт…',
       importWarning: 'Набор конфигураций импортирован с предупреждениями.',
       importFailed: 'Не удалось импортировать набор конфигураций.',
+      importNameTitle: 'Назовите импортируемый набор',
+      importNameDescription:
+        'Импорт создаёт копию. Выберите имя для импортируемого набора.',
+      importInvalidFile: 'Этот файл не является шаблоном набора конфигураций.',
       unresolvedReferencesHeading: 'В импортируемом наборе есть объекты, которых нет в этой системе.',
       defaultConflictHeading: 'Импортируемый набор конфликтует с системным объектом.',
       unresolvedImportTitle: 'Импорт: неразрешённые ссылки',
@@ -649,8 +675,22 @@ export default {
       callbackUrl: 'URL перенаправления OAuth',
       callbackUrlHelp:
         'Укажите этот адрес как URL перенаправления у провайдера идентификации',
+      baseUrlWarningTitle: 'Базовый URL сервера не настроен',
+      baseUrlWarningBody:
+        'Windshift использует {url} для ссылок и OAuth-callback-запросов, поэтому при входе через SSO этот адрес будет отправлен поставщику удостоверений. Задайте переменную окружения BASE_URL и перезапустите Windshift, прежде чем регистрировать URL обратного вызова.',
       scopes: 'Области доступа',
       scopesHelp: 'Список областей доступа OIDC через пробел',
+      nameClaimsHelp:
+        'Некоторые провайдеры (например, Microsoft Entra ID) по умолчанию передают только отображаемое имя. Добавьте given_name и family_name как дополнительные утверждения, чтобы Windshift получал структурированное имя вместо разбора отображаемого имени.',
+      attributeMapping: 'Сопоставление атрибутов',
+      attributeMappingHelp:
+        'Необязательно. Переопределите утверждение, из которого читается каждое поле, если ваш провайдер использует нестандартные имена утверждений. Оставьте поле пустым, чтобы использовать утверждение по умолчанию, указанное в подсказке.',
+      attributeEmail: 'Утверждение email',
+      attributeEmailVerified: 'Утверждение подтверждения email',
+      attributeName: 'Утверждение полного имени',
+      attributeGivenName: 'Утверждение имени',
+      attributeFamilyName: 'Утверждение фамилии',
+      attributeUsername: 'Утверждение имени пользователя',
       enabled: 'Включён',
       disabled: 'Отключён',
       default: 'По умолчанию',
@@ -744,6 +784,14 @@ export default {
       textBody: 'Текстовая версия',
       adminNotes: 'Описание (заметки администратора)',
       activeHint: 'Активен (снимите флажок, чтобы использовать встроенный шаблон)',
+      localeLabel: "Язык",
+      defaultLocale: "По умолчанию (все языки)",
+      translationHint: "Вы редактируете версию для этого языка. Остальные языки используют шаблон по умолчанию.",
+      translationSaved: "Перевод сохранён",
+      translationDelete: "Удалить перевод",
+      translationDeleted: "Перевод удалён",
+      translationSaveFailed: "Не удалось сохранить перевод: {error}",
+      translationDeleteFailed: "Не удалось удалить перевод: {error}",
       availableVariables: 'Доступные переменные',
       syntaxHint:
         'Шаблоны используют синтаксис Go html/template. Для значений укажите {open} .Field {close}, а для перебора — {open} range .Items {close}…{open} end {close}.',
@@ -764,6 +812,8 @@ export default {
         invitation: 'Приглашение нового пользователя',
         notification_batch: 'Сводные уведомления',
         portal_reply: 'Ответ клиенту на портале',
+        approval_requested: 'Запрос согласования в портале',
+        intake_confirmation: 'Подтверждение получения (email)',
       },
     },
 
@@ -928,6 +978,13 @@ export default {
       changeManifest: 'Заменить manifest.json',
       manifestSelected: 'Выбран манифест: {name}',
       registeredRoutes: 'Зарегистрированные маршруты',
+      routeAuth_session: 'Сессия',
+      routeAuth_admin: 'Администратор',
+      routeAuth_none: 'Публичный',
+      hostFunctionPermissions: 'Разрешения хост-функций',
+      permissionGranted: 'Предоставлено',
+      permissionDenied: 'Отклонено',
+      permissionsDeniedNote: 'Некоторые объявленные разрешения не действуют.',
       moduleSettingsNote:
         'Изменения настроек модулей применяются сразу. Отключённый модуль будет скрыт из навигации.',
       failedToUpload: 'Не удалось загрузить: {error}',
@@ -989,11 +1046,6 @@ export default {
         dependency_analysis: {
           name: 'Анализ зависимостей',
           description: 'Анализ и рекомендации зависимостей между элементами',
-        },
-        logbook_articles: {
-          name: 'Статьи базы знаний',
-          description:
-            'Классификация и очистка документов, а также создание статей базы знаний с помощью ИИ',
         },
       },
     },
@@ -1154,6 +1206,9 @@ export default {
       createCustomField: 'Создать настраиваемое поле',
       customFieldsGlobalNote:
         'Настраиваемыми полями для всей системы управляет системный администратор.',
+      columnColor: 'Цвет столбца',
+      displayOptions: 'Параметры отображения',
+      displayOptionsHint: 'Управляйте отображением завершённой работы и крайнего правого столбца.',
       latestFiftyRightmost: 'Показывать только 50 последних элементов в крайнем правом столбце',
       latestFiftyRightmostHint: 'Подходит для больших столбцов «Готово» и не ограничивает остальную доску.',
       hideCompletedByAge: 'Скрывать давно завершённые элементы',
@@ -1162,6 +1217,11 @@ export default {
       days: 'дней',
       retentionWindowHint: 'Завершённые элементы без активности за этот период будут скрыты.',
       retentionRangeError: 'Введите целое число от 1 до 3650.',
+      completedVisibility: 'Завершённая работа',
+      completedVisibilityCustom: 'Настраиваемый (используйте параметры ниже)',
+      completedVisibilityHint: 'Определяет, сколько завершённой работы загружает эта доска. Действует для всех зрителей.',
+      completedLimit: 'Количество завершённых элементов',
+      completedLimitHint: 'Показывать на доске не более этого числа завершённых элементов (1–{max}).',
       backlogSelected: 'Для бэклога выбрано статусов: {count}',
       backlogSelected_one: 'Для бэклога выбран {count} статус',
       backlogSelected_few: 'Для бэклога выбрано {count} статуса',
@@ -1171,7 +1231,7 @@ export default {
         status: 'Статус', priority: 'Приоритет', milestone: 'Этап', iteration: 'Итерация',
         due_date: 'Срок', start_date: 'Дата начала', end_date: 'Дата окончания', labels: 'Метки',
         created_at: 'Дата создания', project: 'Проект', parent: 'Родитель', time_in_status: 'Время в статусе',
-        story_points: 'Сторипойнты', estimate: 'Оценка',
+        story_points: 'Сторипойнты', estimate: 'Оценка', sla: 'SLA',
       },
     },
   },

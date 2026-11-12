@@ -32,8 +32,11 @@ export default {
     },
     mapping: {
       workspaces: 'Рабочие пространства', workspacesDesc: 'Каждый проект Jira станет рабочим пространством Windshift',
+      createNewWorkspace: 'Создать новое рабочее пространство',
       issueTypes: 'Типы задач', issueTypesDesc: 'Типы задач будут созданы в Windshift как типы элементов',
+      createNewItemType: 'Создать новый тип элемента',
       statuses: 'Статусы', statusesDesc: 'Статусы будут созданы и сгруппированы по категориям',
+      createNewStatus: 'Создать новый статус',
       customFields: 'Настраиваемые поля', customFieldsDesc: 'Поля, которые можно сопоставить, будут созданы в Windshift',
       versions: 'Версии / этапы', versionsDesc: 'Версии Jira будут импортированы как этапы рабочего пространства.',
       subtask: 'Подзадача', create: 'Создать', skip: 'Пропустить',
@@ -84,7 +87,7 @@ export default {
     title: 'Итерации', subtitle: 'Управление итерациями и выпусками', iteration: 'Итерация',
     iterations_one: '{count} итерация', iterations_few: '{count} итерации', iterations_many: '{count} итераций', iterations_other: '{count} итерации',
     createIteration: 'Создать итерацию', editIteration: 'Изменить итерацию', updateIteration: 'Обновить итерацию', deleteIteration: 'Удалить итерацию', startIteration: 'Начать итерацию', completeIteration: 'Завершить итерацию', start: 'Начать',
-    noIterations: 'Итерации не найдены', allTypes: 'Все типы', manageTypes: 'Управление типами', backToIterations: 'Вернуться к итерациям', filterByIteration: 'Фильтр по итерации', addGlobalIteration: 'Добавить итерацию',
+    noIterations: 'Итерации не найдены', allTypes: 'Все типы', manageTypes: 'Управление типами', backToIterations: 'Вернуться к итерациям', filterByIteration: 'Фильтр по итерации', addGlobalIteration: 'Добавить итерацию', showCompletedIterations: 'Показывать завершённые итерации',
     status: { planned: 'Запланирована', active: 'Активна', completed: 'Завершена', cancelled: 'Отменена' },
     statusPlanned: 'Запланирована', statusActive: 'Активна', statusCompleted: 'Завершена', statusCancelled: 'Отменена',
     global: 'Глобальная', local: 'Локальная', thisWorkspace: 'Это рабочее пространство', globalIteration: 'Глобальная итерация', globalIterations: 'Глобальные итерации', globalIterationDescription: 'Видна во всех рабочих пространствах', localIteration: 'Локальная итерация', localIterations: 'Локальные итерации', localIterationDescription: 'Видна только в этом рабочем пространстве', switchTo: 'Переключиться на область «{scope}»', scope: 'Область',
@@ -129,7 +132,7 @@ export default {
     newType: 'Новый тип', createType: 'Создать тип', editType: 'Изменить тип', noAssetTypes: 'Нет типов ресурсов', noAssetTypesDesc: 'Создайте типы, чтобы классифицировать ресурсы.', assetType: 'Тип ресурса',
     newCategory: 'Новая категория', createCategory: 'Создать категорию', editCategory: 'Изменить категорию', noCategories: 'Нет категорий', noCategoriesDesc: 'Создайте категории, чтобы упорядочить ресурсы.', parentCategory: 'Родительская категория', noParent: 'Без родителя (верхний уровень)',
     assignRole: 'Назначить роль', everyoneRole: 'Общая роль', everyoneRoleDesc: 'Стандартная роль для всех пользователей. Индивидуальные назначения имеют приоритет.', noRoleAssignments: 'Роли не назначены', noRoleAssignmentsDesc: 'Назначьте роли, чтобы управлять доступом к набору ресурсов.', assignee: 'Получатель', role: 'Роль',
-    failedToDownload: 'Не удалось скачать файл', editDiagram: 'Изменить диаграмму', untitledDiagram: 'Диаграмма без названия', diagram: 'диаграмма', uploadedBy: 'Загрузил {name}', zoomOut: 'Уменьшить (-)', zoomIn: 'Увеличить (+)', rotate: 'Повернуть (R)', fitToScreen: 'Вписать в экран (F)', shortcutScroll: 'Колесо: масштаб', shortcutDrag: 'Перетаскивание: перемещение', shortcutRotate: 'R: повернуть', shortcutFit: 'F: вписать', shortcutReset: '0: сбросить', shortcutClose: 'Esc: закрыть',
+    failedToDownload: 'Не удалось скачать файл', editDiagram: 'Изменить диаграмму', untitledDiagram: 'Диаграмма без названия', diagram: 'диаграмма', uploadedBy: 'Загрузил {name}', zoomOut: 'Уменьшить (-)', zoomIn: 'Увеличить (+)', rotate: 'Повернуть (R)', fitToScreen: 'Вписать в экран (F)', shortcutScroll: 'Колесо: масштаб', shortcutDrag: 'Перетаскивание: перемещение', shortcutRotate: 'R: повернуть', shortcutFit: 'F: вписать', shortcutReset: '0: сбросить', shortcutClose: 'Esc: закрыть', hideFromCustomer: 'Скрыть от клиента', showToCustomer: 'Показать клиенту',
   },
 
   personal: {
@@ -139,9 +142,6 @@ export default {
     reflection: 'Рефлексия', whatAccomplished: 'Что я сделал сегодня?', whatWentWell: 'Что сегодня получилось хорошо?', whatImprove: 'Что можно улучшить завтра?', weeklyAccomplishments: 'Что мы сделали на этой неделе?', weeklyChallenges: 'С какими трудностями мы столкнулись?', weeklyPriorities: 'Каковы наши приоритеты на следующую неделю?', placeholderAccomplishments: 'Опишите основные достижения…', placeholderWentWell: 'Что получилось хорошо и почему…', placeholderImprovements: 'Что улучшить и какие сделать следующие шаги…', startWriting: 'Начните писать рефлексию…',
   },
 
-  audit: {
-    title: 'Журнал аудита', subtitle: 'Отслеживание административных действий и событий безопасности', event: 'Событие', user: 'Пользователь', action: 'Действие', resource: 'Ресурс', timestamp: 'Время', details: 'Сведения', ipAddress: 'IP-адрес', noEvents: 'События аудита не найдены',
-  },
   connections: {
     title: 'Подключения', subtitle: 'Управление внешними интеграциями', connection: 'Подключение', createConnection: 'Создать подключение', editConnection: 'Изменить подключение', deleteConnection: 'Удалить подключение', connectionType: 'Тип подключения', noConnections: 'Подключения не найдены', connectionCreated: 'Подключение создано', connectionUpdated: 'Подключение обновлено', connectionDeleted: 'Подключение удалено', connectionSuccessful: 'Подключение установлено', testConnection: 'Проверить подключение',
   },
@@ -151,11 +151,6 @@ export default {
   members: { title: 'Участники', subtitle: 'Управление участниками команды', addMember: 'Добавить участника', removeMember: 'Удалить участника', searchMembers: 'Поиск по имени или электронной почте…' },
   configuration: { title: 'Конфигурация', searchConfigurationSets: 'Поиск наборов конфигураций…' },
 
-  auditLog: {
-    filters: 'Фильтры', actionType: 'Тип действия', resourceType: 'Тип ресурса', status: 'Статус', searchPlaceholder: 'Пользователь, ресурс…', startDate: 'Дата начала', endDate: 'Дата окончания', applyFilters: 'Применить фильтры', clearFilters: 'Сбросить фильтры', loadingAuditLogs: 'Загрузка журнала аудита…', noAuditLogs: 'Записи аудита не найдены', exportCsv: 'Экспорт в CSV', exportJson: 'Экспорт в JSON', auditLogDetails: 'Сведения записи аудита', timestamp: 'Время', user: 'Пользователь', action: 'Действие', resource: 'Ресурс', resourceName: 'Название ресурса', ipAddress: 'IP-адрес', userAgent: 'User-Agent', errorMessage: 'Сообщение об ошибке', additionalDetails: 'Дополнительные сведения', success: 'Успешно', failed: 'Ошибка', all: 'Все',
-    allActions: 'Все действия', userCreated: 'Пользователь создан', userUpdated: 'Пользователь обновлён', userDeleted: 'Пользователь удалён', userActivated: 'Пользователь активирован', userDeactivated: 'Пользователь деактивирован', passwordReset: 'Пароль сброшен', apiTokenCreated: 'API-токен создан', apiTokenRevoked: 'API-токен отозван', workspaceCreated: 'Рабочее пространство создано', workspaceUpdated: 'Рабочее пространство обновлено', workspaceDeleted: 'Рабочее пространство удалено', groupCreated: 'Группа создана', groupUpdated: 'Группа обновлена', groupDeleted: 'Группа удалена', groupMemberAdded: 'Участник добавлен в группу', groupMemberRemoved: 'Участник удалён из группы', customFieldCreated: 'Настраиваемое поле создано', customFieldUpdated: 'Настраиваемое поле обновлено', customFieldDeleted: 'Настраиваемое поле удалено', itemTypeCreated: 'Тип элемента создан', itemTypeUpdated: 'Тип элемента обновлён', itemTypeDeleted: 'Тип элемента удалён', permissionGranted: 'Разрешение выдано', permissionRevoked: 'Разрешение отозвано', roleAssigned: 'Роль назначена', roleRevoked: 'Роль отозвана',
-    allResources: 'Все ресурсы', apiToken: 'API-токен', customField: 'Настраиваемое поле', itemType: 'Тип элемента', permission: 'Разрешение', group: 'Группа',
-  },
 
   migrationAssistant: {
     configSetMigration: 'Перенос набора конфигураций', workflowMigration: 'Перенос рабочего процесса', migratingFrom: 'Перенос из', to: 'в', configurationSet: 'Набор конфигураций', analyzingMigration: 'Проверка совместимости…', analysisFailed: 'Ошибка анализа', noMigrationRequired: 'Миграция не требуется', allItemsCompatible: 'Все элементы ({count}) совместимы с новой конфигурацией.', migrationRequired: 'Нужно перенести данные', itemsNeedMigration: 'Требуется перенести элементы ({count}). Проверьте сопоставления ниже.', itemTypes: 'Типы элементов', fields: 'Поля', status: 'Статус', priority: 'Приоритет', itemTypeMigrations: 'Изменения типов элементов', customFieldChanges: 'Изменения настраиваемых полей', statusMigrations: 'Изменения статусов', priorityMigrations: 'Изменения приоритетов', noItemsToMigrate: 'Нет элементов для миграции.', noStatusChanges: 'Изменения статусов не обнаружены.', noFieldChanges: 'Изменения полей не обнаружены.', selectTargetType: 'Выберите целевой тип…', selectTargetStatus: 'Выберите целевой статус…', selectTargetPriority: 'Выберите целевой приоритет…', compatible: 'Совместимо', requiresMigration: 'Требует миграции', item: 'элемент', items: 'элементы', kept: 'Сохранено', values: 'значения', hiddenDataPreserved: 'Скрыто (данные сохранены)', newRequiredField: 'Новое обязательное поле', enterDefaultValue: 'Введите значение по умолчанию…', executeMigration: 'Перенести данные', migrating: 'Перенос данных…', migrationCompleted: 'Миграция завершена', allItemsMigrated: 'Все элементы успешно перенесены.', pleaseSelectTargetStatuses: 'Выберите целевые статусы для всех элементов, требующих миграции.', pleaseSelectTargetItemTypes: 'Выберите целевые типы для всех элементов, требующих миграции.', pleaseProvideDefaultValues: 'Укажите значения по умолчанию для всех новых обязательных полей.', pleaseSelectTargetPriorities: 'Выберите целевые приоритеты для всех элементов, требующих миграции.',
@@ -168,7 +163,7 @@ export default {
   createModal: {
     workItem: 'Рабочий элемент', team: 'Команда', milestone: 'Этап', workspace: 'Рабочее пространство', collection: 'Коллекция', planning: 'Планирование', inProgress: 'В работе', completed: 'Завершено', cancelled: 'Отменено', newChildItem: 'Новый дочерний элемент', new: 'Создать', issueTitle: 'Название задачи', milestoneName: 'Название этапа', workspaceName: 'Название: {type}', workspaceKeyPlaceholder: 'Ключ пространства, например PROJ или TEAM', addDescription: 'Добавить описание…', workspaceTemplate: 'Шаблон', workspaceTemplateBlank: 'Пустое рабочее пространство', workspaceTemplateLoading: 'Загрузка шаблонов…', workspaceTemplateError: 'Не удалось загрузить шаблоны рабочих пространств',
     workspaceRestrict: 'Ограничить видимость',
-    workspaceRestrictHint: 'Только вы и назначенные пользователи могут видеть это рабочее пространство', workspaceTemplateMeta: 'Шаблонов: {templates} · элементов: {items}', workspacePackTemplate: 'Встроенный пакет', workspacePackMeta: 'v{version} · набор конфигурации и содержимое', workspacePackError: 'Не удалось загрузить встроенные пакеты', type: 'Тип', template: 'Шаблон', priority: 'Приоритет', noPriority: 'Без приоритета', assignee: 'Исполнитель', unassigned: 'Не назначено', dueDate: 'Срок', milestoneField: 'Этап', noMilestone: 'Без этапа', additionalFields: 'Дополнительные поля', targetDate: 'Целевая дата', status: 'Статус', category: 'Категория', noCategory: 'Без категории', parent: 'Родитель', fillRequiredFields: 'Заполните обязательные поля:', selectWorkspaceFirst: 'Сначала выберите рабочее пространство', create: 'Создать',
+    workspaceRestrictHint: 'Только вы и назначенные пользователи могут видеть это рабочее пространство', workspaceTemplateMeta: 'Шаблонов: {templates} · элементов: {items}', workspacePackTemplate: 'Встроенный пакет', workspacePackMeta: 'v{version} · набор конфигурации и содержимое', workspacePackError: 'Не удалось загрузить встроенные пакеты', type: 'Тип', template: 'Шаблон', priority: 'Приоритет', noPriority: 'Без приоритета', assignee: 'Исполнитель', unassigned: 'Не назначено', dueDate: 'Срок', milestoneField: 'Этап', noMilestone: 'Без этапа', additionalFields: 'Дополнительные поля', targetDate: 'Целевая дата', status: 'Статус', category: 'Категория', noCategory: 'Без категории', parent: 'Родитель', fillRequiredFields: 'Заполните обязательные поля:', selectWorkspaceFirst: 'Сначала выберите рабочее пространство', createdPartialError: 'Элемент создан, но завершить его не удалось: {error}. Нажмите «Создать» ещё раз, чтобы повторить.', create: 'Создать',
   },
 
   scm: {
@@ -197,6 +192,13 @@ export default {
     bulkAssignMe: 'Назначить себе',
     bulkAssignTeam: 'Назначить команде',
     bulkApplyTeam: 'Применить',
+    bulkTransition: 'Задать статус',
+    bulkApplyStatus: 'Применить',
+    bulkDelete: 'Удалить',
+    bulkDeleteConfirm: 'Удалить выбранные заявки ({n})?',
+    bulkDeleteSuccess: 'Удалено заявок: {n}',
+    bulkTransitionSuccess: 'Перемещено заявок: {n}',
+    bulkPartial: 'Обновлено {updated} из {requested} заявок; ошибок: {failed}',
     bulkClear: 'Снять выделение',
     bulkSuccess: 'Обновлено заявок: {n}',
     columnTitle: 'Заявка',
@@ -220,5 +222,14 @@ export default {
     deleted: 'Очередь удалена',
     builtinRemoved: 'Встроенная очередь убрана',
     saveFailed: 'Не удалось сохранить очередь',
+  },
+  transitionScreen: {
+    title: 'Экран перехода',
+    moveTo: 'Перейти в {status}',
+    comment: 'Комментарий',
+    commentPlaceholder: 'Добавить комментарий (необязательно)',
+    confirm: 'Перейти',
+    failed: 'Не удалось выполнить переход.',
+    missingFields: 'Заполните обязательные поля, чтобы продолжить:',
   },
 };

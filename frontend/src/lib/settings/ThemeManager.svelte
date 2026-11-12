@@ -1,8 +1,14 @@
 <script>
   import { onMount } from 'svelte';
   import StateDisplay from '../components/StateDisplay.svelte';
-  import { api } from '../api.js';
-  import { Plus, Edit, Trash2, Palette, Check, X } from '@lucide/svelte';
+  import { themes as themesApi } from '../api/admin.js';
+  import { attachments } from '../api/misc.js';
+  import Plus from '@lucide/svelte/icons/plus';
+  import Edit from '@lucide/svelte/icons/edit';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
+  import Palette from '@lucide/svelte/icons/palette';
+  import Check from '@lucide/svelte/icons/check';
+  import X from '@lucide/svelte/icons/x';
   import AlertBox from '../components/AlertBox.svelte';
   import Button from '../components/Button.svelte';
   import EmptyState from '../components/EmptyState.svelte';
@@ -13,10 +19,14 @@
   import IconSelector from '../pickers/IconSelector.svelte';
   import { toHotkeyString } from '../utils/keyboardShortcuts.js';
   import { t } from '../stores/i18n.svelte.js';
+  import { surfaceError } from '../stores/toasts.svelte.js';
   import { confirm } from '../composables/useConfirm.js';
   import { objectDisplayValue } from '../utils/systemLabels.js';
   import LocalizedObjectFields from './LocalizedObjectFields.svelte';
   import LogoUploader from '../components/LogoUploader.svelte';
+  import ThemeBrandFields from './ThemeBrandFields.svelte';
+  import ThemeLockupPreview from './ThemeLockupPreview.svelte';
+  import { brandStore } from '../stores/brand.svelte.js';
 	import TextField from '../components/TextField.svelte';
 
   // State management
@@ -41,7 +51,10 @@
     nav_background_color_dark: '#1f2937',
     nav_text_color_dark: '#f3f4f6',
     logo_url: '',
-    logo_url_dark: ''
+    logo_url_dark: '',
+    logo_full_url: '',
+    logo_full_url_dark: '',
+    brand_layout: 'mark_text'
   });
   let uploadingLogo = $state(false);
 
@@ -55,10 +68,10 @@
     try {
       loading = true;
       error = null;
-      themes = await api.themes.getAll();
+      themes = await themesApi.getAll();
     } catch (err) {
       error = t('settings.themeManager.failedToLoad');
-      console.error('Error loading themes:', err);
+      surfaceError(err, { context: 'loadThemes' });
     } finally {
       loading = false;
     }
@@ -66,16 +79,16 @@
 
   async function loadActiveTheme() {
     try {
-      activeTheme = await api.themes.getActive();
+      activeTheme = await themesApi.getActive();
     } catch (err) {
-      console.error('Error loading active theme:', err);
+      surfaceError(err, { context: 'loadActiveTheme' });
     }
   }
 
   async function createTheme() {
     try {
       error = null;
-      const created = await api.themes.create(newTheme);
+      const created = await themesApi.create(newTheme);
       themes = [...themes, created];
 
       // Reset form
@@ -87,12 +100,15 @@
         nav_background_color_dark: '#1f2937',
         nav_text_color_dark: '#f3f4f6',
         logo_url: '',
-        logo_url_dark: ''
+        logo_url_dark: '',
+        logo_full_url: '',
+        logo_full_url_dark: '',
+        brand_layout: 'mark_text'
       };
       showCreateForm = false;
     } catch (err) {
       error = t('settings.themeManager.failedToCreate');
-      console.error('Error creating theme:', err);
+      surfaceError(err, { context: 'createTheme' });
     }
   }
 
@@ -111,13 +127,13 @@
       const formData = new FormData();
       formData.append('file', file);
       formData.append('entity_type', 'theme_logo');
-      const result = await api.attachments.upload(formData);
+      const result = await attachments.upload(formData);
       if (result?.success && result.logo_url) {
         target[field] = result.logo_url;
       }
     } catch (err) {
       error = t('settings.themeManager.failedToUploadLogo');
-      console.error('Error uploading theme logo:', err);
+      surfaceError(err, { context: 'uploadThemeLogo' });
     } finally {
       uploadingLogo = false;
     }
@@ -126,7 +142,7 @@
   async function updateTheme(id, data) {
     try {
       error = null;
-      const updated = await api.themes.update(id, data);
+      const updated = await themesApi.update(id, data);
       themes = themes.map(t => t.id === id ? updated : t);
       // If this theme is active, update active theme
       if (updated.is_active) {
@@ -151,18 +167,18 @@
 
     try {
       error = null;
-      await api.themes.delete(id);
+      await themesApi.delete(id);
       themes = themes.filter(t => t.id !== id);
     } catch (err) {
       error = t('settings.themeManager.failedToDelete');
-      console.error('Error deleting theme:', err);
+      surfaceError(err, { context: 'deleteTheme' });
     }
   }
 
   async function activateTheme(id) {
     try {
       error = null;
-      await api.themes.activate(id);
+      await themesApi.activate(id);
       
       // Update local state
       themes = themes.map(t => ({ ...t, is_active: t.id === id }));
@@ -172,7 +188,7 @@
       applyTheme(activeTheme);
     } catch (err) {
       error = t('settings.themeManager.failedToActivate');
-      console.error('Error activating theme:', err);
+      surfaceError(err, { context: 'activateTheme' });
     }
   }
 
@@ -193,7 +209,14 @@
   }
 
   function startEdit(theme) {
-    editingTheme = { ...theme };
+    // The API omits empty logo fields, so normalize before binding them into
+    // the form; brand_layout always has a value but guard it too.
+    editingTheme = {
+      ...theme,
+      logo_full_url: theme.logo_full_url || '',
+      logo_full_url_dark: theme.logo_full_url_dark || '',
+      brand_layout: theme.brand_layout || 'mark_text'
+    };
   }
 
   function cancelEdit() {
@@ -217,6 +240,9 @@
       nav_text_color_dark: editingTheme.nav_text_color_dark,
       logo_url: editingTheme.logo_url || '',
       logo_url_dark: editingTheme.logo_url_dark || '',
+      logo_full_url: editingTheme.logo_full_url || '',
+      logo_full_url_dark: editingTheme.logo_full_url_dark || '',
+      brand_layout: editingTheme.brand_layout || 'mark_text',
       is_active: editingTheme.is_active
     });
     await translationEditor?.save();
@@ -225,7 +251,7 @@
   }
 </script>
 
-<div class="theme-manager">
+<div>
   <PageHeader
     icon={Palette}
     title={t('settings.theme')}
@@ -297,6 +323,7 @@
       <div class="mb-4">
         <LogoUploader
           currentLogoUrl={newTheme.logo_url || null}
+          accept="image/png,image/jpeg,image/svg+xml,image/gif,image/webp"
           onUpload={(files) => uploadThemeLogo(files, newTheme, 'logo_url')}
           onRemove={() => (newTheme.logo_url = '')}
           uploading={uploadingLogo}
@@ -308,12 +335,39 @@
       <div class="mb-4">
         <LogoUploader
           currentLogoUrl={newTheme.logo_url_dark || null}
+          accept="image/png,image/jpeg,image/svg+xml,image/gif,image/webp"
           onUpload={(files) => uploadThemeLogo(files, newTheme, 'logo_url_dark')}
           onRemove={() => (newTheme.logo_url_dark = '')}
           uploading={uploadingLogo}
           maxHeight="40px"
           label={t('lookAndFeel.darkLogo', 'Dark Mode Logo')}
           helpText={t('lookAndFeel.darkLogoFallback', 'Shown in dark mode. Falls back to the light mode logo when left empty.')}
+        />
+      </div>
+
+      <div class="mb-4">
+        <ThemeBrandFields
+          idPrefix="theme-create"
+          bind:brandLayout={newTheme.brand_layout}
+          bind:logoFullUrl={newTheme.logo_full_url}
+          bind:logoFullUrlDark={newTheme.logo_full_url_dark}
+          uploading={uploadingLogo}
+          onUpload={(files, field) => uploadThemeLogo(files, newTheme, field)}
+        />
+      </div>
+
+      <div class="mb-4">
+        <ThemeLockupPreview
+          siteTitle={brandStore.siteTitle}
+          brandLayout={newTheme.brand_layout}
+          logoUrl={newTheme.logo_url}
+          logoUrlDark={newTheme.logo_url_dark}
+          logoFullUrl={newTheme.logo_full_url}
+          logoFullUrlDark={newTheme.logo_full_url_dark}
+          lightBackground={newTheme.nav_background_color_light}
+          lightText={newTheme.nav_text_color_light}
+          darkBackground={newTheme.nav_background_color_dark}
+          darkText={newTheme.nav_text_color_dark}
         />
       </div>
 
@@ -378,26 +432,34 @@
               class="h-14 flex-1 flex items-center px-4"
               style="background-color: {theme.nav_background_color_light}; color: {theme.nav_text_color_light};"
             >
-              <div class="flex items-center space-x-2">
-                {#if theme.logo_url}
+              <div class="flex items-center gap-2 min-w-0">
+                {#if theme.brand_layout === 'full_logo' && theme.logo_full_url}
+                  <img src={theme.logo_full_url} alt="" class="max-h-6 max-w-full object-contain flex-shrink-0" />
+                {:else if theme.logo_url}
                   <img src={theme.logo_url} alt="" class="w-6 h-6 object-contain flex-shrink-0" />
                 {:else}
                   <Palette class="w-4 h-4" />
                 {/if}
-                <span class="font-medium text-sm">{t('settings.lightMode')}</span>
+                {#if theme.brand_layout !== 'full_logo' && theme.brand_layout !== 'mark_only'}
+                  <span class="font-medium text-sm truncate">{brandStore.siteTitle}</span>
+                {/if}
               </div>
             </div>
             <div
               class="h-14 flex-1 flex items-center px-4"
               style="background-color: {theme.nav_background_color_dark}; color: {theme.nav_text_color_dark};"
             >
-              <div class="flex items-center space-x-2">
-                {#if theme.logo_url_dark || theme.logo_url}
+              <div class="flex items-center gap-2 min-w-0">
+                {#if theme.brand_layout === 'full_logo' && (theme.logo_full_url_dark || theme.logo_full_url)}
+                  <img src={theme.logo_full_url_dark || theme.logo_full_url} alt="" class="max-h-6 max-w-full object-contain flex-shrink-0" />
+                {:else if theme.logo_url_dark || theme.logo_url}
                   <img src={theme.logo_url_dark || theme.logo_url} alt="" class="w-6 h-6 object-contain flex-shrink-0" />
                 {:else}
                   <Palette class="w-4 h-4" />
                 {/if}
-                <span class="font-medium text-sm">{t('settings.darkMode')}</span>
+                {#if theme.brand_layout !== 'full_logo' && theme.brand_layout !== 'mark_only'}
+                  <span class="font-medium text-sm truncate">{brandStore.siteTitle}</span>
+                {/if}
               </div>
             </div>
           </div>
@@ -423,6 +485,7 @@
                 <div class="mb-3">
                   <LogoUploader
                     currentLogoUrl={editingTheme.logo_url || null}
+                    accept="image/png,image/jpeg,image/svg+xml,image/gif,image/webp"
                     onUpload={(files) => uploadThemeLogo(files, editingTheme, 'logo_url')}
                     onRemove={() => (editingTheme.logo_url = '')}
                     uploading={uploadingLogo}
@@ -434,12 +497,39 @@
                 <div class="mb-3">
                   <LogoUploader
                     currentLogoUrl={editingTheme.logo_url_dark || null}
+                    accept="image/png,image/jpeg,image/svg+xml,image/gif,image/webp"
                     onUpload={(files) => uploadThemeLogo(files, editingTheme, 'logo_url_dark')}
                     onRemove={() => (editingTheme.logo_url_dark = '')}
                     uploading={uploadingLogo}
                     maxHeight="40px"
                     label={t('lookAndFeel.darkLogo', 'Dark Mode Logo')}
                     helpText={t('lookAndFeel.darkLogoFallback', 'Shown in dark mode. Falls back to the light mode logo when left empty.')}
+                  />
+                </div>
+
+                <div class="mb-3">
+                  <ThemeBrandFields
+                    idPrefix={`theme-edit-${editingTheme.id}`}
+                    bind:brandLayout={editingTheme.brand_layout}
+                    bind:logoFullUrl={editingTheme.logo_full_url}
+                    bind:logoFullUrlDark={editingTheme.logo_full_url_dark}
+                    uploading={uploadingLogo}
+                    onUpload={(files, field) => uploadThemeLogo(files, editingTheme, field)}
+                  />
+                </div>
+
+                <div class="mb-3">
+                  <ThemeLockupPreview
+                    siteTitle={brandStore.siteTitle}
+                    brandLayout={editingTheme.brand_layout}
+                    logoUrl={editingTheme.logo_url}
+                    logoUrlDark={editingTheme.logo_url_dark}
+                    logoFullUrl={editingTheme.logo_full_url}
+                    logoFullUrlDark={editingTheme.logo_full_url_dark}
+                    lightBackground={editingTheme.nav_background_color_light}
+                    lightText={editingTheme.nav_text_color_light}
+                    darkBackground={editingTheme.nav_background_color_dark}
+                    darkText={editingTheme.nav_text_color_dark}
                   />
                 </div>
 
@@ -479,24 +569,25 @@
                   </div>
                 </div>
 
-                <div class="flex justify-end space-x-2 mt-4">
-                  <button
-                    type="button"
+                <div class="flex justify-end items-center gap-2 mt-4">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    icon={X}
                     onclick={cancelEdit}
-                    class="flex items-center space-x-1 px-3 py-1 text-sm rounded transition-colors"
-                    style="color: var(--ds-text-subtle); background-color: var(--ds-surface-secondary);"
+                    dataTestid={`theme-cancel-${editingTheme.id}`}
                   >
-                    <X class="w-3 h-3" />
-                    <span>{t('common.cancel')}</span>
-                  </button>
-                  <button
+                    {t('common.cancel')}
+                  </Button>
+                  <Button
                     type="submit"
-                    class="flex items-center space-x-1 px-3 py-1 text-sm text-white rounded transition-colors"
-                    style="background-color: var(--ds-background-brand); color: white;"
+                    variant="primary"
+                    size="sm"
+                    icon={Check}
+                    dataTestid={`theme-save-${editingTheme.id}`}
                   >
-                    <Check class="w-3 h-3" />
-                    <span>{t('common.save')}</span>
-                  </button>
+                    {t('common.save')}
+                  </Button>
                 </div>
               </form>
             {:else}
@@ -506,10 +597,10 @@
                   <h3 class="text-lg font-semibold flex items-center space-x-2" style="color: var(--ds-text);">
                     <span>{getThemeDisplayValue(theme, 'name')}</span>
                     {#if theme.is_default}
-                      <span class="px-2 py-1 text-xs rounded" style="background-color: var(--ds-surface-secondary); color: var(--ds-text-subtle);">{t('common.default')}</span>
+                      <span class="px-2 py-1 text-xs rounded" style="background-color: var(--ds-background-neutral); color: var(--ds-text-subtle);">{t('common.default')}</span>
                     {/if}
                     {#if theme.is_active}
-                      <span class="px-2 py-1 text-xs rounded" style="background-color: var(--ds-surface-success); color: var(--ds-text-success);">{t('common.active')}</span>
+                      <span class="px-2 py-1 text-xs rounded" style="background-color: var(--ds-success-subtle); color: var(--ds-text-success);">{t('common.active')}</span>
                     {/if}
                   </h3>
                   {#if getThemeDisplayValue(theme, 'description')}
@@ -570,28 +661,28 @@
                   {/if}
 
                   {#if !theme.is_default}
-                    <button
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      icon={Edit}
                       onclick={() => startEdit(theme)}
-                      class="flex items-center space-x-1 px-3 py-1 text-sm rounded transition-colors hover-edit-btn"
-                      style="color: var(--ds-text-subtle); background-color: var(--ds-surface-secondary);"
-                      data-testid={`theme-edit-${theme.id}`}
+                      dataTestid={`theme-edit-${theme.id}`}
                     >
-                      <Edit class="w-3 h-3" />
-                      <span>{t('common.edit')}</span>
-                    </button>
+                      {t('common.edit')}
+                    </Button>
                   {/if}
                 </div>
 
                 {#if !theme.is_default}
-                  <button
+                  <Button
+                    variant="danger-ghost"
+                    size="sm"
+                    icon={Trash2}
                     onclick={() => deleteTheme(theme.id)}
-                    class="flex items-center space-x-1 px-3 py-1 text-sm rounded transition-colors"
-                    style="color: var(--ds-text-danger); background-color: var(--ds-danger-subtle);"
-                    data-testid={`theme-delete-${theme.id}`}
+                    dataTestid={`theme-delete-${theme.id}`}
                   >
-                    <Trash2 class="w-3 h-3" />
-                    <span>{t('common.delete')}</span>
-                  </button>
+                    {t('common.delete')}
+                  </Button>
                 {/if}
               </div>
             {/if}
@@ -612,14 +703,3 @@
     {/if}
   {/if}
 </div>
-
-<style>
-  .theme-manager {
-    max-width: 100%;
-    padding: 0;
-  }
-
-  .hover-edit-btn:hover {
-    background-color: var(--ds-surface-tertiary) !important;
-  }
-</style>

@@ -14,6 +14,7 @@ import (
 	"windshift/internal/cql"
 	"windshift/internal/database"
 	"windshift/internal/models"
+	"windshift/internal/search"
 )
 
 // dbTimeLayouts are the datetime string layouts SQLite may emit when a value
@@ -83,7 +84,11 @@ type ItemFilters struct {
 	ItemIDs                []int  // Multi-value item ID filter
 	TextQuery              string // LIKE search on title/description
 	ItemKeyQuery           string // Workspace key pattern match (e.g. "OK-40")
-	ItemID                 *int   // Filter by specific item ID
+	// SearchQuery is the smart-search form used by the `search` list filter: it
+	// matches title/description text OR a full KEY-NUMBER item key, so a query
+	// like "OK-40" finds the item whether it appears in prose or as a key.
+	SearchQuery string
+	ItemID      *int // Filter by specific item ID
 }
 
 func (f ItemFilters) hasScalarFilters() bool {
@@ -99,7 +104,7 @@ func (f ItemFilters) hasListFilters() bool {
 }
 
 func (f ItemFilters) hasTextFilters() bool {
-	return f.TextQuery != "" || f.ItemKeyQuery != ""
+	return f.TextQuery != "" || f.ItemKeyQuery != "" || f.SearchQuery != ""
 }
 
 func (f ItemFilters) isUnfiltered() bool {
@@ -149,7 +154,14 @@ type itemListCursor struct {
 // shared by item-list and analytics queries so a valid filter cannot succeed
 // in one path and fail in another.
 func ItemListFilterFromClause() string {
-	return `FROM items i
+	return "FROM items i" + ItemListFilterJoins()
+}
+
+// ItemListFilterJoins is the join set a generated QL may reference. The
+// hierarchy read reuses it inside its ranked CTE so a filter that mentions
+// status categories, iterations, or projects resolves there too.
+func ItemListFilterJoins() string {
+	return `
 		JOIN workspaces w ON i.workspace_id = w.id
 		LEFT JOIN item_types it ON i.item_type_id = it.id
 		LEFT JOIN iterations iter ON i.iteration_id = iter.id
@@ -200,9 +212,10 @@ var systemFieldSortColumns = map[string]string{
 
 // unsortableCustomFieldTypes lists custom field types that cannot be meaningfully sorted.
 var unsortableCustomFieldTypes = map[string]bool{
-	"multiselect": true,
-	"multi_user":  true,
-	"linking":     true,
+	"multiselect":     true,
+	"multi_milestone": true,
+	"multi_user":      true,
+	"linking":         true,
 }
 
 // numericCustomFieldSortTypes store scalar numbers or entity/option IDs.
@@ -244,6 +257,38 @@ func (r *ItemRepository) FindAllWithDetailsContext(ctx context.Context, params I
 // query. Cursor mode is deliberately limited to the direct, unfiltered
 // workspace path; collection and filtered lists continue through the same
 // joined page plan and offset semantics as before.
+// itemListSelectClause is the hydrated projection for an item row. List and
+// hierarchy reads share it so their column sets cannot drift.
+func itemListSelectClause(omitDescriptions bool) string {
+	descriptionExpr := "i.description"
+	if omitDescriptions {
+		descriptionExpr = "''"
+	}
+	return fmt.Sprintf(`SELECT
+		i.id, i.workspace_id, i.workspace_item_number, i.item_type_id, i.title, %s, i.status_id, i.priority_id, i.due_date, i.start_date, i.end_date, i.is_task,
+		i.iteration_id, i.project_id, i.inherit_project, i.time_project_id, i.assignee_id, i.creator_id, i.custom_field_values, i.calendar_data, i.parent_id,
+		i.story_points, i.estimate_minutes, i.frac_index, i.created_at, i.updated_at, i.last_active_at,
+		w.name as workspace_name, w.key as workspace_key, it.name as item_type_name, COALESCE(it.builtin_key, '') as item_type_builtin_key, COALESCE(it.icon, '') as item_type_icon, COALESCE(it.color, '') as item_type_color,
+		p.title as parent_title, p.workspace_item_number as parent_workspace_item_number, iter.name as iteration_name, COALESCE(CAST(iter.end_date AS TEXT), '') as iteration_end_date, proj.name as project_name, tp.name as time_project_name,
+		assignee.first_name || ' ' || assignee.last_name as assignee_name, assignee.email as assignee_email, assignee.avatar_url as assignee_avatar,
+		creator.first_name || ' ' || creator.last_name as creator_name, creator.email as creator_email,
+		st.name as status_name, COALESCE(st.builtin_key, '') as status_builtin_key, sc.color as status_color,
+		pri.name as priority_name, COALESCE(pri.builtin_key, '') as priority_builtin_key, pri.icon as priority_icon, pri.color as priority_color,
+		COALESCE(%s, i.created_at) as status_since,
+		i.team_id, i.incident_id, team.name as team_name, team.color as team_color, team.avatar_url as team_avatar
+	`, descriptionExpr, cql.CurrentStatusTransitionAtExpr(""))
+}
+
+// itemListFromClause is the display join set for a hydrated item row.
+func itemListFromClause() string {
+	return ItemListFilterFromClause() + `
+		LEFT JOIN items p ON i.parent_id = p.id
+		LEFT JOIN users assignee ON i.assignee_id = assignee.id
+		LEFT JOIN users creator ON i.creator_id = creator.id
+		LEFT JOIN teams team ON i.team_id = team.id
+	`
+}
+
 func (r *ItemRepository) FindAllWithDetailsPageContext(ctx context.Context, params ItemListParams) (ItemListPage, error) {
 	cursorMode := itemListCursorEligible(params) &&
 		(params.Pagination.CursorMode || params.Pagination.Cursor != "")
@@ -258,30 +303,9 @@ func (r *ItemRepository) FindAllWithDetailsPageContext(ctx context.Context, para
 
 	// Build the SELECT clause. Collection/list surfaces can opt out of the
 	// heavy description payload; detail endpoints still fetch full descriptions.
-	descriptionExpr := "i.description"
-	if params.OmitDescriptions {
-		descriptionExpr = "''"
-	}
-	selectClause := fmt.Sprintf(`SELECT
-		i.id, i.workspace_id, i.workspace_item_number, i.item_type_id, i.title, %s, i.status_id, i.priority_id, i.due_date, i.start_date, i.end_date, i.is_task,
-		i.iteration_id, i.project_id, i.inherit_project, i.time_project_id, i.assignee_id, i.creator_id, i.custom_field_values, i.calendar_data, i.parent_id,
-		i.story_points, i.estimate_minutes, i.frac_index, i.created_at, i.updated_at, i.last_active_at,
-		w.name as workspace_name, w.key as workspace_key, it.name as item_type_name, COALESCE(it.builtin_key, '') as item_type_builtin_key,
-		p.title as parent_title, p.workspace_item_number as parent_workspace_item_number, iter.name as iteration_name, COALESCE(CAST(iter.end_date AS TEXT), '') as iteration_end_date, proj.name as project_name, tp.name as time_project_name,
-		assignee.first_name || ' ' || assignee.last_name as assignee_name, assignee.email as assignee_email, assignee.avatar_url as assignee_avatar,
-		creator.first_name || ' ' || creator.last_name as creator_name, creator.email as creator_email,
-		st.name as status_name, COALESCE(st.builtin_key, '') as status_builtin_key, sc.color as status_color,
-		pri.name as priority_name, COALESCE(pri.builtin_key, '') as priority_builtin_key, pri.icon as priority_icon, pri.color as priority_color,
-		COALESCE(%s, i.created_at) as status_since,
-		i.team_id, i.incident_id, team.name as team_name, team.color as team_color, team.avatar_url as team_avatar
-	`, descriptionExpr, cql.CurrentStatusTransitionAtExpr(""))
+	selectClause := itemListSelectClause(params.OmitDescriptions)
 
-	fromClause := ItemListFilterFromClause() + `
-		LEFT JOIN items p ON i.parent_id = p.id
-		LEFT JOIN users assignee ON i.assignee_id = assignee.id
-		LEFT JOIN users creator ON i.creator_id = creator.id
-		LEFT JOIN teams team ON i.team_id = team.id
-	`
+	fromClause := itemListFromClause()
 
 	whereClause, args := r.buildWhereClause(params)
 
@@ -531,13 +555,32 @@ func itemListCursorWhere(cursor itemListCursor) (where string, args []any, err e
 	return " AND (i.frac_index > ? OR (i.frac_index = ? AND i.id > ?))", []any{cursor.Rank, cursor.Rank, cursor.ID}, nil
 }
 
+// boundedItemListCountLimit caps the filtered, collection, QL and search list
+// count. Those paths run the count over the full filter join set with no bound,
+// so the cost grows with the workspace item count even though the page query
+// beside it is index-bounded. Capping keeps the worst case proportional to the
+// cap instead. The UI already refuses to paginate past 10,000 items and labels
+// the total "(limited to 10,000)" (Pagination.svelte maxItems), so the bound
+// matches the contract the client already assumes.
+const boundedItemListCountLimit = 10000
+
+// boundedItemListCountQuery wraps the filter scan in a LIMIT so the engine can
+// stop after the cap instead of aggregating every matching row. Results below
+// the cap stay exact; results at the cap report the cap.
+func boundedItemListCountQuery(countFromClause, whereClause string) string {
+	return fmt.Sprintf(
+		"SELECT COUNT(*) FROM (SELECT 1 %s%s LIMIT %d) AS bounded_item_count",
+		countFromClause, whereClause, boundedItemListCountLimit,
+	)
+}
+
 func (r *ItemRepository) buildItemListPagePlan(
 	params ItemListParams,
 	countFromClause, whereClause string,
 	args []any,
 ) itemListPagePlan {
 	plan := itemListPagePlan{
-		countQuery:      "SELECT COUNT(*) " + countFromClause + whereClause,
+		countQuery:      boundedItemListCountQuery(countFromClause, whereClause),
 		countArgs:       args,
 		pageFromClause:  countFromClause,
 		pageWhereClause: whereClause,
@@ -610,14 +653,26 @@ func (r *ItemRepository) SearchContext(ctx context.Context, query string, worksp
 
 func itemSearchFilters(query string) ItemFilters {
 	query = strings.TrimSpace(query)
-	// Right-anchor: legacy personal-workspace keys may contain dashes, so the
-	// number is everything after the last one.
-	if lastDash := strings.LastIndex(query, "-"); lastDash > 0 {
-		if num, err := strconv.Atoi(query[lastDash+1:]); err == nil && num > 0 {
-			return ItemFilters{ItemKeyQuery: query}
-		}
+	if _, _, ok := splitItemKeyQuery(query); ok {
+		return ItemFilters{ItemKeyQuery: query}
 	}
 	return ItemFilters{TextQuery: query}
+}
+
+// splitItemKeyQuery parses a KEY-NUMBER reference. The split is right-anchored
+// because legacy personal-workspace keys may contain dashes, so the number is
+// everything after the last one.
+func splitItemKeyQuery(query string) (keyPart string, itemNumber int, ok bool) {
+	query = strings.TrimSpace(query)
+	lastDash := strings.LastIndex(query, "-")
+	if lastDash <= 0 {
+		return "", 0, false
+	}
+	num, err := strconv.Atoi(query[lastDash+1:])
+	if err != nil || num <= 0 {
+		return "", 0, false
+	}
+	return query[:lastDash], num, true
 }
 
 // buildWhereClause constructs the WHERE clause and arguments for item queries
@@ -772,32 +827,39 @@ func (r *ItemRepository) buildWhereClause(params ItemListParams) (whereClause st
 	}
 
 	if params.Filters.TextQuery != "" {
-		whereClause += " AND (LOWER(i.title) LIKE LOWER(?) OR LOWER(i.description) LIKE LOWER(?))"
-		searchPattern := "%" + params.Filters.TextQuery + "%"
-		args = append(args, searchPattern, searchPattern)
+		predicate, predicateArgs := r.itemTextSearchPredicate(params.Filters.TextQuery)
+		whereClause += " AND " + predicate
+		args = append(args, predicateArgs...)
 	}
 
 	if params.Filters.ItemKeyQuery != "" {
-		// Right-anchored KEY-NUMBER split: workspace keys may contain dashes
-		// (legacy personal-workspace keys), so only the number after the last
-		// dash is the item number.
-		query := strings.ToUpper(params.Filters.ItemKeyQuery)
-		if lastDash := strings.LastIndex(query, "-"); lastDash > 0 {
-			if num, err := strconv.Atoi(query[lastDash+1:]); err == nil && num > 0 {
-				keyPart := query[:lastDash]
-				if strings.Contains(keyPart, "-") {
-					// A multi-segment prefix is ambiguous with prose: queries like
-					// "release-2026-09-18" end in digits but are usually text
-					// (WI-1417). Match the key OR the full query as text.
-					whereClause += " AND ((LOWER(w.key) = LOWER(?) AND i.workspace_item_number = ?) OR (LOWER(i.title) LIKE LOWER(?) OR LOWER(i.description) LIKE LOWER(?)))"
-					pattern := "%" + params.Filters.ItemKeyQuery + "%"
-					args = append(args, keyPart, num, pattern, pattern)
-				} else {
-					whereClause += " AND (LOWER(w.key) = LOWER(?) AND i.workspace_item_number = ?)"
-					args = append(args, keyPart, num)
-				}
+		if keyPart, num, ok := splitItemKeyQuery(params.Filters.ItemKeyQuery); ok {
+			if strings.Contains(keyPart, "-") {
+				// A multi-segment prefix is ambiguous with prose: queries like
+				// "release-2026-09-18" end in digits but are usually text
+				// (WI-1417). Match the key OR the full query as text.
+				predicate, predicateArgs := r.itemTextSearchPredicate(params.Filters.ItemKeyQuery)
+				whereClause += " AND ((LOWER(w.key) = LOWER(?) AND i.workspace_item_number = ?) OR " + predicate + ")"
+				args = append(args, keyPart, num)
+				args = append(args, predicateArgs...)
+			} else {
+				whereClause += " AND (LOWER(w.key) = LOWER(?) AND i.workspace_item_number = ?)"
+				args = append(args, keyPart, num)
 			}
 		}
+	}
+
+	// Smart search is additive: text matches keep working, and a query that
+	// resolves to a full item key also matches that item wherever it sits.
+	if params.Filters.SearchQuery != "" {
+		predicate, predicateArgs := r.itemTextSearchPredicate(params.Filters.SearchQuery)
+		args = append(args, predicateArgs...)
+		clause := predicate
+		if keyPart, num, ok := splitItemKeyQuery(params.Filters.SearchQuery); ok {
+			clause = "(" + predicate + " OR (LOWER(w.key) = LOWER(?) AND i.workspace_item_number = ?))"
+			args = append(args, keyPart, num)
+		}
+		whereClause += " AND " + clause
 	}
 
 	if params.Filters.ItemID != nil {
@@ -806,6 +868,42 @@ func (r *ItemRepository) buildWhereClause(params ItemListParams) (whereClause st
 	}
 
 	return whereClause, args
+}
+
+// itemTextSearchPredicate builds the WHERE predicate for a free-text item
+// search. It uses the token-prefix FTS path when the query has usable terms and
+// falls back to the original unindexed LIKE scan for too-short queries, scripts
+// the tokenizer cannot segment, and key-shaped queries.
+func (r *ItemRepository) itemTextSearchPredicate(raw string) (predicate string, args []any) {
+	tokens := search.Tokens(raw)
+	if len(tokens) == 0 || keyShapedQuery(raw) {
+		pattern := "%" + raw + "%"
+		return "(LOWER(i.title) LIKE LOWER(?) OR LOWER(i.description) LIKE LOWER(?))", []any{pattern, pattern}
+	}
+	if database.IsPostgresDriver(r.db.GetDriverName()) {
+		// The tsvector expression must match idx_items_search verbatim.
+		return "to_tsvector('simple', regexp_replace(ws_unaccent(COALESCE(i.title,'') || ' ' || COALESCE(i.description,'')), '[[:space:][:punct:]]+', ' ', 'g')) @@ to_tsquery('simple', ws_unaccent(?))",
+			[]any{search.PostgresTSQuery(tokens)}
+	}
+	return "i.id IN (SELECT rowid FROM items_fts WHERE items_fts MATCH ?)", []any{search.SQLiteMatch(tokens)}
+}
+
+// keyShapedQuery reports whether raw ends in a dash-number segment such as
+// "CR-4" or "release-2026-09-18". The tokenizer drops the short numeric term,
+// which would broaden the match to every item sharing the leading word, so
+// these stay on the LIKE path (WI-1417).
+func keyShapedQuery(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	lastDash := strings.LastIndex(raw, "-")
+	if lastDash < 0 || lastDash == len(raw)-1 {
+		return false
+	}
+	for _, r := range raw[lastDash+1:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // QueueCountQuery is one compiled QL fragment to count in a batched call.
@@ -922,149 +1020,173 @@ func (r *ItemRepository) defaultOrderBy() string {
 	return ` ORDER BY i.frac_index ASC`
 }
 
-// scanItemList scans rows into a slice of items
-func (r *ItemRepository) scanItemList(rows *sql.Rows) ([]models.Item, error) {
-	var items []models.Item
+// scanItemRow scans one hydrated item row, plus any trailing projection
+// columns the caller appended (e.g. hierarchy depth). List and hierarchy reads
+// share it so their column handling cannot drift.
+func scanItemRow(scanner interface{ Scan(dest ...any) error }, extra ...any) (models.Item, error) {
+	var item models.Item
+	var customFieldValuesJSON, calendarDataJSON sql.NullString
+	var itemTypeID, parentID, parentWorkspaceItemNumber, iterationID, projectID, timeProjectID, assigneeID, creatorID, statusID, priorityID sql.NullInt64
+	var dueDate, startDate, endDate sql.NullTime
+	var statusSince sql.NullString
+	var teamID, incidentID sql.NullInt64
+	var itemTypeName, itemTypeBuiltinKey, itemTypeIcon, itemTypeColor, parentTitle, iterationName, iterationEndDate, projectName, timeProjectName sql.NullString
+	var teamName, teamColor, teamAvatar sql.NullString
+	var assigneeName, assigneeEmail, assigneeAvatar, creatorName, creatorEmail, statusName, statusColor sql.NullString
+	var statusBuiltinKey, priorityName, priorityBuiltinKey, priorityIcon, priorityColor sql.NullString
+	var fracIndex sql.NullString
+	var storyPoints sql.NullFloat64
+	var estimateMinutes sql.NullInt64
+	var inheritProject bool
+	// last_active_at can be NULL on rows created before it was consistently
+	// populated, so scan through a nullable and fall back to updated_at.
+	var lastActiveAt sql.NullTime
 
-	for rows.Next() {
-		var item models.Item
-		var customFieldValuesJSON, calendarDataJSON sql.NullString
-		var itemTypeID, parentID, parentWorkspaceItemNumber, iterationID, projectID, timeProjectID, assigneeID, creatorID, statusID, priorityID sql.NullInt64
-		var dueDate, startDate, endDate sql.NullTime
-		var statusSince sql.NullString
-		var teamID, incidentID sql.NullInt64
-		var itemTypeName, itemTypeBuiltinKey, parentTitle, iterationName, iterationEndDate, projectName, timeProjectName sql.NullString
-		var teamName, teamColor, teamAvatar sql.NullString
-		var assigneeName, assigneeEmail, assigneeAvatar, creatorName, creatorEmail, statusName, statusColor sql.NullString
-		var statusBuiltinKey, priorityName, priorityBuiltinKey, priorityIcon, priorityColor sql.NullString
-		var fracIndex sql.NullString
-		var storyPoints sql.NullFloat64
-		var estimateMinutes sql.NullInt64
-		var inheritProject bool
-		// last_active_at can be NULL on rows created before it was consistently
-		// populated, so scan through a nullable and fall back to updated_at.
-		var lastActiveAt sql.NullTime
-
-		err := rows.Scan(
-			&item.ID, &item.WorkspaceID, &item.WorkspaceItemNumber, &itemTypeID, &item.Title, &item.Description,
-			&statusID, &priorityID, &dueDate, &startDate, &endDate, &item.IsTask, &iterationID, &projectID, &inheritProject, &timeProjectID, &assigneeID, &creatorID, &customFieldValuesJSON, &calendarDataJSON, &parentID,
-			&storyPoints, &estimateMinutes, &fracIndex, &item.CreatedAt, &item.UpdatedAt, &lastActiveAt, &item.WorkspaceName, &item.WorkspaceKey, &itemTypeName, &itemTypeBuiltinKey, &parentTitle, &parentWorkspaceItemNumber, &iterationName, &iterationEndDate, &projectName, &timeProjectName,
-			&assigneeName, &assigneeEmail, &assigneeAvatar, &creatorName, &creatorEmail, &statusName, &statusBuiltinKey, &statusColor, &priorityName, &priorityBuiltinKey, &priorityIcon, &priorityColor,
-			&statusSince,
-			&teamID, &incidentID, &teamName, &teamColor, &teamAvatar,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan item: %w", err)
-		}
-
-		if lastActiveAt.Valid {
-			item.LastActiveAt = lastActiveAt.Time
-		} else {
-			item.LastActiveAt = item.UpdatedAt
-		}
-
-		assignNullableInt(&item.ItemTypeID, itemTypeID)
-		assignNullableInt(&item.ParentID, parentID)
-		assignNullableInt(&item.ParentWorkspaceItemNumber, parentWorkspaceItemNumber)
-		assignNullableInt(&item.IterationID, iterationID)
-		assignNullableInt(&item.StatusID, statusID)
-		assignNullableInt(&item.ProjectID, projectID)
-		assignNullableInt(&item.TimeProjectID, timeProjectID)
-		assignNullableInt(&item.PriorityID, priorityID)
-		assignNullableInt(&item.AssigneeID, assigneeID)
-		assignNullableInt(&item.TeamID, teamID)
-		assignNullableInt(&item.IncidentID, incidentID)
-		assignNullableInt(&item.CreatorID, creatorID)
-
-		if dueDate.Valid {
-			item.DueDate = &dueDate.Time
-		}
-		if startDate.Valid {
-			item.StartDate = &startDate.Time
-		}
-		if endDate.Valid {
-			item.EndDate = &endDate.Time
-		}
-		if statusSince.Valid {
-			if t, ok := parseDBTime(statusSince.String); ok {
-				item.StatusSince = &t
-			}
-		}
-		if storyPoints.Valid {
-			item.StoryPoints = &storyPoints.Float64
-		}
-		assignNullableInt(&item.EstimateMinutes, estimateMinutes)
-
-		item.InheritProject = inheritProject
-		assignNullableString(&item.ItemTypeName, itemTypeName)
-		assignNullableString(&item.ItemTypeBuiltinKey, itemTypeBuiltinKey)
-		assignNullableString(&item.ParentTitle, parentTitle)
-		assignNullableString(&item.IterationName, iterationName)
-		assignNullableString(&item.IterationEndDate, iterationEndDate)
-		assignNullableString(&item.StatusName, statusName)
-		assignNullableString(&item.StatusBuiltinKey, statusBuiltinKey)
-		assignNullableString(&item.StatusColor, statusColor)
-		assignNullableString(&item.ProjectName, projectName)
-		assignNullableString(&item.TimeProjectName, timeProjectName)
-		assignNullableString(&item.PriorityName, priorityName)
-		assignNullableString(&item.PriorityBuiltinKey, priorityBuiltinKey)
-		assignNullableString(&item.PriorityIcon, priorityIcon)
-		assignNullableString(&item.PriorityColor, priorityColor)
-		assignNullableString(&item.AssigneeName, assigneeName)
-		assignNullableString(&item.AssigneeEmail, assigneeEmail)
-		assignNullableString(&item.AssigneeAvatar, assigneeAvatar)
-		assignNullableString(&item.CreatorName, creatorName)
-		assignNullableString(&item.CreatorEmail, creatorEmail)
-		assignNullableString(&item.TeamName, teamName)
-		assignNullableString(&item.TeamColor, teamColor)
-		assignNullableString(&item.TeamAvatarURL, teamAvatar)
-
-		if fracIndex.Valid {
-			item.FracIndex = &fracIndex.String
-		}
-
-		if customFieldValuesJSON.Valid && customFieldValuesJSON.String != "" {
-			if err := json.Unmarshal([]byte(customFieldValuesJSON.String), &item.CustomFieldValues); err != nil {
-				item.CustomFieldValues = make(map[string]any)
-			}
-		} else {
-			item.CustomFieldValues = make(map[string]any)
-		}
-
-		if calendarDataJSON.Valid && calendarDataJSON.String != "" {
-			if err := json.Unmarshal([]byte(calendarDataJSON.String), &item.CalendarData); err != nil {
-				item.CalendarData = []models.CalendarScheduleEntry{}
-			}
-		} else {
-			item.CalendarData = []models.CalendarScheduleEntry{}
-		}
-
-		items = append(items, item)
+	dest := make([]any, 0, 57+len(extra))
+	dest = append(dest,
+		&item.ID, &item.WorkspaceID, &item.WorkspaceItemNumber, &itemTypeID, &item.Title, &item.Description,
+		&statusID, &priorityID, &dueDate, &startDate, &endDate, &item.IsTask, &iterationID, &projectID, &inheritProject, &timeProjectID, &assigneeID, &creatorID, &customFieldValuesJSON, &calendarDataJSON, &parentID,
+		&storyPoints, &estimateMinutes, &fracIndex, &item.CreatedAt, &item.UpdatedAt, &lastActiveAt, &item.WorkspaceName, &item.WorkspaceKey, &itemTypeName, &itemTypeBuiltinKey, &itemTypeIcon, &itemTypeColor, &parentTitle, &parentWorkspaceItemNumber, &iterationName, &iterationEndDate, &projectName, &timeProjectName,
+		&assigneeName, &assigneeEmail, &assigneeAvatar, &creatorName, &creatorEmail, &statusName, &statusBuiltinKey, &statusColor, &priorityName, &priorityBuiltinKey, &priorityIcon, &priorityColor,
+		&statusSince,
+		&teamID, &incidentID, &teamName, &teamColor, &teamAvatar,
+	)
+	if err := scanner.Scan(append(dest, extra...)...); err != nil {
+		return models.Item{}, fmt.Errorf("failed to scan item: %w", err)
 	}
 
+	if lastActiveAt.Valid {
+		item.LastActiveAt = lastActiveAt.Time
+	} else {
+		item.LastActiveAt = item.UpdatedAt
+	}
+
+	assignNullableInt(&item.ItemTypeID, itemTypeID)
+	assignNullableInt(&item.ParentID, parentID)
+	assignNullableInt(&item.ParentWorkspaceItemNumber, parentWorkspaceItemNumber)
+	assignNullableInt(&item.IterationID, iterationID)
+	assignNullableInt(&item.StatusID, statusID)
+	assignNullableInt(&item.ProjectID, projectID)
+	assignNullableInt(&item.TimeProjectID, timeProjectID)
+	assignNullableInt(&item.PriorityID, priorityID)
+	assignNullableInt(&item.AssigneeID, assigneeID)
+	assignNullableInt(&item.TeamID, teamID)
+	assignNullableInt(&item.IncidentID, incidentID)
+	assignNullableInt(&item.CreatorID, creatorID)
+
+	if dueDate.Valid {
+		item.DueDate = &dueDate.Time
+	}
+	if startDate.Valid {
+		item.StartDate = &startDate.Time
+	}
+	if endDate.Valid {
+		item.EndDate = &endDate.Time
+	}
+	if statusSince.Valid {
+		if t, ok := parseDBTime(statusSince.String); ok {
+			item.StatusSince = &t
+		}
+	}
+	if storyPoints.Valid {
+		item.StoryPoints = &storyPoints.Float64
+	}
+	assignNullableInt(&item.EstimateMinutes, estimateMinutes)
+
+	item.InheritProject = inheritProject
+	assignNullableString(&item.ItemTypeName, itemTypeName)
+	assignNullableString(&item.ItemTypeBuiltinKey, itemTypeBuiltinKey)
+	assignNullableString(&item.ItemTypeIcon, itemTypeIcon)
+	assignNullableString(&item.ItemTypeColor, itemTypeColor)
+	assignNullableString(&item.ParentTitle, parentTitle)
+	assignNullableString(&item.IterationName, iterationName)
+	assignNullableString(&item.IterationEndDate, iterationEndDate)
+	assignNullableString(&item.StatusName, statusName)
+	assignNullableString(&item.StatusBuiltinKey, statusBuiltinKey)
+	assignNullableString(&item.StatusColor, statusColor)
+	assignNullableString(&item.ProjectName, projectName)
+	assignNullableString(&item.TimeProjectName, timeProjectName)
+	assignNullableString(&item.PriorityName, priorityName)
+	assignNullableString(&item.PriorityBuiltinKey, priorityBuiltinKey)
+	assignNullableString(&item.PriorityIcon, priorityIcon)
+	assignNullableString(&item.PriorityColor, priorityColor)
+	assignNullableString(&item.AssigneeName, assigneeName)
+	assignNullableString(&item.AssigneeEmail, assigneeEmail)
+	assignNullableString(&item.AssigneeAvatar, assigneeAvatar)
+	assignNullableString(&item.CreatorName, creatorName)
+	assignNullableString(&item.CreatorEmail, creatorEmail)
+	assignNullableString(&item.TeamName, teamName)
+	assignNullableString(&item.TeamColor, teamColor)
+	assignNullableString(&item.TeamAvatarURL, teamAvatar)
+
+	if fracIndex.Valid {
+		item.FracIndex = &fracIndex.String
+	}
+
+	if customFieldValuesJSON.Valid && customFieldValuesJSON.String != "" {
+		if err := json.Unmarshal([]byte(customFieldValuesJSON.String), &item.CustomFieldValues); err != nil {
+			item.CustomFieldValues = make(map[string]any)
+		}
+	} else {
+		item.CustomFieldValues = make(map[string]any)
+	}
+
+	if calendarDataJSON.Valid && calendarDataJSON.String != "" {
+		if err := json.Unmarshal([]byte(calendarDataJSON.String), &item.CalendarData); err != nil {
+			item.CalendarData = []models.CalendarScheduleEntry{}
+		}
+	} else {
+		item.CalendarData = []models.CalendarScheduleEntry{}
+	}
+
+	return item, nil
+}
+
+// scanItemList scans rows into a slice of items.
+func (r *ItemRepository) scanItemList(rows *sql.Rows) ([]models.Item, error) {
+	var items []models.Item
+	for rows.Next() {
+		item, err := scanItemRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
 	if items == nil {
 		items = []models.Item{}
 	}
-
 	return items, nil
 }
 
 // GetBacklogStatusIDs returns status IDs for backlog items.
-// It first checks board_configurations for the workspace, then falls back to non-completed statuses.
-func (r *ItemRepository) GetBacklogStatusIDs(workspaceID int) ([]int, error) {
-	return r.GetBacklogStatusIDsContext(context.Background(), workspaceID)
+// It first checks board_configurations for the collection or workspace, then
+// falls back to the global non-completed statuses.
+func (r *ItemRepository) GetBacklogStatusIDs(workspaceID, collectionID int) ([]int, error) {
+	return r.GetBacklogStatusIDsContext(context.Background(), workspaceID, collectionID)
 }
 
 // GetBacklogStatusIDsContext is the request-aware form of GetBacklogStatusIDs.
-func (r *ItemRepository) GetBacklogStatusIDsContext(ctx context.Context, workspaceID int) ([]int, error) {
-	// First, check if there's a board configuration with backlog_status_ids
-	if workspaceID > 0 {
+// A collection-scoped board configuration owns that collection's backlog
+// statuses; a request without a collection uses the workspace default. When
+// neither is configured, the global non-completed, non-default statuses apply.
+func (r *ItemRepository) GetBacklogStatusIDsContext(ctx context.Context, workspaceID, collectionID int) ([]int, error) {
+	scopeColumn, scopeID := "", 0
+	if collectionID > 0 {
+		scopeColumn, scopeID = "collection_id", collectionID
+	} else if workspaceID > 0 {
+		scopeColumn, scopeID = "workspace_id", workspaceID
+	}
+	if scopeID > 0 {
 		var backlogStatusIDsJSON sql.NullString
 		err := r.db.QueryRowContext(ctx, `
 			SELECT backlog_status_ids
 			FROM board_configurations
-			WHERE workspace_id = ?`, workspaceID).Scan(&backlogStatusIDsJSON)
-
+			WHERE `+scopeColumn+` = ?
+			ORDER BY id
+			LIMIT 1`, scopeID).Scan(&backlogStatusIDsJSON)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("failed to load backlog configuration: %w", err)
+		}
 		if err == nil && backlogStatusIDsJSON.Valid && backlogStatusIDsJSON.String != "" {
 			var statusIDs []int
 			if err := json.Unmarshal([]byte(backlogStatusIDsJSON.String), &statusIDs); err != nil {

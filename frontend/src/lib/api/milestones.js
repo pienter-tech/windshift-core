@@ -1,4 +1,4 @@
-import { fetchAllV2Pages, fetchAPIV2, fetchV2Data } from './core.js';
+import { fetchAllV2Pages, fetchV2Data } from './core.js';
 import { createCrudClient } from './createCrudClient.js';
 
 export const milestoneCategories = createCrudClient('/milestone-categories');
@@ -80,9 +80,18 @@ export const milestones = {
       headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
       body: JSON.stringify(data),
     }),
-  // Milestone comments (WCORE-20): oldest first, author-only edit/delete.
-  // They send no notifications and are separate from item comments.
-  getComments: (id) => fetchAllV2Pages(`/milestones/${id}/comments`),
+  // Milestone comments: author-only edit/delete, no notifications, and a
+  // separate table from item comments. The list pages like the item comment
+  // feed: newest first, and `cursor` takes the previous response's next_cursor
+  // to read older comments. Resolves to
+  // { comments, next_cursor, refresh_cursor, has_more, total }.
+  getComments: (id, params = {}) => {
+    const searchParams = new URLSearchParams();
+    if (params.limit) searchParams.set('page_size', params.limit);
+    if (params.cursor) searchParams.set('cursor', params.cursor);
+    const query = searchParams.toString();
+    return fetchV2Data(`/milestones/${id}/comments${query ? `?${query}` : ''}`);
+  },
   createComment: (id, content) =>
     fetchV2Data(`/milestones/${id}/comments`, {
       method: 'POST',
@@ -96,7 +105,7 @@ export const milestones = {
     }),
   deleteComment: (id, commentId) =>
     fetchV2Data(`/milestones/${id}/comments/${commentId}`, { method: 'DELETE' }),
-  // Page links (WCORE-19): workspace milestones only; pages come from the
+  // Page links: workspace milestones only; pages come from the
   // milestone's own workspace. Global milestones always list no links.
   getPageLinks: (id) => fetchV2Data(`/milestones/${id}/page-links`),
   linkPage: (id, pageId) =>
@@ -106,17 +115,14 @@ export const milestones = {
     }),
   unlinkPage: (id, linkId) =>
     fetchV2Data(`/milestones/${id}/page-links/${linkId}`, { method: 'DELETE' }),
-  // Activity feed (WCORE-21): one page of the shared feed, newest first.
-  // Resolves to { entries, page, totalPages, totalItems }.
+  // Activity feed: one page of the shared feed, newest first.
+  // Resolves to { entries, hasMore }; the feed has no total.
   getActivity: async (id, { page = 1, pageSize = 50 } = {}) => {
     const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
-    const document = await fetchAPIV2(`/milestones/${id}/activity?${params}`);
-    const pagination = document?.pagination ?? {};
+    const feed = await fetchV2Data(`/milestones/${id}/activity?${params}`);
     return {
-      entries: document?.data ?? [],
-      page: pagination.page ?? page,
-      totalPages: pagination.total_pages ?? 0,
-      totalItems: pagination.total_items ?? 0,
+      entries: feed?.entries ?? [],
+      hasMore: feed?.has_more === true,
     };
   },
   reorder: (scope, orderedIds) => {

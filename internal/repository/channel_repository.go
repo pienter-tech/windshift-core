@@ -19,6 +19,10 @@ type ChannelRepository struct {
 	db database.Database
 }
 
+// DB exposes the underlying database for handlers that need adjacent
+// repositories (e.g. channel intakes) without a second connection.
+func (r *ChannelRepository) DB() database.Database { return r.db }
+
 // NewChannelRepository creates a new channel repository
 func NewChannelRepository(db database.Database) *ChannelRepository {
 	return &ChannelRepository{db: db}
@@ -399,6 +403,15 @@ func (r *ChannelRepository) Delete(ctx context.Context, tx database.Tx, id int) 
 		return ErrNotFound
 	}
 
+	// A deleted portal leaves no target for the mailboxes that fed it. Remove
+	// those intakes so the scheduler stops polling folders that can only fail.
+	if _, err := tx.Exec(
+		`DELETE FROM intakes WHERE portal_channel_id = ?`,
+		id,
+	); err != nil {
+		return fmt.Errorf("failed to delete intakes targeting channel %d: %w", id, err)
+	}
+
 	return nil
 }
 
@@ -735,7 +748,7 @@ func (r *ChannelRepository) scanChannel(rows *sql.Rows) (*models.Channel, error)
 	}
 
 	// Scrub sensitive data from config
-	channel.Config = ScrubChannelConfig(channel.Config)
+	ScrubChannelForResponse(&channel)
 
 	return &channel, nil
 }
@@ -763,7 +776,7 @@ func (r *ChannelRepository) scanChannelRow(row *sql.Row) (*models.Channel, error
 	}
 
 	// Scrub sensitive data from config
-	channel.Config = ScrubChannelConfig(channel.Config)
+	ScrubChannelForResponse(&channel)
 
 	return &channel, nil
 }
@@ -806,6 +819,9 @@ type ChannelDeleteImpact struct {
 	PortalMagicLinks       int `json:"portal_magic_links"`
 	PortalSessions         int `json:"portal_sessions"`
 	Items                  int `json:"items"`
+	// IntakeTargets counts intakes that feed this channel as a portal target.
+	// They are removed by the delete so they do not outlive their target.
+	IntakeTargets int `json:"intake_targets"`
 }
 
 // GetDeleteImpact gathers row counts for the cascading-or-orphaning tables
@@ -848,6 +864,16 @@ func (r *ChannelRepository) GetDeleteImpact(ctx context.Context, channelID int) 
 		}
 		*item.target = value
 	}
+
+	// Intakes link to a portal by portal_channel_id rather than channel_id, so
+	// count them separately.
+	var intakeTargets int
+	if err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM intakes WHERE portal_channel_id = ?
+	`, channelID).Scan(&intakeTargets); err != nil {
+		return ChannelDeleteImpact{}, fmt.Errorf("count intakes targeting channel %d: %w", channelID, err)
+	}
+	out.IntakeTargets = intakeTargets
 	return out, nil
 }
 
@@ -873,8 +899,12 @@ type ChannelRequestTypeRoute struct {
 // including legacy NULL workspace routes that resolve to the channel's first
 // configured workspace at runtime.
 func (r *ChannelRepository) ListRequestTypeRoutes(channelID int) ([]ChannelRequestTypeRoute, error) {
+	// The system Email request type's workspace is advisory (email intakes route
+	// by their own workspace), so it must not block a portal from dropping a
+	// workspace the intake links can still be re-pointed away from.
 	rows, err := r.db.Query(
-		`SELECT id, name, item_type_id, workspace_id FROM request_types WHERE channel_id = ?`,
+		`SELECT id, name, item_type_id, workspace_id FROM request_types
+		 WHERE channel_id = ? AND COALESCE(kind, '') <> 'email'`,
 		channelID,
 	)
 	if err != nil {
@@ -1176,6 +1206,97 @@ func (r *ChannelRepository) CountRateLimitedEmails(ctx context.Context, channelI
 	return total, nil
 }
 
+// SystemMailRow is a machine-generated inbound message that intake
+// deliberately did not turn into a ticket (bounce or auto-reply).
+type SystemMailRow struct {
+	ID          int       `json:"id"`
+	ChannelID   int       `json:"channel_id"`
+	ChannelName string    `json:"channel_name"`
+	IntakeID    *int      `json:"intake_id,omitempty"`
+	FromEmail   string    `json:"from_email"`
+	FromName    string    `json:"from_name"`
+	Subject     string    `json:"subject"`
+	Category    string    `json:"category"`
+	ProcessedAt time.Time `json:"processed_at"`
+}
+
+// SystemMailCategoryCount is one bucket in the system-mail summary.
+type SystemMailCategoryCount struct {
+	Category string `json:"category"`
+	Count    int    `json:"count"`
+}
+
+// ListSystemMail returns the most recent skipped system-mail rows across all
+// email channels, newest first. Rows are joined with the mailbox name so the
+// admin diagnostics view can show where the message arrived.
+func (r *ChannelRepository) ListSystemMail(ctx context.Context, since time.Time, limit int) ([]SystemMailRow, error) {
+	if limit < 1 {
+		limit = 25
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT emt.id, emt.channel_id, c.name, emt.intake_id, emt.from_email,
+		       COALESCE(emt.from_name, ''), COALESCE(emt.subject, ''),
+		       emt.skipped_reason, emt.processed_at
+		FROM email_message_tracking emt
+		JOIN channels c ON c.id = emt.channel_id
+		WHERE emt.skipped_reason IS NOT NULL AND emt.processed_at >= ?
+		ORDER BY emt.processed_at DESC
+		LIMIT ?
+	`, since, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list skipped system mail: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make([]SystemMailRow, 0, limit)
+	for rows.Next() {
+		var row SystemMailRow
+		var intakeID sql.NullInt64
+		if err := rows.Scan(&row.ID, &row.ChannelID, &row.ChannelName, &intakeID, &row.FromEmail,
+			&row.FromName, &row.Subject, &row.Category, &row.ProcessedAt); err != nil {
+			return nil, fmt.Errorf("scan skipped system mail row: %w", err)
+		}
+		if intakeID.Valid {
+			v := int(intakeID.Int64)
+			row.IntakeID = &v
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate skipped system mail rows: %w", err)
+	}
+	return out, nil
+}
+
+// CountSystemMailByCategory aggregates skipped system-mail rows per category
+// for the given window, ordered by descending count.
+func (r *ChannelRepository) CountSystemMailByCategory(ctx context.Context, since time.Time) ([]SystemMailCategoryCount, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT skipped_reason, COUNT(*)
+		FROM email_message_tracking
+		WHERE skipped_reason IS NOT NULL AND processed_at >= ?
+		GROUP BY skipped_reason
+		ORDER BY COUNT(*) DESC
+	`, since)
+	if err != nil {
+		return nil, fmt.Errorf("count skipped system mail by category: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make([]SystemMailCategoryCount, 0, 4)
+	for rows.Next() {
+		var count SystemMailCategoryCount
+		if err := rows.Scan(&count.Category, &count.Count); err != nil {
+			return nil, fmt.Errorf("scan skipped system mail count: %w", err)
+		}
+		out = append(out, count)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate skipped system mail counts: %w", err)
+	}
+	return out, nil
+}
+
 // GetEarliestRateLimitedUID returns the lowest IMAP UID among rate-limited
 // messages recorded in the given UIDVALIDITY epoch. ok is false when there is
 // nothing to requeue. UIDs from older epochs are ignored: they are meaningless
@@ -1184,10 +1305,27 @@ func (r *ChannelRepository) GetEarliestRateLimitedUID(ctx context.Context, chann
 	var minUID sql.NullInt64
 	err = r.db.QueryRowContext(ctx, `
 		SELECT MIN(uid) FROM email_message_tracking
-		WHERE channel_id = ? AND rate_limited_at IS NOT NULL AND uid_validity = ? AND uid > 0
+		WHERE channel_id = ? AND intake_id IS NULL AND rate_limited_at IS NOT NULL AND uid_validity = ? AND uid > 0
 	`, channelID, int64(uidValidity)).Scan(&minUID)
 	if err != nil {
 		return 0, false, fmt.Errorf("find earliest rate-limited email for channel %d: %w", channelID, err)
+	}
+	if !minUID.Valid {
+		return 0, false, nil
+	}
+	return int(minUID.Int64), true, nil
+}
+
+// GetEarliestRateLimitedUIDForIntake is the per-intake equivalent of
+// GetEarliestRateLimitedUID: it looks only at rows this intake ingested.
+func (r *ChannelRepository) GetEarliestRateLimitedUIDForIntake(ctx context.Context, intakeID int, uidValidity uint32) (uid int, ok bool, err error) {
+	var minUID sql.NullInt64
+	err = r.db.QueryRowContext(ctx, `
+		SELECT MIN(uid) FROM email_message_tracking
+		WHERE intake_id = ? AND rate_limited_at IS NOT NULL AND uid_validity = ? AND uid > 0
+	`, intakeID, int64(uidValidity)).Scan(&minUID)
+	if err != nil {
+		return 0, false, fmt.Errorf("find earliest rate-limited email for intake %d: %w", intakeID, err)
 	}
 	if !minUID.Valid {
 		return 0, false, nil
@@ -1206,7 +1344,7 @@ func (r *ChannelRepository) RequeueRateLimitedClaims(ctx context.Context, channe
 	res, err := r.db.ExecWriteContext(ctx, `
 		UPDATE email_message_tracking
 		SET processed_at = ?
-		WHERE channel_id = ? AND rate_limited_at IS NOT NULL AND uid_validity = ? AND uid > 0
+		WHERE channel_id = ? AND intake_id IS NULL AND rate_limited_at IS NOT NULL AND uid_validity = ? AND uid > 0
 		  AND item_id IS NULL AND comment_id IS NULL
 	`, time.Unix(0, 0).UTC(), channelID, int64(uidValidity))
 	if err != nil {
@@ -1215,6 +1353,25 @@ func (r *ChannelRepository) RequeueRateLimitedClaims(ctx context.Context, channe
 	count, err := res.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("count reset rate-limited claims for channel %d: %w", channelID, err)
+	}
+	return int(count), nil
+}
+
+// RequeueRateLimitedClaimsForIntake is the per-intake equivalent of
+// RequeueRateLimitedClaims.
+func (r *ChannelRepository) RequeueRateLimitedClaimsForIntake(ctx context.Context, intakeID int, uidValidity uint32) (int, error) {
+	res, err := r.db.ExecWriteContext(ctx, `
+		UPDATE email_message_tracking
+		SET processed_at = ?
+		WHERE intake_id = ? AND rate_limited_at IS NOT NULL AND uid_validity = ? AND uid > 0
+		  AND item_id IS NULL AND comment_id IS NULL
+	`, time.Unix(0, 0).UTC(), intakeID, int64(uidValidity))
+	if err != nil {
+		return 0, fmt.Errorf("reset rate-limited claims for intake %d: %w", intakeID, err)
+	}
+	count, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count reset rate-limited claims for intake %d: %w", intakeID, err)
 	}
 	return int(count), nil
 }
@@ -1238,6 +1395,23 @@ func (r *ChannelRepository) ResetEmailWatermarkToUID(ctx context.Context, channe
 	return nil
 }
 
+// ResetIntakeWatermarkToUID rewinds one intake's per-folder watermark and
+// clears its poison tracker.
+func (r *ChannelRepository) ResetIntakeWatermarkToUID(ctx context.Context, intakeID, lastUID int) error {
+	if lastUID < 0 {
+		lastUID = 0
+	}
+	if _, err := r.db.ExecWriteContext(ctx, `
+		UPDATE email_intake_state
+		SET last_uid = ?, failed_message_uid = 0, failed_message_uid_validity = 0,
+		    failed_message_count = 0, updated_at = CURRENT_TIMESTAMP
+		WHERE intake_id = ?
+	`, lastUID, intakeID); err != nil {
+		return fmt.Errorf("rewind email watermark for intake %d: %w", intakeID, err)
+	}
+	return nil
+}
+
 // EmailReplyOutboxStatus narrows the reply-outbox listing. The zero value
 // lists everything the operator can still act on.
 type EmailReplyOutboxStatus string
@@ -1253,7 +1427,8 @@ const (
 // channel UI renders it. Bodies are deliberately excluded — the queue shows
 // envelope metadata and delivery state, never message content.
 type EmailReplyOutboxRow struct {
-	CommentID     int
+	ID            int
+	CommentID     sql.NullInt64
 	ItemID        int
 	ToEmail       string
 	ToName        string
@@ -1305,7 +1480,7 @@ func (r *ChannelRepository) ListEmailReplies(ctx context.Context, channelID int,
 	}
 
 	rows, err := r.db.QueryContext(ctx,
-		"SELECT eo.comment_id, eo.item_id, eo.to_email, eo.to_name, eo.subject, eo.attempt_count, eo.next_attempt_at, eo.last_error, eo.delivered_at, eo.discarded_at, eo.created_at, i.workspace_id, w.key "+
+		"SELECT eo.id, eo.comment_id, eo.item_id, eo.to_email, eo.to_name, eo.subject, eo.attempt_count, eo.next_attempt_at, eo.last_error, eo.delivered_at, eo.discarded_at, eo.created_at, i.workspace_id, w.key "+
 			"FROM email_reply_outbox eo "+
 			"LEFT JOIN items i ON eo.item_id = i.id "+
 			"LEFT JOIN workspaces w ON i.workspace_id = w.id "+
@@ -1323,7 +1498,7 @@ func (r *ChannelRepository) ListEmailReplies(ctx context.Context, channelID int,
 		var row EmailReplyOutboxRow
 		var workspaceID sql.NullInt64
 		var workspaceKey sql.NullString
-		if err := rows.Scan(&row.CommentID, &row.ItemID, &row.ToEmail, &row.ToName, &row.Subject, &row.AttemptCount,
+		if err := rows.Scan(&row.ID, &row.CommentID, &row.ItemID, &row.ToEmail, &row.ToName, &row.Subject, &row.AttemptCount,
 			&row.NextAttemptAt, &row.LastError, &row.DeliveredAt, &row.DiscardedAt, &row.CreatedAt, &workspaceID, &workspaceKey); err != nil {
 			return nil, fmt.Errorf("scan email_reply_outbox row: %w", err)
 		}
@@ -1357,20 +1532,35 @@ const (
 	EmailReplySending
 )
 
-// DiscardEmailReply marks a pending outbound reply as never-send. A live
-// delivery lease reports EmailReplySending instead of pretending the mail
-// was canceled; delivered, already-discarded, and missing rows report
-// EmailReplyNotDiscardable.
+// DiscardEmailReply marks every pending outbound reply for a comment as
+// never-send. A live delivery lease reports EmailReplySending instead of
+// pretending the mail was canceled; delivered, already-discarded, and missing
+// rows report EmailReplyNotDiscardable.
 func (r *ChannelRepository) DiscardEmailReply(ctx context.Context, channelID, commentID int) (EmailReplyDiscardOutcome, error) {
+	return r.discardEmailReply(ctx, "channel_id = ? AND comment_id = ?", channelID, commentID)
+}
+
+// DiscardEmailReplyByID marks one pending outbox row as never-send. Unlike the
+// comment-scoped discard this targets a single row, so an intake receipt (which
+// has no comment_id) can be canceled too.
+func (r *ChannelRepository) DiscardEmailReplyByID(ctx context.Context, channelID, replyID int) (EmailReplyDiscardOutcome, error) {
+	return r.discardEmailReply(ctx, "id = ? AND channel_id = ?", replyID, channelID)
+}
+
+// discardEmailReply applies the never-send marker to the rows matched by where
+// and classifies a refusal so the API can distinguish an in-flight send from a
+// terminal or missing row. where is one of the fixed clauses above, never user
+// input.
+func (r *ChannelRepository) discardEmailReply(ctx context.Context, where string, args ...any) (EmailReplyDiscardOutcome, error) {
 	res, err := r.db.ExecWriteContext(ctx, `
 		UPDATE email_reply_outbox
 		SET discarded_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-		WHERE channel_id = ? AND comment_id = ?
+		WHERE `+where+`
 		  AND delivered_at IS NULL AND discarded_at IS NULL
 		  AND (lease_owner IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP)
-	`, channelID, commentID)
+	`, args...)
 	if err != nil {
-		return EmailReplyNotDiscardable, fmt.Errorf("discard email_reply_outbox row %d: %w", commentID, err)
+		return EmailReplyNotDiscardable, fmt.Errorf("discard email_reply_outbox rows: %w", err)
 	}
 	rows, err := res.RowsAffected()
 	if err != nil {
@@ -1385,18 +1575,56 @@ func (r *ChannelRepository) DiscardEmailReply(ctx context.Context, channelID, co
 	var delivered, discarded, lease sql.NullTime
 	err = r.db.QueryRowContext(ctx, `
 		SELECT delivered_at, discarded_at, next_attempt_at FROM email_reply_outbox
-		WHERE channel_id = ? AND comment_id = ?
-	`, channelID, commentID).Scan(&delivered, &discarded, &lease)
+		WHERE `+where+`
+	`, args...).Scan(&delivered, &discarded, &lease)
 	if errors.Is(err, sql.ErrNoRows) {
 		return EmailReplyNotDiscardable, nil
 	}
 	if err != nil {
-		return EmailReplyNotDiscardable, fmt.Errorf("load email_reply_outbox row %d: %w", commentID, err)
+		return EmailReplyNotDiscardable, fmt.Errorf("load email_reply_outbox row: %w", err)
 	}
 	if !delivered.Valid && !discarded.Valid && lease.Valid && lease.Time.After(time.Now()) {
 		return EmailReplySending, nil
 	}
 	return EmailReplyNotDiscardable, nil
+}
+
+// CountDiscardableEmailReplies returns how many rows the bulk discard would
+// cancel: pending rows that no worker is currently delivering.
+func (r *ChannelRepository) CountDiscardableEmailReplies(ctx context.Context, channelID int) (int, error) {
+	var total int
+	if err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM email_reply_outbox
+		WHERE channel_id = ?
+		  AND delivered_at IS NULL AND discarded_at IS NULL
+		  AND (lease_owner IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP)
+	`, channelID).Scan(&total); err != nil {
+		return 0, fmt.Errorf("count discardable email_reply_outbox rows: %w", err)
+	}
+	return total, nil
+}
+
+// DiscardPendingEmailReplies marks every pending outbound reply for a channel
+// as never-send in one statement. It is the recovery action after an import or
+// any other event queued a burst of customer mail. Rows a worker is actively
+// delivering keep their lease and are left alone, so an in-flight SMTP send is
+// never misreported as canceled. Returns how many rows were discarded.
+func (r *ChannelRepository) DiscardPendingEmailReplies(ctx context.Context, channelID int) (int64, error) {
+	res, err := r.db.ExecWriteContext(ctx, `
+		UPDATE email_reply_outbox
+		SET discarded_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+		WHERE channel_id = ?
+		  AND delivered_at IS NULL AND discarded_at IS NULL
+		  AND (lease_owner IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP)
+	`, channelID)
+	if err != nil {
+		return 0, fmt.Errorf("discard pending email_reply_outbox rows: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count discarded email_reply_outbox rows: %w", err)
+	}
+	return rows, nil
 }
 
 // CreateOAuthState records an in-flight OAuth state for a channel-level
@@ -1443,6 +1671,28 @@ func (r *ChannelRepository) ConsumeOAuthState(ctx context.Context, state string,
 		return 0, 0, 0, false, err
 	}
 	return row.ProviderID, row.ChannelID, row.UserID, row.RestoreChannelEnabled, nil
+}
+
+// ScrubChannelForResponse strips stored credentials from a channel's config
+// and records which ones existed, so read responses can advertise a saved
+// secret without ever revealing it.
+func ScrubChannelForResponse(channel *models.Channel) {
+	channel.HasEmailOAuthClientSecret = channelConfigHasSecret(channel.Config, "email_oauth_client_secret")
+	channel.Config = ScrubChannelConfig(channel.Config)
+}
+
+// channelConfigHasSecret reports whether a stored config holds a non-empty
+// string under key.
+func channelConfigHasSecret(configJSON, key string) bool {
+	if configJSON == "" {
+		return false
+	}
+	var config map[string]any
+	if err := json.Unmarshal([]byte(configJSON), &config); err != nil || config == nil {
+		return false
+	}
+	secret, _ := config[key].(string)
+	return secret != ""
 }
 
 // ScrubChannelConfig removes sensitive fields from the configuration JSON

@@ -192,7 +192,7 @@ func TestMilestoneActivityFeedSourcesOrderAndVisibility(t *testing.T) {
 	}
 
 	service := f.service(pages)
-	entries, total, err := service.List(activityViewer, f.milestone, MilestoneActivityListParams{Limit: 50})
+	entries, hasMore, err := service.List(activityViewer, f.milestone, MilestoneActivityListParams{Limit: 50})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,8 +213,8 @@ func TestMilestoneActivityFeedSourcesOrderAndVisibility(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("feed:\n got %v\nwant %v", got, want)
 	}
-	if total != len(want) {
-		t.Fatalf("total = %d, want %d", total, len(want))
+	if hasMore {
+		t.Fatal("hasMore = true on the only page")
 	}
 
 	byType := map[string]models.MilestoneActivity{}
@@ -261,12 +261,12 @@ func TestMilestoneActivityFeedSourcesOrderAndVisibility(t *testing.T) {
 	}
 
 	// A viewer with access to SEC also sees its item's events.
-	all, allTotal, err := service.List(activityAllSeer, f.milestone, MilestoneActivityListParams{Limit: 50})
+	all, allHasMore, err := service.List(activityAllSeer, f.milestone, MilestoneActivityListParams{Limit: 50})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if allTotal != len(want)+2 || len(all) != len(want)+2 {
-		t.Fatalf("full-access feed has %d/%d entries, want %d", len(all), allTotal, len(want)+2)
+	if allHasMore || len(all) != len(want)+2 {
+		t.Fatalf("full-access feed has %d entries (hasMore %v), want %d", len(all), allHasMore, len(want)+2)
 	}
 	gotAll := activityTypes(all)
 	if gotAll[6] != models.MilestoneActivityItemCommentAdded+" SEC-1" || gotAll[8] != models.MilestoneActivityItemAdded+" SEC-1" {
@@ -274,12 +274,29 @@ func TestMilestoneActivityFeedSourcesOrderAndVisibility(t *testing.T) {
 	}
 
 	// Paging slices the same ordering.
-	page2, pageTotal, err := service.List(activityViewer, f.milestone, MilestoneActivityListParams{Limit: 4, Offset: 4})
+	page2, page2HasMore, err := service.List(activityViewer, f.milestone, MilestoneActivityListParams{Limit: 4, Offset: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pageTotal != len(want) || !reflect.DeepEqual(activityTypes(page2), want[4:8]) {
-		t.Fatalf("page 2: got %v (total %d), want %v", activityTypes(page2), pageTotal, want[4:8])
+	if !page2HasMore || !reflect.DeepEqual(activityTypes(page2), want[4:8]) {
+		t.Fatalf("page 2: got %v (hasMore %v), want %v", activityTypes(page2), page2HasMore, want[4:8])
+	}
+	page3, page3HasMore, err := service.List(activityViewer, f.milestone, MilestoneActivityListParams{Limit: 4, Offset: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page3HasMore || !reflect.DeepEqual(activityTypes(page3), want[8:]) {
+		t.Fatalf("last page: got %v (hasMore %v), want %v", activityTypes(page3), page3HasMore, want[8:])
+	}
+	// A page that ends exactly at the last entry has nothing after it.
+	exact, exactHasMore, err := service.List(activityViewer, f.milestone, MilestoneActivityListParams{Limit: len(want)})
+	if err != nil || exactHasMore || len(exact) != len(want) {
+		t.Fatalf("exact page: %d entries, hasMore %v, err %v", len(exact), exactHasMore, err)
+	}
+	// The entry after the page is a linked page, which the store does not read.
+	short, shortHasMore, err := service.List(activityViewer, f.milestone, MilestoneActivityListParams{Limit: 3})
+	if err != nil || !shortHasMore || !reflect.DeepEqual(activityTypes(short), want[:3]) {
+		t.Fatalf("first page: got %v (hasMore %v, err %v), want %v", activityTypes(short), shortHasMore, err, want[:3])
 	}
 	beyond, _, err := service.List(activityViewer, f.milestone, MilestoneActivityListParams{Limit: 4, Offset: 40})
 	if err != nil || len(beyond) != 0 {
@@ -287,11 +304,11 @@ func TestMilestoneActivityFeedSourcesOrderAndVisibility(t *testing.T) {
 	}
 
 	// No accessible workspace: only milestone events remain.
-	none, noneTotal, err := service.List(99, f.milestone, MilestoneActivityListParams{Limit: 50})
+	none, noneHasMore, err := service.List(99, f.milestone, MilestoneActivityListParams{Limit: 50})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if noneTotal != 5 || len(none) != 5 {
+	if noneHasMore || len(none) != 5 {
 		t.Fatalf("no-workspace feed: %v", activityTypes(none))
 	}
 
@@ -389,13 +406,13 @@ func TestMilestoneActivitySinceFiltersMergedSources(t *testing.T) {
 		{ID: 7, MilestoneID: f.milestone, PageID: 44, PageTitle: "New", WorkspaceID: 1, OccurredAt: at(11)},
 	}
 	service := f.service(pages)
-	list := func(since time.Time, limit, offset int) ([]models.MilestoneActivity, int) {
+	list := func(since time.Time, limit, offset int) ([]models.MilestoneActivity, bool) {
 		t.Helper()
-		entries, total, err := service.List(activityViewer, f.milestone, MilestoneActivityListParams{Limit: limit, Offset: offset, Since: since})
+		entries, hasMore, err := service.List(activityViewer, f.milestone, MilestoneActivityListParams{Limit: limit, Offset: offset, Since: since})
 		if err != nil {
 			t.Fatal(err)
 		}
-		return entries, total
+		return entries, hasMore
 	}
 
 	// since is inclusive: the stored status change and the page link at
@@ -407,37 +424,44 @@ func TestMilestoneActivitySinceFiltersMergedSources(t *testing.T) {
 		models.MilestoneActivityItemStatusChanged + " HUB-2",
 		models.MilestoneActivityMilestonePageLinked,
 	}
-	entries, total := list(at(6), 50, 0)
-	if got := activityTypes(entries); !reflect.DeepEqual(got, want) || total != len(want) {
-		t.Fatalf("since at(6):\n got %v (total %d)\nwant %v", got, total, want)
+	entries, hasMore := list(at(6), 50, 0)
+	if got := activityTypes(entries); !reflect.DeepEqual(got, want) || hasMore {
+		t.Fatalf("since at(6):\n got %v (hasMore %v)\nwant %v", got, hasMore, want)
 	}
 	if entries[0].ID != "milestone_history:7" || entries[4].ID != "milestone_history:6" {
 		t.Fatalf("page entries: %s, %s", entries[0].ID, entries[4].ID)
 	}
 
-	// Paging and the total apply to the filtered feed.
-	page2, pageTotal := list(at(6), 2, 2)
-	if got := activityTypes(page2); !reflect.DeepEqual(got, want[2:4]) || pageTotal != len(want) {
-		t.Fatalf("since page 2: got %v (total %d), want %v", got, pageTotal, want[2:4])
+	// Paging and has_more apply to the filtered feed.
+	first, firstHasMore := list(at(6), 2, 0)
+	if got := activityTypes(first); !reflect.DeepEqual(got, want[:2]) || !firstHasMore {
+		t.Fatalf("since page 1: got %v (hasMore %v), want %v", got, firstHasMore, want[:2])
 	}
-	last, _ := list(at(6), 2, 4)
-	if len(last) != 1 || last[0].ID != "milestone_history:6" {
-		t.Fatalf("since page 3: %v", activityTypes(last))
+	page2, page2HasMore := list(at(6), 2, 2)
+	if got := activityTypes(page2); !reflect.DeepEqual(got, want[2:4]) || !page2HasMore {
+		t.Fatalf("since page 2: got %v (hasMore %v), want %v", got, page2HasMore, want[2:4])
+	}
+	last, lastHasMore := list(at(6), 2, 4)
+	if len(last) != 1 || last[0].ID != "milestone_history:6" || lastHasMore {
+		t.Fatalf("since page 3: %v (hasMore %v)", activityTypes(last), lastHasMore)
+	}
+	exact, exactHasMore := list(at(6), len(want), 0)
+	if len(exact) != len(want) || exactHasMore {
+		t.Fatalf("since exact page: %d entries (hasMore %v), want %d", len(exact), exactHasMore, len(want))
 	}
 
 	// One nanosecond later drops both at(6) entries.
-	_, total = list(at(6).Add(time.Nanosecond), 50, 0)
-	if total != 3 {
-		t.Fatalf("since just after at(6): total %d, want 3", total)
+	if after, _ := list(at(6).Add(time.Nanosecond), 50, 0); len(after) != 3 {
+		t.Fatalf("since just after at(6): %d entries, want 3", len(after))
 	}
 	// A later since than every entry returns nothing.
-	none, noneTotal := list(at(12), 50, 0)
-	if len(none) != 0 || noneTotal != 0 {
-		t.Fatalf("since after the newest entry: %v (total %d)", activityTypes(none), noneTotal)
+	none, noneHasMore := list(at(12), 50, 0)
+	if len(none) != 0 || noneHasMore {
+		t.Fatalf("since after the newest entry: %v (hasMore %v)", activityTypes(none), noneHasMore)
 	}
 	// Without since the whole feed is listed.
-	if _, all := list(time.Time{}, 50, 0); all != 7+len(pages) {
-		t.Fatalf("unfiltered total %d, want %d", all, 7+len(pages))
+	if all, _ := list(time.Time{}, 50, 0); len(all) != 7+len(pages) {
+		t.Fatalf("unfiltered feed has %d entries, want %d", len(all), 7+len(pages))
 	}
 }
 
@@ -457,11 +481,11 @@ func TestMilestoneActivitySinceTimestampPrecision(t *testing.T) {
 	}
 	count := func(since time.Time) int {
 		t.Helper()
-		_, total, err := service.List(activityViewer, f.milestone, MilestoneActivityListParams{Limit: 50, Since: since})
+		entries, _, err := service.List(activityViewer, f.milestone, MilestoneActivityListParams{Limit: 50, Since: since})
 		if err != nil {
 			t.Fatal(err)
 		}
-		return total
+		return len(entries)
 	}
 	for _, tc := range []struct {
 		name  string
@@ -476,7 +500,7 @@ func TestMilestoneActivitySinceTimestampPrecision(t *testing.T) {
 		{"just after the legacy row", legacy.Add(time.Millisecond), 0},
 	} {
 		if got := count(tc.since); got != tc.want {
-			t.Errorf("%s: total %d, want %d", tc.name, got, tc.want)
+			t.Errorf("%s: %d entries, want %d", tc.name, got, tc.want)
 		}
 	}
 }

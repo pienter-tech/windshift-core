@@ -53,13 +53,16 @@ type SLAImportCalendar struct {
 }
 
 type SLAImportMetric struct {
-	SourceID      string               `json:"source_id"`
-	SourcePayload json.RawMessage      `json:"source_payload,omitempty"`
-	Name          string               `json:"name"`
-	DisplayFormat string               `json:"display_format"`
-	IsActive      *bool                `json:"is_active"`
-	Conditions    []SLAImportCondition `json:"conditions"`
-	Goals         []SLAImportGoal      `json:"goals"`
+	SourceID      string          `json:"source_id"`
+	SourcePayload json.RawMessage `json:"source_payload,omitempty"`
+	Name          string          `json:"name"`
+	DisplayFormat string          `json:"display_format"`
+	// IsActive opts a metric into live evaluation. Imported metrics default to
+	// inactive so an import can never arm timers, breach jobs, or side effects;
+	// an operator activates the metrics they want after reviewing the import.
+	IsActive   *bool                `json:"is_active"`
+	Conditions []SLAImportCondition `json:"conditions"`
+	Goals      []SLAImportGoal      `json:"goals"`
 }
 
 type SLAImportCondition struct {
@@ -178,6 +181,13 @@ func (s *SLAImportService) Import(ctx context.Context, workspaceID int, document
 	}
 	result.Mode = mode
 
+	// Cycles of inactive metrics keep their historical rows but must not arm
+	// live breach jobs; activating the metric later triggers a recalculation.
+	metricActiveBySource := make(map[string]bool, len(metrics))
+	for _, resolved := range metrics {
+		metricActiveBySource[valueOrEmpty(resolved.metric.SourceID)] = resolved.metric.IsActive
+	}
+
 	// Persist calendars first: metrics and cycles reference them.
 	calendarIDs := map[string]int{}
 	err = database.WithTx(s.db, func(tx database.Tx) error {
@@ -237,14 +247,15 @@ func (s *SLAImportService) Import(ctx context.Context, workspaceID int, document
 	// writers, so repository reads must not run while the transaction holds the
 	// write lock.
 	type cycleWrite struct {
-		cycle      *SLAImportCycle
-		metricID   int
-		itemID     int
-		calendarID int
-		goalID     int
-		goalQuery  string
-		snapshot   json.RawMessage
-		existingID int64
+		cycle        *SLAImportCycle
+		metricID     int
+		metricActive bool
+		itemID       int
+		calendarID   int
+		goalID       int
+		goalQuery    string
+		snapshot     json.RawMessage
+		existingID   int64
 	}
 	writes := make([]cycleWrite, 0, len(cycles))
 	for i := range cycles {
@@ -277,19 +288,20 @@ func (s *SLAImportService) Import(ctx context.Context, workspaceID int, document
 			return nil, err
 		}
 		writes = append(writes, cycleWrite{
-			cycle:      cycle,
-			metricID:   metricID,
-			itemID:     itemID,
-			calendarID: calendarID,
-			goalID:     goalIDsByMetric[cycle.MetricSourceID][cycle.GoalSourceID],
-			goalQuery:  goalQueriesByMetric[cycle.MetricSourceID][cycle.GoalSourceID],
-			snapshot:   snapshot,
-			existingID: existingID,
+			cycle:        cycle,
+			metricID:     metricID,
+			metricActive: metricActiveBySource[cycle.MetricSourceID],
+			itemID:       itemID,
+			calendarID:   calendarID,
+			goalID:       goalIDsByMetric[cycle.MetricSourceID][cycle.GoalSourceID],
+			goalQuery:    goalQueriesByMetric[cycle.MetricSourceID][cycle.GoalSourceID],
+			snapshot:     snapshot,
+			existingID:   existingID,
 		})
 	}
 	err = database.WithTx(s.db, func(tx database.Tx) error {
 		for _, write := range writes {
-			if err := s.writeCycle(ctx, tx, write.metricID, write.itemID, write.calendarID, write.goalID, write.goalQuery, write.snapshot, write.existingID, write.cycle); err != nil {
+			if err := s.writeCycle(ctx, tx, write.metricID, write.itemID, write.calendarID, write.goalID, write.goalQuery, write.snapshot, write.existingID, write.metricActive, write.cycle); err != nil {
 				return err
 			}
 		}
@@ -424,7 +436,9 @@ func (s *SLAImportService) resolveMetric(ctx context.Context, workspaceID int, s
 		WorkspaceID:   workspaceID,
 		Name:          strings.TrimSpace(source.Name),
 		DisplayFormat: source.DisplayFormat,
-		IsActive:      source.IsActive == nil || *source.IsActive,
+		// Imported metrics stay inactive unless the document opts in, so an
+		// import never arms live SLA timers or breach side effects.
+		IsActive:      source.IsActive != nil && *source.IsActive,
 		ImportStatus:  "ready",
 		Source:        stringPtr(SLAImportSource),
 		SourceID:      stringPtr(source.SourceID),
@@ -459,7 +473,12 @@ func (s *SLAImportService) resolveMetric(ctx context.Context, workspaceID int, s
 		issues = append(issues, SLAImportIssue{Entity: "condition", SourceID: source.SourceID, Message: err.Error()})
 	}
 
-	for i, goal := range source.Goals {
+	// One resolved goal per target. A priority-scoped target becomes its own
+	// goal with the priority appended to the base query; the fallback target
+	// keeps the base query and is ordered last, so first-match-wins preserves
+	// priority precedence.
+	resolvedGoals := make([]models.SLAGoal, 0, len(source.Goals))
+	for _, goal := range source.Goals {
 		ql := strings.TrimSpace(goal.QL)
 		status := "ready"
 		if ql != "" {
@@ -488,64 +507,121 @@ func (s *SLAImportService) resolveMetric(ctx context.Context, workspaceID int, s
 				ql = translated
 			}
 		}
-		if strings.TrimSpace(ql) == "" {
-			ql = "1 = 0"
+		baseQL := strings.TrimSpace(ql)
+		if baseQL == "" {
+			baseQL = "1 = 0"
 		}
-		resolvedGoal := models.SLAGoal{
-			Position:      i,
-			QLQuery:       ql,
-			ImportStatus:  status,
-			SourceID:      stringPtr(goal.SourceID),
-			SourcePayload: rawPayloadString(goal.SourcePayload),
-		}
-		if status == "needs_attention" {
-			resolvedGoal.OriginalJQL = stringPtr(goal.JQL)
-		}
-		for j, target := range goal.Targets {
-			resolvedTarget := models.SLAGoalTarget{
-				Position:         j,
-				IsFallback:       target.IsFallback,
-				TargetMs:         target.TargetMs,
-				SourceID:         stringPtr(target.SourceID),
-				SourcePayload:    rawPayloadString(target.SourcePayload),
-				CalendarSourceID: target.CalendarSourceID,
+		newGoal := func(query string, sourceID *string) models.SLAGoal {
+			resolved := models.SLAGoal{
+				QLQuery:       query,
+				ImportStatus:  status,
+				SourceID:      sourceID,
+				SourcePayload: rawPayloadString(goal.SourcePayload),
 			}
-			if !target.IsFallback && strings.TrimSpace(target.Priority) != "" {
-				priorityName := strings.TrimSpace(target.Priority)
-				switch strings.ToLower(priorityName) {
-				case "highest":
-					priorityName = "Critical"
-				case "lowest":
-					priorityName = "Low"
-				}
-				if priorityID, err := s.repo.PriorityIDByName(ctx, priorityName); err == nil {
-					resolvedTarget.PriorityID = &priorityID
-				} else {
-					exercisable = false
-					resolvedGoal.ImportStatus = "needs_attention"
-					issues = append(issues, SLAImportIssue{Entity: "target", SourceID: target.SourceID, Message: "priority not found: " + target.Priority})
-				}
+			if status == "needs_attention" {
+				resolved.OriginalJQL = stringPtr(goal.JQL)
 			}
-			if calendar, ok := calendars[target.CalendarSourceID]; ok {
-				resolvedTarget.CalendarID = calendar.ID
-				if calendar.ID == 0 {
-					// New calendar; resolve after persistence. Keep the source
-					// id so import can remap it.
-					resolvedTarget.CalendarSourceID = target.CalendarSourceID
+			return resolved
+		}
+
+		var fallback *SLAImportTarget
+		for i := range goal.Targets {
+			target := goal.Targets[i]
+			priorityName := strings.TrimSpace(target.Priority)
+			if target.IsFallback || priorityName == "" {
+				if fallback == nil {
+					fallback = &goal.Targets[i]
 				}
-			} else {
+				continue
+			}
+			normalized := importPriorityName(priorityName)
+			if _, err := s.repo.PriorityIDByName(ctx, normalized); err != nil {
+				exercisable = false
+				issues = append(issues, SLAImportIssue{Entity: "target", SourceID: target.SourceID, Message: "priority not found: " + target.Priority})
+				continue
+			}
+			resolvedGoal := newGoal(combineGoalQuery(baseQL, normalized), priorityGoalSourceID(goal.SourceID, normalized))
+			resolvedTarget, ok := resolveImportTarget(calendars, target)
+			if !ok {
 				exercisable = false
 				resolvedGoal.ImportStatus = "needs_attention"
 				issues = append(issues, SLAImportIssue{Entity: "target", SourceID: target.SourceID, Message: "calendar not found: " + target.CalendarSourceID})
 			}
-			resolvedGoal.Targets = append(resolvedGoal.Targets, resolvedTarget)
+			resolvedGoal.Targets = []models.SLAGoalTarget{resolvedTarget}
+			resolvedGoals = append(resolvedGoals, resolvedGoal)
 		}
-		metric.Goals = append(metric.Goals, resolvedGoal)
+		if fallback != nil {
+			resolvedGoal := newGoal(baseQL, stringPtr(goal.SourceID))
+			resolvedTarget, ok := resolveImportTarget(calendars, *fallback)
+			if !ok {
+				exercisable = false
+				resolvedGoal.ImportStatus = "needs_attention"
+				issues = append(issues, SLAImportIssue{Entity: "target", SourceID: fallback.SourceID, Message: "calendar not found: " + fallback.CalendarSourceID})
+			}
+			resolvedGoal.Targets = []models.SLAGoalTarget{resolvedTarget}
+			resolvedGoals = append(resolvedGoals, resolvedGoal)
+		}
 	}
+	for i := range resolvedGoals {
+		resolvedGoals[i].Position = i
+	}
+	metric.Goals = resolvedGoals
 	if !exercisable {
 		metric.ImportStatus = "needs_attention"
 	}
 	return resolvedMetric{metric: metric, exercisable: exercisable}, issues
+}
+
+// importPriorityName maps Jira's priority labels onto Windshift priority names.
+func importPriorityName(name string) string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "highest":
+		return "Critical"
+	case "lowest":
+		return "Low"
+	default:
+		return strings.TrimSpace(name)
+	}
+}
+
+// combineGoalQuery scopes a base goal query to one priority.
+func combineGoalQuery(base, priorityName string) string {
+	clause := "priority = '" + strings.ReplaceAll(priorityName, "'", "''") + "'"
+	if base == "" {
+		return clause
+	}
+	return "(" + base + ") AND " + clause
+}
+
+// priorityGoalSourceID gives a split-off priority goal a stable source identity
+// so re-imports match it instead of colliding on the parent goal's source id.
+func priorityGoalSourceID(goalSourceID, priorityName string) *string {
+	if strings.TrimSpace(goalSourceID) == "" {
+		return nil
+	}
+	return stringPtr(goalSourceID + "#" + priorityName)
+}
+
+// resolveImportTarget maps an imported target's calendar source id to a
+// persisted calendar id. ok is false when the source calendar is unknown.
+func resolveImportTarget(calendars map[string]*models.WorkingCalendar, target SLAImportTarget) (models.SLAGoalTarget, bool) {
+	resolved := models.SLAGoalTarget{
+		TargetMs:         target.TargetMs,
+		SourceID:         stringPtr(target.SourceID),
+		SourcePayload:    rawPayloadString(target.SourcePayload),
+		CalendarSourceID: target.CalendarSourceID,
+	}
+	calendar, ok := calendars[target.CalendarSourceID]
+	if !ok {
+		return resolved, false
+	}
+	resolved.CalendarID = calendar.ID
+	if calendar.ID == 0 {
+		// New calendar; resolve after persistence. Keep the source id so
+		// import can remap it.
+		resolved.CalendarSourceID = target.CalendarSourceID
+	}
+	return resolved, true
 }
 
 func (s *SLAImportService) persistCalendar(ctx context.Context, tx database.Tx, calendar *models.WorkingCalendar) (int, error) {
@@ -591,7 +667,7 @@ func (s *SLAImportService) persistMetric(ctx context.Context, tx database.Tx, re
 	return metricID, goalIDs, nil
 }
 
-func (s *SLAImportService) writeCycle(ctx context.Context, tx database.Tx, metricID, itemID, calendarID, goalID int, goalQuery string, snapshot json.RawMessage, existingID int64, source *SLAImportCycle) error {
+func (s *SLAImportService) writeCycle(ctx context.Context, tx database.Tx, metricID, itemID, calendarID, goalID int, goalQuery string, snapshot json.RawMessage, existingID int64, metricActive bool, source *SLAImportCycle) error {
 	status := source.Status
 	if status == "" {
 		status = models.SLACycleOngoing
@@ -673,7 +749,7 @@ func (s *SLAImportService) writeCycle(ctx context.Context, tx database.Tx, metri
 	if err := s.repo.DeleteJobsForCycle(ctx, tx, cycle.ID); err != nil {
 		return err
 	}
-	if cycle.Status == models.SLACycleOngoing && !cycle.Paused && cycle.NextDeadlineAt != nil {
+	if metricActive && cycle.Status == models.SLACycleOngoing && !cycle.Paused && cycle.NextDeadlineAt != nil {
 		deadline := *cycle.NextDeadlineAt
 		cycleRef := cycle.ID
 		job := &models.SLAJob{Kind: models.SLAJobBreach, CycleID: &cycleRef, DueAt: deadline, DeadlineAt: &deadline}

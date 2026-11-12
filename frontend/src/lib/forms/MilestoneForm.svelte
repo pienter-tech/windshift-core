@@ -1,5 +1,6 @@
 <script>
-  import { Calendar, Target } from '@lucide/svelte';
+  import Calendar from '@lucide/svelte/icons/calendar';
+  import Target from '@lucide/svelte/icons/target';
   import { t } from '../stores/i18n.svelte.js';
   import { formatDateWithOptions } from '../utils/dateFormatter.js';
   import MilkdownEditor from '../editors/LazyMilkdownEditor.svelte';
@@ -96,6 +97,7 @@
     <MilkdownEditor
       bind:content={form.values.description}
       placeholder={t('createModal.addDescription')}
+      ariaLabel={t('common.description')}
       compact={true}
       showToolbar={false}
       readonly={false}

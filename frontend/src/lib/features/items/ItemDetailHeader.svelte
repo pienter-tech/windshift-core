@@ -1,123 +1,66 @@
 <script>
-  import { Check, X } from '@lucide/svelte';
-  import Button from "../../components/Button.svelte";
-  import Input from '../../components/Input.svelte';
+  import TitleField from './TitleField.svelte';
   import { errorToast } from '../../stores/toasts.svelte.js';
   import { t } from '../../stores/i18n.svelte.js';
 
   let {
     item,
-    workspace,
-    editingTitle = $bindable(false),
-    editTitle = $bindable(''),
+    workspace = null,
     saving = false,
     canEdit = false,
     onsavefield = undefined,
-    oncanceledit = undefined,
   } = $props();
 
-
-  function startEditingTitle() {
-    editTitle = item.title;
-    editingTitle = true;
-  }
-
-  function validateAndSaveTitle() {
-    const trimmedTitle = editTitle.trim();
-
-    if (!trimmedTitle) {
-      // Show error toast
+  async function commitTitle(draft) {
+    const trimmed = String(draft ?? '').trim();
+    if (!trimmed) {
       errorToast(t('items.previousValueRemains'), t('items.titleCannotBeEmpty'));
-
-      // Revert to original title
-      editTitle = item.title;
-      editingTitle = false;
       return;
     }
-
-    onsavefield?.({ field: "title", value: trimmedTitle });
+    await onsavefield?.({ field: 'title', value: trimmed });
   }
-
-  function handleKeydown(event) {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      validateAndSaveTitle();
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      oncanceledit?.({ field: "title" });
-    }
-  }
-
 </script>
 
-<div class="mb-8 w-full max-w-full">
-  <div class="w-full min-w-0 overflow-hidden max-w-full">
-    <div class="mb-2">
-      {#if editingTitle}
-        <div class="flex items-center gap-3 w-full pr-4 ">
-          <!-- Item key (in edit mode) -->
-
-          <div class="min-w-[80%]">
-            <Input
-              type="text"
-              variant="ghost"
-              dataTestid="item-title-input"
-              bind:value={editTitle}
-              onkeydown={handleKeydown}
-              class="w-full text-2xl font-semibold bg-transparent border-0 py-1 focus:outline-none break-words"
-              style="color: var(--ds-text); word-wrap: break-word; overflow-wrap: break-word;"
-              placeholder={t('items.enterTitle')}
-              autofocus
-            />
-          </div>
-          <div class="flex gap-2 mt-2 hidden">
-            <Button
-              variant="primary"
-              size="small"
-              icon={Check}
-              onclick={validateAndSaveTitle}
-              disabled={saving}
-            />
-            <Button
-              variant="default"
-              size="small"
-              icon={X}
-              onclick={() => oncanceledit?.({ field: "title" })}
-            />
-          </div>
-        </div>
-      {:else}
-        <!-- Item key -->
-
-        {#if canEdit}
-          <button
-            onclick={startEditingTitle}
-            data-testid="item-title-edit"
-            class="text-2xl font-semibold pr-4 py-1 rounded transition-colors text-left cursor-pointer w-full title-button break-words"
-            style="color: var(--ds-text); word-wrap: break-word; overflow-wrap: break-word;"
-            title={t('items.clickToEditTitle')}
-          >
-            {item.title}
-          </button>
-        {:else}
-          <!-- Read-only title for users without item.edit (server enforces the
-               PATCH; the UI simply must not offer the affordance). -->
-          <h1
-            class="text-2xl font-semibold pr-4 py-1 text-left w-full break-words"
-            style="color: var(--ds-text); word-wrap: break-word; overflow-wrap: break-word;"
-            data-testid="item-title-readonly"
-          >
-            {item.title}
-          </h1>
-        {/if}
-      {/if}
-    </div>
+<div class="mb-2 w-full max-w-full">
+  <div class="mb-1">
+    {#if canEdit}
+      <TitleField
+        value={item.title}
+        editable={!saving}
+        oncommit={commitTitle}
+        displayTestid="item-title-edit"
+        inputTestid="item-title-input"
+        displayClass="block text-xl font-semibold text-start cursor-pointer title-geometry break-words"
+        inputClass="w-full text-xl font-semibold bg-transparent border-0 focus:outline-none break-words title-geometry"
+        placeholder={t('items.enterTitle')}
+      />
+    {:else}
+      <!-- Read-only title for users without item.edit (server enforces the
+           PATCH; the UI simply must not offer the affordance). -->
+      <h1
+        class="text-xl font-semibold text-start title-geometry break-words"
+        dir="auto"
+        style="color: var(--ds-text); word-wrap: break-word; overflow-wrap: break-word;"
+        data-testid="item-title-readonly"
+      >
+        {item.title}
+      </h1>
+    {/if}
   </div>
 </div>
 
-
 <style>
-  .title-button:hover {
-    background-color: var(--ds-surface);
+  /* Title and description share one hover pill: an 8px outset beyond the text
+     column in --ds-background-neutral-hovered, so their hover backgrounds
+     align to the same edges. The edit input gets the same geometry so the
+     text does not shift when entering edit mode. */
+  .title-geometry {
+    width: calc(100% + 1rem);
+    margin: 0 -0.5rem;
+    padding: 0.375rem 0.5rem;
+    border-radius: 0.25rem;
+  }
+  .title-geometry:hover {
+    background-color: var(--ds-background-neutral-hovered);
   }
 </style>

@@ -19,14 +19,14 @@ type recordingMilestoneActivity struct {
 	calls []services.MilestoneActivityListParams
 }
 
-func (a *recordingMilestoneActivity) List(_, _ int, params services.MilestoneActivityListParams) ([]models.MilestoneActivity, int, error) {
+func (a *recordingMilestoneActivity) List(_, _ int, params services.MilestoneActivityListParams) ([]models.MilestoneActivity, bool, error) {
 	a.calls = append(a.calls, params)
-	return []models.MilestoneActivity{}, 0, nil
+	return []models.MilestoneActivity{}, false, nil
 }
 
 func serveMilestoneActivity(t *testing.T, activity milestoneActivityApplication, query string) *httptest.ResponseRecorder {
 	t.Helper()
-	handler := Adapt(transport{}.Page(listMilestoneActivity(activity)))
+	handler := Adapt(transport{}.Read(http.StatusOK, listMilestoneActivity(activity)))
 	request := httptest.NewRequest(http.MethodGet, "/milestones/7/activity"+query, nil)
 	request.SetPathValue("milestone_id", "7")
 	request = request.WithContext(context.WithValue(request.Context(), contextkeys.User, &models.User{ID: 3}))
