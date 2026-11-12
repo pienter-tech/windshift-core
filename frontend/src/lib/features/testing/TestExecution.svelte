@@ -2,11 +2,20 @@
   import { onMount } from 'svelte';
   import ModalBackdrop from '../../components/ModalBackdrop.svelte';
   import { currentRoute, navigate } from '../../router.js';
-  import { api } from '../../api.js';
+  import { items } from '../../api/items.js';
+  import { tests } from '../../api/tests/index.js';
   import { isExpectedBackgroundSyncError } from '../../utils/backgroundSync.js';
-  import { IconCheck, IconX, IconBug, IconArrowLeft, IconChevronRight, IconChevronLeft, IconPlus, IconLink, IconPlayerSkipForward } from '@tabler/icons-svelte-runes';
+  import IconCheck from '@tabler/icons-svelte-runes/icons/check';
+  import IconX from '@tabler/icons-svelte-runes/icons/x';
+  import IconBug from '@tabler/icons-svelte-runes/icons/bug';
+  import IconChevronRight from '@tabler/icons-svelte-runes/icons/chevron-right';
+  import IconChevronLeft from '@tabler/icons-svelte-runes/icons/chevron-left';
+  import IconPlus from '@tabler/icons-svelte-runes/icons/plus';
+  import IconLink from '@tabler/icons-svelte-runes/icons/link';
+  import IconPlayerSkipForward from '@tabler/icons-svelte-runes/icons/player-skip-forward';
   import { confirm } from '../../composables/useConfirm.js';
   import Button from '../../components/Button.svelte';
+  import BackButton from '../../components/BackButton.svelte';
   import Card from '../../components/Card.svelte';
   import Panel from '../../components/Panel.svelte';
   import Progress from '../../components/Progress.svelte';
@@ -14,14 +23,16 @@
   import EmptyState from '../../components/EmptyState.svelte';
   import AlertBox from '../../components/AlertBox.svelte';
   import Lozenge from '../../components/Lozenge.svelte';
+  import StatusButton from '../../components/StatusButton.svelte';
   import MilkdownEditor from '../../editors/LazyMilkdownEditor.svelte';
   import ItemPicker from '../../pickers/ItemPicker.svelte';
   import CreateModal from '../../dialogs/CreateModal.svelte';
   import Label from '../../components/Label.svelte';
   import Textarea from '../../components/Textarea.svelte';
-  import { getStatusLabel } from '../../utils/statusColors.js';
+  import { getStatusLabel, getTestStatusColor } from '../../utils/statusColors.js';
   import { t } from '../../stores/i18n.svelte.js';
-  import { workspacePermissions } from '../../stores/index.js';
+  import { surfaceError } from '../../stores/toasts.svelte.js';
+  import { workspacePermissions } from '../../stores/workspacePermissions.svelte.js';
   import DescriptionText from '../../components/DescriptionText.svelte';
   import { loadTestRunDetail } from './testRunDetailData.js';
 import BDDExampleExecution from './BDDExampleExecution.svelte';
@@ -47,16 +58,6 @@ import { parseScenarioSpec, flattenExamples } from './bddSpec.js';
   // test case id. Both come with the run detail payload.
   let bddSnapshots = $state({});
   let bddExampleResults = $state({});
-
-  function getStatusColor(status) {
-    return {
-      passed: 'green',
-      failed: 'red',
-      blocked: 'amber',
-      skipped: 'gray',
-      not_run: 'gray'
-    }[status] || 'gray';
-  }
 
   function handleRenderedContentClick(event) {
     if (event.target.tagName === 'IMG') {
@@ -91,7 +92,7 @@ import { parseScenarioSpec, flattenExamples } from './bddSpec.js';
 
   async function loadWorkspaceItems() {
     try {
-      const response = await api.items.getAll({ workspace_id: workspaceId });
+      const response = await items.getAll({ workspace_id: workspaceId });
       workspaceItems = response?.data ?? [];
     } catch (error) {
       // Navigating away aborts the in-flight fetch — expected control flow,
@@ -107,7 +108,7 @@ import { parseScenarioSpec, flattenExamples } from './bddSpec.js';
     try {
       loading = true;
 
-      const detail = await loadTestRunDetail(api, workspaceId, runId);
+      const detail = await loadTestRunDetail(workspaceId, runId);
       testRun = detail.run;
       bddSnapshots = detail.bddSnapshots;
       const groupedExampleResults = {};
@@ -375,14 +376,14 @@ import { parseScenarioSpec, flattenExamples } from './bddSpec.js';
     // backend overwrites items.item_id with whatever this payload carries.
     try {
       const resultData = stepResults[stepId];
-      await api.tests.testRuns.updateStepResult(workspaceId, runId, stepId, {
+      await tests.testRuns.updateStepResult(workspaceId, runId, stepId, {
         status: status,
         actual_result: resultData.actual_result || '',
         notes: resultData.notes || '',
         item_id: resultData.item_id ?? null
       });
     } catch (error) {
-      console.error('Failed to save step result:', error);
+      surfaceError(error, { context: 'saveStepStatus' });
     }
 
     // Auto-advance to next step on pass/skip (but not fail/blocked so user can create defects)
@@ -401,14 +402,14 @@ import { parseScenarioSpec, flattenExamples } from './bddSpec.js';
     // Save to backend, preserving any previously linked item_id.
     try {
       const resultData = stepResults[stepId];
-      await api.tests.testRuns.updateStepResult(workspaceId, runId, stepId, {
+      await tests.testRuns.updateStepResult(workspaceId, runId, stepId, {
         status: resultData.status || 'not_run',
         actual_result: resultData.actual_result || '',
         notes: resultData.notes || '',
         item_id: resultData.item_id ?? null
       });
     } catch (error) {
-      console.error('Failed to save step result:', error);
+      surfaceError(error, { context: 'saveStepResult' });
     }
   }
 
@@ -421,7 +422,7 @@ import { parseScenarioSpec, flattenExamples } from './bddSpec.js';
     });
     if (!ok) return;
     try {
-      await api.tests.testRuns.end(workspaceId, runId);
+      await tests.testRuns.end(workspaceId, runId);
       if (fromPage === 'reports') {
         navigate(testPath('/reports'));
       } else {
@@ -499,14 +500,14 @@ import { parseScenarioSpec, flattenExamples } from './bddSpec.js';
     // Save to backend
     try {
       const resultData = stepResults[stepId];
-      await api.tests.testRuns.updateStepResult(workspaceId, runId, stepId, {
+      await tests.testRuns.updateStepResult(workspaceId, runId, stepId, {
         status: resultData.status || 'not_run',
         actual_result: resultData.actual_result || '',
         notes: resultData.notes || '',
         item_id: item.id
       });
     } catch (error) {
-      console.error('Failed to link item:', error);
+      surfaceError(error, { context: 'linkItemToStep' });
     }
   }
 </script>
@@ -528,14 +529,12 @@ import { parseScenarioSpec, flattenExamples } from './bddSpec.js';
       <div class="p-3 border-b flex items-center {sidebarCollapsed ? 'justify-center' : 'justify-between'}" style="border-color: var(--ds-border);">
         {#if !sidebarCollapsed}
           <div class="flex items-center gap-2 min-w-0">
-            <button
+            <BackButton
               onclick={goBack}
-              data-testid="test-execution-back"
-              class="hover-bg p-1 rounded cursor-pointer flex-shrink-0"
-              style="color: var(--ds-icon);"
-            >
-              <IconArrowLeft class="w-4 h-4" />
-            </button>
+              testid="test-execution-back"
+              tooltip={t('common.back')}
+              class="p-1"
+            />
             <div class="min-w-0">
               <h2 class="font-semibold text-sm truncate" style="color: var(--ds-text);">{t('testing.testExecution')}</h2>
               <div class="text-xs truncate" style="color: var(--ds-text-subtle);">
@@ -762,49 +761,49 @@ import { parseScenarioSpec, flattenExamples } from './bddSpec.js';
               {#if canExecuteTests}
               <!-- Status Buttons -->
               <div class="flex gap-3 mb-4">
-                <button
+                <StatusButton
+                  status="passed"
+                  selected={stepResults[currentStep.id]?.status === 'passed'}
+                  dataTestid="test-execution-status-passed"
                   onclick={() => markStepStatus(currentStep.id, 'passed')}
-                  data-testid="test-execution-status-passed"
-                  class="status-btn flex items-center gap-2 px-4 py-2 rounded transition cursor-pointer"
-                  data-status="passed"
-                  class:selected={stepResults[currentStep.id]?.status === 'passed'}
+                  class="flex items-center gap-2 px-4 py-2 rounded transition cursor-pointer"
                 >
                   <IconCheck class="w-4 h-4" />
                   {t('testing.pass')}
-                </button>
+                </StatusButton>
 
-                <button
+                <StatusButton
+                  status="failed"
+                  selected={stepResults[currentStep.id]?.status === 'failed'}
+                  dataTestid="test-execution-status-failed"
                   onclick={() => markStepStatus(currentStep.id, 'failed')}
-                  data-testid="test-execution-status-failed"
-                  class="status-btn flex items-center gap-2 px-4 py-2 rounded transition cursor-pointer"
-                  data-status="failed"
-                  class:selected={stepResults[currentStep.id]?.status === 'failed'}
+                  class="flex items-center gap-2 px-4 py-2 rounded transition cursor-pointer"
                 >
                   <IconX class="w-4 h-4" />
                   {t('testing.fail')}
-                </button>
+                </StatusButton>
 
-                <button
+                <StatusButton
+                  status="blocked"
+                  selected={stepResults[currentStep.id]?.status === 'blocked'}
+                  dataTestid="test-execution-status-blocked"
                   onclick={() => markStepStatus(currentStep.id, 'blocked')}
-                  data-testid="test-execution-status-blocked"
-                  class="status-btn flex items-center gap-2 px-4 py-2 rounded transition cursor-pointer"
-                  data-status="blocked"
-                  class:selected={stepResults[currentStep.id]?.status === 'blocked'}
+                  class="flex items-center gap-2 px-4 py-2 rounded transition cursor-pointer"
                 >
                   <IconBug class="w-4 h-4" />
                   {t('testing.blocked')}
-                </button>
+                </StatusButton>
 
-                <button
+                <StatusButton
+                  status="skipped"
+                  selected={stepResults[currentStep.id]?.status === 'skipped'}
+                  dataTestid="test-execution-status-skipped"
                   onclick={() => markStepStatus(currentStep.id, 'skipped')}
-                  data-testid="test-execution-status-skipped"
-                  class="status-btn flex items-center gap-2 px-4 py-2 rounded transition cursor-pointer"
-                  data-status="skipped"
-                  class:selected={stepResults[currentStep.id]?.status === 'skipped'}
+                  class="flex items-center gap-2 px-4 py-2 rounded transition cursor-pointer"
                 >
                   <IconPlayerSkipForward class="w-4 h-4" />
                   {t('testing.skip')}
-                </button>
+                </StatusButton>
               </div>
 
               <!-- Actual Result -->
@@ -937,7 +936,7 @@ import { parseScenarioSpec, flattenExamples } from './bddSpec.js';
               <div class="flex justify-between items-center pt-4 border-t" style="border-color: var(--ds-border);">
                 <span data-testid="test-execution-current-status">
                   <Lozenge
-                    color={getStatusColor(stepResults[currentStep.id]?.status || 'not_run')}
+                    color={getTestStatusColor(stepResults[currentStep.id]?.status || 'not_run')}
                     text={`${t('common.status')}: ${getStatusLabel(stepResults[currentStep.id]?.status || 'not_run')}`}
                   />
                 </span>
@@ -1079,71 +1078,5 @@ import { parseScenarioSpec, flattenExamples } from './bddSpec.js';
 
   .step-seg:hover:not(.current) {
     background-color: var(--ds-background-neutral-hovered);
-  }
-
-  /* Step status buttons: tint with the status background while unselected. */
-  .status-btn {
-    background-color: transparent;
-    border: 1px solid;
-  }
-
-  .status-btn[data-status='passed'] {
-    color: var(--ds-status-success-text);
-    border-color: var(--ds-status-success-border);
-  }
-
-  .status-btn[data-status='failed'] {
-    color: var(--ds-status-danger-text);
-    border-color: var(--ds-status-danger-border);
-  }
-
-  .status-btn[data-status='blocked'] {
-    color: var(--ds-status-warning-text);
-    border-color: var(--ds-status-warning-border);
-  }
-
-  .status-btn[data-status='skipped'] {
-    color: var(--ds-status-neutral-text);
-    border-color: var(--ds-status-neutral-border);
-  }
-
-  .status-btn.selected {
-    color: white;
-  }
-
-  .status-btn[data-status='passed'].selected {
-    background-color: var(--ds-status-success-solid);
-    border-color: var(--ds-status-success-solid);
-  }
-
-  .status-btn[data-status='failed'].selected {
-    background-color: var(--ds-status-danger-solid);
-    border-color: var(--ds-status-danger-solid);
-  }
-
-  .status-btn[data-status='blocked'].selected {
-    background-color: var(--ds-status-warning-solid);
-    border-color: var(--ds-status-warning-solid);
-  }
-
-  .status-btn[data-status='skipped'].selected {
-    background-color: var(--ds-status-neutral-solid);
-    border-color: var(--ds-status-neutral-solid);
-  }
-
-  .status-btn[data-status='passed']:hover:not(.selected) {
-    background-color: var(--ds-status-success-bg);
-  }
-
-  .status-btn[data-status='failed']:hover:not(.selected) {
-    background-color: var(--ds-status-danger-bg);
-  }
-
-  .status-btn[data-status='blocked']:hover:not(.selected) {
-    background-color: var(--ds-status-warning-bg);
-  }
-
-  .status-btn[data-status='skipped']:hover:not(.selected) {
-    background-color: var(--ds-status-neutral-bg);
   }
 </style>

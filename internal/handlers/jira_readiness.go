@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
 
 	"windshift/internal/jira"
 )
@@ -53,8 +54,9 @@ func (h *JiraImportHandler) analyzeReadiness(ctx context.Context, client jira.Cl
 	}
 
 	report := JiraReadinessReport{
-		Projects:       make([]JiraProjectReadiness, 0, len(req.ProjectKeys)),
-		OpenIssuesOnly: req.OpenIssuesOnly,
+		Projects:           make([]JiraProjectReadiness, 0, len(req.ProjectKeys)),
+		OpenIssuesOnly:     req.OpenIssuesOnly,
+		AssessmentComplete: true,
 	}
 
 	// Custom-field definitions are instance-wide; fetch suggestions once and
@@ -70,6 +72,9 @@ func (h *JiraImportHandler) analyzeReadiness(ctx context.Context, client jira.Cl
 		report.AttachmentBytes += attachmentBytes
 		if pr.SampledIssues < pr.TotalIssues {
 			report.Extrapolated = true
+		}
+		if !pr.AssessmentComplete {
+			report.AssessmentComplete = false
 		}
 		allFindings = append(allFindings, pr.Findings...)
 	}
@@ -161,14 +166,29 @@ func (h *JiraImportHandler) scanProject(ctx context.Context, client jira.Client,
 		hasSprints = true
 	}
 
-	issues := h.sampleIssues(ctx, client, projectKey, openOnly, sampleSize)
+	issues, sampleErr := h.sampleIssues(ctx, client, projectKey, openOnly, sampleSize)
 	tally := newProjectScanTally()
 	for i := range issues {
 		h.tallyIssue(&issues[i], fields, tally)
 	}
 	pr.SampledIssues = tally.sampled
+	pr.AssessmentComplete = sampleErr == nil
+	if sampleErr != nil {
+		// A rejected page must not look like a complete sample: record the
+		// exact sampled count and an explicit incomplete finding.
+		pr.AssessmentError = sampleErr.Error()
+	}
 
 	pr.Findings = buildFindings(tally, fields, hasSprints)
+	if sampleErr != nil {
+		pr.Findings = append(pr.Findings, jira.Finding{
+			Entity:     "Issue sample completeness",
+			Category:   "assessment",
+			Severity:   jira.SeverityBlocked,
+			Reason:     "The Jira issue sample could not be read in full (" + sampleErr.Error() + "), so fidelity findings for " + projectKey + " reflect only the " + strconv.Itoa(tally.sampled) + " sampled issues.",
+			UsageCount: tally.sampled,
+		})
+	}
 	pr.Findings = append(pr.Findings, h.jiraConfigurationReadinessFindings(
 		ctx,
 		client,
@@ -224,7 +244,6 @@ func (h *JiraImportHandler) jiraConfigurationReadinessFindings(
 		transitionCount := 0
 		nonInitialTransitionCount := 0
 		guardedCount := 0
-		loopCount := 0
 		actionCount := 0
 		triggerCount := 0
 		for _, workflow := range config.Workflows {
@@ -235,16 +254,6 @@ func (h *JiraImportHandler) jiraConfigurationReadinessFindings(
 				}
 				if transition.ValidatorCount > 0 || transition.ConditionCount > 0 {
 					guardedCount++
-				}
-				switch transition.Type {
-				case jira.JiraWorkflowTransitionDirected:
-					for _, fromStatusID := range transition.FromStatusIDs {
-						if fromStatusID == transition.ToStatusID {
-							loopCount++
-						}
-					}
-				case jira.JiraWorkflowTransitionGlobal:
-					loopCount++
 				}
 				actionCount += transition.ActionCount
 				triggerCount += transition.TriggerCount
@@ -271,7 +280,7 @@ func (h *JiraImportHandler) jiraConfigurationReadinessFindings(
 				Entity:     "Workflow conditions and validators",
 				Category:   "workflow_rule",
 				Severity:   jira.SeverityBlocked,
-				Reason:     "Jira transitions with exposed conditions or validators retain their topology but stay behind a generated review lock because Jira rule semantics do not safely map to the Windshift condition model.",
+				Reason:     "Jira reports conditions or validators on these transitions, but its read API does not return the full rule tree. Topology imports either way; guards that map onto the Windshift condition model are recreated, and the remainder import behind a generated review lock so an operator can review and rebuild them.",
 				UsageCount: guardedCount,
 			})
 		}
@@ -282,15 +291,6 @@ func (h *JiraImportHandler) jiraConfigurationReadinessFindings(
 				Severity:   jira.SeverityLossy,
 				Reason:     "Transition topology imports, but Jira post-functions/actions and triggers have no portable Windshift equivalent and are recorded only as import fidelity metadata.",
 				UsageCount: actionCount + triggerCount,
-			})
-		}
-		if loopCount > 0 {
-			findings = append(findings, jira.Finding{
-				Entity:     "Workflow loop transitions",
-				Category:   "workflow_rule",
-				Severity:   jira.SeverityBlocked,
-				Reason:     "Windshift treats a same-status update as a no-op before transition rules execute. Jira loop transitions are omitted so their conditions, post-functions, or triggers cannot be bypassed.",
-				UsageCount: loopCount,
 			})
 		}
 	}
@@ -399,7 +399,7 @@ func jiraScreenFieldIsImportable(
 // sampleIssues pages through a project's issues (newest first) up to limit,
 // requesting all fields plus the changelog so the tally can see history,
 // comment bodies, and custom-field values.
-func (h *JiraImportHandler) sampleIssues(ctx context.Context, client jira.Client, projectKey string, openOnly bool, limit int) []jira.JiraIssue {
+func (h *JiraImportHandler) sampleIssues(ctx context.Context, client jira.Client, projectKey string, openOnly bool, limit int) ([]jira.JiraIssue, error) {
 	jql := `project = "` + escapeHandlerJQLString(projectKey) + `" ORDER BY created DESC`
 	if openOnly {
 		jql = `project = "` + escapeHandlerJQLString(projectKey) + `" AND statusCategory != Done ORDER BY created DESC`
@@ -418,7 +418,7 @@ func (h *JiraImportHandler) sampleIssues(ctx context.Context, client jira.Client
 		if err != nil {
 			slog.Warn("readiness: issue sample failed",
 				slog.String("component", "jira"), slog.String("project", projectKey), slog.Any("error", err))
-			break
+			return out, err
 		}
 		if res == nil || len(res.Issues) == 0 {
 			break
@@ -432,7 +432,7 @@ func (h *JiraImportHandler) sampleIssues(ctx context.Context, client jira.Client
 	if len(out) > limit {
 		out = out[:limit]
 	}
-	return out
+	return out, nil
 }
 
 // tallyIssue folds one sampled issue's fidelity signals into the running tally.

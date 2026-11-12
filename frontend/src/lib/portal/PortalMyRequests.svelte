@@ -1,16 +1,14 @@
 <script>
-  import {
-    ArrowLeft,
-    Calendar,
-    ChevronRight,
-    FileText,
-    Info,
-    List,
-    MessageSquare,
-    Paperclip,
-    Tag,
-    Users,
-  } from '@lucide/svelte';
+  import ArrowLeft from '@lucide/svelte/icons/arrow-left';
+  import Calendar from '@lucide/svelte/icons/calendar';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import FileText from '@lucide/svelte/icons/file-text';
+  import Info from '@lucide/svelte/icons/info';
+  import List from '@lucide/svelte/icons/list';
+  import MessageSquare from '@lucide/svelte/icons/message-square';
+  import Paperclip from '@lucide/svelte/icons/paperclip';
+  import Tag from '@lucide/svelte/icons/tag';
+  import Users from '@lucide/svelte/icons/users';
   import StateDisplay from '../components/StateDisplay.svelte';
   import Badge from '../components/Badge.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
@@ -299,9 +297,9 @@
                   </span>
                   <StatusBadge status={{ label: request.status, categoryColor: request.status_category_color }} />
                 </div>
-                <h2 class="font-semibold" style="color: var(--ds-text);">{request.title}</h2>
+                <h2 class="font-semibold" dir="auto" style="color: var(--ds-text);">{request.title}</h2>
                 {#if request.description}
-                  <p class="text-sm mt-1 line-clamp-2" style="color: var(--ds-text-subtle);">
+                  <p class="text-sm mt-1 line-clamp-2" dir="auto" style="color: var(--ds-text-subtle);">
                     {request.description}
                   </p>
                 {/if}

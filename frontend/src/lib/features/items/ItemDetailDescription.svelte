@@ -1,14 +1,22 @@
 <script>
-  import { Link2, Plus, Paperclip, PenTool, Zap, ChevronDown } from '@lucide/svelte';
+  import Link2 from '@lucide/svelte/icons/link-2';
+  import Plus from '@lucide/svelte/icons/plus';
+  import Paperclip from '@lucide/svelte/icons/paperclip';
+  import IconGraph from '@tabler/icons-svelte-runes/icons/graph';
+  import Zap from '@lucide/svelte/icons/zap';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import { tick } from 'svelte';
   import Button from '../../components/Button.svelte';
   import FileInput from '../../components/FileInput.svelte';
   import MilkdownEditor from '../../editors/LazyMilkdownEditor.svelte';
+  import PluginEditorHost from '../../editors/PluginEditorHost.svelte';
   import AttachmentDiagramList from '../assets/AttachmentDiagramList.svelte';
   import AIActionsDropdown from './AIActionsDropdown.svelte';
   import { getShortcut, matchesShortcut, getDisplayString } from '../../utils/keyboardShortcuts.js';
   import { t } from '../../stores/i18n.svelte.js';
-  import { attachmentStatus, aiStore } from '../../stores';
+  import { attachmentStatus } from '../../stores/attachmentStatus.svelte.js';
+  import { aiStore } from '../../stores/aiStore.svelte.js';
+  import { isExternalRequest } from '../../utils/requestOrigin.js';
   import { onClickOutside } from 'runed';
 
   // Get shortcut configurations
@@ -41,6 +49,7 @@
     onattachmentUpload = undefined,
     onattachmentUploadFiles = undefined,
     onattachmentDelete = undefined,
+    onattachmentToggleVisibility = undefined,
     onnewDiagram = undefined,
     oneditDiagram = undefined,
     ondeleteDiagram = undefined,
@@ -51,6 +60,10 @@
   let milkdownEditor = $state(null);
   let showActionsMenu = $state(false);
   let actionsMenuRef = $state(null);
+
+  // Portal visibility only applies to customer requests, where the portal can
+  // read the item; direct agent-created items have no portal audience.
+  const canToggleAttachmentVisibility = $derived(canEdit && isExternalRequest(item));
 
   // Local state for editor content (initialized from prop when editing starts)
   let editorContent = $state('');
@@ -82,6 +95,24 @@
 
   function startEditingDescription() {
     onstartEditingDescription?.();
+  }
+
+  // The description display is one big click-to-edit target. Links rendered
+  // inside it must keep their native behaviour: entering edit mode re-creates
+  // the editor and removes the anchor, which cancels the pending navigation in
+  // some browsers. Ignore clicks that land on a link so the browser follows it.
+  function isLinkTarget(event) {
+    return !!event.target?.closest?.('a[href]');
+  }
+
+  function handleDescriptionClick(event) {
+    if (isLinkTarget(event)) return;
+    startEditingDescription();
+  }
+
+  function handleDescriptionKeydown(event) {
+    if (event.key !== 'Enter' || isLinkTarget(event)) return;
+    startEditingDescription();
   }
 
   // Initialize editor content when editing starts
@@ -125,6 +156,10 @@
     onattachmentDelete?.(attachment);
   }
 
+  function handleToggleAttachmentVisibility(attachment) {
+    onattachmentToggleVisibility?.(attachment);
+  }
+
   function handleNewDiagram() {
     onnewDiagram?.();
   }
@@ -153,15 +188,18 @@
   {#if editingDescription}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="space-y-3" onkeydown={handleKeydown} data-testid="item-description-editor">
-      <MilkdownEditor
+      <PluginEditorHost
         bind:this={milkdownEditor}
         bind:content={editorContent}
         placeholder={t('items.enterDescription')}
         ariaLabel={t('common.description')}
         showToolbar={true}
         itemId={item.id}
+        entityType="item"
+        entityId={item.id}
         workspaceId={item.workspace_id}
         onImageInsert={handleImageInsert}
+        editorProviders={true}
       />
       <div class="flex items-center gap-2">
         <Button variant="primary" onclick={saveDescription} disabled={saving} keyboardHint={getDisplayString(saveShortcut)} dataTestid="item-description-save">
@@ -175,31 +213,33 @@
   {:else if item.description}
     {#if canEdit}
       <div
-        onclick={startEditingDescription}
-        onkeydown={(e) => e.key === 'Enter' && startEditingDescription()}
+        onclick={handleDescriptionClick}
+        onkeydown={handleDescriptionKeydown}
         role="button"
         tabindex="0"
-        class="description-hover text-left rounded cursor-pointer transition-colors duration-150"
+        class="description-hover text-start rounded cursor-pointer transition-colors duration-150"
+        dir="auto"
         style="color: var(--ds-text);"
         title={t('items.clickToEditDescription')}
         data-testid="item-description-display"
       >
-        <MilkdownEditor content={item.description} readonly={true} showToolbar={false} />
+        <MilkdownEditor content={item.description} readonly={true} showToolbar={false} workspaceId={item.workspace_id} />
       </div>
     {:else}
       <div
-        class="text-left rounded"
+        class="text-start rounded"
+        dir="auto"
         style="color: var(--ds-text);"
         data-testid="item-description-display"
       >
-        <MilkdownEditor content={item.description} readonly={true} showToolbar={false} />
+        <MilkdownEditor content={item.description} readonly={true} showToolbar={false} workspaceId={item.workspace_id} />
       </div>
     {/if}
   {:else if canEdit}
     <button
       data-testid="item-description-empty"
       onclick={startEditingDescription}
-      class="description-empty text-left w-full py-2 text-sm transition-colors cursor-pointer"
+      class="description-empty text-start text-[0.875rem] transition-colors cursor-pointer"
       title={t('items.clickToAddDescription')}
     >
       {t('items.noDescriptionProvided')}
@@ -207,15 +247,18 @@
   {:else}
     <p
       data-testid="item-description-empty"
-      class="text-left w-full py-2 text-sm"
+      class="text-start w-full py-2 text-[0.875rem]"
       style="color: var(--ds-text-subtle);"
     >
       {t('items.noDescriptionProvided')}
     </p>
   {/if}
   
-  <!-- Action buttons - icon only, label slides in on hover -->
-  <div class="mt-5 flex gap-1">
+  <!-- Action buttons - icon only, label slides in on hover. The row's -mx-2
+       compensates the buttons' px-2: icons sit on the text column edge and
+       the leftmost button's hover chip lines up with the title/description
+       hover pills (8px outset). Each button keeps its own hover chip. -->
+  <div class="mt-5 flex gap-1 -mx-2">
     {#if showLinkButton && canEdit}
       <button
         data-testid="add-link-button"
@@ -268,7 +311,7 @@
           onclick={handleNewDiagram}
           title={t('items.newDiagram')}
         >
-          <PenTool class="w-4 h-4 flex-shrink-0" />
+          <IconGraph class="w-4 h-4 flex-shrink-0" />
           <span class="action-label">{t('items.diagram')}</span>
         </button>
       {/if}
@@ -316,7 +359,9 @@
     <AttachmentDiagramList
       {attachments}
       {diagrams}
+      canToggleVisibility={canToggleAttachmentVisibility}
       ondelete={handleDeleteAttachment}
+      ontogglevisibility={handleToggleAttachmentVisibility}
       oneditdiagram={handleEditDiagram}
       ondeletediagram={handleDeleteDiagram}
     />
@@ -331,16 +376,26 @@
     width: calc(100% + 1rem);
     padding: 0.5rem;
     margin: -0.5rem;
+    border-radius: 0.25rem;
   }
-  .description-hover:hover {
-    background-color: var(--ds-background-input-hovered);
+  /* Same pill as the title hover: 8px outset in the neutral hover token. */
+  .description-hover:hover,
+  .description-empty:hover {
+    background-color: var(--ds-background-neutral-hovered);
   }
   .action-btn {
     overflow: hidden;
     color: var(--ds-text-subtle);
   }
+  /* Lucide glyphs draw ~0.7px inside their box at 16px (24-unit viewBox with
+     round caps), which reads as a right-shift against the text column at
+     high zoom. Compensate so the icon ink sits on the column edge. */
+  .action-btn > :global(svg) {
+    margin-left: -0.5px;
+  }
   .action-btn:hover {
     color: var(--ds-text-subtle);
+    background-color: var(--ds-background-neutral-hovered);
   }
   .action-label {
     max-width: 0;
@@ -356,6 +411,11 @@
     transform: translateX(0);
   }
   .description-empty {
+    /* Same 8px-outset pill geometry as .description-hover above. */
+    width: calc(100% + 1rem);
+    margin: 0 -0.5rem;
+    padding: 0.5rem;
+    border-radius: 0.25rem;
     color: var(--ds-text-subtle);
   }
 

@@ -4,12 +4,13 @@ package plugins
 
 import (
 	"errors"
-	"io"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
+
+	securejoin "github.com/cyphar/filepath-securejoin"
 
 	"windshift/internal/database"
 	"windshift/internal/logger"
@@ -24,6 +25,16 @@ type LoadedPlugin struct {
 	Extensions []Extension
 	Path       string
 	Enabled    bool
+	// Licensed mirrors the plugins-build field. The noplugins stub never
+	// loads plugins, so it stays false; it exists so callers that read
+	// LoadedPlugin compile in both build variants.
+	Licensed bool
+	// Permissions mirrors the plugins-build field. The stub never loads
+	// plugins, so it stays empty.
+	Permissions []string
+	// Assets mirrors the plugins-build field. The stub never loads plugins, so
+	// it stays empty.
+	Assets []Asset
 }
 
 // Manager handles plugin loading and lifecycle.
@@ -107,16 +118,19 @@ func (m *Manager) DeletePlugin(_ string) error {
 
 func (m *Manager) Close() error { return nil }
 
+func (m *Manager) GetAssetAuth(_, _ string) (RouteAuth, error) {
+	return "", errors.New("plugins disabled (built without -tags=plugins)")
+}
+
 func (m *Manager) GetAsset(pluginName, assetPath string) ([]byte, string, error) {
-	cleanPath := filepath.Clean(assetPath)
-	if strings.Contains(cleanPath, "..") {
-		return nil, "", errors.New("invalid asset path")
+	if err := validatePluginName(pluginName); err != nil {
+		return nil, "", err
 	}
 
-	fullPath := filepath.Join(m.pluginDir, pluginName, "assets", cleanPath)
 	assetsDir := filepath.Join(m.pluginDir, pluginName, "assets")
-	if !strings.HasPrefix(fullPath, assetsDir) {
-		return nil, "", errors.New("asset path outside assets directory")
+	fullPath, err := securejoin.SecureJoin(assetsDir, assetPath)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid asset path: %w", err)
 	}
 
 	data, err := os.ReadFile(fullPath)
@@ -137,15 +151,4 @@ func (m *Manager) GetCapabilities() []string { return nil }
 
 func (m *Manager) GetExtensions() map[string][]Extension {
 	return make(map[string][]Extension)
-}
-
-// ReadPluginFile reads a file from a plugin directory.
-func ReadPluginFile(pluginDir, pluginName, filename string) (io.ReadCloser, error) {
-	filePath := filepath.Join(pluginDir, pluginName, filename)
-
-	if !strings.HasPrefix(filePath, filepath.Join(pluginDir, pluginName)) {
-		return nil, errors.New("invalid file path")
-	}
-
-	return os.Open(filePath)
 }

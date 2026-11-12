@@ -1,19 +1,19 @@
 <script>
-  import { api } from '../api.js';
+  import { items } from '../api/items.js';
   import { updateCustomFieldValue } from '../utils/customFieldValueUpdates.js';
   import InlineTextEditor from './InlineTextEditor.svelte';
   import InlineSelectEditor from './InlineSelectEditor.svelte';
   import InlineDateEditor from './InlineDateEditor.svelte';
+  import InlineNumberEditor from './InlineNumberEditor.svelte';
+  import InlineDurationEditor from './InlineDurationEditor.svelte';
 
   let {
     item, field, fieldType = 'text', options = [], placeholder = '',
     required = false, disabled = false, className = '',
+    maxLines = null,
     enableSingleClick = false, enableDoubleClick = false,
     onitemUpdated = null, onupdateError = null, onclick: onclickProp = null
   } = $props();
-
-  let editorComponent = $state(null);
-  let saving = false;
 
   // Get current field value
   const fieldValue = $derived(getFieldValue(item, field));
@@ -29,32 +29,28 @@
     return item[field] ?? null;
   }
 
+  // Returns the promise so the editor's commit can await it and surface a
+  // failure inline instead of via the imperative confirm/reject dance.
   // Keep simple field/custom-value updates here; field-specific orchestration
   // belongs to itemDetailStore and ListCellRenderer.
   async function handleSave(detail) {
     const { value } = detail;
-    if (saving) return;
-
     try {
-      saving = true;
       let updatedItem;
       if (field.startsWith('custom_field_')) {
         const fieldId = field.replace('custom_field_', '');
         // The server merges custom field patches per field, so a single-field
         // payload leaves the item's other fields untouched.
-        updatedItem = await updateCustomFieldValue(api, item.id, fieldId, value);
+        updatedItem = await updateCustomFieldValue(item.id, fieldId, value);
       } else {
-        updatedItem = await api.items.update(item.id, { [field]: value });
+        updatedItem = await items.update(item.id, { [field]: value });
       }
       const merged = { ...item, ...updatedItem };
-      editorComponent?.confirmSave?.(value);
       onitemUpdated?.({ item: merged, field, value });
+      return merged;
     } catch (error) {
-      const errorMessage = error?.message || 'Failed to save changes';
-      editorComponent?.rejectSave?.(errorMessage);
-      onupdateError?.({ error: errorMessage, field, value });
-    } finally {
-      saving = false;
+      onupdateError?.({ error: error?.message || 'Failed to save changes', field, value });
+      throw error;
     }
   }
 
@@ -67,7 +63,6 @@
 
 {#if fieldType === 'select'}
   <InlineSelectEditor
-    bind:this={editorComponent}
     value={fieldValue}
     {options}
     {placeholder}
@@ -78,7 +73,30 @@
   />
 {:else if fieldType === 'date'}
   <InlineDateEditor
-    bind:this={editorComponent}
+    value={fieldValue}
+    {placeholder}
+    {required}
+    {disabled}
+    {className}
+    {enableSingleClick}
+    {enableDoubleClick}
+    onsave={handleSave}
+    onclick={handleClick}
+  />
+{:else if fieldType === 'number'}
+  <InlineNumberEditor
+    value={fieldValue}
+    {placeholder}
+    {required}
+    {disabled}
+    {className}
+    {enableSingleClick}
+    {enableDoubleClick}
+    onsave={handleSave}
+    onclick={handleClick}
+  />
+{:else if fieldType === 'duration'}
+  <InlineDurationEditor
     value={fieldValue}
     {placeholder}
     {required}
@@ -91,12 +109,12 @@
   />
 {:else}
   <InlineTextEditor
-    bind:this={editorComponent}
     value={fieldValue}
     {placeholder}
     {required}
     {disabled}
     {className}
+    {maxLines}
     {enableSingleClick}
     {enableDoubleClick}
     onsave={handleSave}

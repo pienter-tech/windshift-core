@@ -1,9 +1,10 @@
 import { fetchV2Data } from './core.js';
 
 // Built-in framework packs (WI-1141). System-administrator surface: list the
-// packs embedded in the server, then apply or verify one against an existing
-// workspace (workspace_id) or create/reuse one by name (workspace_name). The
-// response is the same PackApplyReport the archive upload path produces.
+// packs embedded in the server, then apply or verify one against a new
+// workspace named by workspace_name. Framework packs only apply to new
+// workspaces; an existing name fails the workspace stage. The response is the
+// same PackApplyReport the archive upload path produces.
 export const packs = {
   list: () => fetchV2Data('/packs'),
   apply: (name, target) =>

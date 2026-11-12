@@ -26,6 +26,7 @@ import (
 	"windshift/internal/aitools"
 	"windshift/internal/auth"
 	"windshift/internal/authz"
+	"windshift/internal/blobstore"
 	"windshift/internal/config"
 	"windshift/internal/database"
 	"windshift/internal/email"
@@ -33,6 +34,7 @@ import (
 	"windshift/internal/events"
 	"windshift/internal/handlers"
 	"windshift/internal/health"
+	"windshift/internal/integrations/docmost"
 	"windshift/internal/itemevents"
 	"windshift/internal/ldap"
 	"windshift/internal/licensing"
@@ -45,6 +47,8 @@ import (
 	"windshift/internal/objecttranslation"
 	"windshift/internal/plugins"
 	"windshift/internal/portalwebauthn"
+	"windshift/internal/ratelimit"
+	"windshift/internal/reporting"
 	"windshift/internal/repository"
 	"windshift/internal/restapi"
 	v1 "windshift/internal/restapi/v1"
@@ -140,6 +144,8 @@ type Server struct {
 	notificationManager          *handlers.NotificationManager
 	notificationService          *services.NotificationService
 	notificationScheduler        *scheduler.NotificationScheduler
+	dueDateReminderScheduler     *scheduler.DueDateReminderScheduler
+	outboundEmailScheduler       *scheduler.OutboundEmailScheduler
 	recurrenceScheduler          *scheduler.RecurrenceScheduler
 	cfvCleanupScheduler          *scheduler.CFVCleanupScheduler
 	todoistSyncScheduler         *scheduler.TodoistSyncScheduler
@@ -188,24 +194,28 @@ type Server struct {
 	memoryBudget        config.MemoryBudget
 	metrics             *appmetrics.Metrics
 
-	loginRateLimiter      *middleware.RateLimiter
-	runnerRegisterLimiter *middleware.RateLimiter
-	fidoRateLimiter       *middleware.RateLimiter
-	authRateLimiter       *middleware.RateLimiter
-	scimRateLimiter       *middleware.RateLimiter
-	portalSubmitLimiter   *middleware.RateLimiter
-	portalSearchLimiter   *middleware.RateLimiter
-	emailVerifyLimiter    *middleware.RateLimiter
-	setupLimiter          *middleware.RateLimiter
-	ssoRateLimiter        *middleware.RateLimiter
-	portalAuthLimiter     *middleware.RateLimiter
-	oauthTokenLimiter     *middleware.RateLimiter
-	aiRateLimiter         *middleware.RateLimiter
-	uploadLimiter         *middleware.RateLimiter
-	webhookLimiter        *middleware.RateLimiter
-	searchLimiter         *middleware.RateLimiter
-	calendarFeedLimiter   *middleware.RateLimiter
-	publicBoardLimiter    *middleware.RateLimiter
+	loginRateLimiter      *ratelimit.Limiter
+	runnerRegisterLimiter *ratelimit.Limiter
+	fidoRateLimiter       *ratelimit.Limiter
+	authRateLimiter       *ratelimit.Limiter
+	scimRateLimiter       *ratelimit.Limiter
+	portalSubmitLimiter   *ratelimit.Limiter
+	portalSearchLimiter   *ratelimit.Limiter
+	emailVerifyLimiter    *ratelimit.Limiter
+	setupLimiter          *ratelimit.Limiter
+	ssoRateLimiter        *ratelimit.Limiter
+	portalAuthLimiter     *ratelimit.Limiter
+	oauthTokenLimiter     *ratelimit.Limiter
+	aiRateLimiter         *ratelimit.Limiter
+	widgetGenerateLimiter *ratelimit.Limiter
+	uploadLimiter         *ratelimit.Limiter
+	webhookLimiter        *ratelimit.Limiter
+	searchLimiter         *ratelimit.Limiter
+	calendarFeedLimiter   *ratelimit.Limiter
+	publicBoardLimiter    *ratelimit.Limiter
+	pluginPublicLimiter   *ratelimit.Limiter
+	v2RateLimiter         *ratelimit.Limiter
+	loginLockout          *middleware.LoginLockout
 	userConcurrency       *middleware.UserConcurrencyLimiter
 
 	actualPort         int
@@ -404,37 +414,43 @@ func (s *Server) initialize() error {
 		return err
 	}
 
-	var userKeyedOpts []middleware.RateLimiterOption
-	userKeyedOpts = append(userKeyedOpts, middleware.WithUserKeyed())
+	// Core /api limiters. Authenticated surfaces key by user so a user's quota
+	// is shared across clients and tokens; unauthenticated surfaces key by IP.
+	// Public boards and OAuth /token stay IP-keyed even when DisableIPRateLimit
+	// is set, otherwise NAT deployments would lose brute-force protection.
+	ipKey := ratelimit.ByIP(ipExtractor)
+	userKey := ratelimit.ByUserOrIP(ipExtractor)
 	if cfg.DisableIPRateLimit {
-		userKeyedOpts = append(userKeyedOpts, middleware.WithDisableIPLimit())
+		userKey = ratelimit.ByUser()
 	}
 
-	s.loginRateLimiter = middleware.NewRateLimiter(5.0/60.0, 10, cfg.UseProxy, additionalProxyList)
-	s.runnerRegisterLimiter = middleware.NewRateLimiter(5.0/60.0, 10, cfg.UseProxy, additionalProxyList)
-	s.fidoRateLimiter = middleware.NewRateLimiter(10.0/60.0, 15, cfg.UseProxy, additionalProxyList)
-	s.scimRateLimiter = middleware.NewRateLimiter(10.0, 100, cfg.UseProxy, additionalProxyList)
-	s.portalSubmitLimiter = middleware.NewRateLimiter(5.0/60.0, 10, cfg.UseProxy, additionalProxyList)
-	s.portalSearchLimiter = middleware.NewRateLimiter(10.0/60.0, 15, cfg.UseProxy, additionalProxyList)
-	s.emailVerifyLimiter = middleware.NewRateLimiter(10.0/60.0, 15, cfg.UseProxy, additionalProxyList)
-	s.setupLimiter = middleware.NewRateLimiter(20.0/60.0, 30, cfg.UseProxy, additionalProxyList)
-	s.ssoRateLimiter = middleware.NewRateLimiter(10.0/60.0, 5, cfg.UseProxy, additionalProxyList)
-	s.portalAuthLimiter = middleware.NewRateLimiter(3.0/60.0, 3, cfg.UseProxy, additionalProxyList)
-	s.calendarFeedLimiter = middleware.NewRateLimiter(10.0/60.0, 15, cfg.UseProxy, additionalProxyList)
-	// Public boards are anonymous and can trigger substantial query and file IO.
-	// Keep this limiter IP-keyed even when authenticated IP limiting is disabled.
-	s.publicBoardLimiter = middleware.NewRateLimiter(30.0/60.0, 60, cfg.UseProxy, additionalProxyList)
-	// OAuth /token is unauthenticated (server-to-server), so it must stay
-	// IP-keyed and must NOT honor DisableIPRateLimit — otherwise enabling that
-	// flag for NAT deployments would silently remove all brute-force protection
-	// on client_secret/code guessing. Kept separate from the user-keyed
-	// authRateLimiter for exactly this reason.
-	s.oauthTokenLimiter = middleware.NewRateLimiter(20.0/60.0, 30, cfg.UseProxy, additionalProxyList)
-	s.authRateLimiter = middleware.NewRateLimiter(20.0/60.0, 30, cfg.UseProxy, additionalProxyList, userKeyedOpts...)
-	s.aiRateLimiter = middleware.NewRateLimiter(20.0/60.0, 30, cfg.UseProxy, additionalProxyList, userKeyedOpts...)
-	s.uploadLimiter = middleware.NewRateLimiter(10.0/60.0, 15, cfg.UseProxy, additionalProxyList, userKeyedOpts...)
-	s.webhookLimiter = middleware.NewRateLimiter(10.0/60.0, 15, cfg.UseProxy, additionalProxyList, userKeyedOpts...)
-	s.searchLimiter = middleware.NewRateLimiter(20.0/60.0, 30, cfg.UseProxy, additionalProxyList, userKeyedOpts...)
+	s.loginRateLimiter = ratelimit.New(5.0/60.0, 10, ipKey)
+	s.runnerRegisterLimiter = ratelimit.New(5.0/60.0, 10, ipKey)
+	s.fidoRateLimiter = ratelimit.New(10.0/60.0, 15, ipKey)
+	s.scimRateLimiter = ratelimit.New(10.0, 100, ipKey)
+	s.portalSubmitLimiter = ratelimit.New(5.0/60.0, 10, ipKey)
+	s.portalSearchLimiter = ratelimit.New(10.0/60.0, 15, ipKey)
+	s.emailVerifyLimiter = ratelimit.New(10.0/60.0, 15, ipKey)
+	s.setupLimiter = ratelimit.New(20.0/60.0, 30, ipKey)
+	s.ssoRateLimiter = ratelimit.New(10.0/60.0, 5, ipKey)
+	s.portalAuthLimiter = ratelimit.New(3.0/60.0, 3, ipKey)
+	s.calendarFeedLimiter = ratelimit.New(10.0/60.0, 15, ipKey)
+	s.publicBoardLimiter = ratelimit.New(30.0/60.0, 60, ipKey)
+	s.pluginPublicLimiter = ratelimit.New(30.0/60.0, 60, ipKey)
+	s.oauthTokenLimiter = ratelimit.New(20.0/60.0, 30, ipKey)
+	s.authRateLimiter = ratelimit.New(20.0/60.0, 30, userKey)
+	s.aiRateLimiter = ratelimit.New(20.0/60.0, 30, userKey)
+	// Widget generation is a much heavier call than a chat turn and users create
+	// widgets rarely, so it gets its own tighter per-user bucket: 20/hour.
+	s.widgetGenerateLimiter = ratelimit.New(20.0/3600.0, 20, userKey)
+	s.uploadLimiter = ratelimit.New(10.0/60.0, 15, userKey)
+	s.webhookLimiter = ratelimit.New(10.0/60.0, 15, userKey)
+	s.searchLimiter = ratelimit.New(20.0/60.0, 30, userKey)
+	// Backstop for the v2 APIs, which previously had no request-rate limit at
+	// all. Generous enough not to interfere with normal SPA usage; the point is
+	// to stop runaway clients.
+	s.v2RateLimiter = ratelimit.New(100.0, 200, userKey)
+	s.loginLockout = middleware.NewLoginLockout()
 	// Per-user in-flight concurrency cap for the whole /api surface — bounds how
 	// many shared DB-pool connections one user can hold so a runaway client
 	// can't starve the others. Applied to the api group below.
@@ -482,7 +498,7 @@ func (s *Server) initialize() error {
 	healthHandler := health.NewHandler(s.db.GetDB())
 	mux.HandleFunc("GET /healthz", healthHandler.Liveness)
 	mux.HandleFunc("GET /readyz", healthHandler.Readiness)
-	s.metrics = appmetrics.New(s.db)
+	s.metrics = appmetrics.New(s.db, s.config.MetricsToken)
 	mux.Handle("GET /metrics", s.metrics.Handler())
 
 	nmCfg := handlers.DefaultNotificationManagerConfig()
@@ -516,8 +532,23 @@ func (s *Server) initialize() error {
 
 	smtpSender := smtp.NewNotificationSMTPSender(s.db)
 	s.notificationScheduler = scheduler.NewNotificationScheduler(s.db, smtpSender, cfg.Notification.BatchInterval, s.notificationService)
+	if cfg.Notification.OutboxBatchSize > 0 {
+		s.notificationScheduler.SetOutboxBatchSize(cfg.Notification.OutboxBatchSize)
+	}
 	s.notificationScheduler.Start()
 	slog.Info("notification scheduler started")
+
+	s.dueDateReminderScheduler = scheduler.NewDueDateReminderScheduler(s.db, s.notificationService, scheduler.DueDateReminderSchedulerConfig{
+		TickInterval: cfg.Reminders.Interval,
+		BatchSize:    cfg.Reminders.BatchSize,
+	})
+	s.dueDateReminderScheduler.Start()
+
+	// The outbound email pool drains the threaded-reply and @mention outboxes
+	// on a fast, bounded cadence, separate from the 5-minute digest batching.
+	s.outboundEmailScheduler = scheduler.NewOutboundEmailScheduler(s.db, smtpSender, cfg.Notification.OutboxInterval, cfg.Notification.OutboxBatchSize)
+	s.outboundEmailScheduler.Start()
+	slog.Info("outbound email scheduler started")
 
 	// WorkflowService is constructed here (moved up from later in bootstrap) so the
 	// recurrence scheduler can resolve a workspace+item-type's initial status the
@@ -555,7 +586,7 @@ func (s *Server) initialize() error {
 	s.actionService = services.NewActionService(s.db, services.DefaultActionServiceConfig(), chainStore)
 	s.actionService.SetNotificationService(s.notificationService)
 	s.actionService.SetPermissionService(permService)
-	if err := services.PrepareDurableActionEngine(context.Background(), s.eventEngine, s.actionService, cfg.ActivateDurableActions); err != nil {
+	if err := services.PrepareDurableActionEngine(context.Background(), s.eventEngine, s.actionService); err != nil {
 		return fmt.Errorf("prepare durable action consumers: %w", err)
 	}
 	slog.Info("action service initialized")
@@ -563,7 +594,7 @@ func (s *Server) initialize() error {
 	s.assetActionService = services.NewAssetActionService(s.db, services.DefaultActionServiceConfig(), chainStore)
 	s.assetActionService.SetNotificationService(s.notificationService)
 	s.assetActionService.SetPermissionService(permService)
-	if err := services.PrepareDurableAssetActionEngine(context.Background(), s.eventEngine, s.assetActionService, cfg.ActivateDurableAssetActions); err != nil {
+	if err := services.PrepareDurableAssetActionEngine(context.Background(), s.eventEngine, s.assetActionService); err != nil {
 		return fmt.Errorf("prepare durable asset action consumers: %w", err)
 	}
 	slog.Info("asset action service initialized")
@@ -575,6 +606,7 @@ func (s *Server) initialize() error {
 	if baseURL == "" {
 		baseURL = fmt.Sprintf("http://localhost:%s%s", cfg.Port, cfg.ContextPath)
 	}
+	smtpSender.SetBaseURL(baseURL)
 
 	emailVerificationService := services.NewEmailVerificationService(s.db, smtpSender, baseURL)
 
@@ -667,7 +699,40 @@ func (s *Server) initialize() error {
 	if webAuthnConfig != nil {
 		webAuthnHandler = handlers.NewWebAuthnHandler(s.db, permService, sessionManager, webAuthnConfig, ipExtractor)
 	}
-	publicBoardHandler := handlers.NewPublicBoardHandler(s.db, permService, cfg.AttachmentPath)
+	attachmentStorage, storageErr := newAttachmentStorage(cfg)
+	if storageErr != nil {
+		return fmt.Errorf("initialize attachment storage: %w", storageErr)
+	}
+	if attachmentStorage.Enabled() {
+		if attachmentStorage.Backend() == config.StorageBackendS3 {
+			// The S3 probe retries transient failures and tolerates an
+			// AccessDenied HeadBucket; see blobstore.probeWithRetry.
+			if err := attachmentStorage.Probe(context.Background()); err != nil {
+				return fmt.Errorf("attachment object storage is unavailable: %w", err)
+			}
+		}
+		slog.Info("attachments enabled", "backend", attachmentStorage.Backend(), "location", attachmentStorage.Describe())
+	} else {
+		slog.Info("attachments disabled (no attachment path specified)")
+	}
+	// Readiness (/readyz) reports attachment reachability; liveness (/healthz)
+	// intentionally does not depend on it.
+	healthHandler.SetAttachmentProbe(attachmentStorage)
+	// Item deletion removes attachment blobs through the configured backend.
+	services.SetItemAttachmentBlobRemover(attachmentStorage)
+
+	// CSV import staging is transient and stays on local disk. Local mode keeps
+	// the historical ATTACHMENT_PATH behavior (empty disables imports); S3 mode
+	// falls back to the OS temp directory when no local path is configured.
+	importScratch := cfg.Storage.LocalPath
+	if importScratch == "" {
+		importScratch = cfg.AttachmentPath
+	}
+	if importScratch == "" && cfg.Storage.Backend == config.StorageBackendS3 {
+		importScratch = os.TempDir()
+	}
+
+	publicBoardHandler := handlers.NewPublicBoardHandler(s.db, permService, attachmentStorage)
 	permissionHandler := handlers.NewPermissionHandlerWithCache(repository.NewPermissionRepository(s.db), permService, logger.NewAuditor(s.db))
 	apiTokenHandler := handlers.NewAPITokenHandler(
 		tokenManager,
@@ -719,12 +784,20 @@ func (s *Server) initialize() error {
 	pageApplication := services.NewPageApplicationService(pageService, pagePermissionService)
 	pageDiagramService := services.NewPageDiagramService(
 		s.db,
-		cfg.AttachmentPath,
+		attachmentStorage,
 		pageApplication,
 		pagePermissionService,
 		permService,
 	)
+	docmostClient := docmost.NewClient()
+	docmostService := services.NewDocmostService(
+		repository.NewIntegrationProviderRepository(s.db),
+		repository.NewIntegrationTokenRepository(s.db),
+		services.NewDocmostCredentialEncryption(cfg.Auth.SessionSecret),
+		docmostClient,
+	)
 	knowledgeRetrieval := services.NewKnowledgeRetrievalService(s.db, pagePermissionService)
+	knowledgeRetrieval.SetDocmost(docmostService, docmostClient)
 	knowledgeSearchHandler := handlers.NewKnowledgeSearchHandler(knowledgeRetrieval)
 	knowledgePublication := services.NewKnowledgePublicationService(s.db)
 	pageLabelService := services.NewPageLabelService(pageLabelRepo, logger.NewAuditor(s.db))
@@ -784,7 +857,6 @@ func (s *Server) initialize() error {
 	iterationTypeHandler := handlers.NewEnumHandler(
 		services.NewEnumService(s.db, iterationTypeConfig),
 		func() any { return &models.IterationType{} }).WithGlobalMutationPermission(permService, models.PermissionIterationManage)
-	personalLabelHandler := handlers.NewPersonalLabelHandler(s.db, permService)
 	reviewHandler := handlers.NewReviewHandler(s.db, permService)
 	calendarFeedHandler := handlers.NewCalendarFeedHandler(s.db, permService, cfg.BaseURL)
 	securitySettingsHandler := handlers.NewSecuritySettingsHandler(repository.NewSystemSettingRepository(s.db), logger.NewAuditor(s.db), cfg.Plugins.Disabled)
@@ -809,7 +881,7 @@ func (s *Server) initialize() error {
 		repository.NewCredentialRepository(s.db),
 		logger.NewAuditor(s.db),
 		sessionManager,
-		s.loginRateLimiter,
+		s.loginLockout,
 		permService,
 		emailVerificationService,
 		ipExtractor,
@@ -820,9 +892,11 @@ func (s *Server) initialize() error {
 	invitationHandler := handlers.NewInvitationHandler(invitationService)
 
 	themeHandler := handlers.NewThemeHandler(services.NewThemeService(repository.NewThemeRepository(s.db)), logger.NewAuditor(s.db)).WithObjectTranslations(objectTranslationService)
-	objectTranslationHandler := handlers.NewObjectTranslationHandler(objectTranslationService)
+	generalSettingsHandler := handlers.NewGeneralSettingsHandler(repository.NewSystemSettingRepository(s.db), repository.NewThemeRepository(s.db), logger.NewAuditor(s.db))
+	objectTranslationHandler := handlers.NewObjectTranslationHandler(objectTranslationService, logger.NewAuditor(s.db))
 	userPreferencesService := services.NewUserPreferencesService(repository.NewUserPreferencesRepository(s.db), repository.NewThemeRepository(s.db), permService)
 	userPreferencesHandler := handlers.NewUserPreferencesHandler(userPreferencesService)
+	customWidgetHandler := handlers.NewCustomWidgetHandler(repository.NewCustomWidgetRepository(s.db), permService)
 	homepageHandler := handlers.NewHomepageHandler(
 		repository.NewWorkspaceRepository(s.db),
 		repository.NewItemRepository(s.db),
@@ -850,7 +924,7 @@ func (s *Server) initialize() error {
 
 	permissionMiddleware := middleware.NewPermissionMiddleware(s.db, permService)
 
-	setupHandler := handlers.NewSetupHandler(s.db, sessionManager, authMiddleware)
+	setupHandler := handlers.NewSetupHandler(s.db, sessionManager, authMiddleware, ipExtractor)
 
 	ssoHandler := handlers.NewSSOHandler(s.db, sessionManager, permService, emailVerificationService, s.pluginManager, cfg.Auth.SessionSecret, baseURL, cfg.AllowedHosts, cfg.DisableCSRF, ipExtractor, cfg.UseProxy, additionalProxyList)
 
@@ -898,6 +972,9 @@ func (s *Server) initialize() error {
 		slog.Info("LLM fallback service not configured")
 	}
 	llmManager := llm.NewConnectionManager(s.db, scmProviderHandler.GetEncryption(), fallbackLLMClient)
+	// Widget generation uses the shared prompt store and connection manager, so
+	// it follows the same per-feature AI configuration as the other features.
+	customWidgetGenerateHandler := handlers.NewCustomWidgetGenerateHandler(llmManager, promptStore)
 	llmModelCache := llm.NewModelCache(s.db)
 	llmManager.SetModelCache(llmModelCache) // freshest vision-capability resolution
 	llmModelRefresher := llm.NewModelRefresher(llmModelCache)
@@ -980,7 +1057,7 @@ func (s *Server) initialize() error {
 	assetHandler := handlers.NewAssetHandler(s.db, permService, cfg.AttachmentPath)
 	assetApplication := services.NewAssetApplicationService(s.db, permService, assetHandler.AssetService(), assetHandler.AssetPermissionService()).
 		WithLinks(itemLinkService).
-		WithImportStorage(cfg.AttachmentPath)
+		WithImportStorage(importScratch)
 	s.actionService.SetAssetNodeServices(assetHandler.AssetService(), assetHandler.AssetPermissionService())
 	if n, err := assetApplication.ReconcileInterruptedImports(); err != nil {
 		slog.Warn("failed to reconcile interrupted asset imports", slog.Any("error", err))
@@ -999,8 +1076,16 @@ func (s *Server) initialize() error {
 	)
 	assetActionHandler := handlers.NewAssetActionHandler(repository.NewAssetActionRepository(s.db), assetHandler, s.assetActionService, logger.NewAuditor(s.db))
 
-	jiraImportHandler := handlers.NewJiraImportHandler(s.db, cfg.Auth.SessionSecret, cfg.Jira.CapturePayloadsDir).
-		WithAuthorizationCacheInvalidator(authorizationCacheInvalidator)
+	jiraImportHandler := handlers.NewJiraImportHandler(s.db, cfg.Auth.SessionSecret, cfg.Jira.CapturePayloadsDir, attachmentStorage).
+		WithAuthorizationCacheInvalidator(authorizationCacheInvalidator).
+		WithImportMaxDuration(cfg.Jira.ImportMaxDuration).
+		WithImportWatchers(cfg.Jira.ImportWatchers).
+		WithImportConcurrency(cfg.Jira.ImportConcurrency)
+	if n, err := jiraImportHandler.ReconcileInterruptedImports(); err != nil {
+		slog.Warn("failed to reconcile interrupted Jira imports", slog.Any("error", err))
+	} else if n > 0 {
+		slog.Info("reconciled interrupted Jira imports", slog.Int("count", n))
+	}
 
 	// Share one credential manager so every in-process refresh/callback path
 	// uses the same per-channel lock and CAS config writer.
@@ -1009,13 +1094,16 @@ func (s *Server) initialize() error {
 	emailProviderHandler := handlers.NewEmailProviderHandler(s.db, scmProviderHandler.GetEncryption(), baseURL, channelService)
 	emailProviderHandler.SetCredentialManager(emailCredManager)
 
-	s.ticketImport = services.NewTicketImportService(s.db, permService, cfg.AttachmentPath)
+	s.ticketImport = services.NewTicketImportService(s.db, permService, importScratch)
 	if n, err := s.ticketImport.ReconcileInterrupted(); err != nil {
 		slog.Warn("failed to reconcile interrupted ticket imports", slog.Any("error", err))
 	} else if n > 0 {
 		slog.Info("reconciled interrupted ticket imports", slog.Int("count", n))
 	}
-	s.emailScheduler = scheduler.NewEmailScheduler(s.db, emailCredManager, cfg.AttachmentPath)
+	s.emailScheduler = scheduler.NewEmailScheduler(s.db, emailCredManager, attachmentStorage)
+	s.emailScheduler.SetPollInterval(cfg.Email.PollInterval)
+	s.emailScheduler.SetBatchSize(cfg.Email.BatchSize)
+	s.emailScheduler.SetPollConcurrency(cfg.Email.PollConcurrency)
 	s.emailScheduler.Start()
 	slog.Info("email scheduler started (IMAP polling)")
 
@@ -1035,7 +1123,7 @@ func (s *Server) initialize() error {
 	s.kbEventsRetention.Start()
 
 	integrationProviderHandler := handlers.NewIntegrationProviderHandler(repository.NewIntegrationProviderRepository(s.db), scmProviderHandler.GetEncryption(), logger.NewAuditor(s.db))
-	integrationOAuthHandler := handlers.NewIntegrationOAuthHandler(s.db, scmProviderHandler.GetEncryption(), baseURL)
+	integrationOAuthHandler := handlers.NewIntegrationOAuthHandler(s.db, scmProviderHandler.GetEncryption(), baseURL, docmostService)
 	integrationItemLinksHandler := handlers.NewIntegrationItemLinksHandler(s.db, scmProviderHandler.GetEncryption(), permService)
 	todoistSyncHandler := handlers.NewTodoistSyncHandler(s.db, scmProviderHandler.GetEncryption())
 	s.todoistSyncScheduler = scheduler.NewTodoistSyncScheduler(s.db, scmProviderHandler.GetEncryption())
@@ -1046,6 +1134,7 @@ func (s *Server) initialize() error {
 	issueSyncService := scm.NewIssueSyncService(s.db, scmProviderHandler.GetEncryption())
 	issueSyncService.SetUserService(services.NewUserReadService(s.db))
 	issueSyncHandler := handlers.NewIssueSyncHandler(issueSyncService, permService, logger.NewAuditor(s.db))
+	scmItemLinksHandler.SetIssueSync(issueSyncService)
 	issueSyncHandler.SetSyncConfigChanged(func() { s.refreshIssueSyncLoop(issueSyncService) })
 	s.refreshIssueSyncLoop(issueSyncService)
 
@@ -1076,6 +1165,17 @@ func (s *Server) initialize() error {
 	// process-wide item-change publisher (WI-483 installed a no-op default), and
 	// give the item handler the hub so GET /items/{id}/events can subscribe.
 	sseHub := services.NewSSEHub()
+	// Each tab holds one stream per topic family (notifications, workspace/
+	// collection, item detail) and reconnects briefly overlap, so the old
+	// default of 8 tripped on ordinary multi-tab use. Bound the count, but
+	// leave room for several tabs per user.
+	sseHub.SetMaxUserStreams(cfg.MaxUserStreams)
+	if os.Getenv("WINDSHIFT_E2E_TEST_HOOKS") == "1" {
+		// Parallel e2e workers share the admin user; rapid reloads briefly
+		// overlap streams and would trip the production per-user cap, turning a
+		// healthy reconnect into a spurious 429 console error.
+		sseHub.SetMaxUserStreams(256)
+	}
 	services.SetItemChangePublisher(sseHub)
 	services.SetWorkspaceChangePublisher(sseHub)
 	services.SetUserChangePublisher(sseHub)
@@ -1103,11 +1203,27 @@ func (s *Server) initialize() error {
 
 	// Wire email reply service for bidirectional email threading
 	emailReplyService := services.NewEmailReplyService(s.db, smtpSender)
+	emailReplyService.SetBaseURL(baseURL)
 	if err := services.PrepareDurableEmailReplyEngine(context.Background(), s.eventEngine, emailReplyService); err != nil {
 		return fmt.Errorf("prepare durable email reply consumer: %w", err)
 	}
 	commentService.SetEmailReplyService(emailReplyService)
 	s.notificationScheduler.SetEmailReplyOutbox(emailReplyService)
+	s.outboundEmailScheduler.SetEmailReplyOutbox(emailReplyService)
+
+	// Dedicated @mention emails (WI-1726): carry the message body and
+	// re-authorize the recipient before SMTP delivery. mentionService was
+	// constructed above, before this notifier existed.
+	mentionEmailService := services.NewMentionEmailService(
+		s.db,
+		smtpSender,
+		s.notificationService,
+		services.NewNotificationAuthorizer(s.db, permService, nil),
+	)
+	mentionEmailService.SetBaseURL(baseURL)
+	mentionService.SetMentionEmailNotifier(mentionEmailService)
+	s.notificationScheduler.SetMentionEmailOutbox(mentionEmailService)
+	s.outboundEmailScheduler.SetMentionEmailOutbox(mentionEmailService)
 
 	// External request participants (WI-1136): the reply service sends the
 	// customer-facing "you were added" notice.
@@ -1124,6 +1240,10 @@ func (s *Server) initialize() error {
 	// Wire EventCoordinator into email processor so inbound-email-created items
 	// emit the same notifications/webhooks/action events as REST-created ones.
 	s.emailScheduler.SetEventCoordinator(eventCoordinator)
+
+	// Optional intake receipts reuse the reply service's SMTP + portal-link
+	// plumbing (WI-1712).
+	s.emailScheduler.SetConfirmationSender(emailReplyService)
 
 	slog.Info("comment service initialized")
 
@@ -1230,6 +1350,10 @@ func (s *Server) initialize() error {
 		repository.NewItemRepository(s.db),
 	)
 	scmSyncService.SetApprovalService(approvalService)
+	scmItemLinksHandler.SetSmartCommitServices(
+		workflowService, commentService, permService, conditionService, approvalService,
+		repository.NewItemRepository(s.db),
+	)
 	// Outbound "@agent" PR-comment continuation trigger (WI-426): the sync poller
 	// hands detected comments to the binding service to continue the PR. Nil-safe
 	// when the coding-agent harness is disabled (bindingSvc may be nil).
@@ -1244,6 +1368,7 @@ func (s *Server) initialize() error {
 	//     attachment via the scm.MilestoneAttacher adapter).
 	scmSyncService.SetActionEvents(s.actionService)
 	scmSyncService.SetDurableActionEvents(s.actionService)
+	scmItemLinksHandler.SetActionEvents(s.actionService, s.actionService)
 	milestoneItemUpdater := services.NewItemUpdateApplicationService(s.db, permService)
 	milestoneItemUpdater.SetEmitter(eventCoordinator)
 	milestoneAttacher := scm.NewMilestoneAttacher(
@@ -1284,14 +1409,14 @@ func (s *Server) initialize() error {
 
 	// Webhook handler
 	webhookHandler := handlers.NewWebhookHandler(repository.NewChannelRepository(s.db), repository.NewItemRepository(s.db), webhookSender, permService, channelService, logger.NewAuditor(s.db))
-	portalHandler := handlers.NewPortalHandler(s.db, sessionManager, portalSessionManager, ipExtractor, cfg.AttachmentPath)
+	portalHandler := handlers.NewPortalHandler(s.db, sessionManager, portalSessionManager, ipExtractor, attachmentStorage)
 	portalHandler.SetApprovalService(approvalService)
 	portalHandler.SetEventCoordinator(eventCoordinator)
 	portalHandler.SetChannelService(channelService)
 	portalHandler.SetKnowledgePublicationService(knowledgePublication)
 	portalHandler.SetKBSignalService(services.NewKBSignalService(s.db))
 	portalHandler.SetCommentService(commentService)
-	portalAuthHandler := handlers.NewPortalAuthHandler(repository.NewPortalAuthRepository(s.db), portalSessionManager, sessionManager, magicLinkService, ipExtractor)
+	portalAuthHandler := handlers.NewPortalAuthHandler(repository.NewPortalAuthRepository(s.db), repository.NewPortalCustomerRepository(s.db), portalSessionManager, sessionManager, magicLinkService, ipExtractor)
 	var portalWebAuthnHandler *handlers.PortalWebAuthnHandler
 	if portalWebAuthnConfig != nil {
 		portalWebAuthnHandler = handlers.NewPortalWebAuthnHandler(
@@ -1318,30 +1443,53 @@ func (s *Server) initialize() error {
 
 	var attachmentHandler *handlers.AttachmentHandler
 	var attachmentSettingsHandler *handlers.AttachmentSettingsHandler
-	if cfg.AttachmentPath != "" {
-		slog.Info("attachments enabled", "path", cfg.AttachmentPath)
-		attachmentHandler = handlers.NewAttachmentHandler(s.db, cfg.AttachmentPath, permService)
+	if attachmentStorage.Enabled() {
+		attachmentHandler = handlers.NewAttachmentHandler(s.db, attachmentStorage, permService)
 		attachmentHandler.SetApprovalService(approvalService)
 		attachmentHandler.SetPagePermissionService(pagePermissionService)
 		attachmentHandler.SetChannelService(channelService)
-		attachmentSettingsService := services.NewAttachmentSettingsService(s.db)
-		if err := attachmentSettingsService.Initialize(cfg.AttachmentPath); err != nil {
+		attachmentSettingsService := services.NewAttachmentSettingsService(s.db, attachmentStorage)
+		if err := attachmentSettingsService.Initialize(); err != nil {
 			slog.Warn("failed to initialize attachment settings", "error", err)
 		}
-		formHandler.SetItemAttachmentService(services.NewItemAttachmentService(s.db, cfg.AttachmentPath, permService))
+		formHandler.SetItemAttachmentService(services.NewItemAttachmentService(s.db, attachmentStorage, permService))
 		attachmentSettingsHandler = handlers.NewAttachmentSettingsHandler(attachmentSettingsService, logger.NewAuditor(s.db))
-	} else {
-		slog.Info("attachments disabled (no attachment path specified)")
 	}
 
 	itemDiagramService := services.NewItemDiagramService(repository.NewDiagramRepository(s.db))
+
+	// CSRF origins are shared by the /api middleware chain and the plugin
+	// router, which mounts on the raw mux outside that chain. Derive the scheme
+	// from BASE_URL for origin construction.
+	corsScheme := ""
+	if cfg.BaseURL != "" {
+		if parsed, err := url.Parse(cfg.BaseURL); err == nil {
+			corsScheme = parsed.Scheme
+		}
+	}
+	csrfOrigins := buildAllowedOrigins(cfg.AllowedHosts, effectivePort, corsScheme, cfg.UseProxy)
+	csrfValidator := middleware.NewDisabledCSRFValidator()
+	if !cfg.DisableCSRF {
+		csrfValidator = middleware.NewCSRFValidator(csrfOrigins)
+	}
 
 	var pluginRouter *plugins.Router
 	var pluginLicenseVerifier plugins.LicenseVerifier
 	var instanceService *services.InstanceService
 	if !cfg.Plugins.Disabled {
 		var pluginOpts []plugins.Option
-		pluginOpts = append(pluginOpts, plugins.WithDatabase(s.db), plugins.WithSCMService(scmSyncService), plugins.WithCommentService(commentService))
+		pluginOpts = append(pluginOpts, plugins.WithDatabase(s.db), plugins.WithSCMService(scmSyncService), plugins.WithCommentService(commentService), plugins.WithAllowPublicRoutes(cfg.Plugins.AllowPublicRoutes))
+
+		// The instance identity is a stable install id, independent of license
+		// enforcement: the admin module settings page reads it to issue a
+		// license. Generate it whenever plugins are enabled so the endpoint
+		// works before a license key is configured.
+		instanceService = services.NewInstanceService(repository.NewSystemSettingRepository(s.db))
+		instanceID, instanceErr := instanceService.GetOrCreate()
+		if instanceErr != nil {
+			slog.Error("failed to load instance id", "error", instanceErr)
+			instanceService = nil
+		}
 
 		// License enforcement: when a license public key is configured, a
 		// plugin only contributes capabilities if its license verifies against
@@ -1350,17 +1498,10 @@ func (s *Server) initialize() error {
 			licensePubKey, err := base64.StdEncoding.DecodeString(cfg.Plugins.LicensePubKey)
 			if err != nil || len(licensePubKey) != ed25519.PublicKeySize {
 				slog.Error("invalid PLUGIN_LICENSE_PUBKEY; license enforcement disabled", "error", err)
-			} else {
-				instanceService = services.NewInstanceService(repository.NewSystemSettingRepository(s.db))
-				instanceID, err := instanceService.GetOrCreate()
-				if err != nil {
-					slog.Error("failed to load instance id; license enforcement disabled", "error", err)
-					instanceService = nil
-				} else {
-					pluginLicenseVerifier = licensing.MakeVerifier(ed25519.PublicKey(licensePubKey), instanceID)
-					pluginOpts = append(pluginOpts, plugins.WithLicenseVerifier(pluginLicenseVerifier))
-					slog.Info("plugin license enforcement enabled", "instance_id", instanceID)
-				}
+			} else if instanceService != nil {
+				pluginLicenseVerifier = licensing.MakeVerifier(ed25519.PublicKey(licensePubKey), instanceID)
+				pluginOpts = append(pluginOpts, plugins.WithLicenseVerifier(pluginLicenseVerifier))
+				slog.Info("plugin license enforcement enabled", "instance_id", instanceID)
 			}
 		}
 
@@ -1400,7 +1541,14 @@ func (s *Server) initialize() error {
 		}
 		cancel()
 
-		pluginRouter = plugins.NewRouter(s.pluginManager)
+		pluginRouter = plugins.NewRouter(s.pluginManager, plugins.RouterDeps{
+			RequireAuth:  authMiddleware.RequireAuth,
+			RequireAdmin: permissionMiddleware.RequireSystemAdmin(),
+			CSRF:         csrfValidator,
+			PublicLimit:  s.pluginPublicLimiter.Limit,
+			Permissions:  permService,
+			Logger:       logger.Get(),
+		})
 
 		// Plugin schedule scheduler — invokes plugin handlers on their declared
 		// interval (manifest `schedules:` field). Must start after LoadPlugins
@@ -1414,8 +1562,11 @@ func (s *Server) initialize() error {
 
 	pluginHandler := handlers.NewPluginHandler(s.pluginManager, repository.NewPluginRegistryRepository(s.db), logger.NewAuditor(s.db), cfg.Plugins.Disabled)
 	pluginHandler.SetLicensing(pluginLicenseVerifier, instanceService)
+	// Assets are served by the host, so their per-prefix auth policy is enforced
+	// with the same middleware the plugin router uses for handler routes.
+	pluginHandler.SetAssetAuth(authMiddleware.RequireAuth, permissionMiddleware.RequireSystemAdmin(), s.pluginPublicLimiter.Limit)
 
-	auditLogHandler := handlers.NewAuditLogHandler(repository.NewAuditLogRepository(s.db))
+	auditLogHandler := handlers.NewAuditLogHandler(repository.NewAuditLogRepository(s.db), logger.NewAuditor(s.db))
 
 	// LDAP handler — keep on Server so Shutdown can drain in-flight syncs.
 	ldapSyncService := ldap.NewSyncService(s.db, ssoHandler.GetEncryption(), func(userID int) error {
@@ -1425,7 +1576,7 @@ func (s *Server) initialize() error {
 	s.ldapHandler = handlers.NewLDAPHandler(s.db, ldapSyncService, ssoHandler.GetEncryption())
 	ldapHandler := s.ldapHandler
 
-	featuresHandler := handlers.NewFeaturesHandler(s.pluginManager, cfg.SSH.Enabled, cfg.Logbook.Endpoint != "")
+	featuresHandler := handlers.NewFeaturesHandler(s.pluginManager, cfg.SSH.Enabled)
 
 	shutdownChan := cfg.ShutdownChan
 	if shutdownChan == nil {
@@ -1472,60 +1623,7 @@ func (s *Server) initialize() error {
 	s.briefingScheduler = scheduler.NewBriefingScheduler(s.db, llmManager, permService, timePermissionService, services.NewUserReadService(s.db), promptStore)
 	s.briefingScheduler.Start()
 
-	if cfg.Logbook.Endpoint != "" {
-		proxyCfg := LogbookProxyConfig{
-			Endpoint:          cfg.Logbook.Endpoint,
-			AuthMiddleware:    authMiddleware,
-			PermissionService: permService,
-			UploadLimiter:     s.uploadLimiter,
-			SharedSecret:      cfg.Auth.SessionSecret,
-		}
-		logbookProxy := NewLogbookProxy(proxyCfg)
-
-		// Rate-limited upload routes (registered before the catch-all so they take priority)
-		logbookUploadProxy := NewLogbookUploadProxy(proxyCfg)
-		mux.Handle("POST /api/logbook/buckets/{bucketID}/documents/upload", logbookUploadProxy)
-		mux.Handle("POST /api/logbook/documents/{documentID}/attachments", logbookUploadProxy)
-
-		// All logbook routes (including actions) are proxied to the sidecar
-		mux.Handle("GET /api/logbook/", logbookProxy)
-		mux.Handle("POST /api/logbook/", logbookProxy)
-		mux.Handle("PUT /api/logbook/", logbookProxy)
-		mux.Handle("PATCH /api/logbook/", logbookProxy)
-		mux.Handle("DELETE /api/logbook/", logbookProxy)
-		slog.Info("logbook proxy enabled", "endpoint", cfg.Logbook.Endpoint)
-
-		// Internal endpoints for sidecar → main server communication.
-		// cfg.Auth.SessionSecret is already validated non-empty by config.Load,
-		// so the guard is cosmetic — kept for defense-in-depth.
-		if ssoSecret := cfg.Auth.SessionSecret; ssoSecret != "" {
-			// LLM proxy for logbook article generation
-			llmProxy := NewInternalLLMProxy(llmManager, ssoSecret)
-			mux.Handle("POST /api/internal/llm/v1/chat/completions", llmProxy)
-			mux.Handle("GET /api/internal/llm/health", NewInternalLLMHealthCheck(llmManager, ssoSecret))
-			slog.Info("internal LLM proxy enabled for logbook article generation")
-
-			// Node execution endpoint for logbook actions (create_item, create_asset on SQLite)
-			nodeExecHandler := handlers.NewLogbookNodeExecutionHandler(
-				ssoSecret,
-				permService,
-				assetHandler,
-				itemHandler.ItemCreationService(),
-			)
-			mux.Handle("POST /api/internal/logbook/execute-node", http.HandlerFunc(nodeExecHandler.HandleNodeExecution))
-			slog.Info("internal logbook node execution endpoint enabled")
-		}
-	}
-
 	// Build API middleware chain
-	// Derive scheme from BASE_URL for CORS origin construction
-	corsScheme := ""
-	if cfg.BaseURL != "" {
-		if parsed, err := url.Parse(cfg.BaseURL); err == nil {
-			corsScheme = parsed.Scheme
-		}
-	}
-	csrfOrigins := buildAllowedOrigins(cfg.AllowedHosts, effectivePort, corsScheme, cfg.UseProxy)
 	corsMiddleware := createCORSMiddleware(cfg.AllowedHosts, effectivePort, corsScheme, cfg.DisableCSRF, cfg.UseProxy, cfg.AllowInsecureHTTP)
 	apiCORSMiddleware := createFormEmbedCORSMiddleware(cfg.FormEmbedOrigins, csrfOrigins, corsMiddleware)
 	apiMiddleware := router.MiddlewareChain{
@@ -1599,6 +1697,7 @@ func (s *Server) initialize() error {
 		EmailVerifyLimiter:    s.emailVerifyLimiter,
 		SetupLimiter:          s.setupLimiter,
 		AIRateLimiter:         s.aiRateLimiter,
+		WidgetGenerateLimiter: s.widgetGenerateLimiter,
 		UploadLimiter:         s.uploadLimiter,
 		WebhookLimiter:        s.webhookLimiter,
 		CalendarFeedLimiter:   s.calendarFeedLimiter,
@@ -1657,6 +1756,7 @@ func (s *Server) initialize() error {
 		},
 		Admin: routes.AdminHandlers{
 			SecuritySettings: securitySettingsHandler,
+			GeneralSettings:  generalSettingsHandler,
 			AuthPolicy:       authPolicyHandler,
 			Theme:            themeHandler,
 			UserPreferences:  userPreferencesHandler,
@@ -1691,6 +1791,7 @@ func (s *Server) initialize() error {
 				s.memoryBudget,
 				s.eventEngine.Store(),
 				repository.NewSCMHealthRepository(s.db),
+				repository.NewChannelRepository(s.db),
 			),
 			AgentSecurity: handlers.NewAgentSecurityHandler(
 				agentSecurityRepo,
@@ -1704,7 +1805,6 @@ func (s *Server) initialize() error {
 		Planning: routes.PlanningHandlers{
 			MilestoneCategory: milestoneCategoryHandler,
 			IterationType:     iterationTypeHandler,
-			PersonalLabel:     personalLabelHandler,
 		},
 		TimeTracking: routes.TimeTrackingHandlers{
 			Customer:           timeCustomerHandler,
@@ -1737,6 +1837,10 @@ func (s *Server) initialize() error {
 			AI:                aiHandler,
 			LLMConnection:     llmConnHandler,
 			WorkItemStaleness: workItemStalenessHandler,
+		},
+		Widgets: routes.WidgetHandlers{
+			Custom:   customWidgetHandler,
+			Generate: customWidgetGenerateHandler,
 		},
 		Misc: routes.MiscHandlers{
 			Homepage:      homepageHandler,
@@ -1796,11 +1900,14 @@ func (s *Server) initialize() error {
 		repository.NewConfigurationSetRepository(s.db),
 		repository.NewItemTypeRepository(s.db),
 		repository.NewLabelRepository(s.db),
+		repository.NewBoardConfigurationRepository(s.db),
 		pageApplication,
 		pageLabelService,
 		itemHandler.ItemCreationService(),
 		itemLinkService,
 		permService,
+		services.NewSLACalendarService(s.db, s.slaEngine),
+		services.NewSLAMetricService(s.db, s.slaEngine),
 	)
 	packApplyService := services.NewPackApplyService(
 		s.db,
@@ -1818,7 +1925,7 @@ func (s *Server) initialize() error {
 		TokenManager:                   tokenManager,
 		PermissionService:              permService,
 		ActionService:                  s.actionService,
-		AttachmentPath:                 cfg.AttachmentPath,
+		Storage:                        attachmentStorage,
 		ItemLinkService:                itemLinkService,
 		AssetPermissionService:         assetHandler.AssetPermissionService(),
 		AssetService:                   assetHandler.AssetService(),
@@ -1833,6 +1940,7 @@ func (s *Server) initialize() error {
 		PackProvisioner:                packApplyService,
 		AI:                             aiHandler,
 		AIRateLimiter:                  s.aiRateLimiter,
+		IPExtractor:                    ipExtractor,
 	}, v1.RegisterRoutes)
 	v2CSRF := middleware.NewDisabledCSRFValidator()
 	if !cfg.DisableCSRF {
@@ -1858,6 +1966,22 @@ func (s *Server) initialize() error {
 			return planningReleaseProviderAdapter{provider: releaseProvider}, nil
 		},
 	)
+	milestoneCommentService := services.NewMilestoneCommentService(
+		repository.NewMilestoneCommentRepository(s.db),
+		planningApplication,
+		permService,
+	)
+	milestonePageLinkService := services.NewMilestonePageLinkService(
+		repository.NewMilestonePageLinkRepository(s.db),
+		planningApplication,
+		pagePermissionService,
+	)
+	milestoneActivityService := services.NewMilestoneActivityService(
+		repository.NewMilestoneActivityRepository(s.db),
+		planningApplication,
+		permService,
+		milestonePageLinkService,
+	)
 	agentRunApplication := services.NewAgentRunReadService(
 		repository.NewItemRepository(s.db),
 		repository.NewAgentRunRepository(s.db),
@@ -1880,10 +2004,24 @@ func (s *Server) initialize() error {
 	).WithReads(s.activityTracker, approvalService).
 		WithCache(itemHandler.ItemCacheService()).
 		WithWorkflow(conditionService, eventCoordinator, issueSyncService).
-		WithMutationEffects(mentionService)
+		WithMutationEffects(mentionService).
+		WithComments(commentService).
+		WithAssetPermissions(services.NewAssetPermissionService(repository.NewAssetRepository(s.db), permService)).
+		WithClock(slaClock)
 	itemDetailApplication := services.NewItemDetailApplicationService(s.db, itemApplication, itemLinkService, permService).
 		WithContextReaders(screenHandler, requestTypeHandler, actionApplication).
 		WithStoryPointRollups(repository.NewItemRepository(s.db))
+	// Custom widget data resolution needs the item application service, which is
+	// built after RegisterAll, so this one route is registered here instead.
+	customWidgetDataHandler := handlers.NewCustomWidgetDataHandler(
+		repository.NewCustomWidgetRepository(s.db),
+		permService,
+		reporting.NewService(itemApplication, assetApplication).
+			WithLinks(repository.NewItemLinkRepository(s.db)).
+			WithEdges(repository.NewItemLinkRepository(s.db), repository.NewItemRepository(s.db)),
+	)
+	routeDeps.API.HandleH("POST /custom-widgets/data",
+		routeDeps.AuthMiddleware.RequireAuth(http.HandlerFunc(customWidgetDataHandler.ResolveCustomWidgetData)))
 	catalogMutations := services.NewCatalogMutationService(s.db, permService, workflowService)
 	governanceApplication := services.NewGovernanceApplicationService(s.db, permService, approvalSetService, approvalService)
 	if err := v2.RegisterRoutes(v2.Deps{
@@ -1922,6 +2060,7 @@ func (s *Server) initialize() error {
 		ItemTemplates:                services.NewItemTemplateApplicationService(s.db, v2Access),
 		Labels:                       services.NewLabelApplicationService(s.db),
 		Participants:                 participantService,
+		SCMLinks:                     scmWorkspaceRepo,
 		Items:                        repository.NewItemRepository(s.db),
 		Access:                       v2Access,
 		Preferences:                  userPreferencesService,
@@ -1948,10 +2087,13 @@ func (s *Server) initialize() error {
 		AdminTranslations:            objectTranslationService,
 		Comments:                     commentService,
 		CommentAccess:                permService,
-		Attachments:                  services.NewItemAttachmentService(s.db, cfg.AttachmentPath, permService),
-		PageAttachments:              services.NewPageAttachmentUploadService(s.db, cfg.AttachmentPath, permService, pagePermissionService),
+		Attachments:                  services.NewItemAttachmentService(s.db, attachmentStorage, permService),
+		PageAttachments:              services.NewPageAttachmentUploadService(s.db, attachmentStorage, permService, pagePermissionService),
 		Collections:                  services.NewCollectionApplicationService(s.db, permService),
 		Planning:                     planningApplication,
+		MilestoneComments:            milestoneCommentService,
+		MilestonePageLinks:           milestonePageLinkService,
+		MilestoneActivity:            milestoneActivityService,
 		Links:                        itemLinkService,
 		AgentRuns:                    agentRunApplication,
 		AgentSkills:                  services.NewAgentSkillApplicationService(s.db, permService),
@@ -1963,13 +2105,14 @@ func (s *Server) initialize() error {
 		ItemApplication:              itemApplication,
 		ItemDetail:                   itemDetailApplication,
 		ItemLifecycle:                services.NewItemLifecycleService(s.db, permService),
-		TicketImport:                 services.NewTicketImportService(s.db, permService, cfg.AttachmentPath),
+		TicketImport:                 services.NewTicketImportService(s.db, permService, importScratch),
 		SessionMiddleware:            authMiddleware.OptionalAuth,
 		SearchAllowed:                s.searchLimiter.AllowRequest,
 		DBRequestTimeout:             s.config.DB.RequestTimeout,
 		CORS:                         v2.NewCORS(csrfOrigins, cfg.DisableCSRF, !cfg.DisableCSRF),
 		CSRF:                         v2CSRF,
 		Concurrency:                  s.userConcurrency,
+		RateLimiter:                  s.v2RateLimiter,
 	}); err != nil {
 		return fmt.Errorf("register REST API v2: %w", err)
 	}
@@ -2052,7 +2195,14 @@ func (s *Server) initialize() error {
 				slog.Warn("could not read index.html from embedded FS", "error", err)
 			}
 
-			contextPath := cfg.ContextPath
+			// The SPA shell carries the server's effective public base URL so admin
+			// screens can show the exact URLs the server will send to third parties
+			// instead of guessing from the browser origin.
+			indexBoot := indexBootstrap{
+				ContextPath:       cfg.ContextPath,
+				BaseURL:           baseURL,
+				BaseURLConfigured: cfg.BaseURL != "",
+			}
 			mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 				// Anything under an API root that hasn't matched a specific
 				// route is a 404 — don't fall through to the SPA shell.
@@ -2069,9 +2219,9 @@ func (s *Server) initialize() error {
 				}
 
 				// Inject CSP nonce into the inline theme script tag and expose the
-				// externally visible context path for the SPA translation layer.
+				// externally visible context path and base URL for the SPA.
 				nonce := CSPNonceFromContext(r.Context())
-				html := prepareIndexHTML(indexHTML, nonce, contextPath)
+				html := prepareIndexHTML(indexHTML, nonce, indexBoot)
 
 				w.Header().Set("Content-Type", "text/html")
 				// Force the SPA shell to revalidate on every load so that a
@@ -2205,6 +2355,21 @@ func (s *Server) recoverUser(username string) {
 	slog.Warn("RECOVER_USER: re-enabled disabled user", "username", username, "email", userEmail, "id", id)
 }
 
+// configureServerProtocols selects the protocols the HTTP server accepts. A TLS
+// listener negotiates h2 through ALPN with no configuration, so it is left
+// alone. A plain listener is HTTP/1.1 unless h2c is explicitly enabled; h2c is
+// cleartext and browsers do not use it, so it exists for a fronting proxy that
+// multiplexes streams onto one upstream connection.
+func configureServerProtocols(server *http.Server, enableHTTPS, h2cEnabled bool) {
+	if enableHTTPS || !h2cEnabled {
+		return
+	}
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
+	server.Protocols = protocols
+}
+
 // Start begins listening for HTTP requests.
 // This method is non-blocking; the server runs in a goroutine.
 // Use Shutdown to stop the server gracefully.
@@ -2227,6 +2392,7 @@ func (s *Server) Start() error {
 	s.actualPort = tcpAddr.Port
 
 	enableHTTPS := s.config.TLSCertPath != "" && s.config.TLSKeyPath != ""
+	configureServerProtocols(s.httpServer, enableHTTPS, s.config.H2CEnabled)
 
 	if enableHTTPS {
 		slog.Info("HTTPS server starting", "port", s.actualPort)
@@ -2266,6 +2432,16 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.notificationScheduler != nil {
 		slog.Info("stopping notification scheduler")
 		s.notificationScheduler.Stop()
+	}
+
+	if s.dueDateReminderScheduler != nil {
+		slog.Info("stopping due-date reminder scheduler")
+		s.dueDateReminderScheduler.Stop()
+	}
+
+	if s.outboundEmailScheduler != nil {
+		slog.Info("stopping outbound email scheduler")
+		s.outboundEmailScheduler.Stop()
 	}
 
 	if s.recurrenceScheduler != nil {
@@ -2493,6 +2669,9 @@ func (s *Server) cleanup() {
 	if s.aiRateLimiter != nil {
 		s.aiRateLimiter.Stop()
 	}
+	if s.widgetGenerateLimiter != nil {
+		s.widgetGenerateLimiter.Stop()
+	}
 	if s.uploadLimiter != nil {
 		s.uploadLimiter.Stop()
 	}
@@ -2507,6 +2686,12 @@ func (s *Server) cleanup() {
 	}
 	if s.publicBoardLimiter != nil {
 		s.publicBoardLimiter.Stop()
+	}
+	if s.pluginPublicLimiter != nil {
+		s.pluginPublicLimiter.Stop()
+	}
+	if s.v2RateLimiter != nil {
+		s.v2RateLimiter.Stop()
 	}
 
 	// Stop notification manager (flush cached notifications to DB)
@@ -2832,7 +3017,7 @@ func (s *Server) refreshIssueSyncLoop(issueSyncService *scm.IssueSyncService) {
 	go s.runIssueSync(issueSyncService, s.issueSyncLoopStop)
 }
 
-// runIssueSync runs periodic GitHub Issue synchronization while enabled.
+// runIssueSync runs periodic issue synchronization while enabled.
 func (s *Server) runIssueSync(issueSyncService *scm.IssueSyncService, stop <-chan struct{}) {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
@@ -3166,4 +3351,30 @@ func bootCodingAgentRunService(
 		return nil, fmt.Errorf("coding-agent run service: %w", err)
 	}
 	return runSvc, nil
+}
+
+// newAttachmentStorage builds the configured attachment blob backend. Local
+// disk stays the zero-config default; S3 is opt-in via STORAGE_BACKEND=s3.
+func newAttachmentStorage(cfg Config) (*blobstore.Store, error) {
+	localPath := cfg.Storage.LocalPath
+	if localPath == "" {
+		// Callers that build Config directly (rather than via config.Load) still
+		// get the historical ATTACHMENT_PATH behavior.
+		localPath = cfg.AttachmentPath
+	}
+	switch cfg.Storage.Backend {
+	case config.StorageBackendS3:
+		return blobstore.NewS3(blobstore.S3Config{
+			Endpoint:        cfg.Storage.S3.Endpoint,
+			Bucket:          cfg.Storage.S3.Bucket,
+			Region:          cfg.Storage.S3.Region,
+			AccessKeyID:     cfg.Storage.S3.AccessKeyID,
+			SecretAccessKey: cfg.Storage.S3.SecretAccessKey,
+			Prefix:          cfg.Storage.S3.Prefix,
+			ForcePathStyle:  cfg.Storage.S3.ForcePathStyle,
+			LocalRoot:       localPath,
+		})
+	default:
+		return blobstore.NewLocal(localPath), nil
+	}
 }

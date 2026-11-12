@@ -1,11 +1,19 @@
 <script>
   import { onMount } from 'svelte';
   import Badge from '../components/Badge.svelte';
-  import { IconArrowLeft as ArrowLeft, IconUsers as Users, IconMail as Mail, IconPhone as Phone, IconEdit as Edit2, IconSend as Send, IconMessage as MessageCircle, IconTrash as Trash2, IconDots as MoreHorizontal } from '@tabler/icons-svelte-runes';
-  import { api } from '../api.js';
+  import Users from '@tabler/icons-svelte-runes/icons/users';
+  import Mail from '@tabler/icons-svelte-runes/icons/mail';
+  import Phone from '@tabler/icons-svelte-runes/icons/phone';
+  import Edit2 from '@tabler/icons-svelte-runes/icons/edit';
+  import Send from '@tabler/icons-svelte-runes/icons/send';
+  import MessageCircle from '@tabler/icons-svelte-runes/icons/message';
+  import Trash2 from '@tabler/icons-svelte-runes/icons/trash';
+  import MoreHorizontal from '@tabler/icons-svelte-runes/icons/dots';
+  import { contactRoles as contactRolesApi, portalCustomers } from '../api/portal.js';
   import { confirm } from '../composables/useConfirm.js';
   import { errorToast } from '../stores/toasts.svelte.js';
   import Button from '../components/Button.svelte';
+  import BackButton from '../components/BackButton.svelte';
   import Avatar from '../components/Avatar.svelte';
   import Tabs from '../components/Tabs.svelte';
   import Spinner from '../components/Spinner.svelte';
@@ -15,6 +23,7 @@
   import BasePicker from '../pickers/BasePicker.svelte';
   import CustomFieldRenderer from '../features/items/CustomFieldRenderer.svelte';
   import { t } from '../stores/i18n.svelte.js';
+  import { fieldValue, toIdKeyedCustomFieldValues } from '../utils/customFieldValues.js';
   import DescriptionText from '../components/DescriptionText.svelte';
   import AlertBox from '../components/AlertBox.svelte';
   import { formatAuthenticatedDateTime } from '../utils/authenticatedDateFormatter.js';
@@ -83,7 +92,7 @@
   onMount(async () => {
     await loadCustomer();
     try {
-      const roles = await api.contactRoles.getAll();
+      const roles = await contactRolesApi.getAll();
       contactRoles = Array.isArray(roles) ? roles : (roles?.data ?? []);
     } catch (err) {
       console.error('Failed to load contact roles:', err);
@@ -100,7 +109,7 @@
     loading = true;
     error = null;
     try {
-      customer = await api.portalCustomers.getById(contactId);
+      customer = await portalCustomers.getById(contactId);
     } catch (err) {
       console.error('Failed to load customer:', err);
       error = t('workspaces.customers.failedToLoadCustomer') || 'Failed to load customer';
@@ -120,7 +129,7 @@
       email: customer.email,
       phone: customer.phone || '',
       customer_organisation_id: customer.customer_organisation_id ?? null,
-      custom_field_values: customer.custom_field_values || {},
+      custom_field_values: toIdKeyedCustomFieldValues(customer.custom_field_values, portalCustomerFields),
       role_ids: (customer.roles || []).map((role) => role.id)
     };
     isEditing = true;
@@ -133,8 +142,8 @@
   async function saveChanges() {
     saving = true;
     try {
-      await api.portalCustomers.update(customer.id, editFormData);
-      customer = await api.portalCustomers.getById(contactId);
+      await portalCustomers.update(customer.id, editFormData);
+      customer = await portalCustomers.getById(contactId);
       isEditing = false;
       onCustomerUpdated();
     } catch (err) {
@@ -159,7 +168,7 @@
 
     deleting = true;
     try {
-      await api.portalCustomers.delete(customer.id);
+      await portalCustomers.delete(customer.id);
       await onCustomerUpdated();
       onBack();
     } catch (err) {
@@ -197,7 +206,7 @@
     if (submissions !== null) return;
     loadingSubmissions = true;
     try {
-      submissions = await api.portalCustomers.getSubmissions(contactId);
+      submissions = await portalCustomers.getSubmissions(contactId);
     } catch (err) {
       console.error('Failed to load submissions:', err);
       submissions = [];
@@ -210,7 +219,7 @@
     if (channels !== null) return;
     loadingChannels = true;
     try {
-      channels = await api.portalCustomers.getChannels(contactId);
+      channels = await portalCustomers.getChannels(contactId);
     } catch (err) {
       console.error('Failed to load channels:', err);
       channels = [];
@@ -220,7 +229,6 @@
   }
 
   function submissionHref(submission) {
-    if (!submission?.can_view || !submission?.workspace_id || !submission?.id) return null;
     return itemUrl({ workspaceId: submission.workspace_id, itemId: submission.id });
   }
 
@@ -236,14 +244,11 @@
 
 <div>
   <!-- Back button -->
-  <button
+  <BackButton
     onclick={onBack}
-    class="flex items-center gap-2 mb-4 text-sm hover:underline"
-    style="color: var(--ds-text-subtle);"
-  >
-    <ArrowLeft class="w-4 h-4" />
-    {t('workspaces.customers.backToCustomers') || 'Back to Customers'}
-  </button>
+    label={t('workspaces.customers.backToCustomers') || 'Back to Customers'}
+    class="mb-4"
+  />
 
   {#if loading}
     <div class="flex items-center justify-center h-64">
@@ -361,10 +366,10 @@
                   {#each portalCustomerFields as field}
                     <CustomFieldRenderer
                       {field}
-                      value={editFormData.custom_field_values[field.name] ?? ''}
+                      value={fieldValue(editFormData.custom_field_values, field) ?? ''}
                       readonly={false}
                       onChange={(val) => {
-                        editFormData.custom_field_values[field.name] = val;
+                        editFormData.custom_field_values[String(field.id)] = val;
                       }}
                     />
                   {/each}
@@ -414,7 +419,7 @@
 
             <!-- Custom Field Values (read-only) -->
             {#if portalCustomerFields.length > 0 && customer.custom_field_values}
-              {@const filledFields = portalCustomerFields.filter(f => hasCustomFieldValue(customer.custom_field_values[f.name]))}
+              {@const filledFields = portalCustomerFields.filter(f => hasCustomFieldValue(fieldValue(customer.custom_field_values, f)))}
               {#if filledFields.length > 0}
                 <div class="pt-4 border-t" style="border-color: var(--ds-border);">
                   <h3 class="text-sm font-medium mb-3" style="color: var(--ds-text);">{t('workspaces.customers.customFields')}</h3>
@@ -424,7 +429,7 @@
                         <div class="text-xs font-medium mb-1" style="color: var(--ds-text-subtle);">{field.label || field.name}</div>
                         <CustomFieldRenderer
                           {field}
-                          value={customer.custom_field_values[field.name]}
+                          value={fieldValue(customer.custom_field_values, field)}
                           readonly={true}
                           noPadding={true}
                           displayTestId={`customer-custom-field-${field.id}-value`}
@@ -478,12 +483,12 @@
                     {submission.title || submission.subject || `Submission #${submission.id}`}
                   </div>
                   <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs" style="color: var(--ds-text-subtle);">
-                    {#if submission.can_view && submission.workspace_key && submission.workspace_item_number}
+                    {#if submission.workspace_key && submission.workspace_item_number}
                       <span class="font-medium" style="color: var(--ds-text);">
                         {submission.workspace_key}-{submission.workspace_item_number}
                       </span>
                     {/if}
-                    {#if submission.can_view && submission.workspace_name}
+                    {#if submission.workspace_name}
                       <span>{submission.workspace_name}</span>
                     {/if}
                     {#if submission.status_name}
@@ -505,7 +510,7 @@
         {:else}
           <div class="p-8 text-center" style="color: var(--ds-text-subtle);">
             <Send class="w-12 h-12 mx-auto mb-3 opacity-50" />
-            <p>{t('workspaces.customers.noSubmissions') || 'No submissions yet'}</p>
+            <p>{t('workspaces.customers.noSubmissions') || 'No visible submissions'}</p>
           </div>
         {/if}
 

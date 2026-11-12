@@ -1,26 +1,48 @@
 <script>
   import { onMount } from 'svelte';
-  import { untrack } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import { t } from '../../stores/i18n.svelte.js';
-  import { api } from '../../api.js';
+  import { items as itemsApi } from '../../api/items.js';
+  import { collections } from '../../api/collections.js';
+  import { customFields as customFieldsApi, linkTypes as linkTypesApi, screens } from '../../api/configuration.js';
+  import { createDependencyLoader } from './dependencyLoader.svelte.js';
   import { navigate } from '../../router.js';
-  import { collectionStore, reloadCollection, refreshCollectionItem } from '../../stores/collectionContext.js';
-  import { findOrphansByMissingParent, indexCollectionHierarchy, mergeAncestorContext } from './collectionHierarchy.js';
+  import {
+    collectionStore,
+    reloadCollection,
+    refreshCollectionItem,
+    scheduleCollectionReconciliation,
+  } from '../../stores/collectionContext.js';
+  import { useCollectionHierarchy } from '../../composables/useCollectionHierarchy.svelte.js';
+  import CollectionLevelFilter from './CollectionLevelFilter.svelte';
   import { useGradientStyles, loadWorkspaceGradient } from '../../stores/workspaceGradient.svelte.js';
-  import { workspaceDataStore } from '../../stores/index.js';
+  import { workspaceDataStore } from '../../stores/workspaceDataStore.svelte.js';
+  import { itemModalStore } from '../../stores/itemModalStore.svelte.js';
   import { workspacePermissions } from '../../stores/workspacePermissions.svelte.js';
   import ViewHeader from '../../layout/ViewHeader.svelte';
   import StaticViewBackground from '../../layout/StaticViewBackground.svelte';
   import SubFilterBar from './SubFilterBar.svelte';
   import Select from '../../components/Select.svelte';
   import Toggle from '../../components/Toggle.svelte';
-  import ItemDetail from '../items/ItemDetail.svelte';
   import RoadmapItemPreview from './RoadmapItemPreview.svelte';
+  import CollectionHierarchyLoadMore from './CollectionHierarchyLoadMore.svelte';
+  import { useCollectionEventStream } from '../../composables/useCollectionEventStream.svelte.js';
   import { buildHierarchyDatePatches, projectHierarchyDates } from './roadmapHierarchyDates.js';
   import { boardColumnsForSave } from '../../utils/workItemListColumns.js';
-  import { Settings, ChevronLeft, ChevronRight, Diamond, ChevronDown, CalendarClock, RotateCcw } from '@lucide/svelte';
+  import Settings from '@lucide/svelte/icons/settings';
+  import ChevronLeft from '@lucide/svelte/icons/chevron-left';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import Diamond from '@lucide/svelte/icons/diamond';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
+  import CalendarClock from '@lucide/svelte/icons/calendar-clock';
+  import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
   import { getVisibleColor } from '../../utils/colorUtils.js';
+  import { formatDateWithOptions } from '../../utils/dateFormatter.js';
+  import { calendarDate as toCalendarDate, calendarMonthStart, calendarMonthPosition, calendarDateAtPosition, civilDays } from './roadmapCalendar.js';
+  import { getAppLocale } from '../../stores/appLocale.svelte.js';
+  import { resolveCalendar } from '../../stores/calendar.svelte.js';
   import ItemTypeIcon from '../../components/ItemTypeIcon.svelte';
+  import ItemKey from '../../components/ItemKey.svelte';
   import { SYSTEM_FIELDS } from '../../stores/fieldConfig.js';
   import Button from '../../components/Button.svelte';
   import LazyRender from '../../components/LazyRender.svelte';
@@ -50,12 +72,15 @@
   let loading = $state(true);
   let currentCollectionName = $state('Default');
 
-  // Ancestor context for hierarchy gaps: with "hide completed" enabled a
-  // finished parent is filtered out of the loaded page, but its active
-  // children still need it visible above them. Mirrors CollectionTree.
-  let ancestorsByParent = $state({});
-  let ancestorsRequestInFlight = false;
-  let ancestorsRerunPending = false;
+  // Level-scoped base page plus lazily loaded subtrees.
+  const hierarchy = useCollectionHierarchy({
+    getWorkspaceId: () => workspaceId ?? null,
+    getCollectionId: () => collectionId ?? null,
+    getMaxDepth: () => 0,
+    getSubFilterQL: () => collectionStore.effectiveSubFilterQL,
+  });
+  let allItemsSorted = $derived(hierarchy.allItems);
+  let hierarchyIndex = $derived(hierarchy.hierarchyIndex);
 
   // Settings panel toggle
   let settingsOpen = $state(false);
@@ -116,7 +141,7 @@
     hierarchyDatesLoaded = false;
     hierarchyDatesError = '';
     try {
-      const result = await api.items.getRoadmapHierarchyDates(rootIds);
+      const result = await itemsApi.getRoadmapHierarchyDates(rootIds);
       if (generation !== hierarchyLoadGeneration) return;
       if (result?.truncated) {
         hierarchyDateItems = [];
@@ -171,13 +196,15 @@
   // Drag state (bar move/resize)
   let dragInfo = $state(null);
 
-  // Item detail modal
-  let showItemModal = $state(false);
-  let selectedItemId = $state(null);
-
-  // Links/dependencies
-  let itemLinks = $state({});
-  const ROADMAP_LINK_CHUNK = 100;
+  // Links/dependencies. The roadmap projects outgoing links only.
+  const roadmapDependencyLoader = createDependencyLoader();
+  let itemLinks = $derived.by(() => {
+    const map = {};
+    for (const [id, entry] of Object.entries(roadmapDependencyLoader.entries)) {
+      if (entry.outgoing?.length) map[id] = entry.outgoing;
+    }
+    return map;
+  });
 
   // Timeline computation
   let containerWidth = $state(1200);
@@ -191,7 +218,6 @@
   let isResizingPanel = $state(false);
   let resizeStartX = $state(0);
   let resizeStartWidth = $state(0);
-  let expandedItems = $state(new Set());
   let schedulePreview = $state(null);
   let schedulingItemIds = $state(new Set());
   let treeScrollContainer = $state(null);
@@ -248,15 +274,16 @@
   // Snap granularity in days: week/month zoom → 1 day, quarter zoom → 7 days
   let snapDays = $derived(zoom === 'quarter' ? 7 : 1);
 
+  function calendarDate(date) { return toCalendarDate(date, resolveCalendar(getAppLocale())); }
+  function monthStart(date, offset = 0) { return calendarMonthStart(date, resolveCalendar(getAppLocale()), offset); }
+
   // Reference date (start of visible range)
   let referenceDate = $derived.by(() => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const d = new Date(today);
     if (zoom === 'quarter') {
-      d.setDate(1);
-      d.setMonth(d.getMonth() + scrollOffset);
-      return d;
+      return monthStart(d, scrollOffset);
     }
     d.setDate(d.getDate() + scrollOffset * zoomConfig.columnDays);
     if (zoom === 'week' || zoom === 'month') {
@@ -293,7 +320,7 @@
     for (let i = -prependCount; i < rightCount; i++) {
       const d = new Date(referenceDate);
       if (zoom === 'quarter') {
-        d.setMonth(referenceDate.getMonth() + i);
+        d.setTime(monthStart(referenceDate, i).getTime());
       } else {
         d.setDate(d.getDate() + i * zoomConfig.columnDays);
       }
@@ -314,7 +341,7 @@
     const last = columns[columns.length - 1];
     const d = new Date(last);
     if (zoom === 'quarter') {
-      d.setMonth(d.getMonth() + 1);
+      d.setTime(monthStart(d, 1).getTime());
     } else {
       d.setDate(d.getDate() + zoomConfig.columnDays);
     }
@@ -324,18 +351,9 @@
   // Convert a date to a column position (fractional column index)
   function dateToColPos(date) {
     if (zoom === 'quarter') {
-      const refYear = referenceDate.getFullYear();
-      const refMonth = referenceDate.getMonth();
-      const year = date.getFullYear();
-      const month = date.getMonth();
-      const monthOffset = (year - refYear) * 12 + (month - refMonth);
-      const monthStart = new Date(year, month, 1);
-      const nextMonth = new Date(year, month + 1, 1);
-      const daysInMonth = (nextMonth.getTime() - monthStart.getTime()) / (1000 * 60 * 60 * 24);
-      const dayInMonth = (date.getTime() - monthStart.getTime()) / (1000 * 60 * 60 * 24);
-      return monthOffset + dayInMonth / daysInMonth;
+      return calendarMonthPosition(referenceDate, date, resolveCalendar(getAppLocale()));
     }
-    return (date.getTime() - referenceDate.getTime()) / (1000 * 60 * 60 * 24) / zoomConfig.columnDays;
+    return civilDays(date, referenceDate) / zoomConfig.columnDays;
   }
 
   // Today column index
@@ -349,17 +367,15 @@
   let monthBoundaries = $derived.by(() => {
     if (zoom !== 'month' || columns.length === 0) return [];
     const boundaries = [];
-    const refTime = referenceDate.getTime();
-    const msPerDay = 1000 * 60 * 60 * 24;
     // Find all month-starts within the visible range
     const first = columns[0];
     const last = columns[columns.length - 1];
-    const d = new Date(first.getFullYear(), first.getMonth(), 1);
-    if (d < first) d.setMonth(d.getMonth() + 1);
+    const d = monthStart(first);
+    if (d < first) d.setTime(monthStart(d, 1).getTime());
     while (d <= last) {
-      const colPos = (d.getTime() - refTime) / msPerDay / zoomConfig.columnDays;
-      boundaries.push({ px: (colPos + gridOffset) * colWidth, label: d.toLocaleDateString(undefined, { month: 'short' }) });
-      d.setMonth(d.getMonth() + 1);
+      const colPos = civilDays(d, referenceDate) / zoomConfig.columnDays;
+      boundaries.push({ px: (colPos + gridOffset) * colWidth, label: formatDateWithOptions(d, { month: 'short' }) });
+      d.setTime(monthStart(d, 1).getTime());
     }
     return boundaries;
   });
@@ -368,21 +384,24 @@
   let headerLabels = $derived.by(() => {
     if (zoom === 'week') {
       return columns.map(d => ({
-        label: d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric' }),
+        label: formatDateWithOptions(d, { day: 'numeric' }),
+        weekday: formatDateWithOptions(d, { weekday: 'short' }),
         sublabel: '',
         date: d
       }));
     }
     if (zoom === 'month') {
       return columns.map(d => ({
-        label: `${d.getDate()}`,
-        sublabel: d.toLocaleDateString(undefined, { month: 'short' }),
+        label: formatDateWithOptions(d, { day: 'numeric' }),
+        weekday: '',
+        sublabel: formatDateWithOptions(d, { month: 'short' }),
         date: d
       }));
     }
     return columns.map(d => ({
-      label: d.toLocaleDateString(undefined, { month: 'short' }),
-      sublabel: String(d.getFullYear()),
+      label: formatDateWithOptions(d, { month: 'short' }),
+      weekday: '',
+      sublabel: formatDateWithOptions(d, { year: 'numeric' }),
       date: d
     }));
   });
@@ -392,24 +411,22 @@
     const groups = [];
     if (zoom === 'month' && columns.length > 0) {
       // Use actual calendar month boundaries for pixel-accurate positioning
-      const refTime = referenceDate.getTime();
-      const msPerDay = 1000 * 60 * 60 * 24;
       const totalPx = columns.length * colWidth;
 
       const lastCol = columns[columns.length - 1];
       const endVisible = new Date(lastCol);
       endVisible.setDate(endVisible.getDate() + zoomConfig.columnDays);
 
-      let d = new Date(columns[0].getFullYear(), columns[0].getMonth(), 1);
+      let d = monthStart(columns[0]);
       while (d <= endVisible) {
-        const nextMonth = new Date(d.getFullYear(), d.getMonth() + 1, 1);
-        const leftDays = (d.getTime() - refTime) / msPerDay;
-        const rightDays = (nextMonth.getTime() - refTime) / msPerDay;
+        const nextMonth = monthStart(d, 1);
+        const leftDays = civilDays(d, referenceDate);
+        const rightDays = civilDays(nextMonth, referenceDate);
         const leftPx = Math.max(0, (leftDays / zoomConfig.columnDays + gridOffset) * colWidth);
         const rightPx = Math.min(totalPx, (rightDays / zoomConfig.columnDays + gridOffset) * colWidth);
         if (rightPx > leftPx) {
           groups.push({
-            label: d.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }),
+            label: formatDateWithOptions(d, { month: 'long', year: 'numeric' }),
             leftPx,
             widthPx: rightPx - leftPx,
           });
@@ -422,8 +439,8 @@
       for (let i = 0; i < columns.length; i++) {
         const d = columns[i];
         const key = zoom === 'quarter'
-          ? `Q${Math.floor(d.getMonth() / 3) + 1} ${d.getFullYear()}`
-          : d.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+          ? `Q${Math.floor((calendarDate(d).month - 1) / 3) + 1} ${calendarDate(d).year}`
+          : formatDateWithOptions(d, { month: 'long', year: 'numeric' });
         if (key !== currentMonth) {
           groups.push({ label: key, leftPx: i * colWidth, widthPx: colWidth });
           currentMonth = key;
@@ -436,120 +453,40 @@
   });
 
   // --- Tree helpers ---
-  let allItemsSorted = $derived.by(() => {
-    if (collectionStore.loading) return [];
-    return [...mergeAncestorContext(collectionStore.items, ancestorsByParent)].sort(
-      (a, b) => (a.level || 0) - (b.level || 0) || a.id - b.id
-    );
-  });
-  let hierarchyIndex = $derived(indexCollectionHierarchy(allItemsSorted));
-
-  // Load ancestor chains for items whose parent is not in the loaded page so
-  // filtered or paginated children do not render as stray roots.
-  $effect(() => {
-    const items = collectionStore.items;
-    untrack(() => void syncAncestorContext(items));
-  });
-
-  async function syncAncestorContext(items) {
-    const orphansByParent = findOrphansByMissingParent(items);
-    const neededParents = new Set(orphansByParent.keys());
-
-    // Drop cached chains whose gap the store has since filled itself.
-    const kept = {};
-    let pruned = false;
-    for (const [parentId, chain] of Object.entries(ancestorsByParent)) {
-      if (neededParents.has(Number(parentId))) {
-        kept[parentId] = chain;
-      } else {
-        pruned = true;
-      }
-    }
-    if (pruned) ancestorsByParent = kept;
-
-    const parentByOrphanId = new Map();
-    for (const [parentId, orphans] of orphansByParent) {
-      parentByOrphanId.set(orphans[0].id, parentId);
-    }
-    const orphanIds = [...parentByOrphanId.keys()].filter(
-      (orphanId) => !kept[String(parentByOrphanId.get(orphanId))]
-    );
-    if (orphanIds.length === 0) return;
-    if (ancestorsRequestInFlight) {
-      // A newer page may need different chains; rerun when the current
-      // request settles.
-      ancestorsRerunPending = true;
-      return;
-    }
-    ancestorsRequestInFlight = true;
-    try {
-      const entries = await api.items.getManyAncestors(orphanIds);
-      for (const { item_id: orphanId, ancestors } of entries) {
-        // The gap may have closed while the request was in flight.
-        const parentId = parentByOrphanId.get(orphanId);
-        if (!ancestors?.length || parentId == null || !neededParents.has(parentId)) continue;
-        ancestorsByParent = { ...ancestorsByParent, [String(parentId)]: ancestors };
-        for (const ancestor of ancestors) {
-          expandedItems.add(ancestor.id);
-        }
-      }
-      expandedItems = new Set(expandedItems);
-    } catch (error) {
-      console.error('[CollectionRoadmap] Failed to load ancestor context:', error);
-    } finally {
-      ancestorsRequestInFlight = false;
-    }
-    if (ancestorsRerunPending) {
-      ancestorsRerunPending = false;
-      await syncAncestorContext(collectionStore.items);
-    }
-  }
-
   function getRootItems() {
-    return hierarchyIndex.roots;
+    return hierarchy.roots;
   }
 
-  function getItemsByParent(parentId) {
-    return hierarchyIndex.childrenByParent.get(parentId) || [];
-  }
-
-  function hasChildren(itemId) {
-    return hierarchyIndex.childrenByParent.has(itemId);
-  }
-
-  function toggleExpanded(itemId) {
-    if (expandedItems.has(itemId)) {
-      expandedItems.delete(itemId);
-    } else {
-      expandedItems.add(itemId);
-    }
-    expandedItems = new Set(expandedItems);
-  }
+  const getItemsByParent = (parentId) => hierarchy.getChildren(parentId);
+  const hasChildren = (itemId) => hierarchy.hasChildren(itemId);
+  const toggleExpanded = (itemId) => hierarchy.toggleExpanded(itemId);
 
   function getIndentLevel(level) {
     return `${level * 20}px`;
   }
 
   function getItemTypeInfo(item) {
-    if (!item.item_type_id || !itemTypes.length) {
-      const fallback = [
-        { iconName: 'GitBranch', color: '#9333ea', label: 'Epic' },
-        { iconName: 'Circle', color: '#2563eb', label: 'Feature' },
-        { iconName: 'Circle', color: '#16a34a', label: 'Story' },
-        { iconName: 'Circle', color: '#ea580c', label: 'Task' },
-        { iconName: 'Circle', color: '#6b7280', label: 'Subtask' }
-      ];
-      return fallback[Math.min(item.level || 0, fallback.length - 1)];
-    }
-    const it = itemTypes.find(type => type.id === item.item_type_id);
-    if (it) {
+    const itemType = item.item_type_id
+      ? itemTypes.find((type) => type.id === item.item_type_id)
+      : null;
+    // Prefer the icon carried on the row: the workspace-scoped itemTypes list
+    // omits types excluded from the effective configuration set.
+    const iconName = item.item_type_icon || itemType?.icon;
+    if (iconName) {
       return {
-        iconName: it.icon,
-        color: it.color,
-        label: it.name
+        iconName,
+        color: item.item_type_color || itemType?.color || '#6b7280',
+        label: item.item_type_name || itemType?.name || 'Unknown'
       };
     }
-    return { iconName: 'Circle', color: '#6b7280', label: 'Unknown' };
+    const fallback = [
+      { iconName: 'GitBranch', color: '#9333ea', label: 'Epic' },
+      { iconName: 'Circle', color: '#2563eb', label: 'Feature' },
+      { iconName: 'Circle', color: '#16a34a', label: 'Story' },
+      { iconName: 'Circle', color: '#ea580c', label: 'Task' },
+      { iconName: 'Circle', color: '#6b7280', label: 'Subtask' }
+    ];
+    return fallback[Math.min(item.level || 0, fallback.length - 1)];
   }
 
   function renderTreeItems(parentId = null, level = 0, result = []) {
@@ -560,7 +497,7 @@
         treeLevel: level,
         hasChildren: hasChildren(item.id),
       });
-      if (expandedItems.has(item.id)) {
+      if (hierarchy.isExpanded(item.id)) {
         renderTreeItems(item.id, level + 1, result);
       }
     }
@@ -581,21 +518,7 @@
     collectionStore.loading ? 0 : allItemsSorted.filter((item) => !itemHasDate(item)).length,
   );
 
-  // Auto-expand root items with children on first load
-  $effect(() => {
-    if (!collectionStore.loading && allItemsSorted.length > 0) {
-      untrack(() => {
-        if (expandedItems.size === 0) {
-          const roots = getRootItems();
-          const newExpanded = new Set();
-          for (const r of roots) {
-            if (hasChildren(r.id)) newExpanded.add(r.id);
-          }
-          if (newExpanded.size > 0) expandedItems = newExpanded;
-        }
-      });
-    }
-  });
+  // The shared loader auto-expands base roots with children on load.
 
   // Items with computed bar positions
   let roadmapItems = $derived.by(() => {
@@ -670,7 +593,8 @@
         const source = itemMap.get(link.source_id);
         const target = itemMap.get(link.target_id);
         if (source && target) {
-          arrows.push({ source, target });
+          // "Depends On" links run from the dependent (source) to its blocker (target).
+          arrows.push({ blocker: target, dependent: source });
         }
       }
     }
@@ -725,43 +649,30 @@
 
   // Sync collection name and load links when items change
   $effect(() => {
+    const dependencyLinkTypeId = roadmapConfig.dependency_link_type_id;
     if (!collectionStore.loading) {
       currentCollectionName = collectionStore.collectionName;
-      untrack(() => loadLinksForItems(allItemsSorted));
+      if (dependencyLinkTypeId) untrack(() => loadLinksForItems(allItemsSorted));
     }
   });
+
+  // Scoped SSE invalidations (WI-1624): any frame runs the existing delta fetch.
+  useCollectionEventStream(
+    () => (collectionId ? { kind: 'collection', id: collectionId } : { kind: 'workspace', id: workspaceId }),
+    { onInvalidate: () => scheduleCollectionReconciliation() }
+  );
 
   // Load links for visible items in batched requests instead of one per item.
   async function loadLinksForItems(items) {
     if (!roadmapConfig.dependency_link_type_id) return;
     const ids = items.filter((i) => i?.id != null).map((i) => i.id);
-    const newLinks = {};
-    for (const id of ids) newLinks[id] = [];
-    const chunks = [];
-    for (let i = 0; i < ids.length; i += ROADMAP_LINK_CHUNK) {
-      chunks.push(ids.slice(i, i + ROADMAP_LINK_CHUNK));
-    }
-    const groupsPerChunk = await Promise.all(
-      chunks.map(async (chunk) => {
-        try {
-          return await api.links.getForItems(chunk);
-        } catch {
-          return {};
-        }
-      })
-    );
-    for (const groups of groupsPerChunk) {
-      for (const [id, group] of Object.entries(groups)) {
-        newLinks[id] = group?.outgoing || [];
-      }
-    }
-    itemLinks = newLinks;
+    await roadmapDependencyLoader.ensure(ids);
   }
 
   // Load config data
   async function loadConfig() {
     try {
-      const config = await api.collections.getBoardConfiguration(collectionId, workspaceId);
+      const config = await collections.getBoardConfiguration(collectionId, workspaceId);
       boardConfig = config;
       boardConfigId = config.id;
       if (config.roadmap_config) {
@@ -779,8 +690,8 @@
   async function loadReferenceData() {
     try {
       const [lt, cf] = await Promise.all([
-        api.linkTypes.getAll(),
-        api.customFields.getAll(),
+        linkTypesApi.getAll(),
+        customFieldsApi.getAll(),
       ]);
       linkTypes = lt || [];
       customFields = cf?.data || cf || [];
@@ -790,7 +701,7 @@
       // effective edit screen through the workspace's shared config cache.
       const config = await workspaceDataStore.screenConfig(null);
       const screenId = config?.edit_screen?.id ?? 1;
-      const screen = await api.screens.get(screenId);
+      const screen = await screens.get(screenId);
       screenFields = screen?.fields || [];
     } catch (e) {
       console.error('Failed to load reference data:', e);
@@ -815,13 +726,14 @@
 
     try {
       if (boardConfigId) {
-        await api.collections.updateBoardConfiguration(collectionId, boardConfigId, payload, workspaceId);
+        await collections.updateBoardConfiguration(collectionId, boardConfigId, payload, workspaceId);
       } else {
-        const result = await api.collections.createBoardConfiguration(collectionId, workspaceId, payload);
+        const result = await collections.createBoardConfiguration(collectionId, workspaceId, payload);
         boardConfigId = result.id;
       }
     } catch (e) {
       console.error('Failed to save roadmap config:', e);
+      errorToast(t('dialogs.alerts.failedToSave', { error: e?.message || e }));
     }
   }
 
@@ -858,16 +770,20 @@
     scrollOffset += zoomConfig.navigationColumns;
   }
 
-  function goToToday() {
+  // "Today" resets the offset and scrolls to the reference column, which is
+  // today's week/month. Items scheduled before today prepend columns, so
+  // scrollLeft 0 points into the past and the anchor must be computed.
+  async function goToToday() {
     scrollOffset = 0;
-    timelineScrollLeft = 0;
-    if (timelineScrollContainer) timelineScrollContainer.scrollLeft = 0;
+    await tick();
+    const target = gridOffset * colWidth;
+    timelineScrollLeft = target;
+    if (timelineScrollContainer) timelineScrollContainer.scrollLeft = target;
   }
 
   // Item click
   function openItem(itemId) {
-    selectedItemId = itemId;
-    showItemModal = true;
+    itemModalStore.open(itemId, workspaceId);
   }
 
   // --- Bar drag handlers (existing move/resize) ---
@@ -890,11 +806,14 @@
   function onDragMove(e) {
     if (!dragInfo) return;
     const dx = e.clientX - dragInfo.startX;
-    const pxPerDay = zoom === 'quarter'
-      ? colWidth / 30
-      : colWidth / zoomConfig.columnDays;
-    const rawDays = dx / pxPerDay;
-    dragInfo.daysDelta = Math.round(rawDays / snapDays) * snapDays;
+    if (zoom === 'quarter') {
+      const anchor = dragInfo.mode === 'resize-right' ? dragInfo.origEnd : dragInfo.origStart;
+      const position = (anchor + gridOffset) * colWidth;
+      dragInfo.daysDelta = civilDays(dateAtTimelineX(position + dx), dateAtTimelineX(position));
+    } else {
+      const rawDays = dx / (colWidth / zoomConfig.columnDays);
+      dragInfo.daysDelta = Math.round(rawDays / snapDays) * snapDays;
+    }
   }
 
   async function onDragEnd() {
@@ -978,12 +897,12 @@
         fields,
         mode: hierarchyMode,
       });
-      await api.items.bulkPatch(patches);
+      await itemsApi.bulkPatch(patches);
       reloadCollection();
       await loadHierarchyDates(allItemsSorted.map((item) => item.id));
       return;
     }
-    await api.items.update(itemId, updateData);
+    await itemsApi.update(itemId, updateData);
     reloadCollection();
   }
 
@@ -997,15 +916,20 @@
     return { startOffset: 0, endOffset: 0 };
   }
 
-  // SVG arrow path between two items (using treeData indices)
-  function getArrowPath(source, target, sourceIndex, targetIndex) {
-    const x1 = (source.barEnd + gridOffset) * colWidth;
-    const y1 = sourceIndex * ROW_HEIGHT + ROW_HEIGHT / 2;
-    const x2 = (target.barStart + gridOffset) * colWidth;
-    const y2 = targetIndex * ROW_HEIGHT + ROW_HEIGHT / 2;
-
+  // Connect the facing bar ends, with direction from blocker to dependent.
+  function getArrowGeometry(blocker, dependent, blockerIndex, dependentIndex) {
+    const forward = blocker.barStart + blocker.barEnd <= dependent.barStart + dependent.barEnd;
+    const x1 = ((forward ? blocker.barEnd : blocker.barStart) + gridOffset) * colWidth;
+    const y1 = blockerIndex * ROW_HEIGHT + ROW_HEIGHT / 2;
+    const x2 = ((forward ? dependent.barStart : dependent.barEnd) + gridOffset) * colWidth;
+    const y2 = dependentIndex * ROW_HEIGHT + ROW_HEIGHT / 2;
     const midX = (x1 + x2) / 2;
-    return `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`;
+    return {
+      path: `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`,
+      head: forward
+        ? `${x2},${y2} ${x2 - 6},${y2 - 4} ${x2 - 6},${y2 + 4}`
+        : `${x2},${y2} ${x2 + 6},${y2 - 4} ${x2 + 6},${y2 + 4}`,
+    };
   }
 
   // --- Panel resize handlers ---
@@ -1032,13 +956,7 @@
     const dayOffset = timelineX / colWidth - gridOffset;
     const date = new Date(referenceDate);
     if (zoom === 'quarter') {
-      const monthOffset = Math.floor(dayOffset);
-      const frac = dayOffset - monthOffset;
-      date.setMonth(date.getMonth() + monthOffset);
-      const nextMonth = new Date(date.getFullYear(), date.getMonth() + 1, 1);
-      const monthStart = new Date(date.getFullYear(), date.getMonth(), 1);
-      const daysInMonth = (nextMonth.getTime() - monthStart.getTime()) / (1000 * 60 * 60 * 24);
-      date.setDate(1 + Math.floor(frac * daysInMonth / snapDays) * snapDays);
+      return calendarDateAtPosition(referenceDate, dayOffset, resolveCalendar(getAppLocale()), snapDays);
     } else {
       const days = Math.floor(dayOffset * zoomConfig.columnDays / snapDays) * snapDays;
       date.setDate(date.getDate() + days);
@@ -1127,7 +1045,12 @@
     }
   }
 
-  let isAwayFromToday = $derived(scrollOffset !== 0 || timelineScrollLeft > 0);
+  // The today anchor is the reference column's left edge; prepended past
+  // columns make scrollLeft 0 point at the past, not at today.
+  let todayScrollLeft = $derived(gridOffset * colWidth);
+  let isAwayFromToday = $derived(
+    scrollOffset !== 0 || Math.abs(timelineScrollLeft - todayScrollLeft) > 1
+  );
 
   useResizeObserver(() => timelineScrollContainer, (entries) => {
     const entry = entries[0];
@@ -1294,7 +1217,10 @@
 
       <!-- Controls Bar -->
       <div class="relative z-40 flex items-center mb-4">
-        <SubFilterBar {workspaceId} />
+      <div class="flex items-center gap-4">
+        <SubFilterBar {workspaceId} {collectionId} />
+        <CollectionLevelFilter {workspaceId} {collectionId} />
+      </div>
       </div>
 
       <!-- Toolbar: Zoom + Navigation + Settings toggle -->
@@ -1324,6 +1250,7 @@
             <ChevronLeft class="w-4 h-4" />
           </button>
           <button
+            data-testid="roadmap-today"
             class="px-2 py-1 text-xs font-medium rounded transition-colors"
             style="color: var(--ctx-text-subtle, var(--ds-text-subtle)); border: 1px solid var(--ctx-border, var(--ds-border));"
             onclick={goToToday}
@@ -1395,12 +1322,21 @@
           >
             <!-- Tree header row 1 (month groups height) -->
             <div
-              class="flex items-center px-3 shrink-0"
+              class="flex items-center justify-between px-3 shrink-0"
               style="height: 29px; border-bottom: 1px solid var(--ds-border);"
             >
               <span class="text-xs font-medium" style="color: var(--ds-text-subtle);">
                 {t('collections.roadmapItems', { count: treeData.length })}
               </span>
+              <button
+                type="button"
+                data-testid="roadmap-expand-toggle"
+                class="text-xs transition-colors cursor-pointer"
+                style="color: var(--ds-interactive);"
+                onclick={() => (hierarchy.expandedCount === 0 ? hierarchy.expandAll() : hierarchy.collapseAll())}
+              >
+                {hierarchy.expandedCount === 0 ? t('collectionTree.expandAll') : t('collectionTree.collapseAll')}
+              </button>
             </div>
             <!-- Tree header row 2 (column labels height) -->
             <div
@@ -1435,7 +1371,7 @@
                           onclick={(e) => { e.stopPropagation(); toggleExpanded(item.id); }}
                           onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); toggleExpanded(item.id); } }}
                         >
-                          {#if expandedItems.has(item.id)}
+                          {#if hierarchy.isExpanded(item.id)}
                             <ChevronDown class="w-3 h-3" />
                           {:else}
                             <ChevronRight class="w-3 h-3" />
@@ -1454,11 +1390,11 @@
 
                       <!-- Item key -->
                       {#if item.item_key}
-                        <span class="text-xs shrink-0" style="color: var(--ds-text-subtle);">{item.item_key}</span>
+                        <ItemKey itemKey={item.item_key} />
                       {/if}
 
                       <!-- Title -->
-                      <span class="text-sm truncate flex-1 group-hover/tree-row:underline" style="color: var(--ds-text);">{item.title}</span>
+                      <span class="text-sm truncate flex-1 group-hover/tree-row:underline" dir="auto" style="color: var(--ds-text);">{item.title}</span>
 
                       <!-- Scheduled indicator -->
                       {#if scheduled}
@@ -1503,13 +1439,18 @@
                 </div>
 
                 <!-- Header row: column labels -->
-                <div class="flex sticky top-[29px] z-30" style="border-bottom: 1px solid var(--ctx-border, var(--ds-border)); background-color: var(--ctx-surface, var(--ds-surface));">
+                <div class="flex sticky top-[29px] z-30" style="height: 29px; border-bottom: 1px solid var(--ctx-border, var(--ds-border)); background-color: var(--ctx-surface, var(--ds-surface));">
                   {#each headerLabels as col, i}
                     <div
-                      class="text-center py-1.5 text-xs shrink-0"
+                      class="flex flex-col items-center justify-center text-center shrink-0"
                       style="width: {colWidth}px; color: var(--ds-text-subtlest); border-left: 1px solid var(--ds-border-subtle, var(--ds-border));"
                     >
-                      {col.label}
+                      {#if zoom === 'week'}
+                        <span class="text-[10px] leading-none">{col.weekday}</span>
+                        <span class="mt-0.5 text-[11px] font-medium leading-none">{col.label}</span>
+                      {:else}
+                        <span class="text-xs leading-none">{col.label}</span>
+                      {/if}
                     </div>
                   {/each}
                 </div>
@@ -1543,6 +1484,7 @@
                           <!-- Today line -->
                           {#if (todayColumnIndex + gridOffset) >= 0 && (todayColumnIndex + gridOffset) < columns.length}
                             <div
+                              data-testid="roadmap-today-line"
                               class="absolute top-0 bottom-0"
                               style="left: {(todayColumnIndex + gridOffset) * colWidth}px; width: 2px; background-color: var(--ds-accent-red); opacity: 0.6; z-index: 5;"
                             ></div>
@@ -1570,7 +1512,7 @@
                             {@const visibleColor = getVisibleColor(roadmapItem.statusColor)}
 
                             {#if roadmapItem.isMilestone && !roadmapConfig.end_field_id}
-                              <!-- Diamond milestone (no end field configured, can't expand) -->
+                              <!-- Diamond milestone when no end field is configured -->
                               <RoadmapItemPreview
                                 item={roadmapItem}
                                 workspace={workspace}
@@ -1662,8 +1604,8 @@
                             {/if}
                           {:else if schedulePreview?.itemId === item.id}
                             {@const previewColor = getVisibleColor(statuses.find(s => s.id === item.status_id)?.color || '#6b7280')}
-                            {@const previewStart = schedulePreview.start.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
-                            {@const previewEnd = schedulePreview.end?.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                            {@const previewStart = formatDateWithOptions(schedulePreview.start, { month: 'short', day: 'numeric' })}
+                            {@const previewEnd = formatDateWithOptions(schedulePreview.end, { month: 'short', day: 'numeric' })}
                             <div
                               data-testid="roadmap-schedule-preview-{item.id}"
                               data-start-date={formatDateValue(schedulePreview.start)}
@@ -1686,21 +1628,20 @@
                       style="left: 0; top: 0; width: {totalWidth}px; height: {treeData.length * ROW_HEIGHT}px; z-index: 20;"
                     >
                       {#each dependencyArrows as arrow}
-                        {@const sourceIdx = treeData.findIndex(i => i.id === arrow.source.id)}
-                        {@const targetIdx = treeData.findIndex(i => i.id === arrow.target.id)}
-                        {#if sourceIdx !== -1 && targetIdx !== -1}
+                        {@const blockerIdx = treeData.findIndex(i => i.id === arrow.blocker.id)}
+                        {@const dependentIdx = treeData.findIndex(i => i.id === arrow.dependent.id)}
+                        {@const geometry = getArrowGeometry(arrow.blocker, arrow.dependent, blockerIdx, dependentIdx)}
+                        {#if blockerIdx !== -1 && dependentIdx !== -1}
                           <path
-                            d={getArrowPath(arrow.source, arrow.target, sourceIdx, targetIdx)}
+                            d={geometry.path}
                             fill="none"
                             stroke="var(--ds-text-subtle)"
                             stroke-width="1.5"
                             stroke-dasharray="4,3"
                             opacity="0.6"
                           />
-                          {@const tx = (arrow.target.barStart + gridOffset) * colWidth}
-                          {@const ty = targetIdx * ROW_HEIGHT + ROW_HEIGHT / 2}
                           <polygon
-                            points="{tx},{ty} {tx - 6},{ty - 4} {tx - 6},{ty + 4}"
+                            points={geometry.head}
                             fill="var(--ds-text-subtle)"
                             opacity="0.6"
                           />
@@ -1714,22 +1655,13 @@
           </div>
         </div>
       {/if}
+
+      {#if roadmapConfig.start_field_id}
+        <CollectionHierarchyLoadMore testid="roadmap-load-more" />
+      {/if}
   </StaticViewBackground>
 {/if}
 
-<!-- Item Detail Modal -->
-{#if showItemModal && selectedItemId}
-  <ItemDetail
-    itemId={selectedItemId}
-    isModal={true}
-    onclose={() => {
-      const id = selectedItemId;
-      showItemModal = false;
-      selectedItemId = null;
-      refreshCollectionItem(id);
-    }}
-  />
-{/if}
 
 <style>
   /* Custom scrollbar for timeline */

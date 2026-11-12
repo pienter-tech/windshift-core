@@ -10,7 +10,7 @@ import (
 	"windshift/internal/database"
 )
 
-// SCMWebhookRepository persists GitLab webhook configuration and deliveries.
+// SCMWebhookRepository persists manual SCM webhook configuration and deliveries.
 type SCMWebhookRepository struct {
 	db database.Database
 }

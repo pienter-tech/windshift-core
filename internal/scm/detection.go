@@ -17,6 +17,22 @@ const (
 	DetectionSourceCommitMessage DetectionSource = "commit_message"
 )
 
+// syncDetectionSourcesSQL lists, as an SQL value list, the detection sources
+// the repository sync writes. Only links with one of these sources are
+// "detected": the sync may remove them, and deleting one is remembered.
+const syncDetectionSourcesSQL = `('pr_title', 'pr_body', 'branch_name', 'commit_message')`
+
+// isSyncDetectionSource reports whether a link's detection_source marks it as
+// detected by the repository sync rather than created by a user, a plugin or
+// a coding agent.
+func isSyncDetectionSource(source string) bool {
+	switch DetectionSource(source) {
+	case DetectionSourcePRTitle, DetectionSourcePRBody, DetectionSourceBranchName, DetectionSourceCommitMessage:
+		return true
+	}
+	return false
+}
+
 // DetectedItemKey represents an item key found in text
 type DetectedItemKey struct {
 	Key    string          // The full key (e.g., "PROJ-123")
@@ -158,8 +174,8 @@ func (d *ItemKeyDetector) DetectFromCommit(commit *Commit, workspacePrefix strin
 
 // SmartCommitAction is a parsed (itemKey, command, payload) triple from a
 // smart-commit-formatted line. One line can produce multiple actions when
-// multiple keys and/or multiple commands are combined (Jira cross-product
-// semantics).
+// multiple keys and/or multiple commands are combined (the cross-product of
+// keys and commands).
 type SmartCommitAction struct {
 	Key     DetectedItemKey
 	Command string // normalised: "comment" or a transition slug (lowercase, hyphenated)
@@ -170,9 +186,9 @@ type SmartCommitAction struct {
 // preceded by whitespace. This avoids matching fragments inside URLs.
 var smartCmdRegex = regexp.MustCompile(`(?:^|\s)#([A-Za-z][A-Za-z0-9_-]*)`)
 
-// ParseSmartCommitActions extracts Jira-style smart-commit actions from free
-// text (commit message or PR body). Per Jira:
-//   - Syntax is line-scoped: "KEY [KEY...] #cmd [args] [#cmd2 [args]]".
+// ParseSmartCommitActions extracts smart-commit actions from free text
+// (commit message or PR body). The syntax is line-scoped:
+//   - A line reads "KEY [KEY...] #cmd [args] [#cmd2 [args]]".
 //   - Item keys must appear before the first "#cmd" on the line.
 //   - "#comment" consumes the rest of the line up to the next "#cmd".
 //   - For other commands, only the first token is considered (no args).

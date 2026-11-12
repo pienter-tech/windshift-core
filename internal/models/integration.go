@@ -324,29 +324,32 @@ type TimeProjectCategory struct {
 
 // TimeProject represents a time tracking project
 type TimeProject struct {
-	ID            int            `json:"id"`
-	CustomerID    *int           `json:"customer_id,omitempty"` // Now optional
-	CategoryID    *int           `json:"category_id,omitempty"` // Link to project category
-	Name          string         `json:"name"`
-	Description   string         `json:"description"`
-	Status        string         `json:"status"` // Active, On Hold, Completed, Archived
-	Color         string         `json:"color,omitempty"`
-	HourlyRate    float64        `json:"hourly_rate"`
-	Settings      map[string]any `json:"settings,omitempty"` // Flexible JSON attributes (e.g., max_hours)
-	CreatedAt     time.Time      `json:"created_at"`
-	UpdatedAt     time.Time      `json:"updated_at"`
-	CustomerName  string         `json:"customer_name,omitempty"`
-	CategoryName  string         `json:"category_name,omitempty"`
-	CategoryColor string         `json:"category_color,omitempty"`
-	TotalHours    *float64       `json:"total_hours,omitempty"` // Computed from worklogs
-	IsManager     bool           `json:"is_manager,omitempty"`  // Whether current user is a manager of this project
+	ID           int            `json:"id"`
+	CustomerID   *int           `json:"customer_id,omitempty"` // Now optional
+	CategoryID   *int           `json:"category_id,omitempty"` // Link to project category
+	Name         string         `json:"name"`
+	Description  string         `json:"description"`
+	Status       string         `json:"status"` // Active, On Hold, Completed, Archived
+	Color        string         `json:"color,omitempty"`
+	HourlyRate   float64        `json:"hourly_rate"`
+	Settings     map[string]any `json:"settings,omitempty"` // Flexible JSON attributes (e.g., max_hours)
+	CreatedAt    time.Time      `json:"created_at"`
+	UpdatedAt    time.Time      `json:"updated_at"`
+	CustomerName string         `json:"customer_name,omitempty"`
+	// CustomerBuiltinKey identifies a system-managed customer (e.g. the
+	// no-customer placeholder) so clients can localize its display name.
+	CustomerBuiltinKey string   `json:"customer_builtin_key,omitempty"`
+	CategoryName       string   `json:"category_name,omitempty"`
+	CategoryColor      string   `json:"category_color,omitempty"`
+	TotalHours         *float64 `json:"total_hours,omitempty"` // Computed from worklogs
+	IsManager          bool     `json:"is_manager,omitempty"`  // Whether current user is a manager of this project
 }
 
 // Worklog represents a time tracking entry
 type Worklog struct {
 	ID                  int      `json:"id"`
 	ProjectID           int      `json:"project_id"`
-	CustomerID          int      `json:"customer_id"`
+	CustomerID          int      `json:"customer_id"`       // Derived from the project; worklogs do not store a customer.
 	UserID              *int     `json:"user_id,omitempty"` // User who created the worklog
 	ItemID              *int     `json:"item_id,omitempty"` // Optional link to work item
 	Description         string   `json:"description"`
@@ -357,6 +360,7 @@ type Worklog struct {
 	CreatedAt           int64    `json:"created_at"` // Unix timestamp
 	UpdatedAt           int64    `json:"updated_at"` // Unix timestamp
 	CustomerName        string   `json:"customer_name,omitempty"`
+	CustomerBuiltinKey  string   `json:"customer_builtin_key,omitempty"`
 	ProjectName         string   `json:"project_name,omitempty"`
 	UserName            string   `json:"user_name,omitempty"`             // Name of user who created the worklog
 	ItemTitle           string   `json:"item_title,omitempty"`            // Title of linked work item
@@ -379,6 +383,7 @@ type ActiveTimer struct {
 	CreatedAt           int64   `json:"created_at"`     // Unix timestamp
 	ProjectName         *string `json:"project_name,omitempty"`
 	CustomerName        *string `json:"customer_name,omitempty"`
+	CustomerBuiltinKey  *string `json:"customer_builtin_key,omitempty"`
 	ItemTitle           *string `json:"item_title,omitempty"`
 	WorkspaceName       *string `json:"workspace_name,omitempty"`
 	WorkspaceKey        *string `json:"workspace_key,omitempty"`
@@ -781,6 +786,12 @@ const (
 	ActionTriggerItemLinked       ActionTriggerType = "item_linked"
 	ActionTriggerManual           ActionTriggerType = "manual"
 
+	// ActionTriggerStatusLoop fires when an item's status is set to the status it
+	// already has and the item's workflow declares a self-transition for that
+	// status (from_status_id == to_status_id). ToStatusID optionally filters the
+	// looped status; ItemTypeID optionally filters the item type.
+	ActionTriggerStatusLoop ActionTriggerType = "status_loop"
+
 	// SLA-driven triggers emitted in the breach/warning transaction. They are
 	// configuration consumers, not fields on imported SLA goals.
 	ActionTriggerSLABreached ActionTriggerType = "sla_breached"
@@ -797,7 +808,8 @@ const (
 	// SCM pull-request lifecycle triggers emitted by the repo sync loop when
 	// a synced repository discovers a new pull request linked to an item
 	// (scm_pr_linked) or when a linked pull request transitions to merged
-	// (scm_pr_merged).
+	// (scm_pr_merged). The PR-link refresh also emits scm_pr_merged when it
+	// sees the merge first; each merge emits once.
 	ActionTriggerSCMPRLinked ActionTriggerType = "scm_pr_linked"
 	ActionTriggerSCMPRMerged ActionTriggerType = "scm_pr_merged"
 
@@ -1042,11 +1054,16 @@ type ActionEvent struct {
 	TriggeredByAction bool   `json:"triggered_by_action,omitempty"` // True if this event was emitted by an action
 	ExecutionChainID  string `json:"execution_chain_id,omitempty"`  // UUID to look up cached chain state for cycle detection
 	CascadeDepth      int    `json:"cascade_depth,omitempty"`       // Depth level of this event (0 = user-triggered)
-	SourceApplication string `json:"source_application,omitempty"`  // "workspace", "logbook", or "asset"
+	SourceApplication string `json:"source_application,omitempty"`  // "workspace" or "asset"
 	// TriggerCommentIsPrivate carries the privacy of a comment_created
 	// trigger across cascades. Customer-visible nodes must not emit
 	// outward-facing output when it is set.
 	TriggerCommentIsPrivate bool `json:"trigger_comment_is_private,omitempty"`
+	// ActorKind/SourceKind preserve provenance on the durable side-effect event
+	// so consumers can apply the same import and suppression rules as canonical
+	// domain facts. Empty defaults to system/side_effect.
+	ActorKind  string `json:"actor_kind,omitempty"`
+	SourceKind string `json:"source_kind,omitempty"`
 }
 
 // ExecutionContext holds context during action execution
@@ -1262,6 +1279,14 @@ type AssetFieldMapping struct {
 	SourceType    string `json:"source_type"`     // "item_field", "literal", or "variable"
 	SourceValue   string `json:"source_value"`    // Field name, literal value, or template
 	TargetFieldID string `json:"target_field_id"` // Asset field to update
+}
+
+// CreateItemNodeConfig configures a create_item node
+type CreateItemNodeConfig struct {
+	WorkspaceID int    `json:"workspace_id"`
+	ItemTypeID  int    `json:"item_type_id"`
+	Title       string `json:"title"`       // Title template (supports {{variables}})
+	Description string `json:"description"` // Description template (optional)
 }
 
 // CreateAssetNodeConfig configures a create_asset node

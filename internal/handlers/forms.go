@@ -617,30 +617,24 @@ func (h *FormHandler) SubmitForm(w http.ResponseWriter, r *http.Request) {
 		submission.Title = sanitize.PlainTextField.Sanitize(rendered)
 	}
 
-	// Resolve the target workspace. The request type's own workspace_id is the
-	// source of truth for routing. A legacy/NULL request type may fall back only
-	// when the channel serves exactly one workspace; choosing the first of
-	// several workspaces would make routing depend on configuration order.
+	// Resolve the target workspace. The request type pins its workspace at
+	// creation and that binding is the source of truth; there is no implicit
+	// fallback to the channel's first workspace.
 	if len(config.FormWorkspaceIDs) == 0 {
 		respondInternalError(w, r, fmt.Errorf("form channel has no configured workspaces"))
 		return
 	}
-	var targetWorkspaceID int
-	if validationResult.WorkspaceID != nil {
-		targetWorkspaceID = *validationResult.WorkspaceID
-		// The request type's workspace must be one the form channel serves; a
-		// mismatch means the channel's workspace list drifted away from the
-		// request type's routing target.
-		if !containsID(config.FormWorkspaceIDs, targetWorkspaceID) {
-			respondValidationError(w, r, "request type is misconfigured: its workspace is not served by this form channel")
-			return
-		}
-	} else {
-		if len(config.FormWorkspaceIDs) != 1 {
-			respondValidationError(w, r, "request type is misconfigured: select a target workspace")
-			return
-		}
-		targetWorkspaceID = config.FormWorkspaceIDs[0]
+	if validationResult.WorkspaceID == nil {
+		respondValidationError(w, r, "request type is misconfigured: no target workspace")
+		return
+	}
+	targetWorkspaceID := *validationResult.WorkspaceID
+	// The request type's workspace must be one the form channel serves; a
+	// mismatch means the channel's workspace list drifted away from the
+	// request type's routing target.
+	if !containsID(config.FormWorkspaceIDs, targetWorkspaceID) {
+		respondValidationError(w, r, "request type is misconfigured: its workspace is not served by this form channel")
+		return
 	}
 
 	// Determine initial status
@@ -699,8 +693,8 @@ func (h *FormHandler) SubmitForm(w http.ResponseWriter, r *http.Request) {
 		if portalCustomerID != nil {
 			attachments[i].UploaderPortalCustomerID = portalCustomerID
 		}
-		if _, uploadErr := h.itemAttachments.UploadPublicFormAttachment(attachments[i]); uploadErr != nil {
-			if rollbackErr := h.itemAttachments.RollbackPublicFormItem(int(itemID)); rollbackErr != nil {
+		if _, uploadErr := h.itemAttachments.UploadPublicFormAttachment(r.Context(), attachments[i]); uploadErr != nil {
+			if rollbackErr := h.itemAttachments.RollbackPublicFormItem(r.Context(), int(itemID)); rollbackErr != nil {
 				respondInternalError(w, r, fmt.Errorf("upload public form attachment: %v; rollback item: %w", uploadErr, rollbackErr))
 				return
 			}
@@ -842,7 +836,7 @@ func (h *FormHandler) UpdateRequestTypeConfig(w http.ResponseWriter, r *http.Req
 	}
 
 	if user != nil {
-		h.auditor.Log(r, user, logger.ActionRequestTypeConfigUpdate, logger.ResourceRequestTypeConfig, &id, "")
+		h.auditor.Log(r, user, logger.ActionRequestTypeConfigUpdate, logger.ResourceRequestType, &id, "")
 	}
 	respondJSONOK(w, rtConfig)
 }

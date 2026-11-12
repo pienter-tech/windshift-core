@@ -1,9 +1,13 @@
 <script>
   import { untrack } from 'svelte';
   import { createCombobox, melt } from '@melt-ui/svelte';
-  import { Check, ChevronDown, X, Search } from '@lucide/svelte';
+  import Check from '@lucide/svelte/icons/check';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
+  import X from '@lucide/svelte/icons/x';
+  import Search from '@lucide/svelte/icons/search';
   import Spinner from '../components/Spinner.svelte';
   import { t } from '../stores/i18n.svelte.js';
+  import { controlSizeClasses } from '../utils/controlSizes.js';
 
   let {
     // Core props
@@ -372,6 +376,11 @@
 
   // Handle keyboard navigation
   async function handleKeydown(event) {
+    // A closed picker owns no keys. Consuming Escape here (preventDefault)
+    // would make Modal.svelte's defaultPrevented guard swallow it, so an
+    // enclosing dialog could never close while a picker had focus.
+    if (!$open) return;
+
     if (event.key === 'Escape') {
       event.preventDefault();
       // Return focus to the in-modal trigger so the next Tab continues inside
@@ -386,7 +395,6 @@
     // rather than tabbing out. Focus is kept inside the modal by restoring it to
     // the trigger on select/Escape (see restoreFocusToTrigger), not by
     // intercepting Tab.
-    if (!$open) return;
 
     const totalItems = visibleOptions.length;
 
@@ -572,7 +580,7 @@
   {:else if multiple}
     <!-- Multi-select: Container with chips + input (original behavior) -->
     <div
-      class="w-full min-h-[38px] px-2.5 py-1.5 pr-10 rounded border transition-all duration-200
+      class="w-full min-h-[38px] {controlSizeClasses('medium')} pr-10 rounded border transition-all duration-200
              focus-within:outline-none focus-within:ring-2 focus-within:ring-ds-border-focused
              disabled:opacity-50 disabled:cursor-not-allowed flex flex-wrap items-center gap-1.5"
       style="background-color: var(--ds-background-input); border-color: var(--ds-border);"
@@ -586,7 +594,7 @@
           {#if chipSnippet}
             {@render chipSnippet({ item })}
           {:else}
-            <span class="font-medium truncate max-w-[150px]">{labelFor(item)}</span>
+            <span class="font-medium truncate max-w-[150px]" dir="auto">{labelFor(item)}</span>
           {/if}
           <button type="button" onclick={(e) => removeItem(e, itemValue(item))}
                   class="picker-clear rounded p-0.5 transition-colors" {disabled}>
@@ -611,9 +619,9 @@
            data-testid={inputTestid}
            aria-label={ariaLabel}
            onkeydowncapture={handleKeydown}
-           class="w-full px-4 py-2 pr-16 rounded border transition-all duration-200
+           class="w-full {controlSizeClasses('medium')} pr-16 rounded border transition-all duration-200
                   focus:outline-none focus:ring-2 focus:ring-ds-border-focused
-                  disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                  disabled:opacity-50 disabled:cursor-not-allowed"
            style="background-color: var(--ds-background-input); border-color: var(--ds-border); color: var(--ds-text);" />
     <div class="absolute right-2 top-1/2 transform -translate-y-1/2 flex items-center gap-1">
       {#if allowClear && value != null && !disabled && showSelectedInTrigger}
@@ -679,7 +687,7 @@
                     {:else}
                       {#if iconSnippet}{@render iconSnippet({ item: opt.item })}{/if}
                       <div class="flex flex-col min-w-0">
-                        <span class="font-medium truncate">{opt.label}</span>
+                        <span class="font-medium truncate" dir="auto">{opt.label}</span>
                       </div>
                     {/if}
                   </div>

@@ -1,19 +1,26 @@
 <script>
-  import { api } from '../../api.js';
-  import { attachmentStatus } from '../../stores';
+  import { items } from '../../api/items.js';
+  import { attachments as attachmentsApi } from '../../api/misc.js';
+  import { hierarchyLevels as hierarchyLevelsApi } from '../../api/configuration.js';
+  import { attachmentStatus } from '../../stores/attachmentStatus.svelte.js';
   import { workspaceDataStore } from '../../stores/workspaceDataStore.svelte.js';
   import Modal from '../../dialogs/Modal.svelte';
   import Comments from '../items/Comments.svelte';
   import ItemDetailDescription from '../items/ItemDetailDescription.svelte';
-  import { X, Calendar, MessageSquare, ExternalLink } from '@lucide/svelte';
+  import TitleField from '../items/TitleField.svelte';
+  import SidebarDateField from '../items/SidebarDateField.svelte';
+  import X from '@lucide/svelte/icons/x';
+  import MessageSquare from '@lucide/svelte/icons/message-square';
+  import ExternalLink from '@lucide/svelte/icons/external-link';
   import Button from '../../components/Button.svelte';
   import Checkbox from '../../components/Checkbox.svelte';
-  import Input from '../../components/Input.svelte';
   import { copyToClipboard } from '../../utils/clipboard.js';
-  import { formatDateOnly } from '../../utils/dateFormatter.js';
   import { navigate } from '../../router.js';
   import ItemDetailBreadcrumbs from '../items/ItemDetailBreadcrumbs.svelte';
+  import { useItemEventStream } from '../../composables/useItemEventStream.svelte.js';
   import { t } from '../../stores/i18n.svelte.js';
+  import { errorToast, surfaceError } from '../../stores/toasts.svelte.js';
+  import { runWithConcurrency } from '../../utils/concurrency.js';
 
   let {
     itemId,
@@ -33,11 +40,8 @@
   let error = $state(null);
 
   // Editing states
-  let editingTitle = $state(false);
-  let editTitle = $state('');
   let editingDescription = $state(false);
   let editDescription = $state('');
-  let editingDueDate = $state(false);
 
 
   // Attachment state
@@ -67,10 +71,9 @@
     commentCount = 0;
     if (!isModal && attachmentStatus.enabled) void loadAttachments(id, generation);
     try {
-      const loaded = await api.items.get(id);
+      const loaded = await items.get(id);
       if (generation !== itemGeneration) return; // a newer load superseded this one
       item = loaded;
-      editTitle = item.title || '';
       editDescription = item.description || '';
       if (!isModal) await loadHierarchyData();
     } catch (err) {
@@ -99,7 +102,7 @@
 
   async function loadAttachments(id = itemId, generation = itemGeneration) {
     try {
-      const response = await api.attachments.getByItem(id);
+      const response = await attachmentsApi.getByItem(id);
       if (id !== itemId || generation !== itemGeneration) return; // superseded by navigation
       attachments = response?.data || [];
     } catch (err) {
@@ -123,8 +126,8 @@
     try {
       const [itemTypesData, hierarchyLevels, ancestors] = await Promise.all([
         Promise.resolve(workspaceDataStore.itemTypes),
-        api.hierarchyLevels.getAll(),
-        item?.parent_id ? api.items.getAncestors(item.id) : Promise.resolve([]),
+        hierarchyLevelsApi.getAll(),
+        item?.parent_id ? items.getAncestors(item.id) : Promise.resolve([]),
       ]);
       itemTypes = itemTypesData || [];
       parentHierarchy = (ancestors || []).map((ancestor) => {
@@ -155,33 +158,31 @@
     try {
       saving = true;
       const targetStatusId = isTaskCompleted() ? STATUS_ID_OPEN : STATUS_ID_DONE;
-      await api.items.transition(item.id, targetStatusId);
+      await items.transition(item.id, targetStatusId);
       item = { ...item, status_id: targetStatusId };
       onupdate?.();
     } catch (err) {
-      console.error('Failed to toggle done status:', err);
       error = err.message;
+      surfaceError(err, { context: 'togglePersonalTask' });
     } finally {
       saving = false;
     }
   }
 
-  async function saveTitle() {
-    if (!editTitle.trim() || editTitle === item.title) {
-      editingTitle = false;
-      editTitle = item.title || '';
-      return;
-    }
+  async function commitTitle(draft) {
+    const next = String(draft ?? '').trim();
+    if (!next || next === item.title) return;
 
     try {
       saving = true;
-      await api.items.update(item.id, { title: editTitle.trim() });
-      item = { ...item, title: editTitle.trim() };
-      editingTitle = false;
+      await items.update(item.id, { title: next });
+      item = { ...item, title: next };
       onupdate?.();
     } catch (err) {
-      console.error('Failed to save title:', err);
       error = err.message;
+      surfaceError(err, { context: 'saveTitle' });
+      // Keep the editor open so the value is not lost.
+      throw err;
     } finally {
       saving = false;
     }
@@ -190,46 +191,30 @@
   async function saveDescription() {
     try {
       saving = true;
-      await api.items.update(item.id, { description: editDescription });
+      await items.update(item.id, { description: editDescription });
       item = { ...item, description: editDescription };
       editingDescription = false;
       onupdate?.();
     } catch (err) {
-      console.error('Failed to save description:', err);
       error = err.message;
+      surfaceError(err, { context: 'saveDescription' });
     } finally {
       saving = false;
     }
   }
 
-  async function saveDueDate(newValue) {
+  async function commitDueDate(newValue) {
     try {
       saving = true;
       const dueDate = newValue || null;
-      await api.items.update(item.id, { due_date: dueDate });
+      await items.update(item.id, { due_date: dueDate });
       item = { ...item, due_date: dueDate };
-      editingDueDate = false;
       onupdate?.();
     } catch (err) {
-      console.error('Failed to save due date:', err);
       error = err.message;
+      surfaceError(err, { context: 'saveDueDate' });
     } finally {
       saving = false;
-    }
-  }
-
-  function clearDueDate(e) {
-    e.stopPropagation();
-    saveDueDate(null);
-  }
-
-  function handleTitleKeydown(e) {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      saveTitle();
-    } else if (e.key === 'Escape') {
-      editingTitle = false;
-      editTitle = item.title || '';
     }
   }
 
@@ -255,23 +240,25 @@
 
   async function handleAttachmentUploadFiles(data) {
     const { files } = data;
-    for (const file of files) {
-      try {
-        await api.attachments.uploadToItem(item.id, file);
-      } catch (err) {
-        console.error('Failed to upload:', err);
-      }
+    const results = await runWithConcurrency(files, (file) =>
+      attachmentsApi.uploadToItem(item.id, file)
+    );
+    const failed = results.filter((result) => !result.ok);
+    if (failed.length > 0) {
+      console.error('Failed to upload:', failed[0].error);
+      const names = failed.map((result) => result.item?.name).filter(Boolean).join(', ');
+      errorToast(t('dialogs.alerts.failedToUpload', { error: names || t('errors.UNKNOWN') }));
     }
     await loadAttachments();
   }
 
   async function handleAttachmentDelete(attachment) {
     try {
-      await api.attachments.delete(attachment.id);
+      await attachmentsApi.delete(attachment.id);
       attachments = attachments.filter(a => a.id !== attachment.id);
     } catch (err) {
-      console.error('Failed to delete attachment:', err);
       error = 'Failed to delete attachment';
+      surfaceError(err, { context: 'deleteAttachment' });
     }
   }
 
@@ -285,6 +272,32 @@
     } else {
       // Full-page mode: navigate back
       window.history.back();
+    }
+  }
+
+  // Live updates (WI-484): personal tasks use the same item event stream as the
+  // workspace item detail. Any change reloads the task and refreshes the
+  // embedded Comments; a deletion closes the view.
+  useItemEventStream(() => itemId, {
+    onReconcile: () => {
+      refreshItem();
+      window.dispatchEvent(new CustomEvent('item-comments-changed', { detail: { itemId } }));
+    },
+    onDeleted: () => closeModal(),
+  });
+
+  // Silent reload so a live change never flashes the loading state or clobbers
+  // fields the user is editing.
+  async function refreshItem() {
+    const id = item?.id;
+    if (id == null) return;
+    try {
+      const fresh = await items.get(id);
+      if (item?.id !== id) return;
+      item = { ...item, ...fresh };
+      if (!editingDescription) editDescription = fresh.description || '';
+    } catch (err) {
+      if (err?.status === 404) closeModal();
     }
   }
 
@@ -329,26 +342,15 @@
         />
 
         <!-- Editable Title -->
-        {#if editingTitle}
-          <Input
-            type="text"
-            bind:value={editTitle}
-            onblur={saveTitle}
-            onkeydown={handleTitleKeydown}
-            class="flex-1 text-lg font-semibold border-b-2 focus:outline-none min-w-0"
-            style="background: transparent; color: var(--ds-text); border-color: #3b82f6;"
-            autofocus
+        <div class="flex-1 min-w-0">
+          <TitleField
+            value={item.title}
+            editable={true}
+            oncommit={commitTitle}
+            displayClass="block text-lg font-semibold cursor-pointer hover:opacity-70 truncate text-left {isTaskCompleted() ? 'line-through opacity-60' : ''}"
+            inputClass="w-full text-lg font-semibold border-b-2 focus:outline-none min-w-0"
           />
-        {:else}
-          <button
-            type="button"
-            onclick={() => { editingTitle = true; }}
-            class="flex-1 text-lg font-semibold cursor-pointer hover:opacity-70 truncate text-left {isTaskCompleted() ? 'line-through opacity-60' : ''}"
-            style="color: var(--ds-text); background: none; border: none; padding: 0;"
-          >
-            {item.title}
-          </button>
-        {/if}
+        </div>
       </div>
 
       {#if isModal}
@@ -363,42 +365,13 @@
     <div class="{isModal ? 'p-4 max-h-[70vh] overflow-y-auto' : 'px-6 py-6'}">
       <!-- Due Date -->
       <div class="mb-4" data-testid="personal-task-due-date">
-        {#if editingDueDate}
-          <div class="flex items-center gap-2">
-            <Calendar class="w-4 h-4" style="color: var(--ds-text-subtle);" />
-            <!-- svelte-ignore a11y_autofocus -->
-            <Input
-              type="date"
-              value={item.due_date?.split('T')[0] || ''}
-              onchange={(e) => saveDueDate(e.currentTarget.value || null)}
-              onblur={() => editingDueDate = false}
-              size="small"
-              autofocus
-            />
-          </div>
-        {:else}
-          <div class="flex items-center gap-2">
-            <button
-              type="button"
-              onclick={() => editingDueDate = true}
-              class="flex items-center gap-2 text-sm hover:opacity-70"
-              style="color: {item.due_date ? 'var(--ds-text)' : 'var(--ds-text-subtle)'}; background: none; border: none; padding: 0;"
-            >
-              <Calendar class="w-4 h-4" />
-              {item.due_date ? formatDateOnly(item.due_date) : t('personal.setDueDate')}
-            </button>
-            {#if item.due_date}
-              <button
-                type="button"
-                onclick={clearDueDate}
-                class="p-0.5 hover:opacity-70 rounded"
-                style="color: var(--ds-text-subtle);"
-              >
-                <X class="w-3 h-3" />
-              </button>
-            {/if}
-          </div>
-        {/if}
+        <SidebarDateField
+          fieldKey="due_date"
+          label={t('common.dueDate')}
+          value={item.due_date}
+          editable={true}
+          onSave={commitDueDate}
+        />
       </div>
 
       <!-- Description -->

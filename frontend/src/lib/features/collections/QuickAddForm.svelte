@@ -1,5 +1,9 @@
 <script>
-  import { Plus, X, Package, ChevronDown, LoaderCircle } from '@lucide/svelte';
+  import Plus from '@lucide/svelte/icons/plus';
+  import X from '@lucide/svelte/icons/x';
+  import Package from '@lucide/svelte/icons/package';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
+  import LoaderCircle from '@lucide/svelte/icons/loader-circle';
   import { useEventListener } from 'runed';
   import Button from '../../components/Button.svelte';
   import Textarea from '../../components/Textarea.svelte';
@@ -20,6 +24,7 @@
     parentId,
     formState,
     workspaces = [],
+    directoryLoading = false,
     compact = false,
     cardBgStyle = '',
     onUpdateField = () => {},
@@ -29,6 +34,9 @@
 
   let selectedWorkspace = $derived(workspaces.find(w => w.id === formState.workspaceId));
   let selectedItemType = $derived(formState.availableTypes?.find(it => it.id === formState.itemTypeId));
+  // While the directory settles there is no workspace list to choose from, so
+  // the selector reads as loading instead of an empty menu.
+  let workspacesPending = $derived(directoryLoading && workspaces.length === 0);
 
   // Dropdown management. Both menus are portalled to <body> and positioned
   // against their trigger: the board clips swimlanes with overflow-hidden, so
@@ -165,8 +173,9 @@
 
   <!-- Actions Footer -->
   <div
-    class="flex items-center {compact ? 'p-3 pt-2 gap-2' : 'mt-2.5 pt-2 gap-1.5'}"
+    class="flex items-center {compact ? 'p-3 pt-2 gap-2' : 'mt-2.5 pt-2 gap-1'}"
     class:flex-wrap={compact}
+    data-testid="quick-add-footer"
   >
     <!-- Workspace Selector -->
     <div class="relative" bind:this={workspaceAnchor} data-quick-add-menu-anchor>
@@ -176,9 +185,12 @@
         onclick={toggleWorkspaceDropdown}
         class={compact ? '!size-7 !p-0' : '!size-6 !p-0 !rounded-[3px]'}
         dataTestid="quick-add-workspace"
-        title={selectedWorkspace?.name || 'Select workspace'}
+        disabled={workspacesPending}
+        title={workspacesPending ? t('common.loading') : (selectedWorkspace?.name || 'Select workspace')}
       >
-        {#if selectedWorkspace?.avatar_url}
+        {#if workspacesPending}
+          <LoaderCircle class="{compact ? 'w-4 h-4' : 'w-3.5 h-3.5'} animate-spin" />
+        {:else if selectedWorkspace?.avatar_url}
           <img
             src={selectedWorkspace.avatar_url}
             alt="{selectedWorkspace.name} avatar"
@@ -195,7 +207,7 @@
         {/if}
       </Button>
 
-      {#if showWorkspaceDropdown}
+      {#if showWorkspaceDropdown && !workspacesPending}
         <div
           use:portal
           data-quick-add-menu
@@ -283,7 +295,7 @@
             variant="default"
             size="small"
             onclick={toggleItemTypeDropdown}
-            class="!h-6 !px-1 !gap-0.5 !rounded-[3px]"
+            class="!h-6 !px-0.5 !gap-0.5 !rounded-[3px]"
             dataTestid="quick-add-type"
             title={selectedItemType?.name || t('collections.selectType')}
           >
@@ -346,7 +358,7 @@
         variant="ghost"
         size="small"
         onclick={() => onCancel(parentId)}
-        class="!h-6 !px-2 !text-xs"
+        class="!h-6 !px-1 !text-xs"
         style="color: var(--ds-text);"
         dataTestid="quick-add-cancel"
         title="{t('common.cancel')} ({getDisplayString(cancelShortcut)})"
@@ -366,7 +378,7 @@
         class="!size-7 !p-0"
         dataTestid="quick-add-create"
         title={t('common.create')}
-        disabled={formState.loadingTypes || !formState.itemTypeId}
+        disabled={formState.loadingTypes || !formState.itemTypeId || (workspacesPending && !formState.workspaceId)}
       />
     {:else}
       <Button
@@ -374,9 +386,9 @@
         size="small"
         keyboardHint={getDisplayString(createShortcut)}
         onclick={() => onCreate(parentId)}
-        class="!h-6 !px-2 !text-xs !gap-1.5"
+        class="!h-6 !px-1 !text-xs !gap-1"
         dataTestid="quick-add-create"
-        disabled={formState.loadingTypes || !formState.itemTypeId}
+        disabled={formState.loadingTypes || !formState.itemTypeId || (workspacesPending && !formState.workspaceId)}
       >
         {t('common.create')}
       </Button>

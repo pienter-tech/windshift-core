@@ -6,6 +6,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// milestoneCancelledStatus is the canonical persisted milestone status. The
+// API also accepts the US spelling "canceled" and normalizes it.
+const milestoneCancelledStatus = "cancelled" //nolint:misspell // Persisted API status.
+
 var milestoneCmd = &cobra.Command{
 	Use:   "milestone",
 	Short: "Manage milestones",
@@ -155,7 +159,9 @@ var milestoneUpdateCmd = &cobra.Command{
 
 Examples:
   ws milestone update 5 --status completed
-  ws milestone update 5 -n "v2.1 Release" --target 2024-07-01`,
+  ws milestone update 5 -n "v2.1 Release" --target 2024-07-01
+  ws milestone update 5 --file description.md   # description from a Markdown file
+  cat description.md | ws milestone update 5 -f -  # description from stdin`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, err := NewClient()
@@ -184,6 +190,15 @@ Examples:
 			req.Description = &milestoneUpdateDesc
 			hasUpdate = true
 		}
+		if cmd.Flags().Changed("file") {
+			// Verbatim file content, like `ws page edit --file`.
+			content, _, ferr := readMarkdownFile(milestoneUpdateFile)
+			if ferr != nil {
+				return ferr
+			}
+			req.Description = &content
+			hasUpdate = true
+		}
 		if cmd.Flags().Changed("target") {
 			req.TargetDate = &milestoneUpdateTarget
 			hasUpdate = true
@@ -194,7 +209,7 @@ Examples:
 		}
 
 		if !hasUpdate {
-			return fmt.Errorf("no updates specified. Use --name, --description, --target, or --status")
+			return fmt.Errorf("no updates specified. Use --name, --description, --file, --target, or --status")
 		}
 
 		milestone, err := client.UpdateMilestoneInWorkspace(wsID, milestoneID, req)
@@ -224,6 +239,7 @@ var (
 
 	milestoneUpdateName   string
 	milestoneUpdateDesc   string
+	milestoneUpdateFile   string
 	milestoneUpdateTarget string
 	milestoneUpdateStatus string
 )
@@ -236,7 +252,7 @@ func init() {
 	milestoneCmd.AddCommand(milestoneUpdateCmd)
 
 	// List filters
-	milestoneListCmd.Flags().StringVarP(&milestoneStatusFilter, "status", "s", "", "filter by status (planning, in-progress, completed, canceled)")
+	milestoneListCmd.Flags().StringVarP(&milestoneStatusFilter, "status", "s", "", "filter by status (planning, in-progress, completed, "+milestoneCancelledStatus+")")
 	milestoneListCmd.Flags().BoolVar(&milestoneGlobalOnly, "global", false, "show only global milestones")
 
 	// Get flags
@@ -246,11 +262,13 @@ func init() {
 	milestoneCreateCmd.Flags().StringVarP(&milestoneCreateName, "name", "n", "", "milestone name (required)")
 	milestoneCreateCmd.Flags().StringVarP(&milestoneCreateDesc, "description", "d", "", "milestone description")
 	milestoneCreateCmd.Flags().StringVar(&milestoneCreateTarget, "target", "", "target date (YYYY-MM-DD)")
-	milestoneCreateCmd.Flags().StringVar(&milestoneCreateStatus, "status", "", "initial status (default: planning)")
+	milestoneCreateCmd.Flags().StringVar(&milestoneCreateStatus, "status", "", "initial status: planning (default), in-progress, completed, "+milestoneCancelledStatus)
 
 	// Update flags
 	milestoneUpdateCmd.Flags().StringVarP(&milestoneUpdateName, "name", "n", "", "new milestone name")
 	milestoneUpdateCmd.Flags().StringVarP(&milestoneUpdateDesc, "description", "d", "", "new description")
+	milestoneUpdateCmd.Flags().StringVarP(&milestoneUpdateFile, "file", "f", "", "path to a Markdown file with the new description (use - for stdin)")
+	milestoneUpdateCmd.MarkFlagsMutuallyExclusive("description", "file")
 	milestoneUpdateCmd.Flags().StringVar(&milestoneUpdateTarget, "target", "", "new target date (YYYY-MM-DD)")
-	milestoneUpdateCmd.Flags().StringVar(&milestoneUpdateStatus, "status", "", "new status")
+	milestoneUpdateCmd.Flags().StringVar(&milestoneUpdateStatus, "status", "", "new status: planning, in-progress, completed, "+milestoneCancelledStatus)
 }

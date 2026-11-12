@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"windshift/internal/logger"
 	"windshift/internal/models"
 	"windshift/internal/sanitize"
 	"windshift/internal/utils"
@@ -93,6 +94,34 @@ func (s *PlanningApplicationService) GetMilestone(userID, id int) (*MilestoneRes
 	}
 	result.Releases, err = s.planning.ListMilestoneReleases(id)
 	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// AuthorizeMilestoneRead loads a milestone and confirms the user may view it:
+// global milestones are visible to every authenticated user, local ones need
+// item view in their workspace. It skips the release lookup GetMilestone does.
+func (s *PlanningApplicationService) AuthorizeMilestoneRead(userID, id int) (*MilestoneResult, error) {
+	result, err := s.planning.GetMilestone(id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.requireRead(userID, result.IsGlobal, result.WorkspaceID); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// AuthorizeMilestoneWrite loads a milestone and confirms the user may edit it,
+// with the same check UpdateMilestone uses: global milestones need the global
+// milestone.create permission, local ones item edit in their workspace.
+func (s *PlanningApplicationService) AuthorizeMilestoneWrite(userID, id int) (*MilestoneResult, error) {
+	result, err := s.planning.GetMilestone(id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.requireWrite(userID, result.IsGlobal, result.WorkspaceID, models.PermissionMilestoneCreate); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -342,7 +371,7 @@ func (s *PlanningApplicationService) ReleaseMilestone(ctx context.Context, userI
 		_ = s.planning.MarkMilestoneReleaseUncertain(ctx, attempt.ID, attempt.LeaseToken, err.Error())
 		return nil, err
 	}
-	emitServiceAudit(s.planning.db, actor, "milestone.release", "milestone", &id, result.Name, nil)
+	emitServiceAudit(s.planning.db, actor, logger.ActionMilestoneRelease, logger.ResourceMilestone, &id, result.Name, nil)
 	return result, nil
 }
 

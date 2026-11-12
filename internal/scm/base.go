@@ -35,10 +35,18 @@ func newSCMHTTPClient(timeout time.Duration) *http.Client {
 // expectedStatus is the HTTP status code that indicates success (e.g., http.StatusOK).
 func (b *baseProvider) doJSON(ctx context.Context, method, reqURL string,
 	body io.Reader, expectedStatus int, result any) error {
+	_, err := b.doJSONWithHeader(ctx, method, reqURL, body, expectedStatus, result)
+	return err
+}
+
+// doJSONWithHeader is doJSON that also returns the response headers, for
+// callers that read pagination from them.
+func (b *baseProvider) doJSONWithHeader(ctx context.Context, method, reqURL string,
+	body io.Reader, expectedStatus int, result any) (http.Header, error) {
 
 	req, err := http.NewRequestWithContext(ctx, method, reqURL, body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	b.setAuthHeader(req)
 
@@ -48,18 +56,18 @@ func (b *baseProvider) doJSON(ctx context.Context, method, reqURL string,
 
 	resp, err := b.httpClient.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != expectedStatus {
-		return b.handleErrorResponse(resp)
+		return nil, b.handleErrorResponse(resp)
 	}
 
 	if result != nil {
 		if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return resp.Header, nil
 }

@@ -201,7 +201,9 @@ func (s *Service) UpdateImportedItem(itemID int, params services.ItemCreationPar
 		return 0, err
 	}
 	var priorityID any
-	if strings.TrimSpace(params.Priority) != "" {
+	if params.PriorityID != nil {
+		priorityID = *params.PriorityID
+	} else if strings.TrimSpace(params.Priority) != "" {
 		var resolvedPriorityID int
 		if err := s.db.QueryRow(`
 			SELECT id FROM priorities WHERE LOWER(name) = LOWER(?) ORDER BY id LIMIT 1
@@ -297,8 +299,8 @@ func (s *Service) UpdateImportedItem(itemID int, params services.ItemCreationPar
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit Jira item upsert: %w", err)
 	}
-	services.PublishItemChange(itemID, services.ItemChangeUpdated)
-	services.PublishWorkspaceChange(params.WorkspaceID, services.WorkspaceChangeItems)
+	services.PublishItemChange(itemID)
+	services.PublishWorkspaceChange(params.WorkspaceID)
 	return int64(itemID), nil
 }
 
@@ -438,15 +440,45 @@ func (s *Service) UpsertExternalIssueLink(
 		})
 }
 
-func (s *Service) ReassignAttachment(attachmentID, itemID int) (mimeType, originalFilename string, ok bool) {
+// SubresourceBelongsToItem reports whether a previously imported comment,
+// attachment, or worklog is currently owned by the destination item. A partial
+// fork retry must not reuse a mapping owned by the original workspace's item,
+// because the update would move that resource instead of copying it.
+func (s *Service) SubresourceBelongsToItem(entityType string, windshiftID, itemID int) (bool, error) {
+	var query string
+	switch entityType {
+	case "comment":
+		query = `SELECT item_id FROM comments WHERE id = ?`
+	case "attachment":
+		query = `SELECT item_id FROM attachments WHERE id = ?`
+	case "worklog":
+		query = `SELECT item_id FROM time_worklogs WHERE id = ?`
+	default:
+		return false, nil
+	}
+	var owner sql.NullInt64
+	err := s.db.QueryRow(query, windshiftID).Scan(&owner)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check %s ownership: %w", entityType, err)
+	}
+	return owner.Valid && int(owner.Int64) == itemID, nil
+}
+
+// ReassignAttachment moves a previously imported attachment onto a new item
+// and refreshes its portal visibility, so a re-import can both relocate and
+// reclassify the file.
+func (s *Service) ReassignAttachment(attachmentID, itemID int, isInternal bool) (mimeType, originalFilename string, ok bool) {
 	if err := s.db.QueryRow(`
 		SELECT mime_type, original_filename FROM attachments WHERE id = ?
 	`, attachmentID).Scan(&mimeType, &originalFilename); err != nil {
 		return "", "", false
 	}
 	if _, err := s.db.ExecWrite(`
-		UPDATE attachments SET item_id = ?, entity_type = 'item' WHERE id = ?
-	`, itemID, attachmentID); err != nil {
+		UPDATE attachments SET item_id = ?, entity_type = 'item', is_internal = ? WHERE id = ?
+	`, itemID, isInternal, attachmentID); err != nil {
 		return "", "", false
 	}
 	return mimeType, originalFilename, true
@@ -575,26 +607,15 @@ func (s *Service) EnsureLinkType(name, forwardLabel, reverseLabel string) (int, 
 	return entity.GetID(), nil
 }
 
-func (s *Service) TimeProjectCustomerID(projectID int) (int64, error) {
-	info, err := s.timeProjects.GetBookingInfo(projectID)
-	if err != nil {
-		return 0, err
-	}
-	if info.CustomerID == nil {
-		return 0, repository.ErrNotFound
-	}
-	return *info.CustomerID, nil
-}
-
 func (s *Service) UpsertImportedWorklog(input repository.ImportedWorklog, previous *PreviousMapping) (int64, error) {
 	if previous != nil {
 		result, err := s.db.ExecWrite(`
 			UPDATE time_worklogs
-			SET project_id = ?, customer_id = ?, user_id = ?, item_id = ?,
+			SET project_id = ?, user_id = ?, item_id = ?,
 			    description = ?, date = ?, start_time = ?, end_time = ?,
 			    duration_minutes = ?, created_at = ?, updated_at = ?
 			WHERE id = ?
-		`, input.ProjectID, input.CustomerID, input.UserID, input.ItemID,
+		`, input.ProjectID, input.UserID, input.ItemID,
 			input.Description, input.DateUnix, input.StartTimeUnix, input.EndTimeUnix,
 			input.DurationMinutes, input.CreatedAtUnix, input.UpdatedAtUnix, previous.WindshiftID)
 		if err != nil {
@@ -610,21 +631,6 @@ func (s *Service) UpsertImportedWorklog(input repository.ImportedWorklog, previo
 func (s *Service) ItemLinkExists(linkID int) bool {
 	var exists bool
 	return s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM item_links WHERE id = ?)`, linkID).Scan(&exists) == nil && exists
-}
-
-func (s *Service) AttachmentPath() (string, bool) {
-	var attachmentPath string
-	err := s.db.QueryRow(`
-		SELECT attachment_path
-		FROM attachment_settings
-		WHERE enabled = true
-		ORDER BY id DESC
-		LIMIT 1
-	`).Scan(&attachmentPath)
-	if err != nil || strings.TrimSpace(attachmentPath) == "" {
-		return "", false
-	}
-	return attachmentPath, true
 }
 
 func (s *Service) PreserveAttachmentCreatedAt(attachmentID int64, createdAt time.Time) error {

@@ -25,6 +25,12 @@ type PluginHandler struct {
 	pluginsDisabled bool
 	licenseVerifier plugins.LicenseVerifier
 	instanceService *services.InstanceService
+	// Asset auth middleware, selected per request from the plugin's declared
+	// per-prefix asset policy. A nil hook denies, so an unconfigured handler
+	// fails closed.
+	requireAuth  func(http.Handler) http.Handler
+	requireAdmin func(http.Handler) http.Handler
+	publicLimit  func(http.Handler) http.Handler
 }
 
 // NewPluginHandler creates a new plugin handler
@@ -44,6 +50,15 @@ func (h *PluginHandler) SetLicensing(verifier plugins.LicenseVerifier, instanceS
 	h.instanceService = instanceService
 }
 
+// SetAssetAuth wires the middleware applied to plugin asset requests. The
+// plugin's manifest declares a per-prefix auth policy; the handler selects the
+// matching middleware at request time.
+func (h *PluginHandler) SetAssetAuth(requireAuth, requireAdmin, publicLimit func(http.Handler) http.Handler) {
+	h.requireAuth = requireAuth
+	h.requireAdmin = requireAdmin
+	h.publicLimit = publicLimit
+}
+
 // PluginInfo represents plugin information for API responses
 type PluginInfo struct {
 	ID          int    `json:"id"`
@@ -54,10 +69,15 @@ type PluginInfo struct {
 	Enabled     bool   `json:"enabled"`
 	// Licensed reports whether the plugin's license verified for this install.
 	// Always true when license enforcement is not configured.
-	Licensed    bool                `json:"licensed"`
-	Routes      []map[string]string `json:"routes"`
-	Extensions  []plugins.Extension `json:"extensions,omitempty"`
-	InstalledAt string              `json:"installed_at"`
+	Licensed bool                `json:"licensed"`
+	Routes   []map[string]string `json:"routes"`
+	// RequestedPermissions is what the plugin's manifest declares;
+	// EffectivePermissions is what it actually holds after manifest validation
+	// and license gating. Undeclared host functions are denied.
+	RequestedPermissions []string            `json:"requested_permissions,omitempty"`
+	EffectivePermissions []string            `json:"effective_permissions,omitempty"`
+	Extensions           []plugins.Extension `json:"extensions,omitempty"`
+	InstalledAt          string              `json:"installed_at"`
 }
 
 // ListPlugins returns all installed plugins
@@ -98,8 +118,11 @@ func (h *PluginHandler) ListPlugins(w http.ResponseWriter, r *http.Request) {
 			for i := range pluginList {
 				dbPlugin := &pluginList[i]
 				if dbPlugin.Name == loadedPlugin.Manifest.Name {
-					// The loaded state is the source of truth for licensing.
+					// The loaded state is the source of truth for licensing and
+					// effective host-function permissions.
 					dbPlugin.Licensed = loadedPlugin.Licensed
+					dbPlugin.RequestedPermissions = loadedPlugin.Manifest.Permissions
+					dbPlugin.EffectivePermissions = loadedPlugin.Permissions
 					found = true
 					break
 				}
@@ -113,17 +136,20 @@ func (h *PluginHandler) ListPlugins(w http.ResponseWriter, r *http.Request) {
 						"method":      r.Method,
 						"path":        r.Path,
 						"description": r.Description,
+						"auth":        string(r.Auth),
 					})
 				}
 
 				pluginList = append(pluginList, PluginInfo{
-					Name:        loadedPlugin.Manifest.Name,
-					Version:     loadedPlugin.Manifest.Version,
-					Description: loadedPlugin.Manifest.Description,
-					Author:      loadedPlugin.Manifest.Author,
-					Enabled:     loadedPlugin.Enabled,
-					Licensed:    loadedPlugin.Licensed,
-					Routes:      routes,
+					Name:                 loadedPlugin.Manifest.Name,
+					Version:              loadedPlugin.Manifest.Version,
+					Description:          loadedPlugin.Manifest.Description,
+					Author:               loadedPlugin.Manifest.Author,
+					Enabled:              loadedPlugin.Enabled,
+					Licensed:             loadedPlugin.Licensed,
+					Routes:               routes,
+					RequestedPermissions: loadedPlugin.Manifest.Permissions,
+					EffectivePermissions: loadedPlugin.Permissions,
 				})
 			}
 		}
@@ -245,10 +271,21 @@ func (h *PluginHandler) GetExtensions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	extensions := h.manager.GetExtensions()
+	// Editor surfaces only need the editor providers; ?point= keeps the
+	// response to the requested point so unrelated plugin metadata is not
+	// shipped to them.
+	if point := strings.TrimSpace(r.URL.Query().Get("point")); point != "" {
+		filtered := make(map[string][]plugins.Extension, 1)
+		if list, ok := extensions[point]; ok {
+			filtered[point] = list
+		}
+		extensions = filtered
+	}
 	_ = json.NewEncoder(w).Encode(extensions)
 }
 
-// GetAsset serves a static asset from a plugin
+// GetAsset serves a static asset from a plugin, enforcing the auth policy the
+// plugin declared for the asset's path.
 func (h *PluginHandler) GetAsset(w http.ResponseWriter, r *http.Request) {
 	if h.pluginsDisabled {
 		respondError(w, r, restapi.ErrPluginsDisabled)
@@ -260,6 +297,40 @@ func (h *PluginHandler) GetAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	pluginName := r.PathValue("name")
+	assetPath := r.PathValue("asset")
+
+	auth, err := h.manager.GetAssetAuth(pluginName, assetPath)
+	if err != nil {
+		respondNotFound(w, r, "asset")
+		return
+	}
+
+	serve := http.Handler(http.HandlerFunc(h.serveAsset))
+	switch auth {
+	case plugins.RouteAuthNone:
+		if h.publicLimit != nil {
+			serve = h.publicLimit(serve)
+		}
+	case plugins.RouteAuthAdmin:
+		if h.requireAuth == nil || h.requireAdmin == nil {
+			http.Error(w, "Plugin asset authorization is not configured", http.StatusForbidden)
+			return
+		}
+		serve = h.requireAuth(h.requireAdmin(serve))
+	default:
+		if h.requireAuth == nil {
+			http.Error(w, "Plugin asset authorization is not configured", http.StatusForbidden)
+			return
+		}
+		serve = h.requireAuth(serve)
+	}
+
+	serve.ServeHTTP(w, r)
+}
+
+// serveAsset writes a plugin asset after GetAsset has enforced its auth policy.
+func (h *PluginHandler) serveAsset(w http.ResponseWriter, r *http.Request) {
 	pluginName := r.PathValue("name")
 	assetPath := r.PathValue("asset")
 
@@ -396,6 +467,7 @@ func (h *PluginHandler) syncPluginToDatabase() {
 				"method":      r.Method,
 				"path":        r.Path,
 				"description": r.Description,
+				"auth":        string(r.Auth),
 			})
 		}
 		extensionsJSON, _ := json.Marshal(p.Manifest.Extensions)

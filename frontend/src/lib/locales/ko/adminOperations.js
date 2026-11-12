@@ -309,7 +309,6 @@ export default {
     "groupOutsideColumnWithType": "{column} 외의 열에서만 {type} 작업 그룹화",
     "groupOutsideColumn": "{column} 외의 열에서만 작업 그룹화",
     "hiddenCount": "{count}개 숨겨짐",
-    "useAsSwimlanes": "이 작업을 스윔레인으로 사용"
   },
   "systemImport": {
     "title": "시스템 가져오기",
@@ -319,9 +318,13 @@ export default {
     "savedConnectionsDescription": "데이터 가져오기에 사용할 Jira Cloud 연결을 관리합니다.",
     "noConnections": "아직 저장된 연결이 없습니다. 가져오기를 시작하여 Jira Cloud를 연결하세요.",
     "lastUsed": "마지막 사용",
-    "deleteConnection": "연결 삭제",
-    "deleteConnectionMessage": "이 연결을 삭제하시겠습니까? 되돌릴 수 없습니다.",
-    "connectionDeleted": "연결을 삭제했습니다",
+    "deleteConnection": "연결 제거",
+    "deleteConnectionMessage": "이 연결을 제거하시겠습니까? 가져온 데이터와 가져오기 기록은 유지됩니다. 이 작업은 되돌릴 수 없습니다.",
+    "connectionDeleted": "연결을 제거했습니다",
+    "updateToken": "토큰 업데이트",
+    "updateTokenTitle": "Jira 연결 업데이트",
+    "updateTokenDescription": "저장된 자격 증명을 교체합니다. Windshift가 저장하기 전에 Jira에서 새 토큰을 확인합니다.",
+    "connectionUpdated": "연결을 업데이트했습니다",
     "importHistory": "가져오기 기록",
     "importHistoryDescription": "이전 가져오기의 상태 및 결과",
     "noImports": "아직 가져오기 기록이 없습니다. 가져오기를 시작하면 여기에 기록이 표시됩니다.",
@@ -354,6 +357,8 @@ export default {
     },
     "deleteData": "데이터 삭제",
     "unavailable": "사용 불가",
+    "removeFromList": "목록에서 제거",
+    "importRemovedFromHistory": "가져오기 기록에서 제거했습니다",
     "dataDeleted": "가져온 Jira 데이터를 삭제했습니다. 다시 가져올 수 있습니다.",
     "deleteImportedTitle": "가져온 Jira 데이터 삭제",
     "deleteWarningTitle": "여러 Windshift 워크스페이스가 삭제될 수 있습니다.",
@@ -405,9 +410,11 @@ export default {
     "configureWebhook": "웹훅 정보 생성",
     "rotateWebhookSecret": "비밀 값 교체",
     "webhookSecretOnce": "지금 비밀 값을 복사하세요. 다시 표시되지 않습니다.",
-    "webhookSecretRotated": "GitLab 웹훅 비밀 값을 생성했습니다",
-    "webhookLoadFailed": "GitLab 웹훅 설정을 불러오지 못했습니다",
-    "webhookRotateFailed": "GitLab 웹훅 비밀 값을 생성하지 못했습니다"
+    "giteaWebhook": "Forgejo / Gitea 웹훅",
+    "giteaWebhookHelp": "이 대상 URL과 비밀 값, POST 콘텐츠 유형 application/json, 푸시, 생성(브랜치 또는 태그 생성), 릴리스, 풀 리퀘스트, 풀 리퀘스트 댓글 이벤트로 Forgejo 또는 Gitea 웹훅을 추가하세요. 이 이벤트들은 다음 폴링을 기다리지 않고 몇 초 안에 저장소를 동기화합니다. 풀 리퀘스트의 CI 상태를 몇 초 안에 갱신하려면 Actions 실행 이벤트(Forgejo) 또는 커밋 상태 이벤트(Gitea)도 선택하세요. 이슈 동기화를 몇 초 안에 하려면 담당자 지정, 라벨, 마일스톤을 포함한 이슈 이벤트와 이슈 댓글 이벤트도 선택하세요.",
+    "webhookSecretRotated": "웹훅 비밀 값을 생성했습니다",
+    "webhookLoadFailed": "웹훅 설정을 불러오지 못했습니다",
+    "webhookRotateFailed": "웹훅 비밀 값을 생성하지 못했습니다"
   },
   "workspaceTemplates": {
     "title": "작업 템플릿",

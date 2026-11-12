@@ -4,13 +4,13 @@
 !go.mod
 !go.sum
 !main.go
+!NOTICE
 !cmd/
 !cmd/ws/
 !cmd/ws/**
 !cmd/windshift-triage/
 !cmd/windshift-triage/**
 cmd/capture-jira-custom-fields
-cmd/logbook
 cmd/reviewstatus
 cmd/stresstest-cf-index
 !windshift-runner/

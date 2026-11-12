@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,33 +18,36 @@ import (
 	"windshift/internal/markdown"
 	"windshift/internal/models"
 	"windshift/internal/repository"
+	"windshift/internal/sla"
 	"windshift/internal/validation"
 )
 
 var (
 	ErrItemForbidden             = errors.New("item access forbidden")
+	ErrItemWatcherForbidden      = errors.New("managing other watchers requires edit permission")
 	ErrItemConflict              = errors.New("item mutation conflict")
 	ErrItemTypeMigrationRequired = errors.New("item type migration requires a target status")
 )
 
 type ItemIssueSync interface {
-	PushStatusToGitHub(context.Context, int, int)
+	PushStatusToIssue(context.Context, int, int)
 }
 
 type ItemListRequest struct {
-	WorkspaceIDs     []int
-	UserID           int
-	WorkspaceID      int
-	CollectionID     int
-	QL               string
-	SubQL            string
-	Filters          ItemFilters
-	Pagination       PaginationParams
-	SortBy           string
-	SortAsc          bool
-	OmitDescriptions bool
-	IncludeWatermark bool
-	ExcludePersonal  bool
+	WorkspaceIDs       []int
+	UserID             int
+	WorkspaceID        int
+	CollectionID       int
+	QL                 string
+	SubQL              string
+	Filters            ItemFilters
+	Pagination         PaginationParams
+	SortBy             string
+	SortAsc            bool
+	OmitDescriptions   bool
+	IncludeWatermark   bool
+	IncludeHasChildren bool
+	ExcludePersonal    bool
 }
 
 type ItemListResult struct {
@@ -74,6 +78,13 @@ type ItemApplicationService struct {
 	matrix     *TransitionMatrixService
 	bulk       *ItemUpdateService
 	mentions   *MentionService
+	comments   *CommentService
+	// assetPerm gates asset titles in history; nil means asset references are
+	// left unresolved rather than leaking a title the viewer cannot see.
+	assetPerm AssetPermissionChecker
+	// clock is the SLA evaluation clock. Reporting must share it so an
+	// ongoing-breach snapshot matches the engine's "now"; nil means wall time.
+	clock sla.Clock
 }
 
 func NewItemApplicationService(
@@ -101,7 +112,24 @@ func NewItemApplicationService(
 
 func (s *ItemApplicationService) WithCache(cache *ItemCacheService) *ItemApplicationService {
 	s.cache = cache
+	// The item read path resolves the effective project through ItemCRUDService,
+	// so it needs the same cache.
+	s.crud.WithCache(cache)
 	return s
+}
+
+// WithClock makes SLA-derived reporting use the engine's clock.
+func (s *ItemApplicationService) WithClock(clock sla.Clock) *ItemApplicationService {
+	s.clock = clock
+	return s
+}
+
+// now returns the SLA clock instant, falling back to wall time.
+func (s *ItemApplicationService) now() time.Time {
+	if s.clock != nil {
+		return s.clock.Now()
+	}
+	return time.Now()
 }
 
 func (s *ItemApplicationService) WithWorkflow(conditions *ConditionService, events *EventCoordinator, issueSync ItemIssueSync) *ItemApplicationService {
@@ -116,9 +144,24 @@ func (s *ItemApplicationService) WithMutationEffects(mentions *MentionService) *
 	return s
 }
 
+// WithComments wires the comment service used to persist the optional comment
+// collected by a transition screen.
+func (s *ItemApplicationService) WithComments(comments *CommentService) *ItemApplicationService {
+	s.comments = comments
+	return s
+}
+
+// WithAssetPermissions lets history resolve asset references only for viewers
+// who can see the asset's set.
+func (s *ItemApplicationService) WithAssetPermissions(checker AssetPermissionChecker) *ItemApplicationService {
+	s.assetPerm = checker
+	return s
+}
+
 type ItemWatchStatus struct {
-	ItemID   int  `json:"item_id"`
-	Watching bool `json:"watching"`
+	ItemID       int  `json:"item_id"`
+	Watching     bool `json:"watching"`
+	WatcherCount int  `json:"watcher_count"`
 }
 
 type ItemDeleteInfo struct {
@@ -146,6 +189,19 @@ type ItemTransitionOption struct {
 	Name          string `json:"name"`
 	Value         string `json:"value"`
 	CategoryColor string `json:"category_color,omitempty"`
+	// Screen is the transition screen the client must open before calling the
+	// transition endpoint, or nil when the move has no screen (WI-1835).
+	Screen *ItemTransitionScreen `json:"screen,omitempty"`
+}
+
+// ItemTransitionScreen is the screen summary attached to an available
+// transition so the client can decide whether to open the screen modal before
+// calling the transition endpoint.
+type ItemTransitionScreen struct {
+	ID                 int    `json:"id"`
+	Name               string `json:"name"`
+	FieldCount         int    `json:"field_count"`
+	RequiredFieldCount int    `json:"required_field_count"`
 }
 
 type ItemTransitionSummary struct {
@@ -253,6 +309,11 @@ func (s *ItemApplicationService) List(ctx context.Context, request ItemListReque
 	if err := s.enrich(ctx, request.UserID, page.Items); err != nil {
 		return ItemListResult{}, err
 	}
+	if request.IncludeHasChildren {
+		if err := s.decorateHasChildren(ctx, workspaceIDs, page.Items); err != nil {
+			return ItemListResult{}, err
+		}
+	}
 
 	var watermark int64
 	if request.IncludeWatermark {
@@ -267,6 +328,139 @@ func (s *ItemApplicationService) List(ctx context.Context, request ItemListReque
 	}, nil
 }
 
+// decorateHasChildren sets HasChildren on the page rows from one batched,
+// permission-scoped lookup so a hierarchy view can render expanders before it
+// loads any subtree.
+func (s *ItemApplicationService) decorateHasChildren(ctx context.Context, workspaceIDs []int, items []models.Item) error {
+	if len(items) == 0 {
+		return nil
+	}
+	ids := make([]int, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ID)
+	}
+	withChildren, err := s.items.HasChildrenByItemIDContext(ctx, ids, workspaceIDs)
+	if err != nil {
+		return err
+	}
+	for i := range items {
+		if _, ok := withChildren[items[i].ID]; ok {
+			items[i].HasChildren = true
+		}
+	}
+	return nil
+}
+
+// ItemHierarchyRequest describes an ancestor-scoped hierarchy read for one
+// level-scoped base page. The collection/QL scope is resolved server-side, so
+// the caller cannot widen it.
+type ItemHierarchyRequest struct {
+	UserID        int
+	WorkspaceID   int
+	CollectionID  int
+	QL            string
+	SubQL         string
+	RootIDs       []int
+	MaxDepth      int
+	PerRootLimit  int
+	PerRootOffset int
+}
+
+// Hierarchy returns the matching descendants of each requested root, grouped by
+// root. Items the caller cannot view are excluded by the repository scope.
+func (s *ItemApplicationService) Hierarchy(ctx context.Context, request ItemHierarchyRequest) ([]repository.HierarchyRootGroup, error) {
+	workspaceIDs, err := s.perm.AccessibleWorkspaceIDs(request.UserID)
+	if err != nil {
+		return nil, err
+	}
+	if request.WorkspaceID > 0 {
+		workspaceIDs = slices.DeleteFunc(workspaceIDs, func(id int) bool {
+			return id != request.WorkspaceID
+		})
+	}
+	if err := s.requireCollectionRead(request.UserID, request.CollectionID, workspaceIDs); err != nil {
+		return nil, err
+	}
+	groups, err := s.crud.HierarchyDescendantsContext(ctx, HierarchyListParams{
+		WorkspaceID:      request.WorkspaceID,
+		CollectionID:     request.CollectionID,
+		QLQuery:          request.QL,
+		SubQLQuery:       request.SubQL,
+		WorkspaceIDs:     workspaceIDs,
+		UserID:           request.UserID,
+		RootIDs:          request.RootIDs,
+		MaxDepth:         request.MaxDepth,
+		PerRootLimit:     request.PerRootLimit,
+		PerRootOffset:    request.PerRootOffset,
+		OmitDescriptions: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.decorateHierarchyGroups(ctx, request.UserID, workspaceIDs, groups)
+}
+
+// decorateHierarchyGroups enriches every returned descendant and marks
+// HasChildren so deeper expanders render without another round trip.
+func (s *ItemApplicationService) decorateHierarchyGroups(ctx context.Context, userID int, workspaceIDs []int, groups []repository.HierarchyRootGroup) ([]repository.HierarchyRootGroup, error) {
+	flat := make([]models.Item, 0)
+	for _, group := range groups {
+		for _, entry := range group.Items {
+			flat = append(flat, entry.Item)
+		}
+	}
+	if len(flat) == 0 {
+		return groups, nil
+	}
+	if err := s.enrich(ctx, userID, flat); err != nil {
+		return nil, err
+	}
+	if err := s.decorateHasChildren(ctx, workspaceIDs, flat); err != nil {
+		return nil, err
+	}
+	enriched := make(map[int]models.Item, len(flat))
+	for _, item := range flat {
+		enriched[item.ID] = item
+	}
+	for gi := range groups {
+		for ii := range groups[gi].Items {
+			if item, ok := enriched[groups[gi].Items[ii].ID]; ok {
+				groups[gi].Items[ii].Item = item
+			}
+		}
+	}
+	return groups, nil
+}
+
+// LevelCounts returns the filtered item count per item-type hierarchy level,
+// backing the level picker's counts and default selection.
+func (s *ItemApplicationService) LevelCounts(ctx context.Context, request ItemListRequest) ([]repository.HierarchyLevelCount, error) {
+	workspaceIDs, err := s.perm.AccessibleWorkspaceIDs(request.UserID)
+	if err != nil {
+		return nil, err
+	}
+	if request.WorkspaceID > 0 {
+		workspaceIDs = slices.DeleteFunc(workspaceIDs, func(id int) bool {
+			return id != request.WorkspaceID
+		})
+	}
+	if err := s.requireCollectionRead(request.UserID, request.CollectionID, workspaceIDs); err != nil {
+		return nil, err
+	}
+	if len(workspaceIDs) == 0 {
+		return []repository.HierarchyLevelCount{}, nil
+	}
+	return s.crud.LevelCountsContext(ctx, ListWithQLParams{
+		WorkspaceID:  request.WorkspaceID,
+		CollectionID: request.CollectionID,
+		QLQuery:      request.QL,
+		SubQLQuery:   request.SubQL,
+		WorkspaceIDs: workspaceIDs,
+		UserID:       request.UserID,
+		Filters:      request.Filters,
+	})
+}
+
 func (s *ItemApplicationService) requireCollectionRead(userID, collectionID int, workspaceIDs []int) error {
 	if collectionID <= 0 {
 		return nil
@@ -278,13 +472,10 @@ func (s *ItemApplicationService) requireCollectionRead(userID, collectionID int,
 	if err != nil {
 		return err
 	}
-	if collection.WorkspaceID != nil {
-		if !slices.Contains(workspaceIDs, *collection.WorkspaceID) {
-			return ErrCollectionNotFound
-		}
-		return nil
+	if collection.IsPrivate && (collection.CreatedBy == nil || *collection.CreatedBy != userID) {
+		return ErrCollectionNotFound
 	}
-	if !collection.IsPublic && (collection.CreatedBy == nil || *collection.CreatedBy != userID) {
+	if collection.WorkspaceID != nil && !slices.Contains(workspaceIDs, *collection.WorkspaceID) {
 		return ErrCollectionNotFound
 	}
 	return nil
@@ -408,6 +599,8 @@ func (s *ItemApplicationService) Changes(ctx context.Context, request ItemChange
 	}
 	removed := make(map[int]bool)
 	changed := make(map[int]bool)
+	candidates := make([]int, 0, len(entries))
+	seenCandidate := make(map[int]bool, len(entries))
 	for _, entry := range entries {
 		if entry.ItemID == 0 {
 			result.RequiresFullReload, result.MembershipDirty = true, true
@@ -417,17 +610,24 @@ func (s *ItemApplicationService) Changes(ctx context.Context, request ItemChange
 			removed[entry.ItemID] = true
 			continue
 		}
-		if changed[entry.ItemID] || removed[entry.ItemID] {
+		if changed[entry.ItemID] || removed[entry.ItemID] || seenCandidate[entry.ItemID] {
 			continue
 		}
-		visible, err := s.itemVisibleInDelta(ctx, request, workspaceIDs, entry.ItemID)
-		if err != nil {
-			return ItemChangesResult{}, err
-		}
-		if visible {
-			changed[entry.ItemID] = true
+		seenCandidate[entry.ItemID] = true
+		candidates = append(candidates, entry.ItemID)
+	}
+	// Resolve visibility for every changed item in one query. Sustained
+	// activity can carry hundreds of entries, and a per-item list pipeline here
+	// costs a count plus a hydrated-detail query per entry.
+	visible, err := s.itemsVisibleInDelta(ctx, request, workspaceIDs, candidates)
+	if err != nil {
+		return ItemChangesResult{}, err
+	}
+	for _, id := range candidates {
+		if visible[id] {
+			changed[id] = true
 		} else {
-			removed[entry.ItemID] = true
+			removed[id] = true
 		}
 	}
 	for id := range removed {
@@ -456,6 +656,16 @@ func (s *ItemApplicationService) BulkUpdate(ctx context.Context, actor AuditActo
 		return ItemBulkResult{}, err
 	}
 	items := s.applyBulkEffects(actor, result.Results)
+	fieldNames := make([]string, 0, len(fields))
+	for name := range fields {
+		fieldNames = append(fieldNames, name)
+	}
+	slices.Sort(fieldNames)
+	emitServiceAudit(s.db, actor, logger.ActionItemBulkUpdate, logger.ResourceItem, nil, "", map[string]any{
+		"requested": result.RequestedCount,
+		"updated":   result.UpdatedCount,
+		"fields":    fieldNames,
+	})
 	return ItemBulkResult{Atomic: true, RequestedCount: result.RequestedCount, UpdatedCount: result.UpdatedCount, UnchangedCount: result.UnchangedCount, Items: items}, nil
 }
 
@@ -628,6 +838,15 @@ func (s *ItemApplicationService) Batch(ctx context.Context, userID int, ids []in
 			}
 			permissions[item.WorkspaceID] = allowed
 		}
+		if !allowed {
+			// The single-item read also grants view to an approver with an active
+			// pool membership on the item. Apply the same fallback here so batch
+			// hydration does not drop rows the single read returns.
+			allowed, err = s.canViewViaApproval(ctx, userID, item.ID)
+			if err != nil {
+				return nil, err
+			}
+		}
 		if allowed {
 			items = append(items, *item)
 		}
@@ -705,7 +924,14 @@ func (s *ItemApplicationService) DeleteInfo(userID, itemID int) (ItemDeleteInfo,
 	if err := s.require(userID, item.WorkspaceID, models.PermissionItemEdit); err != nil {
 		return ItemDeleteInfo{}, err
 	}
-	descendants, err := s.items.GetDescendantIDs(itemID)
+	// Cross-workspace children exist by design, so the descendant count must be
+	// scoped to workspaces the caller can view. The item's own workspace is
+	// always allowed: the caller was just authorized on the item there.
+	allowedWorkspaceIDs, err := s.allowedWorkspaceIDs(userID, item.WorkspaceID)
+	if err != nil {
+		return ItemDeleteInfo{}, err
+	}
+	descendants, err := s.items.GetDescendantIDsInWorkspaces(itemID, allowedWorkspaceIDs)
 	if err != nil {
 		return ItemDeleteInfo{}, err
 	}
@@ -759,6 +985,17 @@ func (s *ItemApplicationService) ReparentChildren(ctx context.Context, actor Aud
 	children, err := s.items.GetChildren(itemID)
 	if err != nil || len(children) == 0 {
 		return ItemMutationCount{Count: len(children)}, err
+	}
+	// Cross-workspace children exist by design. Reparenting a child changes its
+	// hierarchy, so require item.edit in every child's workspace and refuse the
+	// whole operation otherwise, mirroring cascade deletion.
+	for _, child := range children {
+		if child.WorkspaceID == item.WorkspaceID {
+			continue
+		}
+		if err := s.require(actor.UserID, child.WorkspaceID, models.PermissionItemEdit); err != nil {
+			return ItemMutationCount{}, err
+		}
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -899,7 +1136,25 @@ func (s *ItemApplicationService) UpdateRank(ctx context.Context, actor AuditActo
 	return s.Get(ctx, actor.UserID, itemID, false)
 }
 
-func (s *ItemApplicationService) Transition(ctx context.Context, actor AuditActor, itemID, statusID int) (*ItemTransitionResult, error) {
+func (s *ItemApplicationService) Transition(ctx context.Context, actor AuditActor, itemID, statusID int, fields map[string]any) (*ItemTransitionResult, error) {
+	result, err := s.transitionItem(ctx, actor, itemID, statusID, fields)
+	if err != nil {
+		return nil, err
+	}
+	items := []models.Item{*result.Item}
+	if err := s.enrich(ctx, actor.UserID, items); err != nil {
+		return nil, err
+	}
+	result.Item = &items[0]
+	return result, nil
+}
+
+// transitionItem runs one workflow transition without enriching the returned
+// item, so bulk callers can reuse it without paying for N detail loads. The
+// governing transition's screen is always enforced; callers that cannot
+// collect field values (bulk) pass nil fields and receive a screen_required
+// rejection per item.
+func (s *ItemApplicationService) transitionItem(ctx context.Context, actor AuditActor, itemID, statusID int, fields map[string]any) (*ItemTransitionResult, error) {
 	item, err := s.items.FindByID(itemID)
 	if err != nil {
 		return nil, err
@@ -910,23 +1165,296 @@ func (s *ItemApplicationService) Transition(ctx context.Context, actor AuditActo
 	if s.activity != nil {
 		_ = s.activity.TrackItemActivity(actor.UserID, itemID, ActivityEdit)
 	}
+	applyFields := func(ctx context.Context, tx database.Tx, locked *models.Item) error {
+		if err := s.bulk.ApplyFieldsInTx(ctx, tx, locked.ID, screenUpdateData(fields), actor.UserID); err != nil {
+			return err
+		}
+		return s.applyTransitionLabels(ctx, tx, locked, actor, fields)
+	}
 	result, err := NewWorkflowService(s.db).PerformTransition(ctx, PerformTransitionRequest{
 		ItemID: itemID, ToStatusID: statusID, ActorUserID: actor.UserID, Modes: []string{"validator", "condition"},
+		Fields: fields, EnforceScreen: true, ApplyFields: applyFields,
 	}, s.items, s.conditions, s.approvals)
 	if err != nil {
 		return nil, err
 	}
-	if !result.NoOp && s.events != nil {
+	if (!result.NoOp || result.Loop) && s.events != nil {
 		s.events.EmitStatusChanged(result.Item, result.OldStatusID, result.NewStatusID, actor.UserID, actor.Username)
 	}
 	s.syncStatus(ctx, result.Item.ID, result.NewStatusID, result.NoOp)
-	items := []models.Item{*result.Item}
-	if err := s.enrich(ctx, actor.UserID, items); err != nil {
-		return nil, err
-	}
+	s.recordTransitionComment(itemID, actor.UserID, fields)
 	return &ItemTransitionResult{
-		Item: &items[0], OldStatusID: result.OldStatusID, NewStatusID: result.NewStatusID, NoOp: result.NoOp,
+		Item: result.Item, OldStatusID: result.OldStatusID, NewStatusID: result.NewStatusID, NoOp: result.NoOp,
 	}, nil
+}
+
+// applyTransitionLabels replaces the item's label set inside the transition
+// transaction when the screen submitted label_ids. The label-change fact is
+// recorded in the same transaction so the swap and its history commit together.
+func (s *ItemApplicationService) applyTransitionLabels(ctx context.Context, tx database.Tx, item *models.Item, actor AuditActor, fields map[string]any) error {
+	labelIDs, present, err := transitionLabelIDs(fields)
+	if err != nil {
+		return err
+	}
+	if !present {
+		return nil
+	}
+	labels := repository.NewLabelRepository(s.db)
+	for _, labelID := range labelIDs {
+		if _, err := labels.GetByID(labelID); err != nil {
+			if errors.Is(err, repository.ErrNotFound) {
+				return NewServiceError(400, fmt.Sprintf("label %d was not found", labelID))
+			}
+			return err
+		}
+	}
+	before, err := labels.ListForItemTx(tx, item.ID)
+	if err != nil {
+		return err
+	}
+	if err := labels.ReplaceItemLabelsTx(ctx, tx, item.ID, labelIDs); err != nil {
+		return err
+	}
+	after, err := labels.ListForItemTx(tx, item.ID)
+	if err != nil {
+		return err
+	}
+	if !labelSetsDiffer(before, after) {
+		return nil
+	}
+	return recordLabelChangeFact(s.db, tx, item, before, after, actor)
+}
+
+// recordTransitionComment persists the optional comment collected by a
+// transition screen. The move already committed, so a comment failure is
+// logged rather than reported as a failed transition.
+func (s *ItemApplicationService) recordTransitionComment(itemID, authorID int, fields map[string]any) {
+	if s.comments == nil {
+		return
+	}
+	content, ok := fields["comment"].(string)
+	if !ok || strings.TrimSpace(content) == "" {
+		return
+	}
+	if _, err := s.comments.Create(CreateCommentParams{
+		ItemID: itemID, AuthorID: authorID, ActorUserID: authorID, Content: content,
+	}); err != nil {
+		slog.Error("failed to persist transition comment",
+			slog.String("component", "items"), slog.Int("item_id", itemID), slog.Any("error", err))
+	}
+}
+
+// ItemBulkTransitionFailure records one selected item a bulk transition could
+// not move. Rejections and permission denials are reported per item so the
+// rest of the batch can proceed; unexpected errors abort the whole request.
+type ItemBulkTransitionFailure struct {
+	ItemID  int    `json:"item_id"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type ItemBulkTransitionResult struct {
+	RequestedCount    int                         `json:"requested_count"`
+	TransitionedCount int                         `json:"transitioned_count"`
+	UnchangedCount    int                         `json:"unchanged_count"`
+	FailedCount       int                         `json:"failed_count"`
+	Failures          []ItemBulkTransitionFailure `json:"failures"`
+}
+
+// BulkScreenBlockedItem names one item a bulk transition refused because its
+// target transition carries a screen with unsatisfied required fields.
+type BulkScreenBlockedItem struct {
+	ItemID int    `json:"item_id"`
+	Key    string `json:"key,omitempty"`
+}
+
+// BulkTransitionScreenRequiredError refuses an entire bulk transition when at
+// least one selected item needs screen input a bulk caller cannot supply. A
+// screen is a limitation of the bulk mechanism, not a per-item business rule,
+// so the batch is refused instead of partially applied and the client may retry
+// without the blocked items.
+type BulkTransitionScreenRequiredError struct {
+	Blocked []BulkScreenBlockedItem
+}
+
+func (e *BulkTransitionScreenRequiredError) Error() string {
+	return "bulk transition requires transition screen input for some items"
+}
+
+// BulkTransition applies one target status to every requested item in a single
+// server-side request, so the client never fans out one transition call per
+// item. Workflow validity, conditions, and approvals are enforced per item,
+// matching the single-item endpoint, and those rejections are best-effort:
+// items that cannot transition are returned in Failures while the rest commit.
+// A transition screen is different: the bulk caller cannot collect field values,
+// so if any selected item needs screen input the whole request is refused with
+// BulkTransitionScreenRequiredError and nothing is applied.
+func (s *ItemApplicationService) BulkTransition(ctx context.Context, actor AuditActor, itemIDs []int, toStatusID int) (ItemBulkTransitionResult, error) {
+	ids := uniquePositiveSortedIDs(itemIDs)
+	if len(ids) == 0 {
+		return ItemBulkTransitionResult{}, ErrBulkItemNotFound
+	}
+	if len(ids) > MaxBulkItemUpdates {
+		return ItemBulkTransitionResult{}, ErrBulkItemLimit
+	}
+	if toStatusID <= 0 {
+		return ItemBulkTransitionResult{}, &validation.ValidationError{Field: "to_status_id", Message: "to_status_id is required"}
+	}
+	blocked, err := s.screenBlockedItems(ids, toStatusID)
+	if err != nil {
+		return ItemBulkTransitionResult{}, err
+	}
+	if len(blocked) > 0 {
+		return ItemBulkTransitionResult{}, &BulkTransitionScreenRequiredError{Blocked: blocked}
+	}
+	result := ItemBulkTransitionResult{RequestedCount: len(ids), Failures: []ItemBulkTransitionFailure{}}
+	for _, id := range ids {
+		transition, err := s.transitionItem(ctx, actor, id, toStatusID, nil)
+		if err != nil {
+			failure, expected := bulkTransitionFailure(id, err)
+			if !expected {
+				return ItemBulkTransitionResult{}, err
+			}
+			result.Failures = append(result.Failures, failure)
+			continue
+		}
+		if transition.NoOp {
+			result.UnchangedCount++
+		} else {
+			result.TransitionedCount++
+		}
+	}
+	result.FailedCount = len(result.Failures)
+	emitServiceAudit(s.db, actor, logger.ActionItemBulkTransition, logger.ResourceItem, nil, "", map[string]any{
+		"requested":    result.RequestedCount,
+		"transitioned": result.TransitionedCount,
+		"unchanged":    result.UnchangedCount,
+		"failed":       result.FailedCount,
+		"to_status_id": toStatusID,
+	})
+	return result, nil
+}
+
+// screenBlockedItems reports the selected items whose target transition needs
+// screen input, so BulkTransition can refuse the batch before applying any of
+// it. A screen blocks only when a required field is unsatisfied by the item's
+// stored state, matching per-item enforcement exactly: optional fields and
+// already-satisfied required fields never block a bulk move.
+func (s *ItemApplicationService) screenBlockedItems(itemIDs []int, toStatusID int) ([]BulkScreenBlockedItem, error) {
+	workflow := NewWorkflowService(s.db)
+	transitions := repository.NewTransitionRepository(s.db)
+	var blocked []BulkScreenBlockedItem
+	for _, id := range itemIDs {
+		item, err := s.items.FindByIDWithDetails(id)
+		if err != nil {
+			// Missing items are reported per item by the apply loop.
+			if errors.Is(err, repository.ErrNotFound) {
+				continue
+			}
+			return nil, err
+		}
+		if item.StatusID == nil {
+			continue
+		}
+		transitionID, err := workflow.resolveGoverningTransitionID(item.WorkspaceID, item.ItemTypeID, int64(*item.StatusID), int64(toStatusID))
+		if err != nil {
+			return nil, err
+		}
+		if transitionID == 0 {
+			continue
+		}
+		fields, err := transitions.GetScreenFields(transitionID)
+		if err != nil {
+			return nil, err
+		}
+		if len(fields) == 0 {
+			continue
+		}
+		missing, err := workflow.validateTransitionScreenFields(item, fields, nil)
+		if err != nil {
+			return nil, err
+		}
+		if len(missing) == 0 {
+			continue
+		}
+		key := ""
+		if item.WorkspaceKey != "" && item.WorkspaceItemNumber > 0 {
+			key = fmt.Sprintf("%s-%d", item.WorkspaceKey, item.WorkspaceItemNumber)
+		}
+		blocked = append(blocked, BulkScreenBlockedItem{ItemID: id, Key: key})
+	}
+	return blocked, nil
+}
+
+func bulkTransitionFailure(itemID int, err error) (ItemBulkTransitionFailure, bool) {
+	var rejection *TransitionRejection
+	var validationErr *validation.ValidationError
+	switch {
+	case errors.As(err, &rejection):
+		return ItemBulkTransitionFailure{ItemID: itemID, Code: rejection.Code, Message: rejection.Message}, true
+	case errors.As(err, &validationErr):
+		return ItemBulkTransitionFailure{ItemID: itemID, Code: "validation_failed", Message: validationErr.Error()}, true
+	case errors.Is(err, ErrItemForbidden):
+		return ItemBulkTransitionFailure{ItemID: itemID, Code: "forbidden", Message: "item access forbidden"}, true
+	case errors.Is(err, repository.ErrNotFound):
+		return ItemBulkTransitionFailure{ItemID: itemID, Code: "not_found", Message: "item not found"}, true
+	default:
+		return ItemBulkTransitionFailure{}, false
+	}
+}
+
+// ItemBulkDeleteFailure records one selected item a bulk delete could not
+// remove.
+type ItemBulkDeleteFailure struct {
+	ItemID  int    `json:"item_id"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type ItemBulkDeleteResult struct {
+	RequestedCount int                     `json:"requested_count"`
+	DeletedCount   int                     `json:"deleted_count"`
+	FailedCount    int                     `json:"failed_count"`
+	Failures       []ItemBulkDeleteFailure `json:"failures"`
+}
+
+// BulkDelete deletes every requested item in one server-side request instead
+// of one DELETE per item from the client. Each deletion keeps the single-item
+// history, side effects, and audit record; items that cannot be deleted are
+// reported in Failures while the rest commit.
+func (s *ItemApplicationService) BulkDelete(actor AuditActor, itemIDs []int) (ItemBulkDeleteResult, error) {
+	ids := uniquePositiveSortedIDs(itemIDs)
+	if len(ids) == 0 {
+		return ItemBulkDeleteResult{}, ErrBulkItemNotFound
+	}
+	if len(ids) > MaxBulkItemUpdates {
+		return ItemBulkDeleteResult{}, ErrBulkItemLimit
+	}
+	result := ItemBulkDeleteResult{RequestedCount: len(ids), Failures: []ItemBulkDeleteFailure{}}
+	for _, id := range ids {
+		if err := s.Delete(actor, id); err != nil {
+			failure, expected := bulkDeleteFailure(id, err)
+			if !expected {
+				return ItemBulkDeleteResult{}, err
+			}
+			result.Failures = append(result.Failures, failure)
+			continue
+		}
+		result.DeletedCount++
+	}
+	result.FailedCount = len(result.Failures)
+	return result, nil
+}
+
+func bulkDeleteFailure(itemID int, err error) (ItemBulkDeleteFailure, bool) {
+	switch {
+	case errors.Is(err, ErrItemDeletionForbidden):
+		return ItemBulkDeleteFailure{ItemID: itemID, Code: "forbidden", Message: "item deletion forbidden"}, true
+	case errors.Is(err, repository.ErrNotFound):
+		return ItemBulkDeleteFailure{ItemID: itemID, Code: "not_found", Message: "item not found"}, true
+	default:
+		return ItemBulkDeleteFailure{}, false
+	}
 }
 
 func (s *ItemApplicationService) AvailableTransitions(ctx context.Context, userID, itemID int) (ItemTransitionSummary, error) {
@@ -1008,9 +1536,21 @@ func (s *ItemApplicationService) AvailableTransitions(ctx context.Context, userI
 		}
 	}
 	seen := map[int]bool{*item.StatusID: true}
+	transitionIDs := make([]int, 0, len(options))
+	for _, option := range options {
+		transitionIDs = append(transitionIDs, option.TransitionID)
+	}
+	screens, err := repository.NewTransitionRepository(s.db).ScreensForTransitions(transitionIDs)
+	if err != nil {
+		return ItemTransitionSummary{}, err
+	}
 	for _, option := range options {
 		if !seen[option.StatusID] {
-			response.AvailableTransitions = append(response.AvailableTransitions, itemTransitionOption(option))
+			entry := itemTransitionOption(option)
+			if screen, ok := screens[option.TransitionID]; ok {
+				entry.Screen = &ItemTransitionScreen{ID: screen.ID, Name: screen.Name, FieldCount: screen.FieldCount, RequiredFieldCount: screen.RequiredFieldCount}
+			}
+			response.AvailableTransitions = append(response.AvailableTransitions, entry)
 			seen[option.StatusID] = true
 		}
 	}
@@ -1107,7 +1647,23 @@ func (s *ItemApplicationService) Children(ctx context.Context, userID, itemID in
 	if err := s.requireView(ctx, userID, itemID); err != nil {
 		return nil, err
 	}
-	items, err := s.hierarchy.GetChildrenContext(ctx, itemID)
+	// Cross-workspace children exist by design (see validateParentHierarchy),
+	// so the child query must be scoped to workspaces the caller can view.
+	// The parent's workspace is always allowed: the caller was just authorized
+	// on the parent, which may be via an approval pool rather than membership.
+	parentWorkspaceID, err := s.items.GetWorkspaceIDCtx(ctx, itemID)
+	if err != nil {
+		return nil, err
+	}
+	allowedWorkspaceIDs := []int{parentWorkspaceID}
+	if s.perm != nil {
+		accessible, err := s.perm.AccessibleWorkspaceIDs(userID)
+		if err != nil {
+			return nil, err
+		}
+		allowedWorkspaceIDs = append(allowedWorkspaceIDs, accessible...)
+	}
+	items, err := s.hierarchy.GetChildrenInWorkspacesContext(ctx, itemID, allowedWorkspaceIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -1117,11 +1673,60 @@ func (s *ItemApplicationService) Children(ctx context.Context, userID, itemID in
 	return items, nil
 }
 
+// filterViewableByWorkspace drops items whose workspace the caller cannot view.
+// Workspaces in alwaysAllowed are kept without a permission lookup: the caller
+// was already authorized on the starting item there, possibly through an
+// approval pool rather than membership. Decisions are cached per workspace.
+func (s *ItemApplicationService) filterViewableByWorkspace(userID int, items []models.Item, alwaysAllowed ...int) ([]models.Item, error) {
+	if len(items) == 0 {
+		return items, nil
+	}
+	allowed := make(map[int]bool, len(alwaysAllowed))
+	for _, id := range alwaysAllowed {
+		allowed[id] = true
+	}
+	permissions := make(map[int]bool)
+	out := make([]models.Item, 0, len(items))
+	for _, item := range items {
+		if allowed[item.WorkspaceID] {
+			out = append(out, item)
+			continue
+		}
+		viewable, ok := permissions[item.WorkspaceID]
+		if !ok {
+			if s.perm == nil {
+				viewable = false
+			} else {
+				var err error
+				viewable, err = s.perm.HasWorkspacePermission(userID, item.WorkspaceID, models.PermissionItemView)
+				if err != nil {
+					return nil, err
+				}
+			}
+			permissions[item.WorkspaceID] = viewable
+		}
+		if viewable {
+			out = append(out, item)
+		}
+	}
+	return out, nil
+}
+
 func (s *ItemApplicationService) Ancestors(ctx context.Context, userID, itemID int) ([]models.Item, error) {
 	if err := s.requireView(ctx, userID, itemID); err != nil {
 		return nil, err
 	}
 	items, err := s.hierarchy.GetAncestorsContext(ctx, itemID)
+	if err != nil {
+		return nil, err
+	}
+	// Cross-workspace ancestors exist by design; drop the ones the caller
+	// cannot view instead of disclosing their content through a visible item.
+	workspaceID, err := s.items.GetWorkspaceIDCtx(ctx, itemID)
+	if err != nil {
+		return nil, err
+	}
+	items, err = s.filterViewableByWorkspace(userID, items, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -1174,6 +1779,15 @@ func (s *ItemApplicationService) BatchAncestors(ctx context.Context, userID int,
 	if err != nil {
 		return nil, err
 	}
+	// Ancestor chains can cross into workspaces the caller cannot view; drop
+	// those entries before enrichment so their content never leaves the service.
+	for id, chain := range chains {
+		filtered, err := s.filterViewableByWorkspace(userID, chain)
+		if err != nil {
+			return nil, err
+		}
+		chains[id] = filtered
+	}
 	// Enrich every distinct ancestor once, then index by id for regrouping.
 	seen := make(map[int]struct{})
 	flat := make([]models.Item, 0)
@@ -1214,6 +1828,16 @@ func (s *ItemApplicationService) Descendants(ctx context.Context, userID, itemID
 	if err != nil {
 		return nil, err
 	}
+	// Cross-workspace descendants exist by design; drop the ones the caller
+	// cannot view instead of disclosing their content through a visible item.
+	workspaceID, err := s.items.GetWorkspaceIDCtx(ctx, itemID)
+	if err != nil {
+		return nil, err
+	}
+	items, err = s.filterViewableByWorkspace(userID, items, workspaceID)
+	if err != nil {
+		return nil, err
+	}
 	if err := s.enrich(ctx, userID, items); err != nil {
 		return nil, err
 	}
@@ -1224,7 +1848,31 @@ func (s *ItemApplicationService) TimeRollup(ctx context.Context, userID, itemID,
 	if err := s.requireView(ctx, userID, itemID); err != nil {
 		return nil, err
 	}
-	return s.items.GetTimeRollup(itemID, maxDepth, 0)
+	workspaceID, err := s.items.GetWorkspaceIDCtx(ctx, itemID)
+	if err != nil {
+		return nil, err
+	}
+	allowedWorkspaceIDs, err := s.allowedWorkspaceIDs(userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return s.items.GetTimeRollup(itemID, maxDepth, 0, allowedWorkspaceIDs)
+}
+
+// allowedWorkspaceIDs returns the caller's accessible workspaces plus
+// alwaysAllowed. The alwaysAllowed entries skip the permission lookup because
+// the caller was already authorized on an item there, possibly through an
+// approval pool rather than membership.
+func (s *ItemApplicationService) allowedWorkspaceIDs(userID int, alwaysAllowed ...int) ([]int, error) {
+	ids := append([]int(nil), alwaysAllowed...)
+	if s.perm == nil {
+		return ids, nil
+	}
+	accessible, err := s.perm.AccessibleWorkspaceIDs(userID)
+	if err != nil {
+		return nil, err
+	}
+	return append(ids, accessible...), nil
 }
 
 func (s *ItemApplicationService) StatusDurations(ctx context.Context, userID, itemID int) (*models.ItemStatusDurations, error) {
@@ -1246,9 +1894,15 @@ func (s *ItemApplicationService) History(ctx context.Context, userID, itemID int
 	if err != nil {
 		return nil, err
 	}
-	allowedProjects := s.allowedProjectIDs(userID)
+	resolution := &historyResolution{
+		userID:          userID,
+		allowedProjects: s.allowedProjectIDs(userID),
+		// One cache per history read: a long feed repeats the same workspace,
+		// status, or user id across rows, and each miss is a database round trip.
+		names: map[string]string{},
+	}
 	for i := range history {
-		s.resolveHistory(&history[i], allowedProjects)
+		s.resolveHistory(&history[i], resolution)
 	}
 	return history, nil
 }
@@ -1263,10 +1917,8 @@ func (s *ItemApplicationService) Watch(ctx context.Context, userID, itemID int, 
 	if err := s.items.Watch(userID, itemID, reason); err != nil {
 		return ItemWatchStatus{}, err
 	}
-	if s.activity != nil {
-		_ = s.activity.InvalidateUserCache(userID)
-	}
-	return ItemWatchStatus{ItemID: itemID, Watching: true}, nil
+	s.invalidateWatchCache(userID)
+	return s.watchStatus(userID, itemID)
 }
 
 func (s *ItemApplicationService) Unwatch(ctx context.Context, userID, itemID int) (ItemWatchStatus, error) {
@@ -1276,18 +1928,119 @@ func (s *ItemApplicationService) Unwatch(ctx context.Context, userID, itemID int
 	if err := s.items.Unwatch(userID, itemID); err != nil {
 		return ItemWatchStatus{}, err
 	}
-	if s.activity != nil {
-		_ = s.activity.InvalidateUserCache(userID)
-	}
-	return ItemWatchStatus{ItemID: itemID, Watching: false}, nil
+	s.invalidateWatchCache(userID)
+	return s.watchStatus(userID, itemID)
 }
 
 func (s *ItemApplicationService) WatchStatus(ctx context.Context, userID, itemID int) (ItemWatchStatus, error) {
 	if err := s.requireView(ctx, userID, itemID); err != nil {
 		return ItemWatchStatus{}, err
 	}
+	return s.watchStatus(userID, itemID)
+}
+
+// Watchers lists every user watching the item. Anyone who can view the item
+// may see who else is watching it.
+func (s *ItemApplicationService) Watchers(ctx context.Context, userID, itemID int) ([]models.ItemWatcher, error) {
+	if err := s.requireView(ctx, userID, itemID); err != nil {
+		return nil, err
+	}
+	return s.items.ListWatchers(itemID)
+}
+
+// AddWatcher subscribes targetUserID to the item on the actor's behalf.
+// Adding yourself only needs view access; adding someone else needs edit
+// access, and the target must be an active user who can view the item.
+func (s *ItemApplicationService) AddWatcher(ctx context.Context, actorID, itemID, targetUserID int) ([]models.ItemWatcher, error) {
+	if targetUserID == actorID {
+		if _, err := s.Watch(ctx, actorID, itemID, ""); err != nil {
+			return nil, err
+		}
+		return s.items.ListWatchers(itemID)
+	}
+	workspaceID, err := s.requireManageWatchers(ctx, actorID, itemID)
+	if err != nil {
+		return nil, err
+	}
+	active, err := s.items.IsActiveUser(targetUserID)
+	if err != nil {
+		return nil, err
+	}
+	canView := false
+	if active {
+		if canView, err = s.canView(ctx, targetUserID, itemID, workspaceID); err != nil {
+			return nil, err
+		}
+	}
+	if !canView {
+		return nil, &validation.ValidationError{Field: "user_id", Message: "user cannot view this item"}
+	}
+	reason := fmt.Sprintf("Added as watcher by user %d", actorID)
+	if err := s.items.Watch(targetUserID, itemID, reason); err != nil {
+		return nil, err
+	}
+	s.invalidateWatchCache(targetUserID)
+	return s.items.ListWatchers(itemID)
+}
+
+// RemoveWatcher unsubscribes targetUserID from the item. Removing yourself
+// only needs view access; removing someone else needs edit access.
+func (s *ItemApplicationService) RemoveWatcher(ctx context.Context, actorID, itemID, targetUserID int) ([]models.ItemWatcher, error) {
+	if targetUserID == actorID {
+		if _, err := s.Unwatch(ctx, actorID, itemID); err != nil {
+			return nil, err
+		}
+		return s.items.ListWatchers(itemID)
+	}
+	if _, err := s.requireManageWatchers(ctx, actorID, itemID); err != nil {
+		return nil, err
+	}
+	if err := s.items.Unwatch(targetUserID, itemID); err != nil {
+		return nil, err
+	}
+	s.invalidateWatchCache(targetUserID)
+	return s.items.ListWatchers(itemID)
+}
+
+// requireManageWatchers hides the item from users who cannot view it and
+// returns ErrItemWatcherForbidden for viewers without edit access.
+func (s *ItemApplicationService) requireManageWatchers(ctx context.Context, actorID, itemID int) (int, error) {
+	workspaceID, err := s.items.GetWorkspaceIDCtx(ctx, itemID)
+	if err != nil {
+		return 0, err
+	}
+	canView, err := s.canView(ctx, actorID, itemID, workspaceID)
+	if err != nil {
+		return 0, err
+	}
+	if !canView {
+		return 0, repository.ErrNotFound
+	}
+	if err := s.require(actorID, workspaceID, models.PermissionItemEdit); err != nil {
+		if errors.Is(err, ErrItemForbidden) {
+			return 0, ErrItemWatcherForbidden
+		}
+		return 0, err
+	}
+	return workspaceID, nil
+}
+
+func (s *ItemApplicationService) watchStatus(userID, itemID int) (ItemWatchStatus, error) {
 	watching, err := s.items.IsWatching(userID, itemID)
-	return ItemWatchStatus{ItemID: itemID, Watching: watching}, err
+	if err != nil {
+		return ItemWatchStatus{}, err
+	}
+	count, err := s.items.CountWatchers(itemID)
+	if err != nil {
+		return ItemWatchStatus{}, err
+	}
+	return ItemWatchStatus{ItemID: itemID, Watching: watching, WatcherCount: count}, nil
+}
+
+func (s *ItemApplicationService) invalidateWatchCache(userID int) {
+	if s.activity != nil {
+		_ = s.activity.InvalidateUserCache(userID)
+	}
 }
 
 func (s *ItemApplicationService) PersonalTasks(ctx context.Context, userID, itemID int) ([]models.Item, error) {
@@ -1344,7 +2097,27 @@ func (s *ItemApplicationService) requireWorkspaceMove(userID, itemID, destinatio
 	if err := s.require(userID, sourceWorkspaceID, models.PermissionItemEdit); err != nil {
 		return err
 	}
-	return s.require(userID, destinationWorkspaceID, models.PermissionItemCreate)
+	if err := s.require(userID, destinationWorkspaceID, models.PermissionItemCreate); err != nil {
+		return err
+	}
+	// Moving an item detaches its direct children, including children in other
+	// workspaces. Require item.edit in every child's workspace and refuse the
+	// whole operation otherwise, mirroring ReparentChildren.
+	children, err := s.items.GetChildren(itemID)
+	if err != nil {
+		return err
+	}
+	checked := map[int]bool{sourceWorkspaceID: true}
+	for _, child := range children {
+		if checked[child.WorkspaceID] {
+			continue
+		}
+		if err := s.require(userID, child.WorkspaceID, models.PermissionItemEdit); err != nil {
+			return err
+		}
+		checked[child.WorkspaceID] = true
+	}
+	return nil
 }
 
 func (s *ItemApplicationService) invalidateHierarchy(itemID int) {
@@ -1376,7 +2149,7 @@ func (s *ItemApplicationService) syncStatus(ctx context.Context, itemID int, sta
 	go func(status int) {
 		syncContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
-		s.issueSync.PushStatusToGitHub(syncContext, itemID, status)
+		s.issueSync.PushStatusToIssue(syncContext, itemID, status)
 	}(*statusID)
 }
 
@@ -1405,16 +2178,29 @@ func unwrapItemPermission(err error) error {
 	return err
 }
 
-func (s *ItemApplicationService) itemVisibleInDelta(ctx context.Context, request ItemChangesRequest, workspaceIDs []int, itemID int) (bool, error) {
+// itemsVisibleInDelta resolves, for the given candidate ids, which are still
+// visible under the caller's workspace and collection scope. One list query
+// covers the whole batch.
+func (s *ItemApplicationService) itemsVisibleInDelta(ctx context.Context, request ItemChangesRequest, workspaceIDs, itemIDs []int) (map[int]bool, error) {
+	visible := make(map[int]bool, len(itemIDs))
+	if len(itemIDs) == 0 {
+		return visible, nil
+	}
 	items, _, err := s.crud.ListWithQLContext(ctx, ListWithQLParams{
 		WorkspaceID: request.WorkspaceID, CollectionID: request.CollectionID, SubQLQuery: request.SubQL,
-		WorkspaceIDs: workspaceIDs, UserID: request.UserID, Filters: ItemFilters{ItemID: &itemID},
-		Pagination: PaginationParams{Limit: 1},
+		WorkspaceIDs: workspaceIDs, UserID: request.UserID, Filters: ItemFilters{ItemIDs: itemIDs},
+		Pagination: PaginationParams{Limit: len(itemIDs)},
 	})
 	if errors.Is(err, ErrCollectionNotFound) {
-		return false, nil
+		return visible, nil
 	}
-	return len(items) > 0, err
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		visible[items[i].ID] = true
+	}
+	return visible, nil
 }
 
 func (s *ItemApplicationService) applyBulkEffects(actor AuditActor, results []UpdateItemResult) []*models.Item {
@@ -1457,6 +2243,12 @@ func (s *ItemApplicationService) canView(ctx context.Context, userID, itemID, wo
 	} else if !errors.Is(err, ErrItemForbidden) {
 		return false, err
 	}
+	return s.canViewViaApproval(ctx, userID, itemID)
+}
+
+// canViewViaApproval grants view to a user with an active pool membership on
+// the item, the approver-derived fallback the single-item read uses.
+func (s *ItemApplicationService) canViewViaApproval(ctx context.Context, userID, itemID int) (bool, error) {
 	if s.approvals == nil {
 		return false, nil
 	}
@@ -1493,20 +2285,43 @@ func (s *ItemApplicationService) allowedProjectIDs(userID int) map[int]struct{} 
 	return allowed
 }
 
-func (s *ItemApplicationService) resolveHistory(entry *models.ItemHistory, allowedProjects map[int]struct{}) {
+func (s *ItemApplicationService) resolveHistory(entry *models.ItemHistory, res *historyResolution) {
+	if name := s.resolveHistoryFieldName(entry.FieldName, res); name != "" {
+		entry.ResolvedFieldName = &name
+	}
 	if entry.OldValue != nil && *entry.OldValue != "" {
-		if value := s.resolveHistoryValue(entry.FieldName, *entry.OldValue, allowedProjects); value != "" {
+		if value := s.resolveHistoryValue(entry.FieldName, *entry.OldValue, res); value != "" {
 			entry.ResolvedOldValue = &value
 		}
 	}
 	if entry.NewValue != nil && *entry.NewValue != "" {
-		if value := s.resolveHistoryValue(entry.FieldName, *entry.NewValue, allowedProjects); value != "" {
+		if value := s.resolveHistoryValue(entry.FieldName, *entry.NewValue, res); value != "" {
 			entry.ResolvedNewValue = &value
 		}
 	}
 }
 
-func (s *ItemApplicationService) resolveHistoryValue(field, value string, allowedProjects map[int]struct{}) string {
+func (s *ItemApplicationService) resolveHistoryFieldName(field string, res *historyResolution) string {
+	cacheKey := "name\x00" + field
+	if name, ok := res.names[cacheKey]; ok {
+		return name
+	}
+	name := s.resolveHistoryFieldNameUncached(field, res)
+	res.names[cacheKey] = name
+	return name
+}
+
+func (s *ItemApplicationService) resolveHistoryValue(field, value string, res *historyResolution) string {
+	cacheKey := field + "\x00" + value
+	if resolved, ok := res.names[cacheKey]; ok {
+		return resolved
+	}
+	resolved := s.resolveHistoryValueUncached(field, value, res)
+	res.names[cacheKey] = resolved
+	return resolved
+}
+
+func (s *ItemApplicationService) resolveHistoryValueUncached(field, value string, res *historyResolution) string {
 	if field == "milestones" {
 		names := make([]string, 0)
 		for _, part := range strings.Split(value, ",") {
@@ -1518,24 +2333,39 @@ func (s *ItemApplicationService) resolveHistoryValue(field, value string, allowe
 		}
 		return strings.Join(names, ", ")
 	}
+	if name := s.resolveCustomFieldValue(field, value, res); name != "" {
+		return name
+	}
+	if name := s.resolveVirtualFieldValue(field, value, res); name != "" {
+		return name
+	}
 	id, err := strconv.Atoi(value)
 	if err != nil {
 		return ""
 	}
 	switch field {
-	case "assignee_id":
+	case "assignee_id", "creator_id", "reporter_id":
 		return s.resolver.ResolveUserName(id)
+	case "creator_portal_customer_id":
+		return s.resolver.ResolvePortalCustomerName(id)
+	case "workspace_id":
+		return s.resolver.ResolveWorkspaceName(id)
 	case "team_id":
 		return s.resolver.ResolveTeamName(id)
 	case "priority_id":
 		return s.resolver.ResolvePriorityName(id)
 	case "status_id":
 		return s.resolver.ResolveStatusName(id)
-	case "parent_id":
+	case "parent_id", "merged_into_item_id", "merged_item_id", "split_item_id":
 		return s.resolver.ResolveItemKey(id)
-	case "project_id":
-		if allowedProjects != nil {
-			if _, allowed := allowedProjects[id]; !allowed {
+	case "related_work_item_id":
+		if !s.relatedItemVisible(res.userID, id) {
+			return ""
+		}
+		return s.resolver.ResolveItemKey(id)
+	case "project_id", "time_project_id":
+		if res.allowedProjects != nil {
+			if _, allowed := res.allowedProjects[id]; !allowed {
 				return ""
 			}
 		}
@@ -1544,9 +2374,25 @@ func (s *ItemApplicationService) resolveHistoryValue(field, value string, allowe
 		return s.resolver.ResolveMilestoneName(id)
 	case "item_type_id":
 		return s.resolver.ResolveItemTypeName(id)
+	case "iteration_id":
+		return s.resolver.ResolveIterationName(id)
 	default:
 		return ""
 	}
+}
+
+// relatedItemVisible reports whether the viewer can see a related work item,
+// so history never reveals the key of an item in an inaccessible workspace.
+func (s *ItemApplicationService) relatedItemVisible(userID, itemID int) bool {
+	workspaceID, err := s.items.GetWorkspaceID(itemID)
+	if err != nil {
+		return false
+	}
+	allowed, err := s.perm.HasWorkspacePermission(userID, workspaceID, models.PermissionItemView)
+	if err != nil {
+		return false
+	}
+	return allowed
 }
 
 func (s *ItemApplicationService) enrich(ctx context.Context, userID int, items []models.Item) error {
@@ -1554,9 +2400,6 @@ func (s *ItemApplicationService) enrich(ctx context.Context, userID int, items [
 	MaskInaccessibleRelatedWorkItems(userID, items, s.perm)
 	s.decorateItemKeys(userID, items)
 	if err := repository.NewLabelRepository(s.db).LoadForItemsContext(ctx, items); err != nil {
-		return err
-	}
-	if err := LoadPersonalLabelsForItems(ctx, s.db, items, userID); err != nil {
 		return err
 	}
 	return repository.NewMilestoneAttachRepository(s.db).LoadForItemsContext(ctx, items)

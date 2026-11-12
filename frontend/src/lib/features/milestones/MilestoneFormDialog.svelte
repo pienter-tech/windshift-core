@@ -1,5 +1,6 @@
 <script>
-  import { IconBuilding as Building2, IconWorld as Globe } from '@tabler/icons-svelte-runes';
+  import Building2 from '@tabler/icons-svelte-runes/icons/building';
+  import Globe from '@tabler/icons-svelte-runes/icons/world';
   import { t } from '../../stores/i18n.svelte.js';
   import { categoriesStore } from '../../stores/categories.js';
   import { canChangePlanningScope } from '../../utils/planningScope.js';
@@ -9,7 +10,7 @@
   import BasePicker from '../../pickers/BasePicker.svelte';
   import Label from '../../components/Label.svelte';
 	import TextField from '../../components/TextField.svelte';
-	import TextareaField from '../../components/TextareaField.svelte';
+  import MilkdownEditor from '../../editors/LazyMilkdownEditor.svelte';
 
   let {
     isOpen = $bindable(false),
@@ -28,9 +29,12 @@
     canManageGlobal = false,
     canManageWorkspace = false,
     saving = false,
+    zIndexClass = 'z-[70]',
     onclose = null,
     onSubmit = null
   } = $props();
+  const uid = $props.id();
+  const descriptionLabelId = `${uid}-description-label`;
 
   const statusOptions = $derived([
     { value: 'planning', label: t('milestones.status.planning') },
@@ -72,6 +76,7 @@
   onSubmit={submit}
   submitDisabled={saving || !formData.name.trim()}
   maxWidth="max-w-2xl"
+  {zIndexClass}
   dataTestid="milestone-form-dialog"
 >
   {#snippet children(submitHint)}
@@ -160,12 +165,15 @@
           {/if}
 
           <div class="md:col-span-2">
-            <TextareaField
-              label={t('common.description')}
-              id="milestone-description"
-              rows={3}
+            <Label id={descriptionLabelId} class="mb-2">{t('common.description')}</Label>
+            <MilkdownEditor
+              bind:content={formData.description}
               placeholder={t('milestones.descriptionPlaceholder')}
-              bind:value={formData.description}
+              ariaLabelledBy={descriptionLabelId}
+              showToolbar={true}
+              compact={true}
+              allowImageUpload={false}
+              testId="milestone-description-editor"
             />
           </div>
         </div>
