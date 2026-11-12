@@ -168,6 +168,14 @@ export default {
     selectWorkflow: 'Выберите рабочий процесс',
     selectConditionSet: 'Выберите набор условий',
     selectApprovalSet: 'Выберите набор согласований',
+
+    // Выбор даты
+    datePicker: {
+      previousMonth: 'Предыдущий месяц',
+      nextMonth: 'Следующий месяц',
+      openCalendar: 'Открыть календарь',
+      selectDate: 'Выберите дату…',
+    },
   },
 
   editors: {
@@ -475,6 +483,7 @@ export default {
   },
 
   recurrence: {
+    gregorianRuleHint: 'Ежемесячные и ежегодные повторения используют григорианский календарь.',
     title: 'Повторение',
     description: 'Управление правилами повторяющихся задач',
     frequency: 'Периодичность',

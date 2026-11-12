@@ -325,6 +325,18 @@ func SuggestPriorityMapping(jiraPriorityName string) string {
 	return "Medium" // Default
 }
 
+// PriorityMappingTarget returns the Windshift priority a Jira name maps to and
+// whether that mapping is a known synonym. Unknown names are returned unchanged
+// so importers can preserve and create them instead of collapsing to the
+// default.
+func PriorityMappingTarget(jiraPriorityName string) (target string, known bool) {
+	name := strings.TrimSpace(jiraPriorityName)
+	if mapped, ok := PriorityMapping[strings.ToLower(name)]; ok {
+		return mapped, true
+	}
+	return name, false
+}
+
 // MentionResolver maps a Jira accountID to the Windshift username that should
 // be rendered for an `@mention`. Returning "" falls back to the mention's
 // display text.
@@ -352,14 +364,40 @@ type MediaResolver func(jiraAttachmentID string) MediaResolution
 // missing id yields an unresolved result so the caller keeps its placeholder.
 // The reference path is the same relative path Windshift's own attachment
 // upload endpoints document (`/api/attachments/{id}/download`).
+//
+// Data Center wiki bodies name files instead of carrying a media id, so the
+// resolver also matches on filename. A filename only identifies a file when it
+// is unique among the issue's attachments; duplicated names stay unresolved so
+// the converter keeps its placeholder rather than linking an arbitrary file.
 func NewMediaResolver(refs map[string]MediaAttachment) MediaResolver {
+	byFilename := make(map[string]MediaAttachment, len(refs))
+	ambiguous := make(map[string]struct{})
+	for _, ref := range refs {
+		name := strings.TrimSpace(ref.OriginalFilename)
+		if name == "" {
+			continue
+		}
+		if _, seen := byFilename[name]; seen {
+			ambiguous[name] = struct{}{}
+			continue
+		}
+		byFilename[name] = ref
+	}
+
 	return func(jiraAttachmentID string) MediaResolution {
 		if refs == nil {
 			return MediaResolution{}
 		}
 		ref, ok := refs[jiraAttachmentID]
 		if !ok || ref.ID == 0 {
-			return MediaResolution{}
+			name := strings.TrimSpace(jiraAttachmentID)
+			if _, duplicated := ambiguous[name]; duplicated {
+				return MediaResolution{}
+			}
+			ref, ok = byFilename[name]
+			if !ok || ref.ID == 0 {
+				return MediaResolution{}
+			}
 		}
 		href := fmt.Sprintf("/api/attachments/%d/download", ref.ID)
 		alt := ref.OriginalFilename
@@ -398,6 +436,19 @@ func isImageMimeType(mimeType string) bool {
 // by the rendered comment view.
 func ConvertADFToMarkdownWithUsers(adf any, resolver MentionResolver) string {
 	return ConvertADFToMarkdown(adf, resolver, nil)
+}
+
+// ConvertJiraRichText renders a Jira rich-text value to Markdown, choosing the
+// converter from the value's shape: ADF documents (Cloud) use the ADF
+// converter, strings (Server/Data Center wiki markup) use the wiki converter.
+func ConvertJiraRichText(value any, mentionResolver MentionResolver, mediaResolver MediaResolver) string {
+	if value == nil {
+		return ""
+	}
+	if str, ok := value.(string); ok {
+		return ConvertWikiMarkupToMarkdown(str, mediaResolver)
+	}
+	return ConvertADFToMarkdown(value, mentionResolver, mediaResolver)
 }
 
 // ConvertADFToMarkdown converts an ADF document to Markdown, consulting the

@@ -49,6 +49,7 @@ func Load(frontend embed.FS, shutdownChan chan os.Signal) Config {
 		postgresReplicaCount  = flag.Int("postgres-replica-count", 1, "Number of Windshift replicas sharing PostgreSQL for aggregate pool budgeting")
 		postgresHeadroom      = flag.Int("postgres-connection-headroom", 10, "PostgreSQL connections reserved for migrations, administration, and other clients")
 		maxUserConcurrency    = flag.Int("max-user-concurrency", 16, "Max simultaneous in-flight /api requests per authenticated user (0 disables)")
+		maxUserStreams        = flag.Int("max-user-streams", 32, "Max concurrent live-update (SSE) streams per authenticated user (0 disables)")
 		maxTemplateSeedItems  = flag.Int("max-template-seed-items", 1000, "Maximum seed items copied when creating a workspace from a template")
 		maxWriteConns         = flag.Int("max-write-conns", 1, "Max write connections")
 		dbRequestTimeout      = flag.Duration("db-request-timeout", 12*time.Second, "Maximum database-work duration for ordinary HTTP requests")
@@ -58,6 +59,7 @@ func Load(frontend embed.FS, shutdownChan chan os.Signal) Config {
 		tlsKeyPath            = flag.String("tls-key", "", "TLS key file path")
 		disablePlugins        = flag.Bool("disable-plugins", false, "Disable the plugin system")
 		disableIPRateLimit    = flag.Bool("disable-ip-rate-limit", false, "Disable IP-based rate limiting")
+		h2c                   = flag.Bool("h2c", false, "Accept unencrypted HTTP/2 (h2c) on the plain listener, for a fronting proxy that speaks h2c")
 		enableAdminFallback   = flag.Bool("enable-fallback", false, "Enable admin password fallback")
 		enableCodingAgent     = flag.Bool("enable-coding-agent", false, "Enable the coding-agent harness")
 		llmProvidersFile      = flag.String("llm-providers", "", "Path to custom LLM providers JSON file")
@@ -270,9 +272,6 @@ func Load(frontend embed.FS, shutdownChan chan os.Signal) Config {
 			Enabled:  codingAgentEnabled,
 			WSAPIURL: os.Getenv("CODING_AGENT_WS_API_URL"),
 		},
-		Logbook: LogbookConfig{
-			Endpoint: os.Getenv("LOGBOOK_ENDPOINT"),
-		},
 		Notification: NotificationConfig{
 			FlushInterval:   parseDurationEnv("NOTIFICATION_FLUSH_INTERVAL", 0),
 			BatchSize:       parseIntEnv("NOTIFICATION_BATCH_SIZE", 0),
@@ -310,7 +309,9 @@ func Load(frontend embed.FS, shutdownChan chan os.Signal) Config {
 		AttachmentPath:       attachPath,
 		EnableAdminFallback:  adminFallbackEnabled,
 		DisableIPRateLimit:   ipRateLimitDisabled,
+		H2CEnabled:           *h2c || parseBoolEnv("H2C_ENABLED"),
 		MaxUserConcurrency:   parseIntEnv("MAX_USER_CONCURRENCY", *maxUserConcurrency),
+		MaxUserStreams:       parseIntEnv("MAX_USER_STREAMS", *maxUserStreams),
 		MaxTemplateSeedItems: parseIntEnv("MAX_TEMPLATE_SEED_ITEMS", *maxTemplateSeedItems),
 		MCPEnabled:           mcpEnabled,
 		RecoverUser:          os.Getenv("RECOVER_USER"),

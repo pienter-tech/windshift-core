@@ -142,16 +142,21 @@ type JiraReadinessReport struct {
 	Extrapolated    bool                   `json:"extrapolated"`
 	AttachmentBytes int64                  `json:"attachment_bytes_sampled"`
 	OpenIssuesOnly  bool                   `json:"open_issues_only"`
+	// AssessmentComplete is false when any project's issue sample could not be
+	// fully read, so the score reflects only the issues that were sampled.
+	AssessmentComplete bool `json:"assessment_complete"`
 }
 
 // JiraProjectReadiness is the per-project slice of the readiness assessment.
 type JiraProjectReadiness struct {
-	Key           string         `json:"key"`
-	Name          string         `json:"name"`
-	TotalIssues   int            `json:"total_issues"`
-	SampledIssues int            `json:"sampled_issues"`
-	Score         int            `json:"score"`
-	Findings      []jira.Finding `json:"findings"`
+	Key                string         `json:"key"`
+	Name               string         `json:"name"`
+	TotalIssues        int            `json:"total_issues"`
+	SampledIssues      int            `json:"sampled_issues"`
+	Score              int            `json:"score"`
+	Findings           []jira.Finding `json:"findings"`
+	AssessmentComplete bool           `json:"assessment_complete"`
+	AssessmentError    string         `json:"assessment_error,omitempty"`
 }
 
 // JiraProjectAnalysis contains analysis for a single project
@@ -217,6 +222,11 @@ type StartImportRequest struct {
 	Mappings       ImportMappings    `json:"mappings"`
 	Xray           XrayImportOptions `json:"xray"`
 	ForceReimport  bool              `json:"force_reimport,omitempty"`
+	// AssetSchemaIDs is the operator's explicit Jira Assets selection. Assets
+	// import is opt-in: an empty selection imports no inventory, so a
+	// project-scoped import cannot silently ingest every schema the Jira token
+	// can see.
+	AssetSchemaIDs []string `json:"asset_schema_ids,omitempty"`
 }
 
 // XrayImportOptions contains the operator's conditional Xray choice. Cloud

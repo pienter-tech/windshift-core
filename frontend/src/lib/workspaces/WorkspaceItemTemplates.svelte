@@ -31,6 +31,8 @@ import Trash2 from '@lucide/svelte/icons/trash-2';
 	import SelectField from '../components/SelectField.svelte';
 
   let { workspaceId } = $props();
+  const uid = $props.id();
+  const bodyLabelId = `${uid}-body-label`;
 
   const MODE_OPTIONS = $derived([
     { value: 'selectable', label: t('workspaceTemplates.mode.selectable') },
@@ -283,9 +285,9 @@ import Trash2 from '@lucide/svelte/icons/trash-2';
       </div>
 
       <div>
-        <Label class="mb-1">{t('workspaceTemplates.descriptionBody')}</Label>
+        <Label id={bodyLabelId} class="mb-1">{t('workspaceTemplates.descriptionBody')}</Label>
         <div class="border rounded-md" style="border-color: var(--ds-border);" data-testid="item-template-body">
-          <MilkdownEditor bind:content={formBody} showToolbar={true} placeholder={t('workspaceTemplates.bodyPlaceholder')} />
+          <MilkdownEditor bind:content={formBody} showToolbar={true} placeholder={t('workspaceTemplates.bodyPlaceholder')} ariaLabelledBy={bodyLabelId} />
         </div>
       </div>
 

@@ -41,6 +41,7 @@ export default {
     "emptyPaneDescription": "Wählen Sie eine Seite aus der Baumstruktur aus oder erstellen Sie eine, um loszulegen.",
     "titlePlaceholder": "Ohne Titel",
     "editorPlaceholder": "Beginnen Sie mit dem Schreiben…",
+    "contentLabel": "Seiteninhalt",
     "tocHeading": "Auf dieser Seite",
     "tocAriaLabel": "Inhaltsverzeichnis",
     "save": "Speichern",

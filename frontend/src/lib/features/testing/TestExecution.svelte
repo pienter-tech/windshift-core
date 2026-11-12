@@ -31,11 +31,16 @@
   import Textarea from '../../components/Textarea.svelte';
   import { getStatusLabel, getTestStatusColor } from '../../utils/statusColors.js';
   import { t } from '../../stores/i18n.svelte.js';
+  import { surfaceError } from '../../stores/toasts.svelte.js';
   import { workspacePermissions } from '../../stores/workspacePermissions.svelte.js';
   import DescriptionText from '../../components/DescriptionText.svelte';
   import { loadTestRunDetail } from './testRunDetailData.js';
 import BDDExampleExecution from './BDDExampleExecution.svelte';
 import { parseScenarioSpec, flattenExamples } from './bddSpec.js';
+
+  const uid = $props.id();
+  const actualResultLabelId = `${uid}-actual-result-label`;
+  const notesLabelId = `${uid}-notes-label`;
 
   let testRun = $state(null);
   let testCases = $state([]);
@@ -378,7 +383,7 @@ import { parseScenarioSpec, flattenExamples } from './bddSpec.js';
         item_id: resultData.item_id ?? null
       });
     } catch (error) {
-      console.error('Failed to save step result:', error);
+      surfaceError(error, { context: 'saveStepStatus' });
     }
 
     // Auto-advance to next step on pass/skip (but not fail/blocked so user can create defects)
@@ -404,7 +409,7 @@ import { parseScenarioSpec, flattenExamples } from './bddSpec.js';
         item_id: resultData.item_id ?? null
       });
     } catch (error) {
-      console.error('Failed to save step result:', error);
+      surfaceError(error, { context: 'saveStepResult' });
     }
   }
 
@@ -502,7 +507,7 @@ import { parseScenarioSpec, flattenExamples } from './bddSpec.js';
         item_id: item.id
       });
     } catch (error) {
-      console.error('Failed to link item:', error);
+      surfaceError(error, { context: 'linkItemToStep' });
     }
   }
 </script>
@@ -803,13 +808,14 @@ import { parseScenarioSpec, flattenExamples } from './bddSpec.js';
 
               <!-- Actual Result -->
               <div class="mb-4">
-                <Label color="default" class="mb-2">{t('testing.actual')}</Label>
+                <Label id={actualResultLabelId} color="default" class="mb-2">{t('testing.actual')}</Label>
                 {#if testResults[currentCase.id]?.id}
                   {#key currentStep.id}
                     <div data-testid="test-execution-actual-result" class="border rounded overflow-hidden" style="border-color: var(--ds-border); min-height: 80px;">
                       <MilkdownEditor
                         content={stepResults[currentStep.id]?.actual_result || ''}
                         testId="test-execution-actual-result-editor"
+                        ariaLabelledBy={actualResultLabelId}
                         entityType="test_result"
                         entityId={testResults[currentCase.id].id}
                         showToolbar={true}
@@ -831,13 +837,14 @@ import { parseScenarioSpec, flattenExamples } from './bddSpec.js';
 
               <!-- Notes -->
               <div class="mb-4">
-                <Label color="default" class="mb-2">{t('common.notes')}</Label>
+                <Label id={notesLabelId} color="default" class="mb-2">{t('common.notes')}</Label>
                 {#if testResults[currentCase.id]?.id}
                   {#key `notes-${currentStep.id}`}
                     <div data-testid="test-execution-notes" class="border rounded overflow-hidden" style="border-color: var(--ds-border); min-height: 60px;">
                       <MilkdownEditor
                         content={stepResults[currentStep.id]?.notes || ''}
                         testId="test-execution-notes-editor"
+                        ariaLabelledBy={notesLabelId}
                         entityType="test_result"
                         entityId={testResults[currentCase.id].id}
                         showToolbar={true}

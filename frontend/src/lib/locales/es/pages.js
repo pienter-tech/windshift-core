@@ -41,6 +41,7 @@ export default {
     "emptyPaneDescription": "Seleccione una página del árbol o cree una para comenzar.",
     "titlePlaceholder": "Sin título",
     "editorPlaceholder": "Empezar a escribir…",
+    "contentLabel": "Contenido de la página",
     "tocHeading": "En esta página",
     "tocAriaLabel": "Índice de contenidos",
     "save": "Guardar",

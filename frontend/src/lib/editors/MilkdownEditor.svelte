@@ -54,7 +54,9 @@
     expectedContentHash = '',
     onBeforeDiagramOpen = async () => {},
     onDiagramPersisted = (_payload) => {},
-    testId = null
+    testId = null,
+    ariaLabel = null,
+    ariaLabelledBy = null
   } = $props();
 
   // Diagram modal state — only meaningful when enableDiagrams=true.
@@ -577,10 +579,13 @@
           // Context may not be initialized for update.
           ctx.set(editorViewOptionsCtx, {
             editable: () => !readonly,
-            attributes: {
+            // Milkdown already gives the root role="textbox"; editable roots
+            // also get an accessible name, read-only renders stay unnamed.
+            attributes: () => ({
               class: 'milkdown-editor-content',
-              'data-placeholder': effectivePlaceholder
-            },
+              'data-placeholder': effectivePlaceholder,
+              ...(readonly ? {} : accessibleNameAttributes())
+            }),
             // Handle DOM events for mention detection
             handleDOMEvents: {
               keydown: (_view, event) => {
@@ -868,6 +873,20 @@
     event.target.value = '';
   }
 
+  function accessibleNameAttributes() {
+    if (ariaLabelledBy) return { 'aria-labelledby': ariaLabelledBy };
+    if (ariaLabel) return { 'aria-label': ariaLabel };
+    return {};
+  }
+
+  // ProseMirror recomputes root attributes only on view updates.
+  $effect(() => {
+    ariaLabel;
+    ariaLabelledBy;
+    if (!editor) return;
+    editor.action((ctx) => ctx.get(editorViewCtx).setProps({}));
+  });
+
   // Keep readonly renders in sync when underlying markdown changes
   $effect(() => {
     if (editor && readonly) {
@@ -885,11 +904,15 @@
   // the current permission state.
   $effect(() => {
     readonly;
-    if (!editor) return;
-    editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
-      view.setProps({ nodeViews: { ...(view.props.nodeViews || {}) } });
-    });
+    if (!editor || disposed) return;
+    try {
+      editor.action((ctx) => {
+        const view = ctx.get(editorViewCtx);
+        view.setProps({ nodeViews: { ...(view.props.nodeViews || {}) } });
+      });
+    } catch {
+      // The editor can be torn down between the effect and the action.
+    }
   });
 </script>
 
@@ -977,6 +1000,7 @@
     bind:this={editorElement}
     data-testid={testId}
     data-ready={editor ? 'true' : 'false'}
+    dir="auto"
     class="milkdown-editor"
     class:readonly
     class:compact

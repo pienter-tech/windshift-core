@@ -84,6 +84,30 @@ func (s *IDResolverService) ResolveProjectName(id int) string {
 	return name
 }
 
+// ResolveWorkspaceName returns the name for a workspace ID
+func (s *IDResolverService) ResolveWorkspaceName(id int) string {
+	var name string
+	err := s.db.QueryRow(`SELECT name FROM workspaces WHERE id = ?`, id).Scan(&name)
+	if err != nil {
+		return ""
+	}
+	return name
+}
+
+// ResolvePortalCustomerName returns the display name for a portal customer ID,
+// falling back to the email when no name is set.
+func (s *IDResolverService) ResolvePortalCustomerName(id int) string {
+	var name string
+	err := s.db.QueryRow(
+		`SELECT COALESCE(NULLIF(TRIM(name), ''), email, '') FROM portal_customers WHERE id = ?`,
+		id,
+	).Scan(&name)
+	if err != nil {
+		return ""
+	}
+	return name
+}
+
 // ResolveItemTypeName returns the name for an item type ID
 func (s *IDResolverService) ResolveItemTypeName(id int) string {
 	var name string
@@ -92,6 +116,56 @@ func (s *IDResolverService) ResolveItemTypeName(id int) string {
 		return ""
 	}
 	return name
+}
+
+// ResolveIterationName returns the name for an iteration ID.
+func (s *IDResolverService) ResolveIterationName(id int) string {
+	var name string
+	err := s.db.QueryRow(`SELECT name FROM iterations WHERE id = ?`, id).Scan(&name)
+	if err != nil {
+		return ""
+	}
+	return name
+}
+
+// ResolveCustomFieldName returns the configured name for a custom field ID.
+func (s *IDResolverService) ResolveCustomFieldName(id int) string {
+	var name string
+	err := s.db.QueryRow(`SELECT name FROM custom_field_definitions WHERE id = ?`, id).Scan(&name)
+	if err != nil {
+		return ""
+	}
+	return name
+}
+
+// ResolveCustomerOrganisationName returns the name for a customer organisation ID.
+func (s *IDResolverService) ResolveCustomerOrganisationName(id int) string {
+	var name string
+	err := s.db.QueryRow(`SELECT name FROM customer_organisations WHERE id = ?`, id).Scan(&name)
+	if err != nil {
+		return ""
+	}
+	return name
+}
+
+// ResolveAssetName returns the display label for an asset ID, preferring the
+// asset tag plus title the same way the asset UI does.
+func (s *IDResolverService) ResolveAssetName(id int) string {
+	var title, tag string
+	err := s.db.QueryRow(`SELECT COALESCE(title, ''), COALESCE(asset_tag, '') FROM assets WHERE id = ?`, id).Scan(&title, &tag)
+	if err != nil {
+		return ""
+	}
+	switch {
+	case title != "" && tag != "":
+		return tag + " - " + title
+	case title != "":
+		return title
+	case tag != "":
+		return tag
+	default:
+		return ""
+	}
 }
 
 // ResolveItemKey returns the item key in "WORKSPACE-ID" format for an item ID
