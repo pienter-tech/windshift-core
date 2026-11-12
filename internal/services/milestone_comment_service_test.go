@@ -2,37 +2,55 @@ package services
 
 import (
 	"errors"
-	"strings"
 	"testing"
+	"time"
 
 	"windshift/internal/models"
 	"windshift/internal/repository"
+	"windshift/internal/validation"
 )
 
-// fakeMilestoneAccess lets readers view only the listed milestones.
+// fakeMilestoneAccess lets readers view only the listed milestones. Milestones
+// in local are local to commentWorkspace; the rest are global.
 type fakeMilestoneAccess struct {
 	readable map[int]bool
+	local    map[int]bool
 }
 
 func (f fakeMilestoneAccess) AuthorizeMilestoneRead(_, milestoneID int) (*MilestoneResult, error) {
 	if !f.readable[milestoneID] {
 		return nil, ErrPlanningForbidden
 	}
-	return &MilestoneResult{ID: milestoneID}, nil
+	if f.local[milestoneID] {
+		workspaceID := commentWorkspace
+		return &MilestoneResult{ID: milestoneID, WorkspaceID: &workspaceID}, nil
+	}
+	return &MilestoneResult{ID: milestoneID, IsGlobal: true}, nil
+}
+
+// fakeCommentPermissions grants workspace permissions per user.
+type fakeCommentPermissions map[int]map[string]bool
+
+func (f fakeCommentPermissions) HasWorkspacePermission(userID, workspaceID int, permission string) (bool, error) {
+	return workspaceID == commentWorkspace && f[userID][permission], nil
 }
 
 type fakeMilestoneCommentStore struct {
-	nextID int
-	rows   map[int]models.MilestoneComment
+	nextID   int
+	rows     map[int]models.MilestoneComment
+	lastFeed repository.MilestoneCommentFeedQuery
 }
 
 func newFakeMilestoneCommentStore() *fakeMilestoneCommentStore {
 	return &fakeMilestoneCommentStore{nextID: 1, rows: map[int]models.MilestoneComment{}}
 }
 
-func (f *fakeMilestoneCommentStore) ListByMilestone(milestoneID, _, _ int, _ bool) ([]models.MilestoneComment, error) {
+// ListFeed records the query and returns the milestone's comments newest
+// first, up to the limit. Cursor filtering is the repository's job.
+func (f *fakeMilestoneCommentStore) ListFeed(milestoneID int, feed repository.MilestoneCommentFeedQuery) ([]models.MilestoneComment, error) {
+	f.lastFeed = feed
 	result := []models.MilestoneComment{}
-	for id := 1; id < f.nextID; id++ {
+	for id := f.nextID - 1; id >= 1 && len(result) < feed.Limit; id-- {
 		if row, ok := f.rows[id]; ok && row.MilestoneID == milestoneID {
 			result = append(result, row)
 		}
@@ -41,8 +59,13 @@ func (f *fakeMilestoneCommentStore) ListByMilestone(milestoneID, _, _ int, _ boo
 }
 
 func (f *fakeMilestoneCommentStore) CountByMilestone(milestoneID int) (int, error) {
-	rows, _ := f.ListByMilestone(milestoneID, 0, 0, false)
-	return len(rows), nil
+	count := 0
+	for _, row := range f.rows {
+		if row.MilestoneID == milestoneID {
+			count++
+		}
+	}
+	return count, nil
 }
 
 func (f *fakeMilestoneCommentStore) GetByID(id int) (*models.MilestoneComment, error) {
@@ -82,14 +105,28 @@ const (
 	readableMilestone   = 10
 	otherMilestone      = 11
 	unreadableMilestone = 12
+	localMilestone      = 13
+	commentWorkspace    = 5
 	authorUserID        = 1
 	otherUserID         = 2
+	moderatorUserID     = 3
 )
 
+// newTestMilestoneCommentService serves global readableMilestone and
+// otherMilestone and localMilestone in commentWorkspace. The author may
+// comment there; the moderator holds comment.edit_others; otherUserID holds
+// neither.
 func newTestMilestoneCommentService() (*MilestoneCommentService, *fakeMilestoneCommentStore) {
 	store := newFakeMilestoneCommentStore()
-	access := fakeMilestoneAccess{readable: map[int]bool{readableMilestone: true, otherMilestone: true}}
-	return NewMilestoneCommentService(store, access), store
+	access := fakeMilestoneAccess{
+		readable: map[int]bool{readableMilestone: true, otherMilestone: true, localMilestone: true},
+		local:    map[int]bool{localMilestone: true},
+	}
+	permissions := fakeCommentPermissions{
+		authorUserID:    {models.PermissionItemComment: true},
+		moderatorUserID: {models.PermissionCommentEditOthers: true},
+	}
+	return NewMilestoneCommentService(store, access, permissions), store
 }
 
 func TestMilestoneCommentCreateRequiresMilestoneRead(t *testing.T) {
@@ -97,7 +134,7 @@ func TestMilestoneCommentCreateRequiresMilestoneRead(t *testing.T) {
 	if _, err := service.Create(authorUserID, unreadableMilestone, "hello"); !errors.Is(err, ErrPlanningForbidden) {
 		t.Fatalf("expected ErrPlanningForbidden, got %v", err)
 	}
-	if _, _, err := service.List(authorUserID, unreadableMilestone, MilestoneCommentListParams{Limit: 10}); !errors.Is(err, ErrPlanningForbidden) {
+	if _, err := service.GetFeed(authorUserID, unreadableMilestone, CommentFeedOptions{Limit: 10}); !errors.Is(err, ErrPlanningForbidden) {
 		t.Fatalf("expected ErrPlanningForbidden listing, got %v", err)
 	}
 	if len(store.rows) != 0 {
@@ -105,66 +142,156 @@ func TestMilestoneCommentCreateRequiresMilestoneRead(t *testing.T) {
 	}
 }
 
-func TestMilestoneCommentCreateSanitizesAndRejectsEmptyContent(t *testing.T) {
+func TestMilestoneCommentStoresMarkdownAsWritten(t *testing.T) {
 	service, _ := newTestMilestoneCommentService()
-	created, err := service.Create(authorUserID, readableMilestone, "Plan <script>alert(1)</script>**now**")
+	// Like item comments, the source is stored as written and made safe
+	// when rendered.
+	content := "line one<br />line two **now**"
+	created, err := service.Create(authorUserID, readableMilestone, content)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.AuthorID != authorUserID || created.MilestoneID != readableMilestone {
+	if created.AuthorID != authorUserID || created.MilestoneID != readableMilestone || created.Content != content {
 		t.Fatalf("unexpected comment: %+v", created)
 	}
-	if created.Content == "" || strings.Contains(created.Content, "<script>") {
-		t.Fatalf("expected sanitized Markdown, got %q", created.Content)
+	var invalid *validation.ValidationError
+	if _, err := service.Create(authorUserID, readableMilestone, " \n\t"); !errors.As(err, &invalid) {
+		t.Fatalf("expected a validation error for blank content, got %v", err)
 	}
-	for _, empty := range []string{"  <b></b> ", "<br />\n<br>"} {
-		if _, err := service.Create(authorUserID, readableMilestone, empty); err == nil {
-			t.Fatalf("expected empty content %q to be rejected", empty)
-		} else if _, ok := AsPlanningValidationError(err); !ok {
-			t.Fatalf("expected a validation error for %q, got %v", empty, err)
+	if _, err := service.Update(authorUserID, readableMilestone, created.ID, "  "); !errors.As(err, &invalid) {
+		t.Fatalf("expected a validation error for a blank edit, got %v", err)
+	}
+}
+
+// TestMilestoneCommentLocalCreateNeedsItemComment checks that a local
+// milestone applies its workspace's item.comment permission, and a global one
+// lets every viewer comment.
+func TestMilestoneCommentLocalCreateNeedsItemComment(t *testing.T) {
+	service, store := newTestMilestoneCommentService()
+	if _, err := service.Create(otherUserID, localMilestone, "hello"); !errors.Is(err, ErrPlanningForbidden) {
+		t.Fatalf("expected ErrPlanningForbidden without item.comment, got %v", err)
+	}
+	if _, err := service.Create(authorUserID, localMilestone, "hello"); err != nil {
+		t.Fatalf("expected item.comment holder to comment, got %v", err)
+	}
+	if _, err := service.Create(otherUserID, readableMilestone, "hello"); err != nil {
+		t.Fatalf("expected any viewer to comment on a global milestone, got %v", err)
+	}
+	if len(store.rows) != 2 {
+		t.Fatalf("expected 2 stored comments, got %d", len(store.rows))
+	}
+}
+
+func TestMilestoneCommentEditRules(t *testing.T) {
+	service, store := newTestMilestoneCommentService()
+	global, err := service.Create(authorUserID, readableMilestone, "Global")
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, err := service.Create(authorUserID, localMilestone, "Local")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Global milestones have no workspace to grant comment.edit_others in.
+	for _, userID := range []int{otherUserID, moderatorUserID} {
+		if _, err := service.Update(userID, readableMilestone, global.ID, "Hijacked"); !errors.Is(err, ErrPlanningForbidden) {
+			t.Fatalf("user %d: expected ErrPlanningForbidden on a foreign global edit, got %v", userID, err)
 		}
 	}
-}
-
-func TestMilestoneCommentKeepsEditorHardBreaks(t *testing.T) {
-	service, _ := newTestMilestoneCommentService()
-	created, err := service.Create(authorUserID, readableMilestone, "line one<br />line two")
-	if err != nil {
-		t.Fatal(err)
+	if _, err := service.Update(otherUserID, localMilestone, local.ID, "Hijacked"); !errors.Is(err, ErrPlanningForbidden) {
+		t.Fatalf("expected ErrPlanningForbidden without comment.edit_others, got %v", err)
 	}
-	if created.Content != "line one<br />line two" {
-		t.Fatalf("expected the editor's hard break to survive, got %q", created.Content)
+	if err := service.Delete(otherUserID, localMilestone, local.ID); !errors.Is(err, ErrPlanningForbidden) {
+		t.Fatalf("expected ErrPlanningForbidden on a foreign delete, got %v", err)
 	}
-}
-
-func TestMilestoneCommentOnlyAuthorMayEditOrDelete(t *testing.T) {
-	service, store := newTestMilestoneCommentService()
-	created, err := service.Create(authorUserID, readableMilestone, "Original")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := service.Update(otherUserID, readableMilestone, created.ID, "Hijacked"); !errors.Is(err, ErrMilestoneCommentNotAuthor) {
-		t.Fatalf("expected ErrMilestoneCommentNotAuthor on foreign edit, got %v", err)
-	}
-	if err := service.Delete(otherUserID, readableMilestone, created.ID); !errors.Is(err, ErrMilestoneCommentNotAuthor) {
-		t.Fatalf("expected ErrMilestoneCommentNotAuthor on foreign delete, got %v", err)
-	}
-	if _, err := service.Update(authorUserID, otherMilestone, created.ID, "Wrong milestone"); !errors.Is(err, repository.ErrNotFound) {
+	if _, err := service.Update(authorUserID, otherMilestone, global.ID, "Wrong milestone"); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound for a comment on another milestone, got %v", err)
 	}
 
-	updated, err := service.Update(authorUserID, readableMilestone, created.ID, "Edited")
+	updated, err := service.Update(authorUserID, readableMilestone, global.ID, "Edited")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if updated.Content != "Edited" {
 		t.Fatalf("expected edited content, got %q", updated.Content)
 	}
-	if err := service.Delete(authorUserID, readableMilestone, created.ID); err != nil {
+	moderated, err := service.Update(moderatorUserID, localMilestone, local.ID, "Moderated")
+	if err != nil {
+		t.Fatalf("expected comment.edit_others holder to edit, got %v", err)
+	}
+	if moderated.Content != "Moderated" {
+		t.Fatalf("expected moderated content, got %q", moderated.Content)
+	}
+	if err := service.Delete(moderatorUserID, localMilestone, local.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Delete(authorUserID, readableMilestone, global.ID); err != nil {
 		t.Fatal(err)
 	}
 	if len(store.rows) != 0 {
-		t.Fatalf("expected the comment to be deleted, got %d rows", len(store.rows))
+		t.Fatalf("expected the comments to be deleted, got %d rows", len(store.rows))
+	}
+}
+
+// TestMilestoneCommentFeedPages checks that the feed reads one row past the
+// page to set HasMore, applies the item feed's default and maximum page size,
+// and passes a cursor through as a repository position.
+func TestMilestoneCommentFeedPages(t *testing.T) {
+	service, store := newTestMilestoneCommentService()
+	for range 3 {
+		if _, err := service.Create(authorUserID, readableMilestone, "note"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	page, err := service.GetFeed(authorUserID, readableMilestone, CommentFeedOptions{Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Comments) != 2 || !page.HasMore || page.Comments[0].ID != 3 {
+		t.Fatalf("first page = %+v, want comments 3 and 2 with more", page)
+	}
+	if store.lastFeed.Limit != 3 {
+		t.Errorf("repository limit = %d, want page size + 1", store.lastFeed.Limit)
+	}
+
+	page, err = service.GetFeed(authorUserID, readableMilestone, CommentFeedOptions{Limit: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Comments) != 3 || page.HasMore {
+		t.Fatalf("whole thread = %+v, want 3 comments and no more", page)
+	}
+
+	if _, err := service.GetFeed(authorUserID, readableMilestone, CommentFeedOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if store.lastFeed.Limit != DefaultCommentFeedLimit+1 {
+		t.Errorf("default repository limit = %d, want %d", store.lastFeed.Limit, DefaultCommentFeedLimit+1)
+	}
+	if _, err := service.GetFeed(authorUserID, readableMilestone, CommentFeedOptions{Limit: 10_000}); err != nil {
+		t.Fatal(err)
+	}
+	if store.lastFeed.Limit != MaxCommentFeedLimit+1 {
+		t.Errorf("capped repository limit = %d, want %d", store.lastFeed.Limit, MaxCommentFeedLimit+1)
+	}
+
+	cursor := CommentFeedCursor{CreatedAt: time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC), ID: 2}
+	if _, err := service.GetFeed(authorUserID, readableMilestone, CommentFeedOptions{Limit: 2, Before: &cursor}); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.lastFeed.Before; got == nil || got.ID != 2 || !got.CreatedAt.Equal(cursor.CreatedAt) || store.lastFeed.Since != nil {
+		t.Errorf("before cursor passed as %+v / since %+v", got, store.lastFeed.Since)
+	}
+	if _, err := service.GetFeed(authorUserID, readableMilestone, CommentFeedOptions{Limit: 2, Since: &cursor}); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.lastFeed.Since; got == nil || got.ID != 2 || store.lastFeed.Before != nil {
+		t.Errorf("since cursor passed as %+v / before %+v", got, store.lastFeed.Before)
+	}
+
+	if total, err := service.CountFeed(readableMilestone); err != nil || total != 3 {
+		t.Errorf("CountFeed = %d, %v; want 3", total, err)
 	}
 }

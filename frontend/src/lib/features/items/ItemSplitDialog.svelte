@@ -3,18 +3,33 @@
   import ModalHeader from '../../dialogs/ModalHeader.svelte';
   import DialogFooter from '../../dialogs/DialogFooter.svelte';
   import TextField from '../../components/TextField.svelte';
-  import Checkbox from '../../components/Checkbox.svelte';
-  import { api } from '../../api.js';
+  import SelectField from '../../components/SelectField.svelte';
+  import { getComments } from '../../api/misc.js';
+  import { items } from '../../api/items.js';
   import { t } from '../../stores/i18n.svelte.js';
 
-  let { isOpen = $bindable(false), item = null, onSplit = null } = $props();
+  let { isOpen = $bindable(false), item = null, itemTypes = [], onSplit = null } = $props();
 
   let title = $state('');
+  let itemTypeId = $state(null);
   let comments = $state([]);
   let selected = $state(new Set());
   let splitting = $state(false);
   let loadingComments = $state(false);
   let error = $state('');
+
+  // Child types allowed under the source item type, defaulting to the first
+  // (the next hierarchy level down, or the generic sub-task).
+  const typeOptions = $derived(
+    (itemTypes || []).map((type) => ({ value: type.id, label: type.name }))
+  );
+
+  $effect(() => {
+    if (!isOpen) return;
+    if (itemTypeId == null && typeOptions.length > 0) {
+      itemTypeId = typeOptions[0].value;
+    }
+  });
 
   $effect(() => {
     if (isOpen && item) loadComments();
@@ -23,6 +38,7 @@
 
   function reset() {
     title = '';
+    itemTypeId = null;
     comments = [];
     selected = new Set();
     splitting = false;
@@ -37,7 +53,7 @@
     loadingComments = true;
     error = '';
     try {
-      const result = await api.getComments(item.id);
+      const result = await getComments(item.id);
       comments = result?.comments || result || [];
     } catch (err) {
       comments = [];
@@ -67,8 +83,9 @@
     try {
       splitting = true;
       error = '';
-      const result = await api.items.split(item.id, {
+      const result = await items.split(item.id, {
         title: title.trim(),
+        item_type_id: itemTypeId,
         comment_ids: [...selected],
       });
       close();
@@ -96,6 +113,17 @@
       bind:value={title}
       dataTestid="item-split-title-input"
     />
+
+    {#if typeOptions.length > 0}
+      <SelectField
+        id="item-split-type"
+        label={t('items.itemType')}
+        labelColor="default"
+        options={typeOptions}
+        bind:value={itemTypeId}
+        disabled={splitting}
+      />
+    {/if}
 
     <div>
       <div class="text-sm font-medium mb-2" style="color: var(--ds-text);">

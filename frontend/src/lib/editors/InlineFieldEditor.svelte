@@ -1,13 +1,16 @@
 <script>
-  import { api } from '../api.js';
+  import { items } from '../api/items.js';
   import { updateCustomFieldValue } from '../utils/customFieldValueUpdates.js';
   import InlineTextEditor from './InlineTextEditor.svelte';
   import InlineSelectEditor from './InlineSelectEditor.svelte';
   import InlineDateEditor from './InlineDateEditor.svelte';
+  import InlineNumberEditor from './InlineNumberEditor.svelte';
+  import InlineDurationEditor from './InlineDurationEditor.svelte';
 
   let {
     item, field, fieldType = 'text', options = [], placeholder = '',
     required = false, disabled = false, className = '',
+    maxLines = null,
     enableSingleClick = false, enableDoubleClick = false,
     onitemUpdated = null, onupdateError = null, onclick: onclickProp = null
   } = $props();
@@ -42,9 +45,9 @@
         const fieldId = field.replace('custom_field_', '');
         // The server merges custom field patches per field, so a single-field
         // payload leaves the item's other fields untouched.
-        updatedItem = await updateCustomFieldValue(api, item.id, fieldId, value);
+        updatedItem = await updateCustomFieldValue(item.id, fieldId, value);
       } else {
-        updatedItem = await api.items.update(item.id, { [field]: value });
+        updatedItem = await items.update(item.id, { [field]: value });
       }
       const merged = { ...item, ...updatedItem };
       editorComponent?.confirmSave?.(value);
@@ -89,6 +92,32 @@
     onsave={handleSave}
     onclick={handleClick}
   />
+{:else if fieldType === 'number'}
+  <InlineNumberEditor
+    bind:this={editorComponent}
+    value={fieldValue}
+    {placeholder}
+    {required}
+    {disabled}
+    {className}
+    {enableSingleClick}
+    {enableDoubleClick}
+    onsave={handleSave}
+    onclick={handleClick}
+  />
+{:else if fieldType === 'duration'}
+  <InlineDurationEditor
+    bind:this={editorComponent}
+    value={fieldValue}
+    {placeholder}
+    {required}
+    {disabled}
+    {className}
+    {enableSingleClick}
+    {enableDoubleClick}
+    onsave={handleSave}
+    onclick={handleClick}
+  />
 {:else}
   <InlineTextEditor
     bind:this={editorComponent}
@@ -97,6 +126,7 @@
     {required}
     {disabled}
     {className}
+    {maxLines}
     {enableSingleClick}
     {enableDoubleClick}
     onsave={handleSave}

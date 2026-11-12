@@ -67,11 +67,17 @@ type ProfileValidationError struct {
 	Code       string `json:"code"`
 	Message    string `json:"message"`
 	Dependency string `json:"dependency,omitempty"`
+	// Hint points administrators at the surface that resolves the error.
+	Hint string `json:"hint,omitempty"`
 }
 
 type ProfileValidationResult struct {
 	Ready  bool                     `json:"ready"`
 	Errors []ProfileValidationError `json:"errors"`
+	// ProfileVersion is the definition version the checks ran against.
+	// Activation only succeeds while the stored version still matches it, so a
+	// configuration change during validation cannot be marked Ready.
+	ProfileVersion int `json:"profile_version"`
 }
 
 // UpdateStudioProfileRequest carries the mutable overview fields. Profile type
@@ -524,7 +530,7 @@ func (s *BindingService) ValidateStudioProfile(ctx context.Context, workspaceID,
 		return nil, fmt.Errorf("load agent profile: %w", err)
 	}
 
-	result := &ProfileValidationResult{Errors: []ProfileValidationError{}}
+	result := &ProfileValidationResult{Errors: []ProfileValidationError{}, ProfileVersion: binding.ProfileVersion}
 	var active, isAgent bool
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT COALESCE(is_active, false), COALESCE(is_agent, false)
@@ -618,19 +624,13 @@ func (s *BindingService) validateProfilePermissions(binding *models.WorkspaceAge
 	for _, permission := range required {
 		if !grants[permission] {
 			message := fmt.Sprintf("Grant the acting identity the %s permission.", permission)
+			hint := fmt.Sprintf("Assign this agent a workspace role that includes %s in Workspace settings → Members.", permission)
 			if permission == models.PermissionItemEdit {
 				message = "Grant the acting identity Editor access."
+				hint = "Assign this agent the Editor role in Workspace settings → Members."
 			}
 			result.Errors = append(result.Errors, ProfileValidationError{
-				Code: "permission_missing", Message: message, Dependency: permission,
-			})
-		}
-	}
-	if binding.ProfileType == models.AgentProfileStandard && slices.Contains(binding.CapabilityGroups, string(agentstudio.CapabilityUsersApprovals)) {
-		allowed, err := s.permissions.HasGlobalPermission(binding.ActingUserID, models.PermissionUserList)
-		if err != nil || !allowed {
-			result.Errors = append(result.Errors, ProfileValidationError{
-				Code: "permission_missing", Message: "Grant the acting identity the user.list permission.", Dependency: models.PermissionUserList,
+				Code: "permission_missing", Message: message, Dependency: permission, Hint: hint,
 			})
 		}
 	}
@@ -653,15 +653,23 @@ func (s *BindingService) ActivateStudioProfile(ctx context.Context, workspaceID,
 	if err != nil {
 		return nil, nil, err
 	}
+	return s.activateStudioProfile(ctx, workspaceID, bindingID, validation)
+}
+
+// activateStudioProfile transitions a validated definition to Ready, but only
+// while the stored profile version still matches the one the validation ran
+// against. A concurrent configuration change bumps the version, so this refuses
+// to mark a changed definition Ready using validation of an older one.
+func (s *BindingService) activateStudioProfile(ctx context.Context, workspaceID, bindingID int, validation *ProfileValidationResult) (*models.WorkspaceAgentBinding, *ProfileValidationResult, error) {
 	if !validation.Ready {
 		return nil, validation, ErrAgentProfileValidationFailed
 	}
-	rows, err := s.repo.SetLifecycle(ctx, bindingID, workspaceID, models.AgentLifecycleReady)
+	rows, err := s.repo.SetLifecycleIfVersion(ctx, bindingID, workspaceID, models.AgentLifecycleReady, validation.ProfileVersion)
 	if err != nil {
 		return nil, validation, err
 	}
 	if rows == 0 {
-		return nil, validation, ErrBindingUnavailable
+		return nil, validation, ErrAgentProfileVersionConflict
 	}
 	binding, err := s.repo.Get(ctx, bindingID)
 	if err != nil {

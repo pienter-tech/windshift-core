@@ -3,14 +3,14 @@
 import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { api } from '../api.js';
+import { pages } from '../api/pages.js';
 import LinkItemModal from './LinkItemModal.svelte';
 
-vi.mock('../api.js', () => ({
-  api: {
-    links: { search: vi.fn().mockResolvedValue([]) },
-    pages: { searchPages: vi.fn().mockResolvedValue({ results: [] }) },
-  },
+vi.mock('../api/configuration.js', () => ({
+  links: { search: vi.fn().mockResolvedValue([]) },
+}));
+vi.mock('../api/pages.js', () => ({
+  pages: { searchPages: vi.fn().mockResolvedValue({ results: [] }) },
 }));
 
 vi.mock('../stores/i18n.svelte.js', () => ({ t: (key) => key }));
@@ -36,7 +36,9 @@ async function openPageDialog(props = {}) {
   });
   const dialog = await screen.findByRole('dialog');
   const input = await waitFor(() => {
-    const el = dialog.querySelector('#link-target-page-picker');
+    const el = /** @type {HTMLInputElement | null} */ (
+      dialog.querySelector('#link-target-page-picker')
+    );
     expect(el).not.toBeNull();
     return el;
   });
@@ -104,7 +106,7 @@ describe('LinkItemModal in Page mode', () => {
     const { dialog } = await openPageDialog();
     // The pickers keep Escape from their search boxes; in the browser the
     // field then blurs and the next Escape reaches the dialog (WCORE-65).
-    document.activeElement.blur();
+    /** @type {HTMLElement} */ (document.activeElement).blur();
     await waitFor(() => expect(dialog).toHaveFocus());
 
     await fireEvent.keyDown(document.activeElement, { key: 'Escape' });
@@ -129,7 +131,7 @@ describe('LinkItemModal in Page mode', () => {
     ['mouse', pickWithMouse],
   ])('after a %s pick', (_, pick) => {
     beforeEach(() => {
-      api.pages.searchPages.mockResolvedValue({ results: [page] });
+      vi.mocked(pages.searchPages).mockResolvedValue({ results: [page] });
     });
 
     it('keeps focus in the dialog on the Clear button', async () => {

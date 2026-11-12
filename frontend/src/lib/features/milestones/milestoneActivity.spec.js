@@ -63,6 +63,15 @@ describe('describeMilestoneActivity', () => {
       page: { id: 42, title: 'Spec', workspace_id: 3 },
     });
     expect(page.target).toEqual({ label: 'Spec', href: '/workspaces/3/pages/42' });
+
+    const unlinked = describe_({
+      type: 'milestone_page_unlinked',
+      actor_kind: 'user',
+      actor_name: 'Ada',
+      page: { id: 42, title: 'Spec', workspace_id: 3 },
+    });
+    expect(unlinked.lead).toBe('milestones.activity.unlinkedPage');
+    expect(unlinked.target).toEqual({ label: 'Spec', href: '/workspaces/3/pages/42' });
   });
 
   it('names system and unknown actors', () => {

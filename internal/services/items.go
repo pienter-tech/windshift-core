@@ -105,6 +105,7 @@ type ItemCreationParams struct {
 	CreatorPortalCustomerID *int
 	ChannelID               *int       // Portal-specific: track portal/channel
 	RequestTypeID           *int       // Portal-specific: track request type
+	IntakeID                *int       // Email-specific: intake that created this item (WI-1644)
 	PortalOrgShared         bool       // Portal-specific: creator shared the request with their organisation (WI-1139)
 	DueDate                 *time.Time // Due date for the item
 	StartDate               *time.Time // Start date for the item
@@ -150,9 +151,25 @@ type ItemCreationParams struct {
 	// ws CLI) echo the enforced structure even when they supplied their own
 	// description. TemplateID == 0 after the call means the type enforces none.
 	MandatoryTemplateOut *MandatoryTemplateInfo
+	// PinnedItemNumber requests a specific workspace item number instead of the
+	// MAX+1 allocator. The Jira importer uses it to preserve the numeric suffix of
+	// a source key so commit/PR mentions keep resolving. A number already in use
+	// or retired falls back to the next free number rather than failing.
+	PinnedItemNumber *int
+	// PinnedItemNumberResult, when non-nil alongside PinnedItemNumber, receives
+	// the requested and assigned numbers so the caller can report a fallback.
+	PinnedItemNumberResult *PinnedItemNumberOutcome
 	// EventMetadata overrides inferred actor/source provenance for the canonical
 	// item.created fact. Empty fields receive safe defaults.
 	EventMetadata itemevents.Metadata
+}
+
+// PinnedItemNumberOutcome reports how a requested item number resolved so an
+// importer can record that a source key was not preserved verbatim.
+type PinnedItemNumberOutcome struct {
+	Requested int
+	Assigned  int
+	FellBack  bool
 }
 
 // ItemCreateTransactionHook extends the item creation transaction.
@@ -222,15 +239,32 @@ func resolveItemTypeForCreation(db database.Database, workspaceID int, itemTypeI
 		return itemTypeID, nil
 	}
 
+	// Prefer the workspace config set's default item type, but only when it is
+	// actually part of the set. A set with a NULL or stale default would
+	// otherwise resolve to a type the workspace does not allow.
 	var defaultItemTypeID int
 	err := db.QueryRow(`
 		SELECT cs.default_item_type_id FROM configuration_sets cs
 		INNER JOIN workspace_configuration_sets wcs ON cs.id = wcs.configuration_set_id
+		INNER JOIN configuration_set_item_types csit
+			ON csit.configuration_set_id = cs.id AND csit.item_type_id = cs.default_item_type_id
 		WHERE wcs.workspace_id = ? AND cs.default_item_type_id IS NOT NULL
 		ORDER BY cs.is_default DESC
 		LIMIT 1
 	`, workspaceID).Scan(&defaultItemTypeID)
 	if err != nil {
+		// Fall back to the first item type the workspace's config set allows.
+		err = db.QueryRow(`
+			SELECT csit.item_type_id FROM configuration_set_item_types csit
+			INNER JOIN workspace_configuration_sets wcs ON wcs.configuration_set_id = csit.configuration_set_id
+			WHERE wcs.workspace_id = ?
+			ORDER BY csit.item_type_id
+			LIMIT 1
+		`, workspaceID).Scan(&defaultItemTypeID)
+	}
+	if err != nil {
+		// No config set restriction (or an unrestricted empty set): use the
+		// global default item type.
 		err = db.QueryRow("SELECT id FROM item_types WHERE is_default = true LIMIT 1").Scan(&defaultItemTypeID)
 	}
 	if err != nil || defaultItemTypeID == 0 {
@@ -242,7 +276,13 @@ func resolveItemTypeForCreation(db database.Database, workspaceID int, itemTypeI
 // CreateItem creates a new item with proper transaction handling and number generation
 // This centralizes the item creation logic used by normal creation, portal submissions, and copying
 func CreateItem(db database.Database, params ItemCreationParams) (int64, error) {
-	return createItem(context.Background(), db, params)
+	return CreateItemContext(context.Background(), db, params)
+}
+
+// CreateItemContext is CreateItem with cancellation propagated into item
+// creation. Email intake uses it so a mailbox budget also bounds the write.
+func CreateItemContext(ctx context.Context, db database.Database, params ItemCreationParams) (int64, error) {
+	return createItem(ctx, db, params)
 }
 
 func createItem(ctx context.Context, db database.Database, params ItemCreationParams) (int64, error) {
@@ -317,12 +357,4 @@ func GetInitialStatusForItemType(db database.Database, itemTypeID int) (string, 
 	}
 
 	return statusName, nil
-}
-
-// nullString converts an empty string to sql.NullString
-func nullString(s string) sql.NullString {
-	if s == "" {
-		return sql.NullString{Valid: false}
-	}
-	return sql.NullString{String: s, Valid: true}
 }

@@ -1,6 +1,6 @@
 import { itemUrl } from '../../utils/urls.js';
 
-// Milestone Activity (WCORE-21): turns one feed entry from
+// Milestone Activity: turns one feed entry from
 // GET /milestones/{id}/activity into display parts. The component renders
 // `actor lead [target link] trail`.
 
@@ -31,6 +31,12 @@ export function describeMilestoneActivity(entry, { t, formatDate }) {
     ? {
         label: [entry.item.key, entry.item.title].filter(Boolean).join(' '),
         href: itemUrl({ workspaceId: entry.item.workspace_id, itemId: entry.item.id }),
+      }
+    : null;
+  const pageTarget = entry?.page
+    ? {
+        label: entry.page.title || t('pages.untitled'),
+        href: `/workspaces/${entry.page.workspace_id}/pages/${entry.page.id}`,
       }
     : null;
 
@@ -65,17 +71,9 @@ export function describeMilestoneActivity(entry, { t, formatDate }) {
         trail: '',
       };
     case 'milestone_page_linked':
-      return {
-        actor,
-        lead: t('milestones.activity.linkedPage'),
-        target: entry.page
-          ? {
-              label: entry.page.title || t('pages.untitled'),
-              href: `/workspaces/${entry.page.workspace_id}/pages/${entry.page.id}`,
-            }
-          : null,
-        trail: '',
-      };
+      return { actor, lead: t('milestones.activity.linkedPage'), target: pageTarget, trail: '' };
+    case 'milestone_page_unlinked':
+      return { actor, lead: t('milestones.activity.unlinkedPage'), target: pageTarget, trail: '' };
     case 'item_comment_added':
       return { actor, lead: t('milestones.activity.commentedOn'), target: itemTarget, trail: '' };
     case 'item_status_changed':

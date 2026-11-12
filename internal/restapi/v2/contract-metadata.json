@@ -130,6 +130,33 @@
             }
           },
           {
+            "Name": "source",
+            "In": "query",
+            "Description": "Exact match on the event source (USER, SCIM, SYSTEM).",
+            "Required": false,
+            "Schema": {
+              "type": "string"
+            }
+          },
+          {
+            "Name": "success",
+            "In": "query",
+            "Description": "Filter by the success flag.",
+            "Required": false,
+            "Schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "Name": "search",
+            "In": "query",
+            "Description": "Case-insensitive substring match on username, resource name, or action type.",
+            "Required": false,
+            "Schema": {
+              "type": "string"
+            }
+          },
+          {
             "Name": "from",
             "In": "query",
             "Description": "Inclusive RFC3339 timestamp bound.",
@@ -2838,6 +2865,34 @@
         ]
       }
     },
+    "/attachments/{attachment_id}/download": {
+      "get": {
+        "description": "Download item attachment. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "attachment_id",
+            "In": "path",
+            "Description": "The attachment identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Download item attachment",
+        "tags": [
+          "Work items"
+        ]
+      }
+    },
     "/attachments/{attachment_id}/thumbnail": {
       "get": {
         "description": "Get item attachment thumbnail. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
@@ -2863,6 +2918,22 @@
         "summary": "Get item attachment thumbnail",
         "tags": [
           "Work items"
+        ]
+      }
+    },
+    "/catalogs/global-bootstrap": {
+      "get": {
+        "description": "Load global reference catalogs. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [],
+        "responses": {
+          "401": {},
+          "403": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Load global reference catalogs",
+        "tags": [
+          "Workspace configuration"
         ]
       }
     },
@@ -3760,6 +3831,16 @@
               "minimum": 1,
               "type": "integer"
             }
+          },
+          {
+            "Name": "include_reactions",
+            "In": "query",
+            "Description": "Attach grouped emoji reactions to the returned comment. Values true and 1 enable; omitted or other values leave reactions out.",
+            "Required": false,
+            "Schema": {
+              "default": false,
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -3786,6 +3867,16 @@
               "minimum": 1,
               "type": "integer"
             }
+          },
+          {
+            "Name": "include_reactions",
+            "In": "query",
+            "Description": "Attach grouped emoji reactions to the returned comment. Values true and 1 enable; omitted or other values leave reactions out.",
+            "Required": false,
+            "Schema": {
+              "default": false,
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -3799,6 +3890,83 @@
           "500": {}
         },
         "summary": "Update comment",
+        "tags": [
+          "Work items"
+        ]
+      }
+    },
+    "/comments/{comment_id}/reactions": {
+      "post": {
+        "description": "Add comment reaction. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "comment_id",
+            "In": "path",
+            "Description": "The comment identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Add comment reaction",
+        "tags": [
+          "Work items"
+        ]
+      }
+    },
+    "/comments/{comment_id}/reactions/{reaction}": {
+      "delete": {
+        "description": "Remove comment reaction. The server verifies resource ownership and deletion preconditions before removing the resource.",
+        "parameters": [
+          {
+            "Name": "comment_id",
+            "In": "path",
+            "Description": "The comment identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "reaction",
+            "In": "path",
+            "Description": "The reaction key: thumbs_up, check, eyes, heart, laugh, or hooray.",
+            "Required": true,
+            "Schema": {
+              "enum": [
+                "thumbs_up",
+                "check",
+                "eyes",
+                "heart",
+                "laugh",
+                "hooray"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Remove comment reaction",
         "tags": [
           "Work items"
         ]
@@ -4913,6 +5081,16 @@
               "default": false,
               "type": "boolean"
             }
+          },
+          {
+            "Name": "include_has_children",
+            "In": "query",
+            "Description": "Attach has_children to each row, true when the caller can view at least one child. Values true and 1 enable; omitted or other values leave the payload unchanged.",
+            "Required": false,
+            "Schema": {
+              "default": false,
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -5096,6 +5274,44 @@
         ]
       }
     },
+    "/items/bulk-delete": {
+      "post": {
+        "description": "Bulk delete items. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Bulk delete items",
+        "tags": [
+          "Work items"
+        ]
+      }
+    },
+    "/items/bulk-labels": {
+      "post": {
+        "description": "Bulk update item labels. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Bulk update item labels",
+        "tags": [
+          "Work items"
+        ]
+      }
+    },
     "/items/bulk-patch": {
       "post": {
         "description": "Bulk patch items. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
@@ -5110,6 +5326,25 @@
           "500": {}
         },
         "summary": "Bulk patch items",
+        "tags": [
+          "Work items"
+        ]
+      }
+    },
+    "/items/bulk-transition": {
+      "post": {
+        "description": "Bulk transition items. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Bulk transition items",
         "tags": [
           "Work items"
         ]
@@ -5221,6 +5456,41 @@
           "500": {}
         },
         "summary": "Get item changes",
+        "tags": [
+          "Work items"
+        ]
+      }
+    },
+    "/items/hierarchy": {
+      "post": {
+        "description": "Returns the matching descendants of up to 500 root items, grouped by root and capped per root. The collection and sub-filter apply to the descendants; the recursive walk is not pruned by the filter, so a matching descendant under a filtered-out intermediate is still returned. Rows are ordered breadth-first so a truncated root keeps complete shallow levels. Inaccessible items and cross-workspace descendants the caller cannot view are omitted.",
+        "parameters": [],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Read the hierarchy below a set of roots",
+        "tags": [
+          "Work items"
+        ]
+      }
+    },
+    "/items/level-counts": {
+      "get": {
+        "description": "Returns the filtered item count for each item-type hierarchy level, applying the same collection, sub-filter, and workspace scope as the item list. Sub-task (-1) is reported but is not a valid level-picker root.",
+        "parameters": [],
+        "responses": {
+          "401": {},
+          "403": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Count visible items per hierarchy level",
         "tags": [
           "Work items"
         ]
@@ -5824,7 +6094,7 @@
     },
     "/items/{item_id}/comments": {
       "get": {
-        "description": "Returns an authorization-filtered comment feed with at most 200 entries. Opaque next_cursor and refresh_cursor values preserve the exclusive timestamp-and-ID boundary without exposing its representation; partial comment pages are never returned on failure.",
+        "description": "Returns an authorization-filtered comment feed with at most 200 entries. Opaque next_cursor and refresh_cursor values preserve the exclusive timestamp-and-ID boundary without exposing its representation; partial comment pages are never returned on failure. Grouped reactions are attached only when include_reactions is true.",
         "parameters": [
           {
             "Name": "item_id",
@@ -5856,6 +6126,16 @@
             "Schema": {
               "minLength": 1,
               "type": "string"
+            }
+          },
+          {
+            "Name": "include_reactions",
+            "In": "query",
+            "Description": "Attach grouped emoji reactions to each comment. Values true and 1 enable; omitted or other values leave reactions out.",
+            "Required": false,
+            "Schema": {
+              "default": false,
+              "type": "boolean"
             }
           }
         ],
@@ -6879,6 +7159,34 @@
         ]
       }
     },
+    "/items/{item_id}/scm-links": {
+      "get": {
+        "description": "List item SCM links. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "item_id",
+            "In": "path",
+            "Description": "The item identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "List item SCM links",
+        "tags": [
+          "Work items"
+        ]
+      }
+    },
     "/items/{item_id}/sla": {
       "get": {
         "description": "Get item SLA state. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
@@ -7156,6 +7464,108 @@
           "500": {}
         },
         "summary": "Watch item",
+        "tags": [
+          "Work items"
+        ]
+      }
+    },
+    "/items/{item_id}/watchers": {
+      "get": {
+        "description": "List item watchers. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "item_id",
+            "In": "path",
+            "Description": "The item identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "List item watchers",
+        "tags": [
+          "Work items"
+        ]
+      }
+    },
+    "/items/{item_id}/watchers/{user_id}": {
+      "delete": {
+        "description": "Remove item watcher. The server verifies resource ownership and deletion preconditions before removing the resource.",
+        "parameters": [
+          {
+            "Name": "item_id",
+            "In": "path",
+            "Description": "The item identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "user_id",
+            "In": "path",
+            "Description": "The user identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Remove item watcher",
+        "tags": [
+          "Work items"
+        ]
+      },
+      "put": {
+        "description": "Add item watcher. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "item_id",
+            "In": "path",
+            "Description": "The item identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "user_id",
+            "In": "path",
+            "Description": "The user identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Add item watcher",
         "tags": [
           "Work items"
         ]
@@ -8147,7 +8557,7 @@
     },
     "/milestones/{milestone_id}/comments": {
       "get": {
-        "description": "List milestone comments. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "description": "Returns the milestone's comment feed, newest first, with at most 200 entries. Opaque next_cursor and refresh_cursor values preserve the exclusive timestamp-and-ID boundary without exposing its representation; total is returned on the first page only.",
         "parameters": [
           {
             "Name": "milestone_id",
@@ -8160,38 +8570,24 @@
             }
           },
           {
-            "Name": "page",
-            "In": "query",
-            "Description": "One-based page number.",
-            "Required": false,
-            "Schema": {
-              "default": 1,
-              "minimum": 1,
-              "type": "integer"
-            }
-          },
-          {
             "Name": "page_size",
             "In": "query",
             "Description": "Maximum number of resources to return.",
             "Required": false,
             "Schema": {
               "default": 50,
-              "maximum": 1000,
+              "maximum": 200,
               "minimum": 1,
               "type": "integer"
             }
           },
           {
-            "Name": "sort",
+            "Name": "cursor",
             "In": "query",
-            "Description": "Sort field; prefix with '-' for descending order. ID is the stable final tie-breaker.",
+            "Description": "Opaque continuation cursor returned by the preceding response. Cursors are operation-specific and cannot be combined with removed timestamp or ID boundaries.",
             "Required": false,
             "Schema": {
-              "enum": [
-                "created_at",
-                "-created_at"
-              ],
+              "minLength": 1,
               "type": "string"
             }
           }
@@ -8645,6 +9041,54 @@
         "summary": "Verify a built-in framework pack",
         "tags": [
           "Workspace configuration"
+        ]
+      }
+    },
+    "/pages/summaries": {
+      "get": {
+        "description": "List page summaries across workspaces. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "workspace_ids",
+            "In": "query",
+            "Description": "Comma-separated workspace IDs to include. At most 50 IDs are accepted.",
+            "Required": false,
+            "Schema": {
+              "type": "string"
+            }
+          },
+          {
+            "Name": "q",
+            "In": "query",
+            "Description": "Page title and content search text; omit to list every visible page.",
+            "Required": false,
+            "Schema": {
+              "type": "string"
+            }
+          },
+          {
+            "Name": "limit",
+            "In": "query",
+            "Description": "Maximum number of search matches.",
+            "Required": false,
+            "Schema": {
+              "default": 12,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "List page summaries across workspaces",
+        "tags": [
+          "Knowledge"
         ]
       }
     },
@@ -10378,6 +10822,25 @@
         ]
       }
     },
+    "/users/display-batch": {
+      "post": {
+        "description": "Batch user display. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Batch user display",
+        "tags": [
+          "People"
+        ]
+      }
+    },
     "/users/me": {
       "get": {
         "description": "Get the authenticated user. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
@@ -10869,6 +11332,15 @@
             "Name": "search",
             "In": "query",
             "Description": "Case-insensitive substring match on workspace name, key, and description.",
+            "Required": false,
+            "Schema": {
+              "type": "string"
+            }
+          },
+          {
+            "Name": "ids",
+            "In": "query",
+            "Description": "Comma-separated workspace IDs to resolve directly, at most 200. When set, the response contains exactly those workspaces the caller can view; search and pagination are ignored.",
             "Required": false,
             "Schema": {
               "type": "string"

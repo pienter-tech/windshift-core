@@ -1,10 +1,11 @@
 <script>
   import { untrack } from 'svelte';
-  import { api } from '../api.js';
+  import { getAssignableUsers, getUsers } from '../api/users.js';
   import { useEventListener } from 'runed';
   import Avatar from '../components/Avatar.svelte';
   import Text from '../components/Text.svelte';
   import { t } from '../stores/i18n.svelte.js';
+  import { mentionTextFor } from '../editors/mentionResolver.js';
 
   // Generate unique IDs for ARIA attributes
   const listboxId = `mention-listbox-${Math.random().toString(36).slice(2, 9)}`;
@@ -94,8 +95,8 @@
     try {
       loading = true;
       const roster = scopedWorkspaceId
-        ? await api.getAssignableUsers(scopedWorkspaceId)
-        : await api.getUsers();
+        ? await getAssignableUsers(scopedWorkspaceId)
+        : await getUsers();
       if (request !== loadRequest) return;
 
       // The backend roster is shared with assignment and already enforces
@@ -133,7 +134,9 @@
   });
 
   function handleSelect(user) {
-    onSelect?.(user);
+    // The token embeds the user id, so the mention never depends on the display
+    // name being unique and never exposes a username that may be an email.
+    onSelect?.({ ...user, mentionText: mentionTextFor(user) });
   }
 
   // Keys the picker owns while it is open. While a mention is in progress,

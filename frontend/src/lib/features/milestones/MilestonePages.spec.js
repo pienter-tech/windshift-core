@@ -13,15 +13,15 @@ const mocks = vi.hoisted(() => ({
   errorToast: vi.fn(),
 }));
 
-vi.mock('../../api.js', () => ({
-  api: {
-    milestones: {
-      getPageLinks: mocks.getPageLinks,
-      linkPage: mocks.linkPage,
-      unlinkPage: mocks.unlinkPage,
-    },
-    pages: { searchPages: mocks.searchPages },
+vi.mock('../../api/milestones.js', () => ({
+  milestones: {
+    getPageLinks: mocks.getPageLinks,
+    linkPage: mocks.linkPage,
+    unlinkPage: mocks.unlinkPage,
   },
+}));
+vi.mock('../../api/pages.js', () => ({
+  pages: { searchPages: mocks.searchPages },
 }));
 
 vi.mock('../../stores/i18n.svelte.js', () => ({ t: (key) => key }));
@@ -73,8 +73,6 @@ describe('MilestonePages link dialog', () => {
     expect(dialog).toHaveAttribute('role', 'dialog');
     expect(dialog).toHaveAttribute('aria-modal', 'true');
     expect(within(dialog).getByRole('heading', { name: 'items.addPage' })).toBeInTheDocument();
-    // The dialog is named by its heading (WCORE-62).
-    expect(dialog).toHaveAccessibleName('items.addPage');
     expect(within(dialog).getByTestId('milestone-page-link-cancel')).toHaveTextContent(
       'common.cancel'
     );

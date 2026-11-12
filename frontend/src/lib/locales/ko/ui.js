@@ -257,6 +257,7 @@ export default {
     "numberedList": "번호 목록",
     "insertImage": "이미지 삽입",
     "userNotFound": "사용자를 찾을 수 없습니다",
+    "multipleUsersMatch": "여러 사용자가 일치합니다",
     "insertDiagram": "다이어그램 삽입",
     "diagramEdit": "다이어그램 편집",
     "diagramOpen": "다이어그램 열기",
@@ -425,7 +426,7 @@ export default {
     "widthTwoThirds": "3분의 2",
     "widthFull": "전체",
     "resizeAriaLabel": "위젯 크기 조정",
-    "resizeColumnsValue": "12열 중 {count}열",
+    "resizeColumnsValue": "{total}열 중 {count}열",
     "rowCount": "행 수",
     "density": "밀도",
     "densityComfortable": "여유롭게",
@@ -439,7 +440,8 @@ export default {
     "fullWidth": "전체 너비",
     "chart": {
       "items": "작업",
-      "noDataAvailable": "사용 가능한 데이터가 없습니다"
+      "noDataAvailable": "사용 가능한 데이터가 없습니다",
+      "otherSlices": "기타 ({count}개 더)",
     },
     "completionChart": {
       "title": "완료 차트",

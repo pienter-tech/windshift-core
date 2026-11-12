@@ -1,6 +1,7 @@
 import { onDestroy } from 'svelte';
-import { api } from '../api.js';
-import { attachmentStatus } from '../stores';
+import { attachments as attachmentsApi } from '../api/misc.js';
+import { attachmentStatus } from '../stores/attachmentStatus.svelte.js';
+import { runWithConcurrency } from '../utils/concurrency.js';
 
 /**
  * Composable for managing item attachments
@@ -65,7 +66,7 @@ export function useItemAttachments(getItemId, showError = console.error) {
 
     try {
       loading = true;
-      const response = await api.attachments.getByItem(itemId, { page, limit });
+      const response = await attachmentsApi.getByItem(itemId, { page, limit });
 
       attachments = response?.data || [];
       pagination = response?.pagination || null;
@@ -98,7 +99,7 @@ export function useItemAttachments(getItemId, showError = console.error) {
    */
   async function handleDelete(attachment) {
     try {
-      await api.attachments.delete(attachment.id);
+      await attachmentsApi.delete(attachment.id);
 
       // Reload current page to update pagination
       if (isEnabled()) {
@@ -140,13 +141,13 @@ export function useItemAttachments(getItemId, showError = console.error) {
     const itemId = getItemId();
     if (!itemId) return;
 
-    for (const file of files) {
-      try {
-        await api.attachments.uploadToItem(itemId, file);
-      } catch (err) {
-        console.error('Upload error:', err);
-        showError('Failed to upload attachment', err.message || String(err));
-      }
+    const results = await runWithConcurrency(files, (file) =>
+      attachmentsApi.uploadToItem(itemId, file)
+    );
+    for (const result of results) {
+      if (result.ok) continue;
+      console.error('Upload error:', result.error);
+      showError('Failed to upload attachment', result.error?.message || String(result.error));
     }
 
     // Reload attachments after all uploads complete

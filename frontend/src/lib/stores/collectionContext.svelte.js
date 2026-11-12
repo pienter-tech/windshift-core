@@ -1,8 +1,7 @@
-import { api } from '../api.js';
-import {
-  RIGHTMOST_COLUMN_LIMIT,
-  rightmostCapStatusIds,
-} from '../features/collections/boardColumns.js';
+import { collections } from '../api/collections.js';
+import { items as itemsApi } from '../api/items.js';
+import { BACKGROUND_READ, FOREGROUND_READ } from '../api/readScheduler.js';
+import { normalizeCompletedLimit } from '../features/collections/boardConfigPayload.js';
 import {
   fetchCollectionBacklog,
   fetchCollectionItemChanges,
@@ -14,6 +13,7 @@ import {
 import { currentRoute, GLOBAL_COLLECTION_VIEWS } from '../router.js';
 import { isExpectedBackgroundSyncError } from '../utils/backgroundSync.js';
 import { calcHasMore } from '../utils/paginationUtils.js';
+import { collectionPreferences } from './collectionPreferences.svelte.js';
 import { workspaceDataStore } from './workspaceDataStore.svelte.js';
 
 const COLLECTION_VIEWS = new Set([
@@ -28,6 +28,16 @@ const COLLECTION_VIEWS = new Set([
 const BOARD_VIEWS = new Set(['workspace-board', 'collection-board']);
 const LIST_VIEWS = new Set(['workspace-list', 'collection-list']);
 const BACKLOG_VIEWS = new Set(['workspace-backlog', 'collection-backlog']);
+// Tree/map/roadmap build a hierarchy from the loaded set. They are rooted at one
+// item-type level (see docs/400-tree-hierarchy-level-design.md).
+const HIERARCHY_VIEWS = new Set([
+  'workspace-tree',
+  'collection-tree',
+  'workspace-map',
+  'collection-map',
+  'workspace-roadmap',
+  'collection-roadmap',
+]);
 
 const DEFAULT_PAGE_SIZE = 100;
 const LIST_INITIAL_PAGE_SIZE = 50;
@@ -37,8 +47,14 @@ const TREE_PAGE_SIZE = 100;
 const LARGE_COLLECTION_PAGE_SIZE = 250;
 const BOARD_UNFINISHED_PAGE_SIZE = 1000;
 const BOARD_UNTHROTTLED_ITEM_COUNT = 1000;
+// The items API clamps `page_size` to this. A hierarchy refresh that has
+// accumulated more rows than this must replay its pages instead of one request.
+const MAX_ITEMS_PAGE_SIZE = 1000;
 const BOARD_BACKGROUND_PAGE_DELAY_MS = 250;
-const BOARD_SEARCH_PAGE_SIZE = 100;
+const SEARCH_PAGE_SIZE = 100;
+// Local refresh-work-items bursts coalesce into one authoritative delta
+// reconciliation instead of one visibility query per item.
+const LOCAL_RECONCILE_DEBOUNCE_MS = 200;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -92,7 +108,14 @@ class CollectionStore {
   backlogItems = $state([]);
   collectionName = $state('Default');
   collectionTotal = $state(null);
-  #countRequestId = 0;
+  // Deferred count coalescing: at most one in-flight count per scope
+  // generation, plus a dirty flag that turns any number of invalidations into
+  // a single follow-up read. The generation changes on scope change so a late
+  // response from a previous scope cannot write the current one.
+  #countPending = null;
+  #countPendingGeneration = -1;
+  #countDirty = false;
+  #countGeneration = 0;
   publicSlug = $state(null);
   loading = $state(false);
 
@@ -101,19 +124,22 @@ class CollectionStore {
   itemsHasMore = $state(false);
   itemsLoadingMore = $state(false);
   boardBackgroundLoading = $state(false);
+  // Bumped whenever an authoritative read replaces the base item page, so
+  // hierarchy consumers can re-fetch their loaded subtrees (a refresh with the
+  // same base rows still picks up newly created descendants).
+  dataGeneration = $state(0);
 
   // Board views load every unfinished item separately from completed work.
-  // The rightmost cap is retained as a specialized view of that partition.
   boardDeferred = $state(null);
-  rightmostCap = $state(null);
 
-  // Board search is a separate server-scoped result set. Keeping it apart
-  // prevents a search from changing the board's normal cap or pagination.
-  boardSearchItems = $state([]);
-  boardSearchPagination = $state(null);
-  boardSearchLoading = $state(false);
-  boardSearchLoadingMore = $state(false);
-  boardSearchError = $state(false);
+  // View search is a separate server-scoped result set, shared by the board
+  // and list views. Keeping it apart prevents a search from changing the
+  // view's normal pagination or completed-item trimming.
+  searchItems = $state([]);
+  searchPagination = $state(null);
+  searchLoading = $state(false);
+  searchLoadingMore = $state(false);
+  searchError = $state(false);
 
   // Backlog pagination
   backlogPagination = $state(null);
@@ -139,19 +165,55 @@ class CollectionStore {
     return `collection-show-completed:${scope}:${view?.split('-').at(-1)}`;
   }
 
+  // View state lives in user preferences; the localStorage key is only the
+  // fallback for settings saved before that moved to the server.
+  #showCompletedFor(wsId, colId, view) {
+    const stored = collectionPreferences.getViewState(wsId, colId, view?.split('-').at(-1));
+    if (stored && typeof stored.show_completed === 'boolean') return stored.show_completed;
+    try {
+      return localStorage.getItem(this.#completionPreferenceKey(wsId, colId, view)) === 'true';
+    } catch {
+      return false;
+    }
+  }
+
   async setShowCompleted(value) {
     this.showCompleted = value;
-    try {
-      localStorage.setItem(
-        this.#completionPreferenceKey(this.#wsId, this.#colId, this.#currentView),
-        String(value)
-      );
-    } catch {
-      // Keep the setting usable when browser storage is unavailable.
-    }
-    this.clearBoardSearch();
+    collectionPreferences.patchViewState(
+      this.#wsId,
+      this.#colId,
+      this.#currentView?.split('-').at(-1),
+      {
+        show_completed: value,
+      }
+    );
+    this.clearSearch();
     if (this.#wsId || this.#colId) {
       await this.load(this.#wsId, this.#colId, this.#currentView);
+    }
+  }
+
+  // Persisted hierarchy level for a scope/view, or null when none is stored.
+  #persistedHierarchyLevel(wsId, colId, view) {
+    const stored = collectionPreferences.getViewState(
+      wsId,
+      colId,
+      view?.split('-').at(-1)
+    )?.hierarchy_level;
+    const value = Number(stored);
+    return Number.isFinite(value) ? value : null;
+  }
+
+  /**
+   * Select the item-type hierarchy level for a hierarchy view and reload the
+   * level-scoped base page. The picker persists the choice per scope.
+   */
+  setHierarchyLevel(level) {
+    const normalized = Number.isFinite(Number(level)) ? Number(level) : null;
+    if (normalized === this.hierarchyLevel) return;
+    this.hierarchyLevel = normalized;
+    if (this.#wsId || this.#colId) {
+      this.load(this.#wsId, this.#colId, this.#currentView);
     }
   }
 
@@ -165,6 +227,10 @@ class CollectionStore {
   #sortBy = null;
   #sortDirection = null;
   #boardSortMode = 'rank';
+  // Selected item-type hierarchy level for tree/map/roadmap. Null until the
+  // view resolves a persisted or default level; hierarchy item fetches are
+  // level-scoped and opt into has_children while it is set.
+  hierarchyLevel = $state(null);
 
   // Internal tracking
   #wsId = null;
@@ -177,8 +243,11 @@ class CollectionStore {
   #boardConfigurationKey = null;
   #boardConfigurationPromise = null;
   #boardConfigurationLoaded = false;
-  #boardSearchId = 0;
-  #boardSearchQuery = '';
+  #searchId = 0;
+  #searchQuery = '';
+  #reconcileTimer = null;
+  #reconcileInFlight = null;
+  #reconcilePending = false;
 
   constructor() {
     this.#unsubscribe = currentRoute.subscribe(($route) => {
@@ -227,18 +296,20 @@ class CollectionStore {
     if (BOARD_VIEWS.has(view)) {
       this.showCompleted = true;
     } else if (!sameCollection || viewChanged) {
-      try {
-        this.showCompleted =
-          localStorage.getItem(this.#completionPreferenceKey(wsId, colId, view)) === 'true';
-      } catch {
-        this.showCompleted = false;
-      }
+      this.showCompleted = this.#showCompletedFor(wsId, colId, view);
+    }
+
+    // Hierarchy views always carry a level. Reuse a persisted choice so the
+    // first fetch is already level-scoped; otherwise the picker resolves the
+    // default from the level counts and calls setHierarchyLevel.
+    if (HIERARCHY_VIEWS.has(view) && (!sameCollection || viewChanged)) {
+      this.hierarchyLevel = this.#persistedHierarchyLevel(wsId, colId, view);
     }
 
     // Switching between passive collection views does not need another network
     // roundtrip when the already-loaded item page is large enough and there is
-    // no active server-side sort/filter. Board views may need capped-column
-    // fetches, so they intentionally keep loading.
+    // no active server-side sort/filter. Board views fetch completed work
+    // separately, so they intentionally keep loading.
     const canReuseTargetData =
       loadsItems(view) &&
       loadsItems(this.#currentView) &&
@@ -255,7 +326,8 @@ class CollectionStore {
       !this.subFilterQL &&
       !this.#sortBy &&
       !this.#sortDirection &&
-      !BOARD_VIEWS.has(view)
+      !BOARD_VIEWS.has(view) &&
+      !HIERARCHY_VIEWS.has(view)
     ) {
       this.#currentView = view;
       return;
@@ -275,7 +347,6 @@ class CollectionStore {
       this.itemsLoadingMore = false;
       this.boardBackgroundLoading = false;
       this.boardDeferred = null;
-      this.rightmostCap = null;
       this.backlogPagination = null;
       this.backlogHasMore = false;
       this.backlogLoadingMore = false;
@@ -294,7 +365,11 @@ class CollectionStore {
       this.#boardConfigurationPromise = null;
       this.#boardConfigurationLoaded = false;
       this.#changesWatermark = null;
-      this.clearBoardSearch();
+      this.#countGeneration += 1;
+      this.#countPending = null;
+      this.#countPendingGeneration = -1;
+      this.#countDirty = false;
+      this.clearSearch();
     }
     this.#wsId = wsId;
     this.#colId = colId;
@@ -306,14 +381,16 @@ class CollectionStore {
 
     try {
       const boardPartition = await this.#resolveBoardPartition(wsId, colId, view);
-      const collection = colId
-        ? BOARD_VIEWS.has(view)
-          ? (this.boardCollection ?? (await getCollection(colId)))
-          : await getCollection(colId)
-        : null;
+      // Reuse the collection already fetched for this scope. A hierarchy level
+      // change reloads the item page and must not repeat the metadata read.
+      const collection = colId ? (this.boardCollection ?? (await getCollection(colId))) : null;
       if (loadId !== this.#loadId) return; // stale
+      // Keep the collection record available to view-scoped controls (shared
+      // named views, configure affordances) on every collection view, not just
+      // the board where the board bootstrap normally populates it.
+      if (collection) this.boardCollection = collection;
 
-      const [itemsResult, backlogResult, deferredResult, countResult] = await Promise.all([
+      const [itemsResult, backlogResult, deferredResult] = await Promise.all([
         loadsItems(view)
           ? this.#fetchMainItems(
               wsId,
@@ -330,12 +407,12 @@ class CollectionStore {
               limit: DEFAULT_PAGE_SIZE,
               sub_ql: this.effectiveSubFilterQL || undefined,
               collection,
+              requestOptions: FOREGROUND_READ,
             })
           : Promise.resolve(null),
         loadsItems(view)
           ? this.#fetchBoardDeferredItems(wsId, colId, boardPartition, collection)
           : Promise.resolve(null),
-        this.#refreshCollectionTotal(),
       ]);
 
       if (loadId !== this.#loadId) return; // stale
@@ -344,10 +421,16 @@ class CollectionStore {
         itemsResult,
         backlogResult,
         deferredResult,
-        countResult,
         boardPartition,
         collection,
       });
+      this.dataGeneration += 1;
+      // The count is scope-scoped, not filter-scoped: only a scope change needs
+      // a read. A same-scope reload (level, sub-filter, completed visibility)
+      // keeps the value it already has, and mutations refresh it directly.
+      if (!sameCollection) {
+        void this.#requestCollectionTotal();
+      }
       if (itemsResult && BOARD_VIEWS.has(view)) {
         void this.#loadRemainingBoardItems({
           first: itemsResult,
@@ -360,10 +443,19 @@ class CollectionStore {
       }
     } catch (error) {
       if (loadId !== this.#loadId) return;
-      console.error('[collectionStore] Load failed:', error);
+      // Page teardown and session replacement abort in-flight reads; that is
+      // expected control flow, not a load failure to surface.
+      if (!isExpectedBackgroundSyncError(error)) {
+        console.error('[collectionStore] Load failed:', error);
+      }
     } finally {
       if (loadId === this.#loadId) {
         this.loading = false;
+      }
+      // Local events that arrived during the initial load get one trailing run.
+      if (this.#reconcilePending) {
+        this.#reconcilePending = false;
+        void this.refreshDeltas();
       }
     }
   }
@@ -372,14 +464,7 @@ class CollectionStore {
    * Apply one round of fetched results to store state. Load and refresh share
    * this so their state shapes cannot drift apart.
    */
-  #applyResults({
-    itemsResult,
-    backlogResult,
-    deferredResult,
-    countResult,
-    boardPartition,
-    collection,
-  }) {
+  #applyResults({ itemsResult, backlogResult, deferredResult, boardPartition, collection }) {
     if (itemsResult) {
       this.items = deferredResult
         ? [...itemsResult.items, ...deferredResult.items]
@@ -389,12 +474,6 @@ class CollectionStore {
             ...boardPartition,
             pagination: deferredResult.pagination,
             total: deferredResult.pagination?.total_items ?? deferredResult.items.length,
-          }
-        : null;
-      this.rightmostCap = this.boardDeferred?.capped
-        ? {
-            statusIds: this.boardDeferred.statusIds,
-            total: this.boardDeferred.total,
           }
         : null;
       this.collectionName = itemsResult.collectionName;
@@ -416,38 +495,56 @@ class CollectionStore {
           collection?.is_public && collection?.public_slug ? collection.public_slug : null;
       }
     }
-    this.#changesWatermark = snapshotWatermark(
-      itemsResult,
-      backlogResult,
-      deferredResult,
-      countResult
-    );
+    this.#changesWatermark = snapshotWatermark(itemsResult, backlogResult, deferredResult);
   }
 
-  async #refreshCollectionTotal() {
+  /**
+   * Request the unfiltered collection count without blocking item paint. One
+   * read is in flight per scope generation; any invalidation that arrives
+   * while it is pending is folded into a single follow-up read. A response
+   * from a previous scope is discarded.
+   */
+  #requestCollectionTotal() {
     if (!this.#wsId && !this.#colId) return null;
-    const requestId = ++this.#countRequestId;
-    const loadId = this.#loadId;
+    const generation = this.#countGeneration;
+    if (this.#countPending && this.#countPendingGeneration === generation) {
+      this.#countDirty = true;
+      return this.#countPending;
+    }
+    this.#countDirty = false;
+    const run = this.#runCollectionTotal(generation);
+    this.#countPending = run;
+    this.#countPendingGeneration = generation;
+    return run;
+  }
+
+  async #runCollectionTotal(generation) {
     try {
-      const result = await fetchCollectionTotal(this.#wsId, this.#colId);
-      if (requestId === this.#countRequestId && loadId === this.#loadId) {
-        this.collectionTotal = result.total;
-        this.#changesWatermark = minimumWatermark(this.#changesWatermark, result.watermark);
-      }
-      return result;
+      const result = await fetchCollectionTotal(this.#wsId, this.#colId, BACKGROUND_READ);
+      if (generation !== this.#countGeneration) return;
+      if (result?.total != null) this.collectionTotal = result.total;
+      this.#changesWatermark = minimumWatermark(this.#changesWatermark, result?.watermark);
     } catch (error) {
-      if (requestId !== this.#countRequestId || loadId !== this.#loadId) return;
-      this.collectionTotal = null;
+      if (generation !== this.#countGeneration) return;
+      // Keep the last known count as stale. An unavailable count is never 0.
       if (!isExpectedBackgroundSyncError(error)) {
         console.error('[collectionStore] Count refresh failed:', error);
+      }
+    } finally {
+      if (this.#countPendingGeneration === generation) {
+        this.#countPending = null;
+        this.#countPendingGeneration = -1;
+        if (this.#countDirty) {
+          this.#countDirty = false;
+          void this.#requestCollectionTotal();
+        }
       }
     }
   }
 
   /**
-   * Resolves the statuses deferred from the board's full unfinished fetch.
-   * A capped rightmost column keeps its existing 50-card behavior; otherwise
-   * completed statuses are paged separately so they cannot hide active work.
+   * Resolves the statuses deferred from the board's full unfinished fetch so
+   * completed statuses are paged separately and cannot hide active work.
    */
   async #resolveBoardPartition(wsId, colId, view) {
     if (!BOARD_VIEWS.has(view) || !this.showCompleted) return null;
@@ -463,14 +560,38 @@ class CollectionStore {
         statuses = workspaceDataStore.statuses;
       }
 
-      const cappedStatusIds = rightmostCapStatusIds(config, statuses);
-      if (cappedStatusIds?.length) {
-        return { statusIds: cappedStatusIds, limit: RIGHTMOST_COLUMN_LIMIT, capped: true };
-      }
-
       const completedStatusIds = statuses
         .filter((status) => status.is_completed)
         .map((status) => status.id);
+      const visibility = config?.view_settings?.completed_visibility ?? '';
+
+      // Explicit presets select how much completed work to load.
+      if (visibility === 'none') {
+        // Keep completed statuses out of the main fetch without a second
+        // request; the board renders no completed work at all.
+        return completedStatusIds.length
+          ? { statusIds: completedStatusIds, limit: 0, hidden: true }
+          : null;
+      }
+      if (visibility === 'limit') {
+        if (completedStatusIds.length === 0) return null;
+        // The cap is the whole completed set: one page, no further paging.
+        return {
+          statusIds: completedStatusIds,
+          limit: normalizeCompletedLimit(config?.view_settings?.completed_limit),
+          capped: true,
+        };
+      }
+      if (visibility === 'all' || visibility === 'last_day' || visibility === 'last_week') {
+        if (completedStatusIds.length === 0) return null;
+        const activityDays = visibility === 'last_day' ? 1 : visibility === 'last_week' ? 7 : null;
+        return {
+          statusIds: completedStatusIds,
+          limit: DEFAULT_PAGE_SIZE,
+          completedActivityDays: activityDays,
+        };
+      }
+
       const retentionDays = Number(config?.completed_item_retention_days);
       const completedActivityDays =
         Number.isInteger(retentionDays) && retentionDays >= 1 && retentionDays <= 3650
@@ -480,7 +601,6 @@ class CollectionStore {
         ? {
             statusIds: completedStatusIds,
             limit: DEFAULT_PAGE_SIZE,
-            capped: false,
             completedActivityDays,
           }
         : null;
@@ -504,7 +624,7 @@ class CollectionStore {
     this.#boardConfigurationKey = key;
     this.#boardConfigurationLoaded = false;
     this.boardWorkspaceScopeLoaded = false;
-    const request = api.collections
+    const request = collections
       .getBoardConfigurationBootstrap(colId || null, wsId || null)
       .catch((error) => {
         if (error?.status !== 404) throw error;
@@ -533,6 +653,20 @@ class CollectionStore {
     return request;
   }
 
+  /**
+   * Non-starting view of the board-configuration request for a scope. Returns
+   * the cached config, the in-flight bootstrap promise, or null when this store
+   * has not loaded that scope. Navigation joins this instead of issuing a
+   * duplicate plain-config request.
+   */
+  peekBoardConfiguration(wsId = this.#wsId, colId = this.#colId) {
+    const key = `${colId ?? ''}|${wsId ?? ''}`;
+    if (this.#boardConfigurationKey !== key) return null;
+    if (this.#boardConfigurationLoaded) return { config: this.boardConfiguration };
+    if (this.#boardConfigurationPromise) return { pending: this.#boardConfigurationPromise };
+    return null;
+  }
+
   invalidateBoardConfiguration(wsId = this.#wsId, colId = this.#colId) {
     const key = `${colId ?? ''}|${wsId ?? ''}`;
     if (this.#boardConfigurationKey !== key) return;
@@ -550,18 +684,20 @@ class CollectionStore {
     return statusIds?.length ? { status_id_not: statusIds.join(',') } : {};
   }
 
-  #fetchMainItems(wsId, colId, limit, boardPartition, collection, isBoard = false) {
-    const fetchPage = (page, pageLimit) =>
+  #fetchMainItems(wsId, colId, limit, boardPartition, collection, isBoard = false, page = 1) {
+    const fetchPage = (fetchPageNumber, pageLimit) =>
       fetchCollectionItems(wsId, colId, {
-        page,
+        page: fetchPageNumber,
         limit: pageLimit,
         sub_ql: this.effectiveSubFilterQL || undefined,
         collection,
+        requestOptions: FOREGROUND_READ,
+        ...this.#hierarchyFilters(),
         ...this.#itemSortOptions(),
         ...this.#boardExclusionFilter(boardPartition?.statusIds ?? null),
       });
 
-    if (!isBoard) return fetchPage(1, limit);
+    if (!isBoard) return fetchPage(page, limit);
     return fetchPage(1, BOARD_UNFINISHED_PAGE_SIZE);
   }
 
@@ -583,6 +719,7 @@ class CollectionStore {
           limit: BOARD_UNFINISHED_PAGE_SIZE,
           sub_ql: this.effectiveSubFilterQL || undefined,
           collection,
+          requestOptions: BACKGROUND_READ,
           ...this.#itemSortOptions(),
           ...this.#boardExclusionFilter(boardPartition?.statusIds),
         });
@@ -605,16 +742,96 @@ class CollectionStore {
     }
   }
 
-  async #fetchCompleteMainItems(wsId, colId, limit, boardPartition, collection, loadId, isBoard) {
+  // The backlog API clamps page_size to 100, so a single request cannot return
+  // an accumulated backlog larger than that. Fetch the pages needed to cover
+  // the loaded range and merge them.
+  async #fetchCompleteBacklog(wsId, colId, limit, subQL, collection, loadId) {
+    const first = await fetchCollectionBacklog(wsId, colId, {
+      page: 1,
+      limit,
+      sub_ql: subQL,
+      collection,
+      requestOptions: FOREGROUND_READ,
+    });
+    const totalPages = first.pagination?.total_pages ?? 1;
+    const pages = [first];
+    let loadedCount = first.items.length;
+    for (let page = 2; loadedCount < limit && page <= totalPages; page++) {
+      if (loadId !== this.#loadId) return first;
+      const result = await fetchCollectionBacklog(wsId, colId, {
+        page,
+        limit,
+        sub_ql: subQL,
+        collection,
+        requestOptions: BACKGROUND_READ,
+      });
+      pages.push(result);
+      if (result.items.length === 0) break;
+      loadedCount += result.items.length;
+    }
+    return {
+      ...first,
+      items: pages.flatMap((result) => result.items),
+      pagination: pages.at(-1).pagination,
+      watermark: snapshotWatermark(...pages),
+    };
+  }
+
+  async #fetchCompleteMainItems(
+    wsId,
+    colId,
+    limit,
+    boardPartition,
+    collection,
+    loadId,
+    isBoard,
+    page = 1
+  ) {
+    // A hierarchy view accumulates pages. While the loaded set fits one request
+    // it reloads from page 1 in one go; past the API page cap it replays the
+    // accumulated pages with the view's own page size, so the pagination cursor
+    // stays aligned with the loaded set instead of offsetting past it.
+    const replaysHierarchyPages =
+      !isBoard && HIERARCHY_VIEWS.has(this.#currentView) && limit > MAX_ITEMS_PAGE_SIZE;
+    const firstLimit = replaysHierarchyPages ? initialItemsPageSize(this.#currentView) : limit;
     const first = await this.#fetchMainItems(
       wsId,
       colId,
-      limit,
+      firstLimit,
       boardPartition,
       collection,
-      isBoard
+      isBoard,
+      page
     );
     const totalPages = first.pagination?.total_pages ?? 1;
+
+    if (replaysHierarchyPages) {
+      const target = Math.min(limit, first.pagination?.total_items ?? limit);
+      const pages = [first];
+      let loadedCount = first.items.length;
+      for (let next = 2; loadedCount < target && next <= totalPages; next += 1) {
+        if (loadId !== this.#loadId) return first;
+        const result = await this.#fetchMainItems(
+          wsId,
+          colId,
+          firstLimit,
+          boardPartition,
+          collection,
+          false,
+          next
+        );
+        if (result.items.length === 0) break;
+        pages.push(result);
+        loadedCount += result.items.length;
+      }
+      return {
+        ...first,
+        items: pages.flatMap((result) => result.items),
+        pagination: pages.at(-1).pagination,
+        watermark: snapshotWatermark(...pages),
+      };
+    }
+
     if (!isBoard || totalPages <= 1) return first;
 
     const pages = [first];
@@ -630,6 +847,7 @@ class CollectionStore {
         limit: BOARD_UNFINISHED_PAGE_SIZE,
         sub_ql: this.effectiveSubFilterQL || undefined,
         collection,
+        requestOptions: BACKGROUND_READ,
         ...this.#itemSortOptions(),
         ...this.#boardExclusionFilter(boardPartition?.statusIds),
       });
@@ -645,20 +863,25 @@ class CollectionStore {
   }
 
   #fetchBoardDeferredItems(wsId, colId, boardPartition, collection, limitOverride = null) {
-    if (!boardPartition?.statusIds?.length) return Promise.resolve(null);
+    if (!boardPartition?.statusIds?.length || boardPartition.hidden) return Promise.resolve(null);
+    const requested = limitOverride ?? boardPartition.limit ?? 0;
+    // A capped preset fixes the completed set at the configured limit; a
+    // refresh reloads at most what is already loaded. Uncapped presets keep
+    // at least one full page so paging still works.
     const limit = boardPartition.capped
-      ? RIGHTMOST_COLUMN_LIMIT
-      : Math.max(DEFAULT_PAGE_SIZE, limitOverride ?? boardPartition.limit ?? 0);
+      ? requested > 0
+        ? Math.min(requested, boardPartition.limit)
+        : boardPartition.limit
+      : Math.max(DEFAULT_PAGE_SIZE, requested);
     return fetchCollectionItems(wsId, colId, {
       page: 1,
       limit,
       sub_ql: this.effectiveSubFilterQL || undefined,
       collection,
+      requestOptions: FOREGROUND_READ,
       status_id: boardPartition.statusIds.join(','),
       completed_activity_days: boardPartition.completedActivityDays || undefined,
-      ...(boardPartition.capped
-        ? { order_by: 'last_active_at', sort_direction: 'desc' }
-        : this.#itemSortOptions()),
+      ...this.#itemSortOptions(),
     });
   }
 
@@ -672,7 +895,7 @@ class CollectionStore {
   }
 
   get itemsRemainingCount() {
-    if (this.boardDeferred && !this.boardDeferred.capped) {
+    if (this.boardDeferred) {
       const deferredSet = new Set(this.boardDeferred.statusIds);
       const loaded = this.items.filter((item) => deferredSet.has(item.status_id)).length;
       return Math.max(0, this.boardDeferred.total - loaded);
@@ -685,94 +908,96 @@ class CollectionStore {
     return mainTotal + (this.boardDeferred?.total ?? 0);
   }
 
-  get boardSearchHasMore() {
-    return calcHasMore(this.boardSearchPagination);
+  get searchHasMore() {
+    return calcHasMore(this.searchPagination);
   }
 
-  get boardSearchRemainingCount() {
-    const loaded = this.boardSearchItems.length;
-    return Math.max(0, (this.boardSearchPagination?.total_items ?? loaded) - loaded);
+  get searchRemainingCount() {
+    const loaded = this.searchItems.length;
+    return Math.max(0, (this.searchPagination?.total_items ?? loaded) - loaded);
   }
 
-  clearBoardSearch() {
-    this.#boardSearchId++;
-    this.#boardSearchQuery = '';
-    this.boardSearchItems = [];
-    this.boardSearchPagination = null;
-    this.boardSearchLoading = false;
-    this.boardSearchLoadingMore = false;
-    this.boardSearchError = false;
+  clearSearch() {
+    this.#searchId++;
+    this.#searchQuery = '';
+    this.searchItems = [];
+    this.searchPagination = null;
+    this.searchLoading = false;
+    this.searchLoadingMore = false;
+    this.searchError = false;
   }
 
-  async searchBoardItems(query) {
+  async runSearch(query) {
     const normalized = query.trim();
     if (!normalized) {
-      this.clearBoardSearch();
+      this.clearSearch();
       return;
     }
 
-    const searchId = ++this.#boardSearchId;
-    this.#boardSearchQuery = normalized;
-    this.boardSearchItems = [];
-    this.boardSearchPagination = null;
-    this.boardSearchLoading = true;
-    this.boardSearchError = false;
+    const searchId = ++this.#searchId;
+    this.#searchQuery = normalized;
+    this.searchItems = [];
+    this.searchPagination = null;
+    this.searchLoading = true;
+    this.searchError = false;
 
     try {
-      const result = await this.#fetchBoardSearchPage(normalized, 1);
-      if (searchId !== this.#boardSearchId || normalized !== this.#boardSearchQuery) return;
-      this.boardSearchItems = result.items;
-      this.boardSearchPagination = result.pagination;
+      const result = await this.#fetchSearchPage(normalized, 1);
+      if (searchId !== this.#searchId || normalized !== this.#searchQuery) return;
+      this.searchItems = result.items;
+      this.searchPagination = result.pagination;
     } catch (error) {
-      if (searchId !== this.#boardSearchId) return;
-      console.error('[collectionStore] board search failed:', error);
-      this.boardSearchError = true;
+      if (searchId !== this.#searchId) return;
+      console.error('[collectionStore] search failed:', error);
+      this.searchError = true;
     } finally {
-      if (searchId === this.#boardSearchId) {
-        this.boardSearchLoading = false;
+      if (searchId === this.#searchId) {
+        this.searchLoading = false;
       }
     }
   }
 
-  async loadMoreBoardSearchItems() {
-    if (!this.#boardSearchQuery || !this.boardSearchHasMore || this.boardSearchLoadingMore) return;
+  async loadMoreSearchItems() {
+    if (!this.#searchQuery || !this.searchHasMore || this.searchLoadingMore) return;
 
-    const searchId = ++this.#boardSearchId;
-    const query = this.#boardSearchQuery;
-    const nextPage = (this.boardSearchPagination?.page ?? 0) + 1;
-    this.boardSearchLoadingMore = true;
-    this.boardSearchError = false;
+    const searchId = ++this.#searchId;
+    const query = this.#searchQuery;
+    const nextPage = (this.searchPagination?.page ?? 0) + 1;
+    this.searchLoadingMore = true;
+    this.searchError = false;
 
     try {
-      const result = await this.#fetchBoardSearchPage(query, nextPage);
-      if (searchId !== this.#boardSearchId || query !== this.#boardSearchQuery) return;
-      this.boardSearchItems = [...this.boardSearchItems, ...result.items];
-      this.boardSearchPagination = result.pagination;
+      const result = await this.#fetchSearchPage(query, nextPage);
+      if (searchId !== this.#searchId || query !== this.#searchQuery) return;
+      this.searchItems = [...this.searchItems, ...result.items];
+      this.searchPagination = result.pagination;
     } catch (error) {
-      if (searchId !== this.#boardSearchId) return;
-      console.error('[collectionStore] loading more board search results failed:', error);
-      this.boardSearchError = true;
+      if (searchId !== this.#searchId) return;
+      console.error('[collectionStore] loading more search results failed:', error);
+      this.searchError = true;
     } finally {
-      if (searchId === this.#boardSearchId) {
-        this.boardSearchLoadingMore = false;
+      if (searchId === this.#searchId) {
+        this.searchLoadingMore = false;
       }
     }
   }
 
-  #fetchBoardSearchPage(query, page) {
+  #fetchSearchPage(query, page) {
     return fetchCollectionItems(this.#wsId, this.#colId, {
       page,
-      limit: BOARD_SEARCH_PAGE_SIZE,
+      limit: SEARCH_PAGE_SIZE,
       search: query,
       sub_ql: this.effectiveSubFilterQL || undefined,
       collection: this.boardCollection ?? undefined,
+      requestOptions: FOREGROUND_READ,
       ...this.#itemSortOptions(),
     });
   }
 
   #hasMoreItems() {
     if (this.boardDeferred) {
-      return !this.boardDeferred.capped && calcHasMore(this.boardDeferred.pagination);
+      if (this.boardDeferred.capped) return false;
+      return calcHasMore(this.boardDeferred.pagination);
     }
     return calcHasMore(this.itemsPagination);
   }
@@ -789,7 +1014,7 @@ class CollectionStore {
       return;
     }
 
-    const deferred = this.boardDeferred && !this.boardDeferred.capped ? this.boardDeferred : null;
+    const deferred = this.boardDeferred;
     const pagination = deferred?.pagination ?? this.itemsPagination;
     const nextPage = (pagination?.page ?? 0) + 1;
     const loadId = this.#loadId;
@@ -800,6 +1025,8 @@ class CollectionStore {
         page: nextPage,
         limit: pagination?.limit ?? DEFAULT_PAGE_SIZE,
         sub_ql: this.effectiveSubFilterQL || undefined,
+        requestOptions: BACKGROUND_READ,
+        ...this.#hierarchyFilters(),
         ...this.#itemSortOptions(),
         ...(deferred
           ? {
@@ -846,6 +1073,7 @@ class CollectionStore {
         page: nextPage,
         limit: this.backlogPagination?.limit ?? DEFAULT_PAGE_SIZE,
         sub_ql: this.effectiveSubFilterQL || undefined,
+        requestOptions: BACKGROUND_READ,
       });
 
       if (loadId !== this.#loadId) return;
@@ -873,21 +1101,18 @@ class CollectionStore {
     const loadId = ++this.#loadId;
 
     try {
-      const [result] = await Promise.all([
-        fetchCollectionItems(this.#wsId, this.#colId, {
-          page,
-          limit,
-          sub_ql: this.effectiveSubFilterQL || undefined,
-          ...this.#itemSortOptions(),
-        }),
-        this.#refreshCollectionTotal(),
-      ]);
+      const result = await fetchCollectionItems(this.#wsId, this.#colId, {
+        page,
+        limit,
+        sub_ql: this.effectiveSubFilterQL || undefined,
+        requestOptions: FOREGROUND_READ,
+        ...this.#itemSortOptions(),
+      });
 
       if (loadId !== this.#loadId) return;
 
       this.items = result.items;
       this.boardDeferred = null;
-      this.rightmostCap = null;
       this.collectionName = result.collectionName;
       this.publicSlug = result.publicSlug ?? null;
       this.itemsPagination = result.pagination;
@@ -898,6 +1123,7 @@ class CollectionStore {
         this.sortableFields = result.sortableFields;
       }
       this.#changesWatermark = minimumWatermark(this.#changesWatermark, result.watermark ?? 0);
+      void this.#requestCollectionTotal();
     } catch (error) {
       if (loadId !== this.#loadId) return;
       console.error('[collectionStore] setItemsPage failed:', error);
@@ -914,11 +1140,19 @@ class CollectionStore {
    * Used by pollers and background updates.
    */
   async refresh() {
-    if (!this.#wsId && !this.#colId) return;
+    if (!this.#wsId && !this.#colId) return false;
     const loadId = ++this.#loadId;
     this.boardBackgroundLoading = false;
 
     const itemsLimit = Math.max(initialItemsPageSize(this.#currentView), this.mainItemsLoadedCount);
+    // Page-based list views replace their rows per page, so a background
+    // refresh must reload the page the user is on instead of jumping to the
+    // first page. Board and hierarchy views accumulate their pages, so a
+    // refresh must reload from page 1; otherwise page N with limit = loaded
+    // count offsets past the loaded set and blanks the view.
+    const accumulatesPages =
+      BOARD_VIEWS.has(this.#currentView) || HIERARCHY_VIEWS.has(this.#currentView);
+    const itemsPage = accumulatesPages ? 1 : (this.itemsPagination?.page ?? 1);
     const backlogLimit = Math.max(DEFAULT_PAGE_SIZE, this.backlogItems.length);
 
     try {
@@ -932,10 +1166,10 @@ class CollectionStore {
           ? (this.boardCollection ?? (await getCollection(this.#colId)))
           : await getCollection(this.#colId)
         : null;
-      if (loadId !== this.#loadId) return;
+      if (loadId !== this.#loadId) return false;
 
       const deferredLoadedCount = this.items.length - this.mainItemsLoadedCount;
-      const [itemsResult, backlogResult, deferredResult, countResult] = await Promise.all([
+      const [itemsResult, backlogResult, deferredResult] = await Promise.all([
         loadsItems(this.#currentView)
           ? this.#fetchCompleteMainItems(
               this.#wsId,
@@ -944,16 +1178,19 @@ class CollectionStore {
               boardPartition,
               collection,
               loadId,
-              BOARD_VIEWS.has(this.#currentView)
+              BOARD_VIEWS.has(this.#currentView),
+              itemsPage
             )
           : Promise.resolve(null),
         loadsBacklog(this.#currentView)
-          ? fetchCollectionBacklog(this.#wsId, this.#colId, {
-              page: 1,
-              limit: backlogLimit,
-              sub_ql: this.effectiveSubFilterQL || undefined,
+          ? this.#fetchCompleteBacklog(
+              this.#wsId,
+              this.#colId,
+              backlogLimit,
+              this.effectiveSubFilterQL || undefined,
               collection,
-            })
+              loadId
+            )
           : Promise.resolve(null),
         loadsItems(this.#currentView)
           ? this.#fetchBoardDeferredItems(
@@ -964,23 +1201,25 @@ class CollectionStore {
               deferredLoadedCount
             )
           : Promise.resolve(null),
-        this.#refreshCollectionTotal(),
       ]);
-      if (loadId !== this.#loadId) return;
+      if (loadId !== this.#loadId) return false;
 
       this.#applyResults({
         itemsResult,
         backlogResult,
         deferredResult,
-        countResult,
         boardPartition,
         collection,
       });
+      this.dataGeneration += 1;
+      void this.#requestCollectionTotal();
+      return true;
     } catch (error) {
-      if (loadId !== this.#loadId) return;
+      if (loadId !== this.#loadId) return false;
       if (!isExpectedBackgroundSyncError(error)) {
         console.error('[collectionStore] Refresh failed:', error);
       }
+      return false;
     }
   }
 
@@ -1050,9 +1289,9 @@ class CollectionStore {
 
   async refreshItem(itemId) {
     try {
-      const updated = await api.items.get(itemId);
+      const updated = await itemsApi.get(itemId);
       this.#applyUpdatedItem(updated);
-      await this.#refreshCollectionTotal();
+      await this.#requestCollectionTotal();
     } catch (e) {
       console.error('[collectionStore] refreshItem failed:', e);
     }
@@ -1060,7 +1299,7 @@ class CollectionStore {
 
   applyItem(item) {
     if (!item?.id) return;
-    void this.#refreshCollectionTotal();
+    void this.#requestCollectionTotal();
     if (this.#hideCompletedItem(item)) return;
     const index = this.items.findIndex((current) => current.id === item.id);
     if (index === -1) {
@@ -1073,42 +1312,130 @@ class CollectionStore {
   }
 
   /**
-   * Poll for cheap deltas and patch loaded rows by ID. Falls back to a full
+   * Insert a just-created item into the loaded projection. `backlog` targets
+   * the backlog array, otherwise the main items array. Deduplicates by id so
+   * repeated create events (modal plus delta or cross-tab frame) cannot append
+   * the same row twice.
+   */
+  insertCreatedItem(item, { backlog = false } = {}) {
+    if (!item?.id) return;
+    const target = backlog ? this.backlogItems : this.items;
+    if (target.some((existing) => existing.id === item.id)) return;
+    if (backlog) this.backlogItems = [...this.backlogItems, item];
+    else this.items = [...this.items, item];
+  }
+
+  /**
+   * Merge a patch into every loaded projection that holds the item. This is the
+   * only path components use to reflect a confirmed mutation. Update-only: a
+   * missing row is off-page or filtered out, so the next reconciliation owns it.
+   */
+  patchItem(itemId, patch) {
+    if (itemId == null || !patch) return;
+    const apply = (list) => {
+      let found = false;
+      const next = list.map((item) => {
+        if (item.id !== itemId) return item;
+        found = true;
+        return { ...item, ...patch };
+      });
+      return found ? next : list;
+    };
+    const items = apply(this.items);
+    if (items !== this.items) this.items = items;
+    const backlog = apply(this.backlogItems);
+    if (backlog !== this.backlogItems) this.backlogItems = backlog;
+    const search = apply(this.searchItems);
+    if (search !== this.searchItems) this.searchItems = search;
+  }
+
+  /**
+   * Move a loaded backlog row to the start or end of the backlog list after the
+   * server confirmed the new rank.
+   */
+  moveBacklogItemToBoundary(item, boundary) {
+    if (!item?.id) return;
+    const others = this.backlogItems.filter((existing) => existing.id !== item.id);
+    this.backlogItems = boundary === 'start' ? [item, ...others] : [...others, item];
+  }
+
+  /**
+   * Replace the cached board configuration for a scope after a successful save.
+   * A scope that is not currently loaded is left alone; its next load fetches
+   * the saved config.
+   */
+  setBoardConfiguration(config, workspaceId = this.#wsId, collectionId = this.#colId) {
+    const key = `${collectionId ?? ''}|${workspaceId ?? ''}`;
+    if (this.#boardConfigurationKey !== key) return;
+    this.boardConfiguration = config;
+    this.#boardConfigurationLoaded = true;
+  }
+
+  /**
+   * The single reconciliation entry point. Local events, SSE invalidations and
+   * cross-tab broadcasts all funnel here; callers must not fetch deltas on
+   * their own. Single-flight: concurrent requests join the active run, and a
+   * request that arrives during a run or the initial load is replayed exactly
+   * once after it settles.
+   */
+  refreshDeltas() {
+    if (this.loading || this.#reconcileInFlight) {
+      this.#reconcilePending = true;
+      return this.#reconcileInFlight ?? Promise.resolve(false);
+    }
+    const run = this.#fetchDeltas();
+    this.#reconcileInFlight = run;
+    const settle = () => {
+      if (this.#reconcileInFlight === run) this.#reconcileInFlight = null;
+      if (this.#reconcilePending) {
+        this.#reconcilePending = false;
+        void this.refreshDeltas();
+      }
+    };
+    void run.then(settle, settle);
+    return run;
+  }
+
+  /**
+   * Fetch cheap deltas and patch loaded rows by ID. Falls back to a full
    * refresh when the delta implies structural uncertainty (new visible item,
    * server-side sort, or backlog membership changes).
    */
-  async refreshDeltas() {
-    if ((!this.#wsId && !this.#colId) || this.loading) return;
-    if (this.#changesWatermark === null) {
-      await this.#primeChangesWatermark();
-      return;
-    }
+  async #fetchDeltas() {
+    if (!this.#wsId && !this.#colId) return false;
 
     const loadId = this.#loadId;
     try {
+      if (this.#changesWatermark === null) {
+        await this.#primeChangesWatermark();
+        return true;
+      }
+
       const changes = await fetchCollectionItemChanges(this.#wsId, this.#colId, {
         since: this.#changesWatermark,
         sub_ql: this.effectiveSubFilterQL || undefined,
       });
-      if (loadId !== this.#loadId) return;
-      this.#changesWatermark = changes?.watermark ?? this.#changesWatermark;
+      if (loadId !== this.#loadId) return false;
+      const nextWatermark = changes?.watermark ?? this.#changesWatermark;
 
       if (changes?.requires_full_reload) {
-        await this.refresh();
-        return;
+        return await this.refresh();
       }
 
       const removedIds = new Set(changes?.removed_item_ids ?? []);
       if (removedIds.size > 0) {
         // Removed IDs may be off-page or outside the saved query altogether.
-        await this.refresh();
-        return;
+        return await this.refresh();
       }
 
       const changedIds = [...new Set(changes?.changed_item_ids ?? [])].filter(
         (id) => !removedIds.has(id)
       );
-      if (changedIds.length === 0) return;
+      if (changedIds.length === 0) {
+        // Nothing to patch; advancing the cursor is safe.
+        this.#changesWatermark = nextWatermark;
+        return true;
+      }
 
       const loadedMainIds = new Set(this.items.map((item) => item.id));
       const loadedBacklogIds = new Set(this.backlogItems.map((item) => item.id));
@@ -1122,12 +1449,11 @@ class CollectionStore {
         BOARD_VIEWS.has(this.#currentView) ||
         (LIST_VIEWS.has(this.#currentView) && (this.#sortBy || this.#sortDirection));
       if (hasNewVisibleItem || touchesBacklog || usesServerOrderedItems) {
-        await this.refresh();
-        return;
+        return await this.refresh();
       }
 
       const updatedItems = await fetchItemsById(loadedChangedIds);
-      if (loadId !== this.#loadId) return;
+      if (loadId !== this.#loadId) return false;
       for (const updated of updatedItems) {
         this.#applyUpdatedItem(updated);
       }
@@ -1135,12 +1461,30 @@ class CollectionStore {
       // object identity for rows/cards that were patched in place.
       this.items = [...this.items];
       this.backlogItems = [...this.backlogItems];
-      await this.#refreshCollectionTotal();
+      await this.#requestCollectionTotal();
+      // Commit the cursor only after the patch applied successfully so a
+      // failure preserves the previous cursor for replay.
+      this.#changesWatermark = nextWatermark;
+      return true;
     } catch (error) {
       if (!isExpectedBackgroundSyncError(error)) {
         console.error('[collectionStore] Delta refresh failed:', error);
       }
+      return false;
     }
+  }
+
+  /**
+   * Debounce local refresh-work-items, SSE and cross-tab bursts into one
+   * reconciliation. refreshDeltas() remains the single owner that serializes
+   * runs and retains a trailing run.
+   */
+  scheduleLocalReconciliation() {
+    if (this.#reconcileTimer) clearTimeout(this.#reconcileTimer);
+    this.#reconcileTimer = setTimeout(() => {
+      this.#reconcileTimer = null;
+      void this.refreshDeltas();
+    }, LOCAL_RECONCILE_DEBOUNCE_MS);
   }
 
   async #primeChangesWatermark() {
@@ -1160,8 +1504,8 @@ class CollectionStore {
     if (idx !== -1) Object.assign(this.items[idx], updated);
     const bIdx = this.backlogItems.findIndex((i) => i.id === updated.id);
     if (bIdx !== -1) Object.assign(this.backlogItems[bIdx], updated);
-    const searchIdx = this.boardSearchItems.findIndex((i) => i.id === updated.id);
-    if (searchIdx !== -1) Object.assign(this.boardSearchItems[searchIdx], updated);
+    const searchIdx = this.searchItems.findIndex((i) => i.id === updated.id);
+    if (searchIdx !== -1) Object.assign(this.searchItems[searchIdx], updated);
   }
 
   #hideCompletedItem(item) {
@@ -1189,7 +1533,7 @@ class CollectionStore {
       return false;
     });
     this.backlogItems = this.backlogItems.filter((item) => !ids.has(item.id));
-    this.boardSearchItems = this.boardSearchItems.filter((item) => !ids.has(item.id));
+    this.searchItems = this.searchItems.filter((item) => !ids.has(item.id));
 
     const removedBacklog = beforeBacklog - this.backlogItems.length;
     if (removedItems > 0 && this.itemsPagination) {
@@ -1213,9 +1557,6 @@ class CollectionStore {
         total,
         pagination,
       };
-      this.rightmostCap = this.boardDeferred.capped
-        ? { statusIds: this.boardDeferred.statusIds, total }
-        : null;
     }
     this.itemsHasMore = this.#hasMoreItems();
     if (removedBacklog > 0 && this.backlogPagination) {
@@ -1245,9 +1586,23 @@ class CollectionStore {
     return {};
   }
 
+  // Level scope for hierarchy item reads. Only applied once a level is
+  // resolved; has_children rides along so expanders render before any subtree
+  // load.
+  #hierarchyFilters() {
+    if (HIERARCHY_VIEWS.has(this.#currentView) && this.hierarchyLevel != null) {
+      return { level: this.hierarchyLevel, include_has_children: true };
+    }
+    return {};
+  }
+
   destroy() {
     if (this.#unsubscribe) {
       this.#unsubscribe();
+    }
+    if (this.#reconcileTimer) {
+      clearTimeout(this.#reconcileTimer);
+      this.#reconcileTimer = null;
     }
   }
 }
@@ -1259,9 +1614,9 @@ export function reloadCollection() {
   collectionStore.refresh();
 }
 
-/** Poll for cheap collection deltas and patch loaded items when safe */
-export function refreshCollectionDeltas() {
-  return collectionStore.refreshDeltas();
+/** Coalesce local refresh-work-items, SSE and cross-tab events into one reconciliation. */
+export function scheduleCollectionReconciliation() {
+  collectionStore.scheduleLocalReconciliation();
 }
 
 /** Refresh a single item in the store without reloading the entire collection */

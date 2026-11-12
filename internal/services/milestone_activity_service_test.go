@@ -33,9 +33,9 @@ func (w activityWorkspaces) AccessibleWorkspaceIDs(userID int) ([]int, error) {
 	return w[userID], nil
 }
 
-type activityPages []models.MilestonePageLink
+type activityPages []models.MilestonePageLinkEvent
 
-func (p activityPages) List(_, _ int) ([]models.MilestonePageLink, error) {
+func (p activityPages) History(_, _ int) ([]models.MilestonePageLinkEvent, error) {
 	return p, nil
 }
 
@@ -179,7 +179,7 @@ func TestMilestoneActivityFeedSourcesOrderAndVisibility(t *testing.T) {
 	adaID := activityAda
 	pages := activityPages{{
 		ID: 5, MilestoneID: f.milestone, PageID: 42, PageTitle: "Spec", WorkspaceID: 1,
-		CreatedBy: &adaID, CreatedByName: "Ada Lovelace", CreatedAt: f.base.Add(11 * time.Hour),
+		UserID: &adaID, UserName: "Ada Lovelace", OccurredAt: f.base.Add(11 * time.Hour),
 	}}
 
 	// Milestone edits by Bob, recorded by the update path.
@@ -192,7 +192,7 @@ func TestMilestoneActivityFeedSourcesOrderAndVisibility(t *testing.T) {
 	}
 
 	service := f.service(pages)
-	entries, total, err := service.List(activityViewer, f.milestone, MilestoneActivityListParams{Limit: 50})
+	entries, hasMore, err := service.List(activityViewer, f.milestone, MilestoneActivityListParams{Limit: 50})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,8 +213,8 @@ func TestMilestoneActivityFeedSourcesOrderAndVisibility(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("feed:\n got %v\nwant %v", got, want)
 	}
-	if total != len(want) {
-		t.Fatalf("total = %d, want %d", total, len(want))
+	if hasMore {
+		t.Fatal("hasMore = true on the only page")
 	}
 
 	byType := map[string]models.MilestoneActivity{}
@@ -261,12 +261,12 @@ func TestMilestoneActivityFeedSourcesOrderAndVisibility(t *testing.T) {
 	}
 
 	// A viewer with access to SEC also sees its item's events.
-	all, allTotal, err := service.List(activityAllSeer, f.milestone, MilestoneActivityListParams{Limit: 50})
+	all, allHasMore, err := service.List(activityAllSeer, f.milestone, MilestoneActivityListParams{Limit: 50})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if allTotal != len(want)+2 || len(all) != len(want)+2 {
-		t.Fatalf("full-access feed has %d/%d entries, want %d", len(all), allTotal, len(want)+2)
+	if allHasMore || len(all) != len(want)+2 {
+		t.Fatalf("full-access feed has %d entries (hasMore %v), want %d", len(all), allHasMore, len(want)+2)
 	}
 	gotAll := activityTypes(all)
 	if gotAll[6] != models.MilestoneActivityItemCommentAdded+" SEC-1" || gotAll[8] != models.MilestoneActivityItemAdded+" SEC-1" {
@@ -274,12 +274,29 @@ func TestMilestoneActivityFeedSourcesOrderAndVisibility(t *testing.T) {
 	}
 
 	// Paging slices the same ordering.
-	page2, pageTotal, err := service.List(activityViewer, f.milestone, MilestoneActivityListParams{Limit: 4, Offset: 4})
+	page2, page2HasMore, err := service.List(activityViewer, f.milestone, MilestoneActivityListParams{Limit: 4, Offset: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pageTotal != len(want) || !reflect.DeepEqual(activityTypes(page2), want[4:8]) {
-		t.Fatalf("page 2: got %v (total %d), want %v", activityTypes(page2), pageTotal, want[4:8])
+	if !page2HasMore || !reflect.DeepEqual(activityTypes(page2), want[4:8]) {
+		t.Fatalf("page 2: got %v (hasMore %v), want %v", activityTypes(page2), page2HasMore, want[4:8])
+	}
+	page3, page3HasMore, err := service.List(activityViewer, f.milestone, MilestoneActivityListParams{Limit: 4, Offset: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page3HasMore || !reflect.DeepEqual(activityTypes(page3), want[8:]) {
+		t.Fatalf("last page: got %v (hasMore %v), want %v", activityTypes(page3), page3HasMore, want[8:])
+	}
+	// A page that ends exactly at the last entry has nothing after it.
+	exact, exactHasMore, err := service.List(activityViewer, f.milestone, MilestoneActivityListParams{Limit: len(want)})
+	if err != nil || exactHasMore || len(exact) != len(want) {
+		t.Fatalf("exact page: %d entries, hasMore %v, err %v", len(exact), exactHasMore, err)
+	}
+	// The entry after the page is a linked page, which the store does not read.
+	short, shortHasMore, err := service.List(activityViewer, f.milestone, MilestoneActivityListParams{Limit: 3})
+	if err != nil || !shortHasMore || !reflect.DeepEqual(activityTypes(short), want[:3]) {
+		t.Fatalf("first page: got %v (hasMore %v, err %v), want %v", activityTypes(short), shortHasMore, err, want[:3])
 	}
 	beyond, _, err := service.List(activityViewer, f.milestone, MilestoneActivityListParams{Limit: 4, Offset: 40})
 	if err != nil || len(beyond) != 0 {
@@ -287,11 +304,11 @@ func TestMilestoneActivityFeedSourcesOrderAndVisibility(t *testing.T) {
 	}
 
 	// No accessible workspace: only milestone events remain.
-	none, noneTotal, err := service.List(99, f.milestone, MilestoneActivityListParams{Limit: 50})
+	none, noneHasMore, err := service.List(99, f.milestone, MilestoneActivityListParams{Limit: 50})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if noneTotal != 5 || len(none) != 5 {
+	if noneHasMore || len(none) != 5 {
 		t.Fatalf("no-workspace feed: %v", activityTypes(none))
 	}
 

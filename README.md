@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: light)" srcset=".github/assets/readme-splash.svg">
-    <img src=".github/assets/readme-splash-dark.svg" alt="Windshift — a self-hosted work management platform for teams" width="100%">
+    <img src=".github/assets/readme-splash-dark.svg" alt="Windshift, a self-hosted work management platform for teams" width="100%">
   </picture>
 </p>
 
@@ -12,7 +12,7 @@
   <a href="https://matrix.to/#/%23windshift:matrix.org"><img src="https://img.shields.io/badge/matrix-%23windshift-2e7dbd?style=flat-square" alt="Matrix chat"></a>
 </p>
 
-<p align="center"> <strong>Work management that fits the way your team works.</strong><br> Plan projects, organize your work, and keep things moving, while keeping your data under your control. </p>
+<p align="center">Windshift is an open-source, self-hosted work management platform and a Jira alternative, licensed under AGPL v3. It runs as a single Go binary with the Svelte frontend built in, using embedded SQLite by default or PostgreSQL, and ships as an official Docker image and a desktop app. See <a href="https://windshift.sh">windshift.sh</a> and the <a href="https://windshift.sh/docs">documentation</a>.</p>
 
 <p align="center">
   <picture>
@@ -21,20 +21,43 @@
   </picture>
 </p>
 
-## One place for the work that matters
+## What Windshift is
 
-Windshift brings planning, tracking, and collaboration into a fast, flexible workspace. Start with a simple kanban board, then add the structure your team needs: custom workflows, nested work items, milestones, saved searches, dashboards, and more.
+Windshift is a work management platform for teams who want Jira's depth without Jira's weight.
 
-It ships as a single Go binary with the Svelte frontend built in. 
+It covers the core of what Jira does: projects, epics, stories, sub-tasks, sprints and backlogs, boards, roadmaps, custom workflows, custom fields, screens, permissions, automation, and dashboards. Filtering and saved searches use Windshift Query Language, a JQL-style query language.
+
+It also replaces the add-ons and adjacent tools you would otherwise stitch together: service management with SLAs and a customer portal, a knowledge base, test management, time tracking, and an asset/CMDB register.
+
+A built-in importer handles the move off Jira.
+
+It ships as a single Go binary with the Svelte frontend built in, SQLite by default or PostgreSQL for data storage. No Java, no Elasticsearch cluster, no per-user pricing, and your data stays on your infrastructure.
 
 ## Highlights
 
-- Plan work your way - move between boards, backlogs, hierarchy views, milestones, iterations, and dashboards as your work evolves.
-- Customize the workflow around your team - configure item types, statuses, fields, screens, priorities, and recurring work.
-- Keep context - add rich descriptions, comments, mentions, attachments, collections, and knowledge pages.
-- Bring customers into the system - share public boards and accept external requests through a customer portal.
-- Connect the tools you already use - integrate GitHub, Gitea, and Forgejo, import Jira projects, and send email or webhook notifications.
-- Add the capabilities you need - extend work management with test management, time tracking, or asset management.
+- Plan Jira-style without the Jira footprint: boards, backlogs, sprints, epics and sub-tasks, hierarchy trees, roadmaps, and dashboards.
+- Configure each workspace on its own: item types, custom fields, screens, statuses, workflows, priorities, and permissions.
+- Filter with a JQL-style query language and save the results as shared views.
+- Automate the busywork with event-driven rules that update fields, notify people, and create work.
+- Serve customers with SLAs, queues, approvals, and a public request portal.
+- Connect GitHub, Gitlab, Gitea, and Forgejo, import Jira projects, and send email or webhook notifications.
+- Extend it with test management, time tracking, a knowledge base, or an asset register.
+
+## Coming from Jira
+
+| Jira | Windshift |
+|------|-----------|
+| Projects | Workspaces and collections |
+| Issues, epics, sub-tasks | Work items with configurable hierarchy levels |
+| Boards, backlogs, sprints | Board and backlog views with iterations |
+| Custom fields and screens | Custom fields and screens |
+| Workflows and statuses | Workflow builder with conditions and approvals |
+| JQL and saved filters | Windshift Query Language and saved collections |
+| Jira Automation | Built-in event-driven actions |
+| Jira Service Management | SLAs, queues, approvals, and a customer portal |
+| Jira Assets / Insight | Asset and CMDB register |
+| Xray / Zephyr | Test cases, test sets, test runs, and reports |
+| Marketplace apps | Built-in modules, packs, and plugins (extensible via WASM runtime) |
 
 ## Take a look
 
@@ -113,7 +136,7 @@ Want to build from source? See [BUILD.md](BUILD.md). For local development and c
 
 ## Contributing
 
-Code contributions, bug reports, and feedback are all welcome here on GitHub. Open pull requests against `main`; use GitHub Issues and Discussions for bug reports and feedback.
+Code contributions, bug reports, and feedback are all welcome here on GitHub. Open pull requests against `main`; use GitHub Issues and Discussions for bug reports and feedback. Contributions require a signed, one-time [CLA](CLA.md) — see the [contributing guide](CONTRIBUTING.md) for details.
 
 We are especially interested in early bug reports and real-world feedback about OIDC providers.
 
@@ -121,7 +144,7 @@ We are especially interested in early bug reports and real-world feedback about 
 
 - Backend: Go
 - Frontend: Svelte, Vite, and Tailwind CSS
-- Database: SQLite by default, with PostgreSQL support
+- Database: SQLite by default, with PostgreSQL 15+ support
 
 ## Documentation
 
@@ -129,6 +152,7 @@ We are especially interested in early bug reports and real-world feedback about 
 - [Contributing guide](CONTRIBUTING.md)
 - [Logging configuration](LOGGING.md)
 - [Docker backup and restore](deploy/backup-restore.md)
+- [Kubernetes deployment](deploy/kubernetes.md)
 - [Product documentation](https://windshift.sh/docs)
 
 ## License
