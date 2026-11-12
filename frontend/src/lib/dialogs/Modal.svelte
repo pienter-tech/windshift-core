@@ -132,12 +132,20 @@
   // browser when Escape blurs a picker's search field), focus would fall to
   // <body> and the next Escape would not close the dialog (WCORE-65). Move
   // it to the dialog itself instead. Focus lost by a mouse press, such as a
-  // click in a picker's dropdown portalled outside the dialog, is left to
-  // that interaction: the picker returns focus to its field afterwards.
+  // click in a picker's dropdown portalled outside the dialog, is first left
+  // to that interaction: a picker may refocus its field or move focus on
+  // after a pick. A press that ends with focus still on <body> (e.g. on the
+  // dropdown's empty space, where no picker code runs) gets the field back,
+  // or the dialog if the field is gone (WCORE-67).
   let mousePressed = false;
+  let blurredByPress = null;
 
   function handleFocusOut(e) {
-    if (e.relatedTarget || mousePressed) return;
+    if (e.relatedTarget) return;
+    if (mousePressed) {
+      blurredByPress = e.target;
+      return;
+    }
     queueMicrotask(() => {
       if (!isOpen || !backdropElement?.isConnected) return;
       const active = document.activeElement;
@@ -170,18 +178,37 @@
 
   $effect(() => {
     if (!isOpen || inline) return;
+    let timer;
     const press = () => {
       mousePressed = true;
+      blurredByPress = null;
     };
     const release = () => {
       mousePressed = false;
+      const field = blurredByPress;
+      blurredByPress = null;
+      if (!field) return;
+      // A timer runs after the click and its follow-up microtasks (a pick
+      // that focuses another control wins). Unlike an animation frame, it
+      // also runs in a background tab.
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (!isOpen || !backdropElement?.isConnected) return;
+        const active = document.activeElement;
+        if (active && active !== document.body) return;
+        const target =
+          field.isConnected && backdropElement.contains(field) ? field : backdropElement;
+        target.focus({ preventScroll: true });
+      });
     };
     document.addEventListener('mousedown', press, true);
     document.addEventListener('mouseup', release, true);
     return () => {
       document.removeEventListener('mousedown', press, true);
       document.removeEventListener('mouseup', release, true);
+      clearTimeout(timer);
       mousePressed = false;
+      blurredByPress = null;
     };
   });
 

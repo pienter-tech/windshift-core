@@ -180,6 +180,95 @@ describe('MilestonePages link dialog', () => {
     expect(add).toHaveFocus();
   });
 
+  // WCORE-65: in the browser the first Escape can leave the search box
+  // blurred. Focus must then stay in the dialog, so that the next Escape,
+  // which the browser sends to the focused element, still closes it.
+  it('closes on the next Escape after the first one blurs the search box', async () => {
+    const { add, dialog, input } = await openDialog();
+    await fireEvent.click(input);
+    await waitFor(() => expect(screen.getByTestId('picker-dropdown')).toBeInTheDocument());
+
+    await fireEvent.keyDown(input, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByTestId('picker-dropdown')).toBeNull());
+    expect(dialog).toBeInTheDocument();
+    // The field blurs after the picker has finished with the Escape (its own
+    // focus restore runs on the next animation frame).
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    input.blur();
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true));
+    expect(document.activeElement).not.toBe(document.body);
+
+    await fireEvent.keyDown(document.activeElement, { key: 'Escape' });
+    await expectDialogClosed();
+    expect(add).toHaveFocus();
+  });
+
+  it('closes on the next Escape after the search box loses focus with its dropdown closed', async () => {
+    const { add, dialog, input } = await openDialog();
+
+    input.blur();
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true));
+    expect(document.activeElement).not.toBe(document.body);
+
+    await fireEvent.keyDown(document.activeElement, { key: 'Escape' });
+    await expectDialogClosed();
+    expect(add).toHaveFocus();
+  });
+
+  it('returns focus to the search box after a page is picked with the mouse', async () => {
+    const { dialog, input } = await openDialog();
+    await fireEvent.click(input);
+    await fireEvent.input(input, { target: { value: 'Spec' } });
+    const dropdown = await screen.findByTestId('picker-dropdown');
+    const option = await within(dropdown).findByText('Spec page', {}, { timeout: 2000 });
+
+    // A mouse press in the dropdown, which lives outside the dialog, blurs
+    // the field; the picker, not the dialog, takes focus back after the click.
+    await fireEvent.mouseDown(option);
+    input.blur();
+    await fireEvent.mouseUp(option);
+    await fireEvent.click(option);
+
+    await waitFor(() => expect(input).toHaveFocus());
+    expect(within(dialog).getByTestId('milestone-page-link-confirm')).toBeEnabled();
+  });
+
+  // WCORE-67: a press on the dropdown's empty space blurs the field and runs
+  // no picker code. Focus must come back to the field, so Escape still
+  // closes the dropdown and then the dialog.
+  it('keeps focus in the dialog after a press on empty space in the dropdown', async () => {
+    const { add, input } = await openDialog();
+    await fireEvent.click(input);
+    const dropdown = await screen.findByTestId('picker-dropdown');
+    const empty = within(dropdown).getByText('pickers.noItemsFound');
+
+    await fireEvent.mouseDown(empty);
+    input.blur();
+    await fireEvent.mouseUp(empty);
+    await fireEvent.click(empty);
+
+    await waitFor(() => expect(input).toHaveFocus());
+    expect(screen.getByTestId('picker-dropdown')).toBeInTheDocument();
+
+    await fireEvent.keyDown(input, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByTestId('picker-dropdown')).toBeNull());
+    expect(screen.getByTestId('milestone-page-link-modal')).toBeInTheDocument();
+
+    await fireEvent.keyDown(input, { key: 'Escape' });
+    await expectDialogClosed();
+    expect(add).toHaveFocus();
+  });
+
+  it('closes on the X button and refocuses "+ Add"', async () => {
+    const { add, dialog } = await openDialog();
+
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'aria.close' }));
+
+    await expectDialogClosed();
+    expect(mocks.linkPage).not.toHaveBeenCalled();
+    expect(add).toHaveFocus();
+  });
+
   it('closes on a click outside and refocuses "+ Add"', async () => {
     const { add, dialog } = await openDialog();
 
