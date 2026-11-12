@@ -1,8 +1,19 @@
 <script>
-  import { MoreHorizontal, Calendar, Flag, User, Users, Layers, ChevronDown, FileText, Briefcase, Hash, Clock } from '@lucide/svelte';
+  import MoreHorizontal from '@lucide/svelte/icons/more-horizontal';
+  import Calendar from '@lucide/svelte/icons/calendar';
+  import Flag from '@lucide/svelte/icons/flag';
+  import User from '@lucide/svelte/icons/user';
+  import Users from '@lucide/svelte/icons/users';
+  import Layers from '@lucide/svelte/icons/layers';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
+  import FileText from '@lucide/svelte/icons/file-text';
+  import Briefcase from '@lucide/svelte/icons/briefcase';
+  import Hash from '@lucide/svelte/icons/hash';
+  import Clock from '@lucide/svelte/icons/clock';
   import ItemTypeIcon from '../components/ItemTypeIcon.svelte';
   import { workItemFormStore } from '../stores/workItemFormStore.svelte.js';
-  import { workspacesStore, workspacePermissions } from '../stores';
+  import { workspacesStore } from '../stores/workspaces.svelte.js';
+  import { workspacePermissions } from '../stores/workspacePermissions.svelte.js';
   import { t } from '../stores/i18n.svelte.js';
   import { formatDateOnly, formatDueDate } from '../utils/dateFormatter.js';
   import MilkdownEditor from '../editors/LazyMilkdownEditor.svelte';
@@ -15,10 +26,11 @@
   import WorkspaceLabelCombobox from '../pickers/WorkspaceLabelCombobox.svelte';
   import Label from '../components/Label.svelte';
   import Input from '../components/Input.svelte';
+  import TextField from '../components/TextField.svelte';
   import NativeSelect from '../components/NativeSelect.svelte';
   import AlertBox from '../components/AlertBox.svelte';
   import { createPopover, melt } from '@melt-ui/svelte'; // used for dueDateTrigger/dueDateContent
-  import { Milestone as MilestoneIcon } from '@lucide/svelte';
+  import MilestoneIcon from '@lucide/svelte/icons/milestone';
 
   let {
     nameInputRef = $bindable(null),
@@ -34,6 +46,12 @@
   // Derived state for UI
   // Additional fields toggle
   let showAdditionalFields = $state(false);
+
+  // A milestone created inline must invalidate the form store's cached
+  // milestone options so reopening the picker does not show a stale list.
+  function handleMilestoneCreated() {
+    void store.loadMilestones(store.formData.workspace_id, true);
+  }
 
   // Due date popover
   const {
@@ -309,7 +327,7 @@
     {/if}
 
     <!-- Assignee Chip -->
-    {#if store.isFieldConfigured('assignee') && !store.isFieldRequired('assignee')}
+    {#if store.isFieldConfigured('assignee') && !store.isFieldRequired('assignee') && store.selectedWorkspace}
       <UserPicker
         bind:value={store.formData.assignee_id}
         showUnassigned={true}
@@ -321,6 +339,7 @@
           <div
             role="button"
             tabindex="0"
+            data-testid="create-assignee-chip"
             class="chip inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-sm transition-colors"
             style="color: {store.formData.assignee_id ? 'var(--ds-text)' : 'var(--ds-text-subtle)'};"
           >
@@ -528,6 +547,7 @@
         milestones={store.milestones}
         loading={store.milestonesLoading}
         placeholder={t('createModal.noMilestone')}
+        onCreated={handleMilestoneCreated}
       >
         {#snippet children()}
           {@const selectedIds = Array.isArray(store.formData.milestone_ids) ? store.formData.milestone_ids : []}
@@ -613,7 +633,7 @@
             milestones={store.milestones}
             iterations={store.iterations}
             isDarkMode={false}
-            autoOpenPickers={false}
+            workspaceId={store.formData.workspace_id}
           />
         </div>
       {/each}
@@ -644,41 +664,41 @@
             {/if}
           </div>
         {:else if field.field_identifier === 'due_date'}
-          <div class="space-y-1">
-            <Label color="default" for="work-item-due-date-required">
-              {t('createModal.dueDate')} <span style="color: var(--ds-text-danger, #ef4444);">*</span>
-            </Label>
-            <Input
-              type="date"
-              id="work-item-due-date-required"
-              bind:value={store.formData.due_date}
-              size="medium"
-            />
-          </div>
+          <TextField
+            class="space-y-1"
+            label={t('createModal.dueDate')}
+            requiredMark
+            labelColor="default"
+            labelClass=""
+            type="date"
+            id="work-item-due-date-required"
+            bind:value={store.formData.due_date}
+            size="medium"
+          />
         {:else if field.field_identifier === 'start_date'}
-          <div class="space-y-1">
-            <Label color="default" for="work-item-start-date-required">
-              {t('common.startDate')} <span style="color: var(--ds-text-danger, #ef4444);">*</span>
-            </Label>
-            <Input
-              type="date"
-              id="work-item-start-date-required"
-              bind:value={store.formData.start_date}
-              size="medium"
-            />
-          </div>
+          <TextField
+            class="space-y-1"
+            label={t('common.startDate')}
+            requiredMark
+            labelColor="default"
+            labelClass=""
+            type="date"
+            id="work-item-start-date-required"
+            bind:value={store.formData.start_date}
+            size="medium"
+          />
         {:else if field.field_identifier === 'end_date'}
-          <div class="space-y-1">
-            <Label color="default" for="work-item-end-date-required">
-              {t('common.endDate')} <span style="color: var(--ds-text-danger, #ef4444);">*</span>
-            </Label>
-            <Input
-              type="date"
-              id="work-item-end-date-required"
-              bind:value={store.formData.end_date}
-              size="medium"
-            />
-          </div>
+          <TextField
+            class="space-y-1"
+            label={t('common.endDate')}
+            requiredMark
+            labelColor="default"
+            labelClass=""
+            type="date"
+            id="work-item-end-date-required"
+            bind:value={store.formData.end_date}
+            size="medium"
+          />
         {:else if field.field_identifier === 'milestone'}
           <div class="space-y-1">
             <Label color="default">
@@ -691,6 +711,7 @@
               milestones={store.milestones}
               loading={store.milestonesLoading}
               placeholder={t('createModal.noMilestone')}
+              onCreated={handleMilestoneCreated}
             />
           </div>
         {:else if field.field_identifier === 'assignee'}
@@ -698,11 +719,17 @@
             <Label color="default">
               {t('createModal.assignee')} <span style="color: var(--ds-text-danger, #ef4444);">*</span>
             </Label>
-            <UserPicker
-              bind:value={store.formData.assignee_id}
-              placeholder={t('createModal.unassigned')}
-              workspaceId={store.formData.workspace_id}
-            />
+            {#if store.selectedWorkspace}
+              <UserPicker
+                bind:value={store.formData.assignee_id}
+                placeholder={t('createModal.unassigned')}
+                workspaceId={store.formData.workspace_id}
+              />
+            {:else}
+              <div class="px-3 py-2 text-sm rounded border" style="background-color: var(--ds-background-input); border-color: var(--ds-border); color: var(--ds-text-subtle);">
+                {t('createModal.selectWorkspaceFirst')}
+              </div>
+            {/if}
           </div>
         {:else if field.field_identifier === 'team'}
           <div class="space-y-1">
@@ -755,32 +782,32 @@
             />
           </div>
         {:else if field.field_identifier === 'story_points'}
-          <div class="space-y-1">
-            <Label color="default" for="work-item-story-points-required">
-              {t('items.storyPoints')} <span style="color: var(--ds-text-danger, #ef4444);">*</span>
-            </Label>
-            <Input
-              id="work-item-story-points-required"
-              type="number"
-              min="0"
-              step="0.5"
-              bind:value={store.formData.story_points}
-              size="medium"
-            />
-          </div>
+          <TextField
+            class="space-y-1"
+            label={t('items.storyPoints')}
+            requiredMark
+            labelColor="default"
+            labelClass=""
+            id="work-item-story-points-required"
+            type="number"
+            min="0"
+            step="0.5"
+            bind:value={store.formData.story_points}
+            size="medium"
+          />
         {:else if field.field_identifier === 'estimate' || field.field_identifier === 'estimate_minutes'}
-          <div class="space-y-1">
-            <Label color="default" for="work-item-estimate-required">
-              {t('items.estimate') || 'Estimate'} <span style="color: var(--ds-text-danger, #ef4444);">*</span>
-            </Label>
-            <Input
-              id="work-item-estimate-required"
-              type="text"
-              bind:value={store.formData.estimate}
-              placeholder="3d 4h"
-              size="medium"
-            />
-          </div>
+          <TextField
+            class="space-y-1"
+            label={t('items.estimate') || 'Estimate'}
+            requiredMark
+            labelColor="default"
+            labelClass=""
+            id="work-item-estimate-required"
+            type="text"
+            bind:value={store.formData.estimate}
+            placeholder="3d 4h"
+            size="medium"
+          />
         {/if}
       {/each}
     </div>
@@ -802,6 +829,7 @@
             milestones={store.milestones}
             iterations={store.iterations}
             isDarkMode={false}
+            workspaceId={store.formData.workspace_id}
           />
         </div>
       {/each}

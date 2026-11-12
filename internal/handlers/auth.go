@@ -32,7 +32,7 @@ type AuthHandler struct {
 	credentialRepo           *repository.CredentialRepository
 	auditor                  *logger.Auditor
 	sessionManager           *auth.SessionManager
-	rateLimiter              *middleware.RateLimiter
+	loginLockout             *middleware.LoginLockout
 	permissionService        *services.PermissionService
 	emailVerificationService *services.EmailVerificationService
 	ipExtractor              *utils.IPExtractor
@@ -83,13 +83,13 @@ type SessionInfo struct {
 // NewAuthHandler creates a new authentication handler
 // emailVerificationService can be nil if SMTP is not configured
 // authPolicyHandler and adminRateLimiter can be nil for backwards compatibility
-func NewAuthHandler(userRepo *repository.UserRepository, credentialRepo *repository.CredentialRepository, auditor *logger.Auditor, sessionManager *auth.SessionManager, rateLimiter *middleware.RateLimiter, permissionService *services.PermissionService, emailVerificationService *services.EmailVerificationService, ipExtractor *utils.IPExtractor, authPolicyHandler *AuthPolicyHandler, adminRateLimiter *middleware.AdminFallbackRateLimiter) *AuthHandler {
+func NewAuthHandler(userRepo *repository.UserRepository, credentialRepo *repository.CredentialRepository, auditor *logger.Auditor, sessionManager *auth.SessionManager, loginLockout *middleware.LoginLockout, permissionService *services.PermissionService, emailVerificationService *services.EmailVerificationService, ipExtractor *utils.IPExtractor, authPolicyHandler *AuthPolicyHandler, adminRateLimiter *middleware.AdminFallbackRateLimiter) *AuthHandler {
 	return &AuthHandler{
 		userRepo:                 userRepo,
 		credentialRepo:           credentialRepo,
 		auditor:                  auditor,
 		sessionManager:           sessionManager,
-		rateLimiter:              rateLimiter,
+		loginLockout:             loginLockout,
 		permissionService:        permissionService,
 		emailVerificationService: emailVerificationService,
 		ipExtractor:              ipExtractor,
@@ -124,8 +124,17 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 	ipAddress := h.getClientIP(r)
 
-	if locked, duration := h.rateLimiter.IsLockedOut(ipAddress); locked {
+	if locked, duration := h.loginLockout.IsLockedOut(ipAddress); locked {
 		respondTooManyRequests(w, r, fmt.Sprintf("Too many failed login attempts. Please try again in %s", middleware.FormatLockoutDuration(duration)))
+		return
+	}
+
+	// bcrypt truncates input at 72 bytes, so an over-long password would match a
+	// stored 72-byte password on its first 72 bytes. Reject it as invalid
+	// credentials, with the same rate-limit and audit accounting as a mismatch,
+	// instead of comparing against the stored hash.
+	if err := auth.ValidatePasswordLength(req.Password); err != nil {
+		h.rejectPasswordLogin(w, r, req.EmailOrUsername, req.Password, "")
 		return
 	}
 
@@ -147,13 +156,13 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err = bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
-		h.rateLimiter.RecordFailedLogin(ipAddress)
+		h.loginLockout.RecordFailedLogin(ipAddress)
 		h.logFailedLogin(r, req.EmailOrUsername)
 		respondUnauthorized(w, r)
 		return
 	}
 
-	h.rateLimiter.RecordSuccessfulLogin(ipAddress)
+	h.loginLockout.RecordSuccessfulLogin(ipAddress)
 
 	if err = h.populateIsSystemAdmin(user); err != nil {
 		slog.Warn("failed to populate system admin status", slog.String("component", "auth"), slog.Any("error", err))
@@ -427,7 +436,7 @@ func (h *AuthHandler) LogoutAll(w http.ResponseWriter, r *http.Request) {
 // accounting, audit shape, and public response to unknown, inactive, agent, and
 // malformed-password-hash accounts.
 func (h *AuthHandler) rejectPasswordLogin(w http.ResponseWriter, r *http.Request, identifier, password, storedHash string) {
-	h.rateLimiter.RecordFailedLogin(h.getClientIP(r))
+	h.loginLockout.RecordFailedLogin(h.getClientIP(r))
 
 	hash := dummyPasswordHash
 	if candidate := []byte(storedHash); len(candidate) > 0 {
@@ -489,9 +498,21 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := auth.ValidatePasswordLength(req.NewPassword); err != nil {
+		respondValidationError(w, r, err.Error())
+		return
+	}
+
 	user, err := h.findUserByEmailOrUsername(session.User.Email)
 	if err != nil {
 		respondInternalError(w, r, err)
+		return
+	}
+
+	// The current-password comparison truncates at 72 bytes too; treat over-long
+	// input as an incorrect password rather than matching a truncated prefix.
+	if err := auth.ValidatePasswordLength(req.CurrentPassword); err != nil {
+		respondUnauthorized(w, r)
 		return
 	}
 

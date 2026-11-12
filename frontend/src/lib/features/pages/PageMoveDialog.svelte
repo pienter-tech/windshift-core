@@ -3,8 +3,8 @@
   import ModalHeader from '../../dialogs/ModalHeader.svelte';
   import DialogFooter from '../../dialogs/DialogFooter.svelte';
   import BasePicker from '../../pickers/BasePicker.svelte';
-  import { api } from '../../api.js';
-  import { workspacesStore } from '../../stores/workspaces.svelte.js';
+  import WorkspacePicker from '../../pickers/WorkspacePicker.svelte';
+  import { pages } from '../../api/pages.js';
   import { t } from '../../stores/i18n.svelte.js';
   import { isSelfOrDescendant } from './pageHierarchy.js';
 
@@ -19,9 +19,7 @@
 
   let candidates = $state([]);
   let sourceTree = $state([]);
-  let workspaces = $state([]);
   let loading = $state(false);
-  let loadingWorkspaces = $state(false);
   let saving = $state(false);
   let error = $state('');
 
@@ -44,23 +42,14 @@
   });
 
   async function loadDialogData() {
-    loadingWorkspaces = true;
-    const workspaceRequest = workspacesStore.load();
-    await Promise.all([loadCandidates(workspaceId, true), workspaceRequest.then((items) => {
-      workspaces = (items || []).filter((item) => item.active !== false);
-    }).catch((err) => {
-      error = err?.message || t('pages.errorLoadWorkspaces');
-      workspaces = [];
-    }).finally(() => {
-      loadingWorkspaces = false;
-    })]);
+    await loadCandidates(workspaceId, true);
   }
 
   async function loadCandidates(destinationWorkspaceId, rememberSource = false) {
     loading = true;
     error = '';
     try {
-      const all = (await api.pages.getAll(destinationWorkspaceId)) || [];
+      const all = (await pages.getAll(destinationWorkspaceId)) || [];
       if (rememberSource) sourceTree = all;
       candidates = destinationWorkspaceId === workspaceId
         ? all.filter((candidate) => {
@@ -108,7 +97,7 @@
     saving = true;
     error = '';
     try {
-      const moved = await api.pages.movePage(workspaceId, page.id, pickedParentId, {
+      const moved = await pages.movePage(workspaceId, page.id, pickedParentId, {
         destinationWorkspaceId: pickedWorkspaceId,
       });
       isOpen = false;
@@ -132,16 +121,12 @@
       <div class="error" role="alert">{error}</div>
     {/if}
 
-    <BasePicker
+    <WorkspacePicker
       id="page-move-workspace-picker"
       bind:value={pickedWorkspaceId}
-      items={workspaces}
-      loading={loadingWorkspaces}
+      multiple={false}
       label={t('pages.moveWorkspaceLabel')}
       placeholder={t('pages.moveWorkspacePlaceholder')}
-      searchFields={['name', 'key', 'description']}
-      getValue={(item) => item.id}
-      getLabel={(item) => item.name}
       optionTestid={(option) => `page-move-workspace-option-${option.value}`}
       onSelect={onWorkspacePick}
     />

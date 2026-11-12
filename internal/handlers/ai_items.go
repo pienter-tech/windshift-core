@@ -28,13 +28,14 @@ type FindSimilarResponse struct {
 
 // SimilarItem represents a similar item identified by the LLM.
 type SimilarItem struct {
-	ItemID      int    `json:"item_id"`
-	ItemKey     string `json:"item_key"`
-	Title       string `json:"title"`
-	StatusName  string `json:"status_name"`
-	Similarity  string `json:"similarity"`
-	Reason      string `json:"reason"`
-	WorkspaceID int    `json:"workspace_id"`
+	ItemID                  int    `json:"item_id"`
+	ItemKey                 string `json:"item_key"`
+	Title                   string `json:"title"`
+	StatusName              string `json:"status_name"`
+	Similarity              string `json:"similarity"`
+	Reason                  string `json:"reason"`
+	WorkspaceID             int    `json:"workspace_id"`
+	CreatorPortalCustomerID *int   `json:"creator_portal_customer_id,omitempty"`
 }
 
 // DecomposeResponse is the response for the Decompose Item endpoint.
@@ -155,6 +156,34 @@ func appendHierarchyContext(lines []string, parent *models.Item, parentComments 
 		}
 	}
 	return lines
+}
+
+// formatSCMLinkSummary renders one source-control link as a briefing line,
+// e.g. "- PR #12: Fix importer (open)", "- Branch: feature/x", or
+// "- Commit abc1234: Fix importer". Missing titles and states are omitted.
+func formatSCMLinkSummary(link repository.ItemSCMLinkSummary) string {
+	var line string
+	switch link.LinkType {
+	case models.SCMLinkTypePullRequest:
+		line = "- PR #" + link.ExternalID
+	case models.SCMLinkTypeBranch:
+		return "- Branch: " + link.ExternalID
+	case models.SCMLinkTypeCommit:
+		sha := link.ExternalID
+		if len(sha) > 7 {
+			sha = sha[:7]
+		}
+		line = "- Commit " + sha
+	default:
+		line = fmt.Sprintf("- %s %s", link.LinkType, link.ExternalID)
+	}
+	if link.Title != "" {
+		line += ": " + link.Title
+	}
+	if link.State != "" {
+		line += " (" + link.State + ")"
+	}
+	return line
 }
 
 // CatchMeUp generates a summary briefing for an item.
@@ -298,7 +327,7 @@ func (h *AIHandler) CatchMeUp(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		scmLinks := make([]string, 0, len(scmRows))
 		for _, link := range scmRows {
-			scmLinks = append(scmLinks, fmt.Sprintf("- PR: %s (branch: %s, state: %s)", link.Title, link.BranchName, link.State))
+			scmLinks = append(scmLinks, formatSCMLinkSummary(link))
 		}
 		if len(scmLinks) > 0 {
 			contextLines = append(contextLines, "\nSource control:")
@@ -324,7 +353,7 @@ func (h *AIHandler) CatchMeUp(w http.ResponseWriter, r *http.Request) {
 		Temperature: 0.5,
 	})
 	if err != nil {
-		respondLLMError(w, r, err)
+		respondLLMError(w, r, err, h.permService)
 		return
 	}
 
@@ -410,7 +439,7 @@ Find similar items.`, itemKey, item.Title, currentDesc, strings.Join(candidateLi
 		},
 	})
 	if err != nil {
-		respondLLMError(w, r, err)
+		respondLLMError(w, r, err, h.permService)
 		return
 	}
 
@@ -420,13 +449,14 @@ Find similar items.`, itemKey, item.Title, currentDesc, strings.Join(candidateLi
 		key := strings.TrimPrefix(strings.TrimSuffix(si.ItemKey, "]"), "[")
 		if candidate, ok := candidateMap[key]; ok {
 			enriched = append(enriched, SimilarItem{
-				ItemID:      candidate.ID,
-				ItemKey:     candidate.ItemKey,
-				Title:       candidate.Title,
-				StatusName:  candidate.StatusName,
-				Similarity:  si.Similarity,
-				Reason:      si.Reason,
-				WorkspaceID: item.WorkspaceID,
+				ItemID:                  candidate.ID,
+				ItemKey:                 candidate.ItemKey,
+				Title:                   candidate.Title,
+				StatusName:              candidate.StatusName,
+				Similarity:              si.Similarity,
+				Reason:                  si.Reason,
+				WorkspaceID:             item.WorkspaceID,
+				CreatorPortalCustomerID: candidate.CreatorPortalCustomerID,
 			})
 		}
 	}
@@ -503,7 +533,7 @@ func (h *AIHandler) DecomposeItem(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 	if err != nil {
-		respondLLMError(w, r, err)
+		respondLLMError(w, r, err, h.permService)
 		return
 	}
 

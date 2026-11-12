@@ -3,13 +3,26 @@
   import Spinner from '../../components/Spinner.svelte';
   import { setOAuthReturnURL } from '../../utils/oauthReturn.js';
   import { useEventListener } from 'runed';
-  import { api } from '../../api.js';
-  import { GitMerge, GitBranch, GitCommit, ExternalLink, Plus, RefreshCw, Trash2, ChevronDown, ChevronRight, GitBranchPlus, Link2 } from '@lucide/svelte';
+  import { itemSCMLinks, scmProviders } from '../../api/scm.js';
+  import GitMerge from '@lucide/svelte/icons/git-merge';
+  import GitBranch from '@lucide/svelte/icons/git-branch';
+  import GitCommit from '@lucide/svelte/icons/git-commit';
+  import ExternalLink from '@lucide/svelte/icons/external-link';
+  import Plus from '@lucide/svelte/icons/plus';
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
+  import GitBranchPlus from '@lucide/svelte/icons/git-branch-plus';
+  import Link2 from '@lucide/svelte/icons/link-2';
+  import CircleCheck from '@lucide/svelte/icons/circle-check';
+  import CircleX from '@lucide/svelte/icons/circle-x';
+  import CircleDashed from '@lucide/svelte/icons/circle-dashed';
   import Button from '../../components/Button.svelte';
   import Text from '../../components/Text.svelte';
+  import LinkSectionHeader from './LinkSectionHeader.svelte';
   import { t } from '../../stores/i18n.svelte.js';
   import { confirm } from '../../composables/useConfirm.js';
   import { safeHref } from '../../utils/sanitize';
+  import { ciStatusDisplay } from './scmCIStatus.js';
 
   let { itemId, onaddlink, oncreatebranch, oncreatepr } = $props();
 
@@ -30,7 +43,7 @@
   const hasGitLabPullRequests = $derived(pullRequests.some(link => link.provider_type === 'gitlab'));
   const branchLinks = $derived(links.filter(l => l.link_type === 'branch'));
   const commitLinks = $derived(links.filter(l => l.link_type === 'commit'));
-  // PR rollup follows Jira semantics: OPEN > MERGED > DECLINED
+  // Roll up PR state by precedence: open > merged > closed.
   const prRollupState = $derived(
     pullRequests.some(l => l.state === 'open') ? 'open'
     : pullRequests.some(l => l.state === 'merged') ? 'merged'
@@ -69,7 +82,7 @@
     }
 
     try {
-      connectionStatus = await api.itemSCMLinks.getConnectionStatus(itemId, { signal });
+      connectionStatus = await itemSCMLinks.getConnectionStatus(itemId, { signal });
     } catch (err) {
       if (signal?.aborted || err?.name === 'AbortError' || err?.status === 404) return;
       console.error('Failed to check SCM connection status:', err);
@@ -87,7 +100,7 @@
     setOAuthReturnURL();
 
     // Start OAuth flow
-    api.scmProviders.startOAuth(connectionStatus.provider_slug).then(result => {
+    scmProviders.startOAuth(connectionStatus.provider_slug).then(result => {
       if (result?.auth_url) {
         window.location.href = result.auth_url;
       }
@@ -103,12 +116,12 @@
     error = null;
 
     try {
-      links = await api.itemSCMLinks.get(itemId, signal ? { signal } : undefined) || [];
+      links = await itemSCMLinks.get(itemId, signal ? { signal } : undefined) || [];
       // Re-fetch after short delay to pick up background OAuth refresh
       if (links.some(l => l.link_type === 'pull_request' && l.state !== 'merged')) {
         delayedRefresh = setTimeout(async () => {
           try {
-            const updated = await api.itemSCMLinks.get(itemId, { signal: loadController.signal }) || [];
+            const updated = await itemSCMLinks.get(itemId, { signal: loadController.signal }) || [];
             if (JSON.stringify(updated) !== JSON.stringify(links)) {
               links = updated;
             }
@@ -128,7 +141,7 @@
   async function refreshLink(linkId) {
     refreshing = true;
     try {
-      const updatedLink = await api.itemSCMLinks.refresh(linkId);
+      const updatedLink = await itemSCMLinks.refresh(linkId);
       // Update the link in our list
       links = links.map(l => l.id === linkId ? updatedLink : l);
     } catch (err) {
@@ -138,10 +151,12 @@
     }
   }
 
-  async function deleteLink(linkId) {
+  async function deleteLink(link) {
     const confirmed = await confirm({
       title: t('common.remove'),
-      message: t('scm.confirmRemoveLink'),
+      // Deleting any link stops the sync from re-creating it; say so for the
+      // links Windshift found itself, which would otherwise come back.
+      message: t(isManualLink(link) ? 'scm.confirmRemoveLink' : 'scm.confirmRemoveDetectedLink'),
       confirmText: t('common.remove'),
       cancelText: t('common.cancel'),
       variant: 'danger'
@@ -149,8 +164,8 @@
     if (!confirmed) return;
 
     try {
-      await api.itemSCMLinks.delete(linkId);
-      links = links.filter(l => l.id !== linkId);
+      await itemSCMLinks.delete(link.id);
+      links = links.filter(l => l.id !== link.id);
     } catch (err) {
       console.error('Failed to delete link:', err);
     }
@@ -191,6 +206,8 @@
     }
   }
 
+  const ciStatusIcons = { pending: CircleDashed, success: CircleCheck, failure: CircleX };
+
   function getDisplayText(link) {
     if (link.link_type === 'pull_request') {
       return link.title || `#${link.external_id}`;
@@ -207,7 +224,7 @@
     return parts[parts.length - 1] || link.repository_name;
   }
 
-  function canDeleteLink(link) {
+  function isManualLink(link) {
     return !link.detection_source || link.detection_source === 'manual';
   }
 
@@ -223,46 +240,33 @@
   <div class="border-t my-4" style="border-color: var(--ds-border);"></div>
 
   <!-- Section Header -->
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    class="w-full flex items-center justify-between mb-3 group cursor-pointer"
-    onclick={() => expanded = !expanded}
+  <LinkSectionHeader
+    title={t('scm.development')}
+    count={links.length}
+    {expanded}
+    ontoggle={() => (expanded = !expanded)}
   >
-    <div class="flex items-center gap-2">
-      <Text variant="subtle" size="xs" weight="semibold" class="uppercase tracking-wider">{t('scm.development')}</Text>
-      {#if links.length > 0}
-        <span class="text-xs px-1.5 py-0.5 rounded" style="background-color: var(--ds-background-neutral); color: var(--ds-text-subtle);">
-          {links.length}
-        </span>
-      {/if}
-    </div>
-    <div class="flex items-center gap-1">
+    {#snippet actions()}
       {#if connectionStatus?.connected}
         <button
-          class="p-1 rounded transition-colors opacity-0 group-hover:opacity-100"
+          class="p-1 rounded transition-colors opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100"
           class:invisible={!expanded}
-          onclick={e => { e.stopPropagation(); openCreateBranchModal(); }}
+          onclick={(e) => { e.stopPropagation(); openCreateBranchModal(); }}
           title={t('scm.createBranch')}
         >
           <GitBranchPlus class="w-4 h-4" style="color: var(--ds-text-subtle);" />
         </button>
         <button
-          class="p-1 rounded transition-colors opacity-0 group-hover:opacity-100"
+          class="p-1 rounded transition-colors opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100"
           class:invisible={!expanded}
-          onclick={e => { e.stopPropagation(); openAddLinkModal(); }}
+          onclick={(e) => { e.stopPropagation(); openAddLinkModal(); }}
           title={t('scm.linkExisting')}
         >
           <Plus class="w-4 h-4" style="color: var(--ds-text-subtle);" />
         </button>
       {/if}
-      {#if expanded}
-        <ChevronDown class="w-4 h-4" style="color: var(--ds-text-subtle);" />
-      {:else}
-        <ChevronRight class="w-4 h-4" style="color: var(--ds-text-subtle);" />
-      {/if}
-    </div>
-  </div>
+    {/snippet}
+  </LinkSectionHeader>
 
   {#if expanded}
     <div class="space-y-2 mt-1">
@@ -389,6 +393,21 @@
             {link.state}
           </span>
         {/if}
+
+        <!-- Combined CI status (Gitea/Forgejo pull requests only) -->
+        {@render ciStatus(link)}
+
+        <!-- The PR only mentions this item in its body: its automations skip it -->
+        {#if link.is_mention}
+          <span
+            class="text-xs px-1.5 py-0.5 rounded"
+            style="background-color: var(--ds-background-neutral); color: var(--ds-text-subtle);"
+            title={t('scm.mentionedHint')}
+            data-testid="scm-link-mentioned"
+          >
+            {t('scm.mentioned')}
+          </span>
+        {/if}
       </div>
 
       <!-- Title (if different from external_id) -->
@@ -409,7 +428,7 @@
     </div>
 
     <!-- Actions -->
-    <div class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+    <div class="flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100 transition-opacity">
       {#if link.link_type === 'branch'}
         <button
           class="p-1 rounded hover:bg-opacity-50"
@@ -439,16 +458,44 @@
       >
         <ExternalLink class="w-3 h-3" />
       </a>
-      {#if canDeleteLink(link)}
-        <button
-          class="p-1 rounded hover:bg-opacity-50"
-          style="color: var(--ds-text-danger);"
-          onclick={() => deleteLink(link.id)}
-          title={t('items.removeLink')}
-        >
-          <Trash2 class="w-3 h-3" />
-        </button>
-      {/if}
+      <button
+        class="p-1 rounded hover:bg-opacity-50"
+        style="color: var(--ds-text-danger);"
+        onclick={() => deleteLink(link)}
+        title={t('items.removeLink')}
+      >
+        <Trash2 class="w-3 h-3" />
+      </button>
     </div>
   </div>
+{/snippet}
+
+{#snippet ciStatus(link)}
+  {@const ci = ciStatusDisplay(link)}
+  {#if ci}
+    {@const CIIcon = ciStatusIcons[ci.state]}
+    {#if link.ci_url && safeHref(link.ci_url) !== '#'}
+      <a
+        href={safeHref(link.ci_url)}
+        target="_blank"
+        rel="noopener noreferrer"
+        class="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded hover:underline"
+        style="background-color: {ci.bg}; color: {ci.text};"
+        title={t('scm.openCIRun')}
+        data-testid="scm-ci-status"
+      >
+        <CIIcon class="w-3 h-3" />
+        {t(ci.labelKey)}
+      </a>
+    {:else}
+      <span
+        class="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded"
+        style="background-color: {ci.bg}; color: {ci.text};"
+        data-testid="scm-ci-status"
+      >
+        <CIIcon class="w-3 h-3" />
+        {t(ci.labelKey)}
+      </span>
+    {/if}
+  {/if}
 {/snippet}

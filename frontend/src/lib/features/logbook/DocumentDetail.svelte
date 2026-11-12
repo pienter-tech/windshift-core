@@ -4,18 +4,28 @@
   import { navigate, currentRoute } from '../../router.js';
   import { logbookStore } from '../../stores/logbook.svelte.js';
   import { t } from '../../stores/i18n.svelte.js';
-  import { api } from '../../api.js';
+  import { logbook } from '../../api/logbook.js';
   import { successToast, errorToast } from '../../stores/toasts.svelte.js';
   import { confirm } from '../../composables/useConfirm.js';
   import Button from '../../components/Button.svelte';
+  import BackButton from '../../components/BackButton.svelte';
   import Input from '../../components/Input.svelte';
   import Spinner from '../../components/Spinner.svelte';
   import Lozenge from '../../components/Lozenge.svelte';
   import Progress from '../../components/Progress.svelte';
   import { computeDocumentHealth } from './healthScore.js';
-  import {
-    IconArrowLeft as ArrowLeft, IconDeviceFloppy as Save, IconFileText as FileText, IconNote as StickyNote, IconMail as Mail, IconClock as Clock, IconHash as Hash, IconEye as Eye, IconTrash as Trash2, IconExternalLink as ExternalLink, IconCircleCheck as CheckCircle, IconLoader as Loader
-  } from '@tabler/icons-svelte-runes';
+  import { getDocumentStatusColor } from '../../utils/statusMaps.js';
+  import Save from '@tabler/icons-svelte-runes/icons/device-floppy';
+  import FileText from '@tabler/icons-svelte-runes/icons/file-text';
+  import StickyNote from '@tabler/icons-svelte-runes/icons/note';
+  import Mail from '@tabler/icons-svelte-runes/icons/mail';
+  import Clock from '@tabler/icons-svelte-runes/icons/clock';
+  import Hash from '@tabler/icons-svelte-runes/icons/hash';
+  import Eye from '@tabler/icons-svelte-runes/icons/eye';
+  import Trash2 from '@tabler/icons-svelte-runes/icons/trash';
+  import ExternalLink from '@tabler/icons-svelte-runes/icons/external-link';
+  import CheckCircle from '@tabler/icons-svelte-runes/icons/circle-check';
+  import Loader from '@tabler/icons-svelte-runes/icons/loader';
   import { formatDateShort } from '../../utils/dateFormatter.js';
   import LazyMilkdownEditor from '../../editors/LazyMilkdownEditor.svelte';
   import RunActionMenu from './RunActionMenu.svelte';
@@ -80,7 +90,7 @@
       } else {
         payload.content = articleContent;
       }
-      await api.logbook.updateDocument(resolvedDocumentId, payload);
+      await logbook.updateDocument(resolvedDocumentId, payload);
       successToast(t('logbook.saved'));
       hasChanges = false;
       // Reload to get updated metadata
@@ -110,16 +120,6 @@
     }
   }
 
-  function getStatusColor(status) {
-    switch (status) {
-      case 'pending': return 'grey';
-      case 'processing': return 'blue';
-      case 'ready': return 'green';
-      case 'error': return 'red';
-      default: return 'grey';
-    }
-  }
-
   let deleting = $state(false);
 
   async function deleteDocument() {
@@ -133,7 +133,7 @@
     if (!confirmed) return;
     deleting = true;
     try {
-      await api.logbook.archiveDocument(resolvedDocumentId);
+      await logbook.archiveDocument(resolvedDocumentId);
       successToast(t('logbook.documentDeleted'));
       goBack();
     } catch (error) {
@@ -145,7 +145,7 @@
 
   function viewOriginal() {
     if (!resolvedDocumentId) return;
-    window.open(api.logbook.getDocumentFileUrl(resolvedDocumentId), '_blank');
+    window.open(logbook.getDocumentFileUrl(resolvedDocumentId), '_blank');
   }
 
   let doc = $derived(logbookStore.activeDocument);
@@ -171,13 +171,11 @@
   {:else if doc}
     <!-- Back + Header -->
     <div class="mb-6">
-      <a
+      <BackButton
         href={doc?.bucket_id ? `/logbook/bucket/${doc.bucket_id}` : '/logbook'}
-        class="back-link flex items-center gap-2 text-sm mb-4 cursor-pointer transition-colors no-underline"
-      >
-        <ArrowLeft class="w-4 h-4" />
-        {t('logbook.back')}
-      </a>
+        label={t('logbook.back')}
+        class="mb-4"
+      />
 
       {#if doc.has_preview}
         <div
@@ -185,7 +183,7 @@
           style="background-color: var(--ds-surface); border-color: var(--ds-border); max-height: 380px;"
         >
           <img
-            src={api.logbook.getDocumentPreviewUrl(resolvedDocumentId)}
+            src={logbook.getDocumentPreviewUrl(resolvedDocumentId)}
             alt=""
             class="max-h-[380px] w-auto object-contain"
             loading="eager"
@@ -210,7 +208,7 @@
           {/if}
 
           <div class="flex items-center gap-3 mt-2 flex-wrap">
-            <Lozenge color={getStatusColor(doc.status)} text={t(`logbook.status.${doc.status}`)} />
+            <Lozenge color={getDocumentStatusColor(doc.status)} text={t(`logbook.status.${doc.status}`)} />
             <span class="text-sm" style="color: var(--ds-text-subtle);">
               {t(`logbook.sourceType.${doc.source_type}`)}
             </span>
@@ -304,7 +302,7 @@
           ariaLabel={t('logbook.article')}
           placeholder={isNote ? t('logbook.noteContentPlaceholder') : 'Article content...'}
           showToolbar={true}
-          customUploadFn={(formData) => api.logbook.uploadAttachment(resolvedDocumentId, formData)}
+          customUploadFn={(formData) => logbook.uploadAttachment(resolvedDocumentId, formData)}
           downloadUrlBase="/api/logbook/attachments"
         />
       </div>
@@ -344,13 +342,3 @@
     </div>
   {/if}
 </div>
-
-<style>
-  .back-link {
-    color: var(--ds-text-subtle);
-  }
-
-  .back-link:hover {
-    color: var(--ds-text);
-  }
-</style>

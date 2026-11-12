@@ -106,6 +106,9 @@ var recurringTasksSchemaPostgres string
 //go:embed schema/jira_import_postgres.sql
 var jiraImportSchemaPostgres string
 
+//go:embed schema/custom_widgets_postgres.sql
+var customWidgetsSchemaPostgres string
+
 //go:embed schema/actions_postgres.sql
 var actionsSchemaPostgres string
 
@@ -181,6 +184,12 @@ var itemSupportEventsSchemaPostgres string
 //go:embed schema/action_trigger_marks_postgres.sql
 var actionTriggerMarksSchemaPostgres string
 
+//go:embed schema/milestone_comments_postgres.sql
+var milestoneCommentsSchemaPostgres string
+
+//go:embed schema/milestone_history_postgres.sql
+var milestoneHistorySchemaPostgres string
+
 //go:embed schema/agents_postgres.sql
 var agentsSchemaPostgres string
 
@@ -209,6 +218,31 @@ type schemaFile struct {
 	content string
 }
 
+// minimumPostgresVersionNum is the lowest supported PostgreSQL version, encoded
+// the way the server reports server_version_num (15.0 => 150000).
+const minimumPostgresVersionNum = 150000
+
+// requirePostgresVersion refuses a server older than the supported minimum.
+// Kept separate from the query so the comparison is unit-testable.
+func requirePostgresVersion(versionNum int) error {
+	if versionNum < minimumPostgresVersionNum {
+		return fmt.Errorf(
+			"unsupported PostgreSQL %d.%d; Windshift requires PostgreSQL %d or newer",
+			versionNum/10000, versionNum%10000, minimumPostgresVersionNum/10000,
+		)
+	}
+	return nil
+}
+
+// checkPostgresVersion reads the server version and applies the minimum gate.
+func checkPostgresVersion(db *sql.DB) error {
+	var versionNum int
+	if err := db.QueryRow(`SELECT current_setting('server_version_num')::int`).Scan(&versionNum); err != nil {
+		return fmt.Errorf("read postgres server version: %w", err)
+	}
+	return requirePostgresVersion(versionNum)
+}
+
 // NewPostgresDB creates a new PostgreSQL database connection.
 // maxConns sizes the pool (idle pool = maxConns/2, min 1).
 func NewPostgresDB(connectionString string, maxConns int) (Database, error) {
@@ -223,6 +257,12 @@ func NewPostgresDB(connectionString string, maxConns int) (Database, error) {
 
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("failed to ping postgres database: %w", err)
+	}
+
+	// Refuse an unsupported server before any schema or migration work runs.
+	if err := checkPostgresVersion(db); err != nil {
+		_ = db.Close()
+		return nil, err
 	}
 
 	idle := maxConns / 2
@@ -568,6 +608,7 @@ func (p *PostgresDB) getPostgresSchemaFiles() []schemaFile {
 		{"asset_reports_postgres.sql", assetReportsSchemaPostgres},
 		{"recurring_tasks_postgres.sql", recurringTasksSchemaPostgres},
 		{"jira_import_postgres.sql", jiraImportSchemaPostgres},
+		{"custom_widgets_postgres.sql", customWidgetsSchemaPostgres},
 		{"actions_postgres.sql", actionsSchemaPostgres},
 		{"asset_actions_postgres.sql", assetActionsSchemaPostgres},
 		{"labels_postgres.sql", labelsSchemaPostgres},
@@ -590,6 +631,8 @@ func (p *PostgresDB) getPostgresSchemaFiles() []schemaFile {
 		{"item_participants_postgres.sql", itemParticipantsSchemaPostgres},
 		{"item_support_events_postgres.sql", itemSupportEventsSchemaPostgres},
 		{"action_trigger_marks_postgres.sql", actionTriggerMarksSchemaPostgres},
+		{"milestone_comments_postgres.sql", milestoneCommentsSchemaPostgres},
+		{"milestone_history_postgres.sql", milestoneHistorySchemaPostgres},
 		{"agents_postgres.sql", agentsSchemaPostgres},
 		{"events_postgres.sql", eventsSchemaPostgres},
 		{"action_event_targets_postgres.sql", actionEventTargetsSchemaPostgres},

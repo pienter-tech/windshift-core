@@ -28,6 +28,10 @@ var csrfExemptPrefixes = []string{
 	"/api/llm-proxy/",
 	"/api/http-proxy/",
 	"/api/secrets/",
+	// SCM webhook deliveries carry no session cookie; each authenticates with
+	// its repository's webhook secret (HMAC signature for Gitea/Forgejo, token
+	// for GitLab).
+	"/api/scm/webhooks/",
 }
 
 // CSRFValidator applies the shared browser request-origin policy without

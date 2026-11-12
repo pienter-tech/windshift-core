@@ -4,7 +4,7 @@
   import { logbookStore } from '../../stores/logbook.svelte.js';
   import { canRunBackgroundSync, onBackgroundSyncAvailable } from '../../utils/backgroundSync.js';
   import { t } from '../../stores/i18n.svelte.js';
-  import { api } from '../../api.js';
+  import { logbook } from '../../api/logbook.js';
   import { successToast, errorToast } from '../../stores/toasts.svelte.js';
   import { confirm } from '../../composables/useConfirm.js';
   import Button from '../../components/Button.svelte';
@@ -18,9 +18,15 @@
   import Input from '../../components/Input.svelte';
   import DocumentUpload from './DocumentUpload.svelte';
   import { computeDocumentHealth } from './healthScore.js';
-  import {
-    IconPlus as Plus, IconUpload as Upload, IconFileText as FileText, IconNote as StickyNote, IconMail as Mail, IconBook as BookOpen, IconTrash as Trash2, IconExternalLink as ExternalLink
-  } from '@tabler/icons-svelte-runes';
+  import { getDocumentStatusColor } from '../../utils/statusMaps.js';
+  import Plus from '@tabler/icons-svelte-runes/icons/plus';
+  import Upload from '@tabler/icons-svelte-runes/icons/upload';
+  import FileText from '@tabler/icons-svelte-runes/icons/file-text';
+  import StickyNote from '@tabler/icons-svelte-runes/icons/note';
+  import Mail from '@tabler/icons-svelte-runes/icons/mail';
+  import BookOpen from '@tabler/icons-svelte-runes/icons/book';
+  import Trash2 from '@tabler/icons-svelte-runes/icons/trash';
+  import ExternalLink from '@tabler/icons-svelte-runes/icons/external-link';
   import PageHeader from '../../layout/PageHeader.svelte';
   import { formatDateShort } from '../../utils/dateFormatter.js';
   import LazyMilkdownEditor from '../../editors/LazyMilkdownEditor.svelte';
@@ -58,7 +64,7 @@
       try {
         const params = {};
         if (bucketId) params.bucket_id = bucketId;
-        const result = await api.logbook.keywordSearch(query, params);
+        const result = await logbook.keywordSearch(query, params);
         if (version !== searchVersion) return;
         const results = result?.data ?? result;
         if (Array.isArray(results)) {
@@ -156,20 +162,10 @@
     }
   }
 
-  function getStatusColor(status) {
-    switch (status) {
-      case 'pending': return 'grey';
-      case 'processing': return 'blue';
-      case 'ready': return 'green';
-      case 'error': return 'red';
-      default: return 'grey';
-    }
-  }
-
   async function createNote() {
     if (!activeBucketId || !noteFormData.title.trim()) return;
     try {
-      await api.logbook.createNote(activeBucketId, noteFormData);
+      await logbook.createNote(activeBucketId, noteFormData);
       successToast(t('logbook.noteCreated'));
       showNoteModal = false;
       noteFormData = { title: '', content: '' };
@@ -190,7 +186,7 @@
     });
     if (!confirmed) return;
     try {
-      await api.logbook.archiveDocument(docId);
+      await logbook.archiveDocument(docId);
       successToast(t('logbook.documentDeleted'));
       if (activeBucketId) {
         await logbookStore.loadDocuments(activeBucketId);
@@ -205,7 +201,7 @@
   function openFile(e, docId) {
     e.preventDefault();
     e.stopPropagation();
-    window.open(api.logbook.getDocumentFileUrl(docId), '_blank');
+    window.open(logbook.getDocumentFileUrl(docId), '_blank');
   }
 
   function handleUploadComplete() {
@@ -287,7 +283,7 @@
               </div>
             {:else if doc.has_thumbnail}
               <img
-                src={api.logbook.getDocumentThumbnailUrl(doc.id)}
+                src={logbook.getDocumentThumbnailUrl(doc.id)}
                 alt=""
                 class="w-full h-full object-contain"
                 loading="lazy"
@@ -306,7 +302,7 @@
             {/if}
 
             <!-- Hover action buttons -->
-            <div class="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            <div class="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100 transition-opacity">
               {#if doc.source_type === 'upload'}
                 <button
                   onclick={(e) => openFile(e, doc.id)}
@@ -354,7 +350,7 @@
             </div>
 
             <div class="flex items-center justify-between">
-              <Lozenge color={getStatusColor(doc.status)} text={t(`logbook.status.${doc.status}`)} />
+              <Lozenge color={getDocumentStatusColor(doc.status)} text={t(`logbook.status.${doc.status}`)} />
               <span class="text-xs" style="color: var(--ds-text-subtlest);">
                 {formatDateShort(doc.created_at)}
               </span>

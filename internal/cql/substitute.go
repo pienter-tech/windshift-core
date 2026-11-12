@@ -33,19 +33,62 @@ var (
 
 // SubstituteFunctions replaces context-dependent CQL function calls with
 // their resolved values before tokenization. Each function is only replaced
-// when the corresponding context value is set.
+// when the corresponding context value is set. Quoted string literals and
+// backtick-quoted identifiers are copied verbatim so a literal like
+// "currentUser()" keeps its literal meaning.
 func SubstituteFunctions(query string, ctx FunctionContext) string {
 	if strings.TrimSpace(query) == "" {
 		return query
 	}
+	var out strings.Builder
+	out.Grow(len(query))
+	for i := 0; i < len(query); {
+		if quote := query[i]; quote == '"' || quote == '\'' || quote == '`' {
+			i = copyQuoted(&out, query, i, quote)
+			continue
+		}
+		next := strings.IndexAny(query[i:], "\"'`")
+		if next < 0 {
+			out.WriteString(substituteSegment(query[i:], ctx))
+			break
+		}
+		out.WriteString(substituteSegment(query[i:i+next], ctx))
+		i += next
+	}
+	return out.String()
+}
+
+// copyQuoted copies a quoted segment (including its delimiters) verbatim and
+// returns the index just past the closing delimiter. Backslash escapes the next
+// byte, matching the tokenizer's readString.
+func copyQuoted(out *strings.Builder, query string, start int, quote byte) int {
+	out.WriteByte(quote)
+	i := start + 1
+	for i < len(query) {
+		c := query[i]
+		out.WriteByte(c)
+		i++
+		if c == '\\' && i < len(query) {
+			out.WriteByte(query[i])
+			i++
+			continue
+		}
+		if c == quote {
+			break
+		}
+	}
+	return i
+}
+
+func substituteSegment(segment string, ctx FunctionContext) string {
 	if ctx.UserID != nil {
-		query = currentUserRe.ReplaceAllString(query, strconv.Itoa(*ctx.UserID))
+		segment = currentUserRe.ReplaceAllString(segment, strconv.Itoa(*ctx.UserID))
 	}
 	if ctx.CustomerID != nil {
-		query = currentCustomerRe.ReplaceAllString(query, strconv.Itoa(*ctx.CustomerID))
+		segment = currentCustomerRe.ReplaceAllString(segment, strconv.Itoa(*ctx.CustomerID))
 	}
 	if ctx.OrganisationID != nil {
-		query = currentOrganisationRe.ReplaceAllString(query, strconv.Itoa(*ctx.OrganisationID))
+		segment = currentOrganisationRe.ReplaceAllString(segment, strconv.Itoa(*ctx.OrganisationID))
 	}
-	return query
+	return segment
 }

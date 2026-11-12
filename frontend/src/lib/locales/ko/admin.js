@@ -1092,7 +1092,8 @@ export default {
         "parent": "상위 작업",
         "time_in_status": "현재 상태 경과 시간",
         "story_points": "스토리 포인트",
-        "estimate": "추정치"
+        "estimate": "추정치",
+        "sla": "SLA"
       }
     }
   },

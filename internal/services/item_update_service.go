@@ -176,8 +176,8 @@ func (s *ItemUpdateService) AddMilestone(req UpdateItemRequest, milestoneID int)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to load updated item: %w", err)
 	}
-	PublishItemChange(updatedItem.ID, ItemChangeUpdated)
-	PublishWorkspaceChange(updatedItem.WorkspaceID, WorkspaceChangeItems)
+	PublishItemChange(updatedItem.ID)
+	PublishWorkspaceChange(updatedItem.WorkspaceID)
 	return &UpdateItemResult{
 		OriginalItem: originalItem,
 		Item:         updatedItem,
@@ -424,54 +424,6 @@ func (s *ItemUpdateService) compareAndGenerateHistory(original, updated *models.
 		oldVal := customFieldValueToString(original.CustomFieldValues[k])
 		newVal := customFieldValueToString(updated.CustomFieldValues[k])
 		addHistory("cf_"+k, oldVal, newVal)
-	}
-
-	return history
-}
-
-func creationHistoryEntries(item models.Item, userID int, changedAt time.Time) []HistoryEntry {
-	var history []HistoryEntry
-	if changedAt.IsZero() {
-		changedAt = time.Now()
-	}
-
-	// Helper to add history entry (old_value is always empty for creation)
-	addHistory := func(fieldName, newValue string) {
-		if newValue != "" {
-			history = append(history, HistoryEntry{
-				ItemID:    item.ID,
-				UserID:    userID,
-				FieldName: fieldName,
-				OldValue:  "",
-				NewValue:  newValue,
-				ChangedAt: changedAt,
-			})
-		}
-	}
-
-	// Add entries for all fields
-	addHistory("title", item.Title)
-	addHistory("description", item.Description)
-	addHistory("item_type_id", intPtrToString(item.ItemTypeID))
-	addHistory("status_id", intPtrToString(item.StatusID))
-	addHistory("priority_id", intPtrToString(item.PriorityID))
-	addHistory("iteration_id", intPtrToString(item.IterationID))
-	addHistory("project_id", intPtrToString(item.ProjectID))
-	addHistory("time_project_id", intPtrToString(item.TimeProjectID))
-	addHistory("assignee_id", intPtrToString(item.AssigneeID))
-	addHistory("team_id", intPtrToString(item.TeamID))
-	addHistory("creator_id", intPtrToString(item.CreatorID))
-	addHistory("parent_id", intPtrToString(item.ParentID))
-	addHistory("due_date", timePtrToString(item.DueDate))
-	addHistory("start_date", timePtrToString(item.StartDate))
-	addHistory("end_date", timePtrToString(item.EndDate))
-	addHistory("workspace_id", fmt.Sprintf("%d", item.WorkspaceID))
-	addHistory("story_points", float64PtrToString(item.StoryPoints))
-	addHistory("estimate_minutes", intPtrToString(item.EstimateMinutes))
-	// Only record inherit_project when set; the default (false) on root items
-	// would otherwise add a no-op entry to every creation event.
-	if item.InheritProject {
-		addHistory("inherit_project", "true")
 	}
 
 	return history

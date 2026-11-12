@@ -1,13 +1,13 @@
 <script>
   import Modal from './Modal.svelte';
   import Button from '../components/Button.svelte';
-  import Input from '../components/Input.svelte';
   import FileInput from '../components/FileInput.svelte';
   import CustomFieldRenderer from '../features/items/CustomFieldRenderer.svelte';
   import Label from '../components/Label.svelte';
   import Checkbox from '../components/Checkbox.svelte';
-  import { Camera, Trash2 } from '@lucide/svelte';
-  import { api } from '../api.js';
+  import Camera from '@lucide/svelte/icons/camera';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
+  import { attachments } from '../api/misc.js';
   import { t } from '../stores/i18n.svelte.js';
   import { errorToast, warningToast } from '../stores/toasts.svelte.js';
 	import TextField from '../components/TextField.svelte';
@@ -57,7 +57,7 @@
       uploadFormData.append('item_id', '0');
       uploadFormData.append('category', 'customer_avatar');
 
-      const uploadResult = await api.attachments.upload(uploadFormData);
+      const uploadResult = await attachments.upload(uploadFormData);
 
       if (uploadResult && uploadResult.success && uploadResult.avatar_url) {
         formData = { ...formData, avatar_url: uploadResult.avatar_url };
@@ -110,10 +110,13 @@
       </h3>
 
       <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div>
-          <Label required class="mb-2">{t('organization.organizationName')}</Label>
-          <Input id={nameInputId} bind:value={formData.name} required />
-        </div>
+        <TextField
+          label={t('organization.organizationName')}
+          id={nameInputId}
+          labelClass="mb-2"
+          required
+          bind:value={formData.name}
+        />
 
         <div>
           <TextField label={t('organization.email')} type="email" bind:value={formData.email} />

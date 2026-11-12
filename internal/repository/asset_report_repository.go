@@ -121,10 +121,13 @@ func (r *AssetReportRepository) GetByID(id int) (*models.AssetReport, error) {
 
 // AssetReportBasic is the small field set Update needs to detect changes.
 type AssetReportBasic struct {
-	Name       string
-	AssetSetID int
-	Icon       string
-	Color      string
+	Name        string
+	AssetSetID  int
+	Icon        string
+	Color       string
+	RunMode     string
+	ItemTypeID  *int
+	WorkspaceID *int
 }
 
 // GetBasicForChannel returns the editable-field snapshot for an asset_report
@@ -132,9 +135,9 @@ type AssetReportBasic struct {
 func (r *AssetReportRepository) GetBasicForChannel(id, channelID int) (*AssetReportBasic, error) {
 	var b AssetReportBasic
 	err := r.db.QueryRow(
-		`SELECT name, asset_set_id, icon, color FROM asset_reports WHERE id = ? AND channel_id = ?`,
+		`SELECT name, asset_set_id, icon, color, run_mode, item_type_id, workspace_id FROM asset_reports WHERE id = ? AND channel_id = ?`,
 		id, channelID,
-	).Scan(&b.Name, &b.AssetSetID, &b.Icon, &b.Color)
+	).Scan(&b.Name, &b.AssetSetID, &b.Icon, &b.Color, &b.RunMode, &b.ItemTypeID, &b.WorkspaceID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}

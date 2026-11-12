@@ -187,7 +187,7 @@ func MapJiraFieldToWindshift(field JiraCustomField) FieldMappingSuggestion {
 		}
 		if jiraFieldIsDateTime(field) {
 			suggestion.Notes = strings.TrimSpace(suggestion.Notes +
-				" Jira datetime values retain their RFC3339 timestamp in storage, but Windshift's date field renders calendar-date semantics; time-of-day editing is lossy.")
+				" Jira datetime values are stored in the date field as a calendar date; the original RFC3339 timestamp is retained in the item's Jira custom-field metadata, but time-of-day editing in the date field is lossy.")
 		}
 		return suggestion
 	}
@@ -203,7 +203,7 @@ func MapJiraFieldToWindshift(field JiraCustomField) FieldMappingSuggestion {
 			suggestion.Notes = "Inferred from Jira schema type number."
 		case "date", "datetime":
 			suggestion.WindshiftFieldType = FieldTypeDate
-			suggestion.Notes = "Inferred from Jira schema; datetime precision may be reduced by Windshift date rendering."
+			suggestion.Notes = "Inferred from Jira schema; a datetime is stored as a calendar date and its original timestamp is retained in item metadata."
 		case "user":
 			suggestion.WindshiftFieldType = FieldTypeUser
 			suggestion.Notes = "Inferred from Jira schema type user."
@@ -238,7 +238,7 @@ func MapJiraFieldToWindshift(field JiraCustomField) FieldMappingSuggestion {
 		addJiraChoiceMappingNote(&suggestion)
 		if jiraFieldIsDateTime(field) {
 			suggestion.Notes = strings.TrimSpace(suggestion.Notes +
-				" Jira datetime values retain their RFC3339 timestamp in storage, but Windshift's date field renders calendar-date semantics; time-of-day editing is lossy.")
+				" Jira datetime values are stored in the date field as a calendar date; the original RFC3339 timestamp is retained in the item's Jira custom-field metadata, but time-of-day editing in the date field is lossy.")
 		}
 		return suggestion
 	}
@@ -709,6 +709,46 @@ func convertADFMedia(nodeMap map[string]any, mediaResolver MediaResolver) string
 		return "[media]"
 	}
 	return "[media: " + alt + "]"
+}
+
+// IsADFDocument reports whether a decoded Jira field value is an Atlassian
+// Document Format document rather than a plain string or option object.
+func IsADFDocument(value any) bool {
+	doc, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	nodeType, _ := doc["type"].(string)
+	return nodeType == "doc"
+}
+
+// CollectADFMediaIDs returns every Jira attachment id referenced by `media`
+// nodes in an ADF document. Callers use it to decide which imported
+// attachments are linked from a body a portal customer can see.
+func CollectADFMediaIDs(adf any) map[string]bool {
+	ids := make(map[string]bool)
+	collectADFMediaIDs(adf, ids)
+	return ids
+}
+
+func collectADFMediaIDs(node any, ids map[string]bool) {
+	switch typed := node.(type) {
+	case []any:
+		for _, child := range typed {
+			collectADFMediaIDs(child, ids)
+		}
+	case map[string]any:
+		if nodeType, _ := typed["type"].(string); nodeType == "media" {
+			if attrs, ok := typed["attrs"].(map[string]any); ok {
+				if id, _ := attrs["id"].(string); id != "" {
+					ids[id] = true
+				}
+			}
+		}
+		if content, ok := typed["content"].([]any); ok {
+			collectADFMediaIDs(content, ids)
+		}
+	}
 }
 
 func convertADFExpand(nodeMap map[string]any, mentionResolver MentionResolver, mediaResolver MediaResolver) string {

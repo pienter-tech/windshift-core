@@ -26,6 +26,8 @@ type SCMItemLinksHandler struct {
 	db                database.Database
 	encryption        *sso.SecretEncryption
 	syncService       *scm.SyncService
+	repositorySyncs   *repositorySyncs
+	issueSync         webhookIssueSync
 	webhookRepo       *repository.SCMWebhookRepository
 	permissionService *services.PermissionService
 	baseURL           string
@@ -49,26 +51,7 @@ func getItemURL(r *http.Request, workspaceID, itemID int) string {
 }
 
 // ItemSCMLinkResponse represents an SCM link for API responses
-type ItemSCMLinkResponse struct {
-	ID                    int       `json:"id"`
-	ItemID                int       `json:"item_id"`
-	WorkspaceRepositoryID int       `json:"workspace_repository_id"`
-	LinkType              string    `json:"link_type"`
-	ExternalID            string    `json:"external_id"`
-	ExternalURL           string    `json:"external_url,omitempty"`
-	Title                 string    `json:"title,omitempty"`
-	State                 string    `json:"state,omitempty"`
-	AuthorExternalID      string    `json:"author_external_id,omitempty"`
-	AuthorName            string    `json:"author_name,omitempty"`
-	DetectionSource       string    `json:"detection_source,omitempty"`
-	CreatedAt             time.Time `json:"created_at"`
-	UpdatedAt             time.Time `json:"updated_at"`
-	// Joined fields
-	RepositoryName string `json:"repository_name,omitempty"`
-	RepositoryURL  string `json:"repository_url,omitempty"`
-	ProviderType   string `json:"provider_type,omitempty"`
-	AuthMethod     string `json:"auth_method,omitempty"`
-}
+type ItemSCMLinkResponse = repository.ItemSCMLink
 
 // CreateItemSCMLinkRequest represents a request to create an SCM link
 type CreateItemSCMLinkRequest struct {
@@ -102,14 +85,50 @@ type CreateBranchForItemResponse struct {
 
 // NewSCMItemLinksHandler creates a new item SCM links handler
 func NewSCMItemLinksHandler(db database.Database, encryption *sso.SecretEncryption, permissionService *services.PermissionService, baseURL string) *SCMItemLinksHandler {
+	syncService := scm.NewSyncService(db, encryption)
 	return &SCMItemLinksHandler{
 		db:                db,
 		encryption:        encryption,
-		syncService:       scm.NewSyncService(db, encryption),
+		syncService:       syncService,
+		repositorySyncs:   newRepositorySyncs(syncService.SyncRepository, repositorySyncTimeout),
 		webhookRepo:       repository.NewSCMWebhookRepository(db),
 		permissionService: permissionService,
 		baseURL:           strings.TrimRight(baseURL, "/"),
 	}
+}
+
+// webhookIssueSync runs the issue sync of a repository for a webhook delivery.
+type webhookIssueSync interface {
+	SyncRepository(ctx context.Context, workspaceRepositoryID int) error
+}
+
+// SetIssueSync wires the issue sync that issue webhook deliveries schedule.
+// Without it, those deliveries are ignored and polling syncs the issues.
+func (h *SCMItemLinksHandler) SetIssueSync(issueSync webhookIssueSync) {
+	h.issueSync = issueSync
+}
+
+// SetActionEvents wires the action engine into the handler's sync service, so
+// manual link refreshes and repository syncs emit the same SCM events
+// (scm_pr_merged and the others) as the scheduled sync and refresh.
+func (h *SCMItemLinksHandler) SetActionEvents(emitter scm.ActionEventEmitter, recorder scm.DurableActionEventRecorder) {
+	h.syncService.SetActionEvents(emitter)
+	h.syncService.SetDurableActionEvents(recorder)
+}
+
+// SetSmartCommitServices wires smart commits into the handler's sync service,
+// so a webhook-triggered or manual repository sync that sees a merge first
+// applies its smart commits as the scheduled sync does.
+func (h *SCMItemLinksHandler) SetSmartCommitServices(
+	workflowService *services.WorkflowService,
+	commentService *services.CommentService,
+	permissionService *services.PermissionService,
+	conditionService *services.ConditionService,
+	approvalService *services.ApprovalService,
+	itemRepo *repository.ItemRepository,
+) {
+	h.syncService.SetSmartCommitServices(workflowService, commentService, permissionService, conditionService, itemRepo)
+	h.syncService.SetApprovalService(approvalService)
 }
 
 // GetItemSCMLinks returns all SCM links for an item
@@ -123,76 +142,20 @@ func (h *SCMItemLinksHandler) GetItemSCMLinks(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	rows, err := h.db.Query(`
-		SELECT
-			isl.id, isl.item_id, isl.workspace_repository_id, isl.link_type,
-			isl.external_id, isl.external_url, isl.title, isl.state,
-			isl.author_external_id, isl.author_name, isl.detection_source,
-			isl.created_at, isl.updated_at,
-			wr.repository_name, wr.repository_url,
-			sp.provider_type, sp.auth_method
-		FROM item_scm_links isl
-		JOIN workspace_repositories wr ON wr.id = isl.workspace_repository_id
-		JOIN workspace_scm_connections wsc ON wsc.id = wr.workspace_scm_connection_id
-		JOIN scm_providers sp ON sp.id = wsc.scm_provider_id
-		WHERE isl.item_id = ?
-		ORDER BY isl.created_at DESC
-	`, itemID)
+	links, err := repository.NewSCMWorkspaceRepository(h.db).ListItemSCMLinks(itemID)
 	if err != nil {
 		slog.Error("failed to get links", slog.String("component", "scm_item_links"), slog.Any("error", err))
 		respondInternalError(w, r, err)
 		return
 	}
-	defer func() { _ = rows.Close() }()
 
-	links := []ItemSCMLinkResponse{}
+	// Refresh non-merged OAuth PR links after the response completes.
 	hasOAuthPRLinks := false
-	for rows.Next() {
-		var link ItemSCMLinkResponse
-		var externalURL, title, state, authorExternalID, authorName, detectionSource sql.NullString
-
-		err := rows.Scan(
-			&link.ID, &link.ItemID, &link.WorkspaceRepositoryID, &link.LinkType,
-			&link.ExternalID, &externalURL, &title, &state,
-			&authorExternalID, &authorName, &detectionSource,
-			&link.CreatedAt, &link.UpdatedAt,
-			&link.RepositoryName, &link.RepositoryURL,
-			&link.ProviderType, &link.AuthMethod,
-		)
-		if err != nil {
-			slog.Error("failed to scan link", slog.String("component", "scm_item_links"), slog.Any("error", err))
-			continue
-		}
-
-		if externalURL.Valid {
-			link.ExternalURL = externalURL.String
-		}
-		if title.Valid {
-			link.Title = title.String
-		}
-		if state.Valid {
-			link.State = state.String
-		}
-		if authorExternalID.Valid {
-			link.AuthorExternalID = authorExternalID.String
-		}
-		if authorName.Valid {
-			link.AuthorName = authorName.String
-		}
-		if detectionSource.Valid {
-			link.DetectionSource = detectionSource.String
-		}
-
-		// Refresh non-merged OAuth PR links after the response completes.
+	for _, link := range links {
 		if link.AuthMethod == string(models.SCMAuthMethodOAuth) && link.LinkType == "pull_request" && link.State != "merged" {
 			hasOAuthPRLinks = true
+			break
 		}
-
-		links = append(links, link)
-	}
-	if err := rows.Err(); err != nil {
-		respondInternalError(w, r, err)
-		return
 	}
 
 	respondJSONOK(w, links)
@@ -318,7 +281,7 @@ func (h *SCMItemLinksHandler) CreateItemSCMLink(w http.ResponseWriter, r *http.R
 
 	// Live-update publish (WI-484): the SCM-links detail section is separate from
 	// the generic linked-items section, so announce the change for both.
-	services.PublishItemChange(itemID, services.ItemChangeLink)
+	services.PublishItemChange(itemID)
 
 	respondJSONCreated(w, struct {
 		*ItemSCMLinkResponse
@@ -354,17 +317,60 @@ func (h *SCMItemLinksHandler) DeleteItemSCMLink(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	_, err = h.db.ExecWrite("DELETE FROM item_scm_links WHERE id = ?", linkID)
-	if err != nil {
+	var deletedBy *int
+	if user := utils.GetCurrentUser(r); user != nil {
+		deletedBy = &user.ID
+	}
+	if err := h.deleteAndDismissLink(r.Context(), linkID, deletedBy); err != nil {
 		slog.Error("failed to delete link", slog.String("component", "scm_item_links"), slog.Any("error", err))
 		respondInternalError(w, r, err)
 		return
 	}
 
 	// Live-update publish (WI-484): itemID captured before the delete.
-	services.PublishItemChange(itemID, services.ItemChangeLink)
+	services.PublishItemChange(itemID)
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteAndDismissLink deletes a link and remembers the deletion, so the
+// repository sync does not link the same PR, branch or commit to the item
+// again. The dismissal is recorded for every link, not only detected ones:
+// the sync would otherwise re-create a deleted manual link as a detected one
+// whenever the PR, branch or commit names the item.
+func (h *SCMItemLinksHandler) deleteAndDismissLink(ctx context.Context, linkID int, deletedBy *int) error {
+	tx, err := h.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin link delete: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var itemID, repoID int
+	var linkType, externalID string
+	err = tx.QueryRowContext(ctx, `
+		SELECT item_id, workspace_repository_id, link_type, external_id
+		FROM item_scm_links WHERE id = ?
+	`, linkID).Scan(&itemID, &repoID, &linkType, &externalID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil // already deleted
+	}
+	if err != nil {
+		return fmt.Errorf("read link %d: %w", linkID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM item_scm_links WHERE id = ?`, linkID); err != nil {
+		return fmt.Errorf("delete link %d: %w", linkID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO item_scm_link_dismissals (item_id, workspace_repository_id, link_type, external_id, created_by)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT (item_id, workspace_repository_id, link_type, external_id) DO NOTHING
+	`, itemID, repoID, linkType, externalID, deletedBy); err != nil {
+		return fmt.Errorf("dismiss link %d: %w", linkID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit link delete: %w", err)
+	}
+	return nil
 }
 
 // RefreshItemSCMLink refreshes the details of an SCM link from the provider
@@ -438,7 +444,7 @@ func (h *SCMItemLinksHandler) RefreshItemSCMLink(w http.ResponseWriter, r *http.
 
 	// Live-update publish (WI-484): a refreshed link (e.g. PR state change) is a
 	// visible SCM-section change.
-	services.PublishItemChange(itemID, services.ItemChangeLink)
+	services.PublishItemChange(itemID)
 
 	respondJSONOK(w, link)
 }
@@ -481,10 +487,14 @@ func (h *SCMItemLinksHandler) SyncWorkspaceRepository(w http.ResponseWriter, r *
 		return
 	}
 
+	// The sync is shared with the webhook deliveries of the repository: the
+	// request starts it when none runs, and otherwise waits for the follow-up
+	// sync that starts after the running one.
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
-	err = h.syncService.SyncRepository(ctx, repoID)
+	run, _ := h.repositorySyncs.schedule(repoID)
+	err = run.wait(ctx)
 	if err != nil {
 		slog.Error("failed to sync repository", slog.String("component", "scm_item_links"), slog.Any("error", err))
 		respondInternalError(w, r, fmt.Errorf("failed to sync repository: %w", err))
@@ -749,7 +759,7 @@ func (h *SCMItemLinksHandler) CreateBranchForItem(w http.ResponseWriter, r *http
 	}
 
 	// Live-update publish (WI-484): a branch (and optional PR) link was added.
-	services.PublishItemChange(itemID, services.ItemChangeLink)
+	services.PublishItemChange(itemID)
 
 	respondJSONCreated(w, response)
 }
@@ -890,7 +900,7 @@ func (h *SCMItemLinksHandler) CreatePRFromBranch(w http.ResponseWriter, r *http.
 	}
 
 	// Live-update publish (WI-484): a PR link was added to the item.
-	services.PublishItemChange(itemID, services.ItemChangeLink)
+	services.PublishItemChange(itemID)
 
 	respondJSONCreated(w, response)
 }
@@ -898,13 +908,14 @@ func (h *SCMItemLinksHandler) CreatePRFromBranch(w http.ResponseWriter, r *http.
 // getLinkByID retrieves a single SCM link by ID
 func (h *SCMItemLinksHandler) getLinkByID(id int) (*ItemSCMLinkResponse, error) {
 	var link ItemSCMLinkResponse
-	var externalURL, title, state, authorExternalID, authorName, detectionSource sql.NullString
+	var externalURL, title, state, authorExternalID, authorName, detectionSource, ciState, ciURL sql.NullString
 
 	err := h.db.QueryRow(`
 		SELECT
 			isl.id, isl.item_id, isl.workspace_repository_id, isl.link_type,
 			isl.external_id, isl.external_url, isl.title, isl.state,
 			isl.author_external_id, isl.author_name, isl.detection_source,
+			isl.ci_state, isl.ci_url, isl.is_mention,
 			isl.created_at, isl.updated_at,
 			wr.repository_name, wr.repository_url,
 			sp.provider_type
@@ -917,6 +928,7 @@ func (h *SCMItemLinksHandler) getLinkByID(id int) (*ItemSCMLinkResponse, error) 
 		&link.ID, &link.ItemID, &link.WorkspaceRepositoryID, &link.LinkType,
 		&link.ExternalID, &externalURL, &title, &state,
 		&authorExternalID, &authorName, &detectionSource,
+		&ciState, &ciURL, &link.IsMention,
 		&link.CreatedAt, &link.UpdatedAt,
 		&link.RepositoryName, &link.RepositoryURL,
 		&link.ProviderType,
@@ -943,6 +955,7 @@ func (h *SCMItemLinksHandler) getLinkByID(id int) (*ItemSCMLinkResponse, error) 
 	if detectionSource.Valid {
 		link.DetectionSource = detectionSource.String
 	}
+	link.CIState, link.CIURL = ciState.String, ciURL.String
 
 	return &link, nil
 }

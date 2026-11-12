@@ -162,7 +162,7 @@ export const itemSCMLinks = {
     fetchAPI(`/items/${itemId}/scm-connection-status`, options),
 };
 
-// GitHub issue-sync configuration and status.
+// Issue-sync configuration and status (GitHub and Gitea/Forgejo).
 export const issueSync = {
   getConfig: (workspaceId) => fetchAPI(`/workspaces/${workspaceId}/issue-sync`),
 
@@ -192,13 +192,11 @@ export const issueSync = {
 
   getItems: (workspaceId) => fetchAPI(`/workspaces/${workspaceId}/issue-sync/items`),
 
-  getGitHubLabels: (workspaceId, repositoryId) =>
-    fetchAPI(`/workspaces/${workspaceId}/issue-sync/github-labels?repository_id=${repositoryId}`),
+  getRepoLabels: (workspaceId, repositoryId) =>
+    fetchAPI(`/workspaces/${workspaceId}/issue-sync/labels?repository_id=${repositoryId}`),
 
-  getGitHubMilestones: (workspaceId, repositoryId) =>
-    fetchAPI(
-      `/workspaces/${workspaceId}/issue-sync/github-milestones?repository_id=${repositoryId}`
-    ),
+  getRepoMilestones: (workspaceId, repositoryId) =>
+    fetchAPI(`/workspaces/${workspaceId}/issue-sync/milestones?repository_id=${repositoryId}`),
 };
 
 // Personal SCM OAuth connections.

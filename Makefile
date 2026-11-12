@@ -26,13 +26,20 @@ FRONTEND_DIR=frontend
 # builds-and-runs from the pinned source.
 SWAG := go tool swag
 OPENAPI_DIR = api
-GOLANGCI_LINT_VERSION := 2.13.1
+GOLANGCI_LINT_VERSION := 2.14.0
 GOVULNCHECK_VERSION := 1.3.0
 DEADCODE_VERSION := 0.45.0
 OAPI_CODEGEN_VERSION := 2.5.0
 OAPI_RUNTIME_VERSION := 1.1.1
 NODE_VERSION := 24.18.0
 NPM_VERSION := 11.16.0
+
+# Build pinned tools with this module's Go toolchain. `go install pkg@version`
+# otherwise honors the tool's own go directive, which can be older than this
+# module's: golangci-lint 2.14.0 builds with Go 1.26 by default and then
+# refuses to lint a Go 1.27 target ("Go language version used to build
+# golangci-lint is lower than the targeted Go version").
+GO_TOOLCHAIN := go$(shell awk '$$1 == "go" { print $$2; exit }' go.mod)
 
 # Default target
 all: clean frontend build
@@ -84,16 +91,16 @@ dev-tools: install-golangci-lint install-govulncheck install-deadcode
 	@echo "Development tools match CI."
 
 install-golangci-lint:
-	@echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION)..."
-	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v$(GOLANGCI_LINT_VERSION)
+	@echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION) with $(GO_TOOLCHAIN)..."
+	GOTOOLCHAIN=$(GO_TOOLCHAIN) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v$(GOLANGCI_LINT_VERSION)
 
 install-govulncheck:
-	@echo "Installing govulncheck $(GOVULNCHECK_VERSION)..."
-	go install golang.org/x/vuln/cmd/govulncheck@v$(GOVULNCHECK_VERSION)
+	@echo "Installing govulncheck $(GOVULNCHECK_VERSION) with $(GO_TOOLCHAIN)..."
+	GOTOOLCHAIN=$(GO_TOOLCHAIN) go install golang.org/x/vuln/cmd/govulncheck@v$(GOVULNCHECK_VERSION)
 
 install-deadcode:
-	@echo "Installing deadcode $(DEADCODE_VERSION)..."
-	go install golang.org/x/tools/cmd/deadcode@v$(DEADCODE_VERSION)
+	@echo "Installing deadcode $(DEADCODE_VERSION) with $(GO_TOOLCHAIN)..."
+	GOTOOLCHAIN=$(GO_TOOLCHAIN) go install golang.org/x/tools/cmd/deadcode@v$(DEADCODE_VERSION)
 
 # Fail early when the local runtime/tool versions differ from CI. Use the
 # repository .nvmrc (or mise) for Node, then run `make dev-tools` for Go tools.
@@ -188,6 +195,7 @@ lint:
 	@command -v golangci-lint >/dev/null 2>&1 || { echo "golangci-lint not installed; run 'make dev-tools' first"; exit 1; }
 	@scripts/run-golangci-lint.sh run --timeout=5m
 	@node scripts/check-sql-boolean-literals.mjs
+	@node scripts/check-audit-literals.mjs
 	@bash scripts/check-layering.sh
 	@bash scripts/check-handler-db-access.sh
 
@@ -242,3 +250,6 @@ help:
 	@echo "  make openapi-check  - Validate v1 generation and v2 route/spec parity (used by hooks/CI)"
 	@echo "  make coding-agent-image - Build the thin ws-carrier image (WS_IMAGE for windshift-agent)"
 	@echo "  make help           - Show this help message"
+
+# Pienter fork targets (sync-upstream).
+-include pienter/targets.mk

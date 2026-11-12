@@ -1,30 +1,40 @@
 <script>
   import { onMount } from 'svelte';
-  import { useEventListener } from 'runed';
-  import { api } from '../../api.js';
+  import { items } from '../../api/items.js';
+  import { iterations } from '../../api/milestones.js';
   import { t } from '../../stores/i18n.svelte.js';
-  import { collectionStore, refreshCollectionDeltas, reloadCollection } from '../../stores/collectionContext.js';
+  import {
+    collectionStore,
+    reloadCollection,
+    scheduleCollectionReconciliation,
+  } from '../../stores/collectionContext.js';
+  import { resolveCreatedItemMembership } from './collectionService.js';
   import { useGradientStyles, loadWorkspaceGradient } from '../../stores/workspaceGradient.svelte.js';
-  import { List, Plus } from '@lucide/svelte';
+  import List from '@lucide/svelte/icons/list';
+  import Plus from '@lucide/svelte/icons/plus';
   import EmptyState from '../../components/EmptyState.svelte';
+  import Toggle from '../../components/Toggle.svelte';
   import { draggable, dropTargetForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter';
   import { attachClosestEdge, extractClosestEdge } from '@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge';
-  import ItemDetail from '../items/ItemDetail.svelte';
   import ViewHeader from '../../layout/ViewHeader.svelte';
   import StaticViewBackground from '../../layout/StaticViewBackground.svelte';
   import SubFilterBar from './SubFilterBar.svelte';
   import CollectionViewSwitcher from './CollectionViewSwitcher.svelte';
   import BacklogIterationSection from './BacklogIterationSection.svelte';
+  import { sortBacklogIterations } from './backlogIterationOrder.js';
   import ItemPicker from '../../pickers/ItemPicker.svelte';
-  import { backlogStore, workspaceDataStore } from '../../stores/index.js';
-  import { useWorkItemPoller } from '../../composables/useWorkItemPoller.svelte.js';
+  import { backlogStore } from '../../stores/backlogStore.svelte.js';
+  import { onWorkItemRefresh } from '../../stores/workItemRefresh.js';
+  import { workspaceDataStore } from '../../stores/workspaceDataStore.svelte.js';
+  import { collectionPreferences } from '../../stores/collectionPreferences.svelte.js';
+  import { itemModalStore } from '../../stores/itemModalStore.svelte.js';
   import { useCollectionEventStream } from '../../composables/useCollectionEventStream.svelte.js';
+  import { useCollectionDragDrop } from '../../composables/useCollectionDragDrop.js';
   import { errorToast, successToast, warningToast } from '../../stores/toasts.svelte.js';
   import { getIncompleteIterationItems } from './iterationCompletion.js';
   import CompleteIterationDialog from '../../dialogs/CompleteIterationDialog.svelte';
-  import { workspacesStore } from '../../stores/workspaces.svelte.js';
   import { formatItemCount } from '../../utils/itemCount.js';
-  import { isSystemFieldAvailableForItem } from '../../utils/screenFields.js';
+  import { isSystemFieldAvailableInEffectiveConfig } from '../../utils/screenFields.js';
 
   let { workspaceId, collectionId = null } = $props();
 
@@ -38,9 +48,6 @@
   let backlogItemsById = $derived(new Map(backlogItems.map((item) => [item.id, item])));
   let loading = $state(true);
   let currentCollectionName = $derived(collectionStore.collectionName);
-  let showItemModal = $state(false);
-  let selectedItemId = $state(null);
-  let pendingDrops = new Set(); // Track pending drop operations to prevent duplicates
 
   // Edge-based drag state (must use $state for Svelte 5 reactivity)
   let dragState = $state(new Map()); // Track drag state for each item: { isDragging: boolean, closestEdge: 'top'|'bottom'|null }
@@ -50,14 +57,13 @@
   let allIterations = $state([]);
   let addedGlobalIds = $state(new Set());
   let collapsedSections = $state(new Set());
+  // Completed and cancelled iterations are terminal, so their sections stay
+  // hidden by default; the toggle mirrors the board's completed-milestone
+  // control and is persisted per view.
+  let showCompletedIterations = $state(false);
   let sectionDropHighlight = $state(new Map()); // iterationId|'unassigned' -> boolean
   let pendingActionItemIds = $state(new Set());
   let pendingStoryPointsItemIds = $state(new Set());
-  let storyPointsScreenConfiguration = $state({
-    ready: false,
-    configSetsByWorkspaceId: new Map(),
-    screensById: new Map(),
-  });
 
   // --- Complete Iteration dialog state ---
   let completeIterationShow = $state(false);
@@ -65,44 +71,102 @@
   let iterationIncompleteItems = $state([]);
   let iterationCompleteTargets = $state([]);
 
-  // localStorage keys
+  // Legacy localStorage keys, read only as a fallback for settings saved
+  // before backlog view state moved into user preferences.
   const globalIdsKey = $derived(`backlog-global-iterations-${workspaceId}`);
   const collapsedKey = $derived(`backlog-collapsed-sections-${workspaceId}`);
 
-  // Restore persisted state from localStorage
   function restorePersistedState() {
-    try {
-      const savedGlobal = localStorage.getItem(globalIdsKey);
-      if (savedGlobal) addedGlobalIds = new Set(JSON.parse(savedGlobal));
-    } catch { /* ignore */ }
-    try {
-      const savedCollapsed = localStorage.getItem(collapsedKey);
-      if (savedCollapsed) collapsedSections = new Set(JSON.parse(savedCollapsed));
-    } catch { /* ignore */ }
+    const storedGlobal = collectionPreferences.viewStateValue(
+      workspaceId,
+      collectionId,
+      'backlog',
+      'global_iteration_ids'
+    );
+    if (Array.isArray(storedGlobal)) {
+      addedGlobalIds = new Set(storedGlobal);
+    } else {
+      try {
+        const savedGlobal = localStorage.getItem(globalIdsKey);
+        if (savedGlobal) addedGlobalIds = new Set(JSON.parse(savedGlobal));
+      } catch { /* ignore */ }
+    }
+
+    const storedCollapsed = collectionPreferences.viewStateValue(
+      workspaceId,
+      collectionId,
+      'backlog',
+      'collapsed_sections'
+    );
+    if (Array.isArray(storedCollapsed)) {
+      collapsedSections = new Set(storedCollapsed);
+    } else {
+      try {
+        const savedCollapsed = localStorage.getItem(collapsedKey);
+        if (savedCollapsed) collapsedSections = new Set(JSON.parse(savedCollapsed));
+      } catch { /* ignore */ }
+    }
+
+    const storedShowCompleted = collectionPreferences.viewStateValue(
+      workspaceId,
+      collectionId,
+      'backlog',
+      'show_completed_iterations'
+    );
+    if (typeof storedShowCompleted === 'boolean') {
+      showCompletedIterations = storedShowCompleted;
+    }
+  }
+
+  function setShowCompletedIterations(value) {
+    showCompletedIterations = value;
+    collectionPreferences.patchViewState(workspaceId, collectionId, 'backlog', {
+      show_completed_iterations: value,
+    });
   }
 
   function persistGlobalIds() {
-    localStorage.setItem(globalIdsKey, JSON.stringify([...addedGlobalIds]));
+    collectionPreferences.patchViewState(workspaceId, collectionId, 'backlog', {
+      global_iteration_ids: [...addedGlobalIds],
+    });
   }
 
   function persistCollapsed() {
-    localStorage.setItem(collapsedKey, JSON.stringify([...collapsedSections]));
+    collectionPreferences.patchViewState(workspaceId, collectionId, 'backlog', {
+      collapsed_sections: [...collapsedSections],
+    });
   }
 
   // Derived iteration groupings
-  let localIterations = $derived(allIterations.filter(i => !i.is_global));
-  let addedGlobalIterations = $derived(allIterations.filter(i => i.is_global && addedGlobalIds.has(i.id)));
+  function isClosedIteration(iteration) {
+    return iteration?.status === 'completed' || iteration?.status === 'cancelled';
+  }
+
+  let closedIterationIds = $derived(
+    new Set(allIterations.filter(isClosedIteration).map(i => i.id))
+  );
+
+  function isSectionClosed(sectionId) {
+    if (sectionId == null || sectionId === 'unassigned') return false;
+    const id = typeof sectionId === 'string' ? parseInt(sectionId, 10) : sectionId;
+    return closedIterationIds.has(id);
+  }
+
+  let localIterations = $derived(
+    allIterations.filter(i => !i.is_global && (showCompletedIterations || !isClosedIteration(i)))
+  );
+  let addedGlobalIterations = $derived(
+    allIterations.filter(
+      i => i.is_global && addedGlobalIds.has(i.id) && (showCompletedIterations || !isClosedIteration(i))
+    )
+  );
   let assignableIterations = $derived(
     allIterations.filter(i => i.status === 'planned' || i.status === 'active')
   );
 
-  // Sort order: active first, then planned, then completed/cancelled
-  const statusOrder = { active: 0, planned: 1, completed: 2, cancelled: 3 };
-
-  let visibleIterations = $derived.by(() => {
-    const combined = [...localIterations, ...addedGlobalIterations];
-    return combined.sort((a, b) => (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9));
-  });
+  let visibleIterations = $derived.by(() =>
+    sortBacklogIterations([...localIterations, ...addedGlobalIterations])
+  );
 
   let visibleIterationIds = $derived(new Set(visibleIterations.map(i => i.id)));
 
@@ -122,7 +186,7 @@
   let availableGlobalIterations = $derived.by(() => {
     const seen = new Set();
     return allIterations.filter(i => {
-      if (!i.is_global || addedGlobalIds.has(i.id) || i.status === 'completed' || i.status === 'cancelled') return false;
+      if (!i.is_global || addedGlobalIds.has(i.id) || isClosedIteration(i)) return false;
       if (seen.has(i.id)) return false;
       seen.add(i.id);
       return true;
@@ -147,75 +211,26 @@
     addIterationPickerValue = null;
   }
 
-  async function loadStoryPointsScreenConfiguration() {
-    const workspaceRecords = workspaceId
-      ? [{
-          id: workspaceDataStore.workspace?.id ?? Number(workspaceId),
-          configuration_set_id: workspaceDataStore.workspace?.configuration_set_id ?? null,
-        }]
-      : (await workspacesStore.load()).map((availableWorkspace) => ({
-          id: availableWorkspace.id,
-          configuration_set_id: availableWorkspace.configuration_set_id ?? null,
-        }));
-
-    const configSetIds = [...new Set(
-      workspaceRecords
-        .map((record) => record.configuration_set_id)
-        .filter((configSetId) => configSetId != null)
-        .map((configSetId) => String(configSetId))
-    )];
-
-    const [screensOutcome, configSetOutcomes] = await Promise.all([
-      api.screens.getAllWithFields()
-        .then((screens) => ({ status: 'fulfilled', value: screens }))
-        .catch((error) => ({ status: 'rejected', reason: error })),
-      Promise.allSettled(configSetIds.map((configSetId) => api.configurationSets.get(configSetId))),
-    ]);
-
-    if (screensOutcome.status === 'rejected') {
-      console.error('Failed to load screens for backlog fields:', screensOutcome.reason);
+  // Field availability resolves through the shared effective-config cache,
+  // keyed by (workspace, item type). Rows render before metadata; a pair that
+  // is still unknown leaves its story-points control hidden.
+  $effect(() => {
+    const pairs = new Map();
+    for (const item of backlogItems) {
+      if (item.workspace_id == null) continue;
+      const key = `${item.workspace_id}:${item.item_type_id ?? 'default'}`;
+      if (!pairs.has(key)) pairs.set(key, [item.workspace_id, item.item_type_id ?? null]);
     }
-
-    const screensById = new Map(
-      (Array.isArray(screensOutcome.value) ? screensOutcome.value : [])
-        .filter((screen) => screen?.id != null)
-        .map((screen) => [screen.id, screen])
-    );
-    const configSetsById = new Map();
-    configSetOutcomes.forEach((outcome, index) => {
-      if (outcome.status === 'fulfilled' && outcome.value) {
-        configSetsById.set(configSetIds[index], outcome.value);
-      } else if (outcome.status === 'rejected') {
-        console.error(`Failed to load configuration set ${configSetIds[index]} for backlog fields:`, outcome.reason);
-      }
-    });
-
-    const configSetsByWorkspaceId = new Map();
-    workspaceRecords.forEach((record) => {
-      if (record?.id == null) return;
-      const workspaceKey = String(record.id);
-      const configSetId = record.configuration_set_id;
-      configSetsByWorkspaceId.set(
-        workspaceKey,
-        configSetId == null ? null : configSetsById.get(String(configSetId))
-      );
-    });
-
-    storyPointsScreenConfiguration = {
-      ready: true,
-      configSetsByWorkspaceId,
-      screensById,
-    };
-  }
+    for (const [workspaceIdForItem, itemTypeId] of pairs.values()) {
+      void workspaceDataStore.screenConfigFor(workspaceIdForItem, itemTypeId);
+    }
+  });
 
   function storyPointsConfiguredForItem(item) {
-    if (!storyPointsScreenConfiguration.ready) return false;
-    return isSystemFieldAvailableForItem(
-      item,
-      'story_points',
-      storyPointsScreenConfiguration.configSetsByWorkspaceId,
-      storyPointsScreenConfiguration.screensById
-    );
+    if (item.workspace_id == null) return false;
+    const key = `${item.workspace_id}:${item.item_type_id == null ? 'default' : item.item_type_id}`;
+    const config = workspaceDataStore.screenConfigs[key];
+    return !!config && isSystemFieldAvailableInEffectiveConfig(config, 'story_points');
   }
 
   function setStoryPointsPending(itemId, pending) {
@@ -230,10 +245,8 @@
     setStoryPointsPending(item.id, true);
 
     try {
-      await api.items.update(item.id, { story_points: value });
-      collectionStore.backlogItems = collectionStore.backlogItems.map((backlogItem) =>
-        backlogItem.id === item.id ? { ...backlogItem, story_points: value } : backlogItem
-      );
+      await items.update(item.id, { story_points: value });
+      collectionStore.patchItem(item.id, { story_points: value });
     } catch (error) {
       console.error('Failed to update story points:', error);
       errorToast(t('collections.backlogActionFailed'));
@@ -257,39 +270,51 @@
   const styles = useGradientStyles();
 
   // Listen for newly created items
-  async function handleRefreshWorkItems(event) {
-    if (event.detail?.itemId) {
-      try {
-        const newItem = event.detail.item ?? await api.items.get(event.detail.itemId);
-        // When viewing a collection, accept items from any workspace (the collection defines scope).
-        // Otherwise fall back to current-workspace check.
-        const belongsToView = collectionId
-          ? true
-          : Number(newItem.workspace_id) === Number(workspaceId);
-        if (belongsToView) {
-          collectionStore.backlogItems = [...collectionStore.backlogItems, newItem];
-        }
-      } catch (error) {
-        console.error('Failed to load new item:', error);
+  async function handleRefreshWorkItems(detail) {
+    if (!detail?.itemId) return;
+    try {
+      const newItem = detail.item ?? await items.get(detail.itemId);
+      // Collection QL and sub-filters depend on server state, so verify rather
+      // than assume membership. Unknown never permits an insert; it reconciles.
+      const membership = await resolveCreatedItemMembership(newItem, {
+        workspaceId,
+        collectionId,
+        subFilterQL: collectionStore.subFilterQL ? collectionStore.effectiveSubFilterQL : '',
+      });
+      if (membership === 'member') {
+        // insertCreatedItem deduplicates by id so a repeated create event cannot
+        // append the same backlog row twice.
+        collectionStore.insertCreatedItem(newItem, { backlog: true });
+      } else if (membership === 'unknown') {
+        scheduleCollectionReconciliation();
       }
+    } catch (error) {
+      console.error('Failed to load new item:', error);
     }
   }
 
-  useEventListener(() => window, 'refresh-work-items', handleRefreshWorkItems);
+  $effect(() => onWorkItemRefresh(handleRefreshWorkItems));
 
   onMount(async () => {
     if (workspaceId) {
       await loadWorkspaceGradient(workspaceId);
       await workspaceDataStore.initialize(workspaceId);
-      await loadStoryPointsScreenConfiguration();
 
       // Load iterations for this workspace
       try {
-        const iters = await api.iterations.getAll({
-          workspace_id: workspaceId,
-          include_global: !workspace?.is_personal,
-        });
-        allIterations = iters || [];
+        const isPersonal = workspaceDataStore.workspace?.is_personal === true;
+        if (workspaceDataStore.planningCompleteness?.iterations === true) {
+          // Complete bootstrap data avoids a second full iteration fetch.
+          allIterations = (workspaceDataStore.iterations || []).filter(
+            (iteration) => !isPersonal || !iteration.is_global
+          );
+        } else {
+          const iters = await iterations.getAll({
+            workspace_id: workspaceId,
+            include_global: !isPersonal,
+          });
+          allIterations = iters || [];
+        }
       } catch (error) {
         console.error('Failed to load iterations:', error);
       }
@@ -297,7 +322,6 @@
       restorePersistedState();
     } else {
       await workspaceDataStore.initializeGlobal();
-      await loadStoryPointsScreenConfiguration();
     }
     loading = false;
   });
@@ -307,16 +331,12 @@
     backlogStore.setCount(workspaceId, backlogTotal);
   });
 
-  // Scoped SSE invalidations (WI-1624) replace the 30s poll while the stream is
-  // healthy; the poller stays as the reconnect/unsupported fallback.
-  const collectionStream = useCollectionEventStream(
+  // Scoped SSE invalidations (WI-1624): any frame runs the existing delta fetch,
+  // and a reconnect reconciles. No polling fallback.
+  useCollectionEventStream(
     () => (collectionId ? { kind: 'collection', id: collectionId } : { kind: 'workspace', id: workspaceId }),
-    { onInvalidate: () => refreshCollectionDeltas() }
+    { onInvalidate: () => scheduleCollectionReconciliation() }
   );
-  // Adaptive polling for backlog items: use cheap deltas, falling back to full refresh only when needed.
-  const poller = useWorkItemPoller(() => refreshCollectionDeltas(), {
-    enabled: () => !collectionStream.connected,
-  });
 
   function openItem(itemId, event) {
     // Don't open item if we're dragging
@@ -325,18 +345,7 @@
     }
     event.preventDefault();
     event.stopPropagation();
-    selectedItemId = itemId;
-    showItemModal = true;
-  }
-
-  async function closeItemModal(event) {
-    showItemModal = false;
-    selectedItemId = null;
-
-    // If changes were made in the modal, reload data
-    if (event?.hasChanges) {
-      reloadCollection();
-    }
+    itemModalStore.open(itemId, workspaceId);
   }
 
   // --- Section collapse / expand ---
@@ -354,7 +363,7 @@
   // --- Start / Complete iteration ---
   async function startIteration(iteration) {
     try {
-      await api.iterations.update(iteration.id, {
+      await iterations.update(iteration.id, {
         status: 'active',
         is_global: iteration.is_global,
         workspace_id: iteration.workspace_id,
@@ -387,7 +396,7 @@
 
     try {
       const targetIterationId = moveTarget.type === 'iteration' ? moveTarget.iterationId : null;
-      await api.iterations.complete(iteration.id, targetIterationId);
+      await iterations.complete(iteration.id, targetIterationId);
       allIterations = allIterations.map(i =>
         i.id === iteration.id ? { ...i, status: 'completed' } : i
       );
@@ -425,7 +434,7 @@
     setItemActionPending(item.id, true);
 
     try {
-      const boundaryItem = await api.items.getBacklogBoundary(
+      const boundaryItem = await items.getBacklogBoundary(
         workspaceId,
         collectionId,
         collectionStore.effectiveSubFilterQL,
@@ -433,14 +442,11 @@
       );
       if (!boundaryItem || boundaryItem.id === item.id) return;
 
-      await api.items.updateFracIndex(item.id, boundary === 'start'
+      await items.updateFracIndex(item.id, boundary === 'start'
         ? { previous_item_id: null, next_item_id: boundaryItem.id }
         : { previous_item_id: boundaryItem.id, next_item_id: null });
 
-      const otherItems = collectionStore.backlogItems.filter(i => i.id !== item.id);
-      collectionStore.backlogItems = boundary === 'start'
-        ? [item, ...otherItems]
-        : [...otherItems, item];
+      collectionStore.moveBacklogItemToBoundary(item, boundary);
       successToast(t(boundary === 'start'
         ? 'collections.movedToBeginningOfBacklog'
         : 'collections.sentToEndOfBacklog', { title: item.title }));
@@ -461,12 +467,11 @@
       if (iteration.status === 'active') {
         warningToast(t('iterations.activeScopeWarning'));
       }
-      await api.items.update(item.id, { iteration_id: iteration.id });
-      collectionStore.backlogItems = collectionStore.backlogItems.map(i =>
-        i.id === item.id
-          ? { ...i, iteration_id: iteration.id, iteration_name: iteration.name }
-          : i
-      );
+      await items.update(item.id, { iteration_id: iteration.id });
+      collectionStore.patchItem(item.id, {
+        iteration_id: iteration.id,
+        iteration_name: iteration.name,
+      });
       successToast(t('collections.assignedToIteration', {
         title: item.title,
         iteration: iteration.name,
@@ -518,7 +523,8 @@
       element,
       canDrop: ({ source }) => {
         const data = /** @type {any} */ (source.data);
-        return data.type === 'work-item' && data.item?.id !== itemId;
+        return data.type === 'work-item' && data.item?.id !== itemId &&
+          !isSectionClosed(element.dataset.sectionId || 'unassigned');
       },
       getData: ({ input, element: targetElement }) => attachClosestEdge(
         { sectionId: element.dataset.sectionId || 'unassigned' },
@@ -544,12 +550,9 @@
         const item = backlogItemsById.get(itemId);
         const closestEdge = extractClosestEdge(self.data);
         if (item && data.type === 'work-item' && closestEdge) {
-          handleEdgeBasedDrop(
-            data.item,
-            item,
-            closestEdge,
-            element.dataset.sectionId || 'unassigned'
-          );
+          handleEdgeBasedDrop(data.item, item, closestEdge, {
+            sectionId: element.dataset.sectionId || 'unassigned',
+          });
         }
       }
     });
@@ -569,7 +572,8 @@
     const key = String(iterationId);
     const cleanup = dropTargetForElements({
       element,
-      canDrop: ({ source }) => (/** @type {any} */ (source.data)).type === 'work-item',
+      canDrop: ({ source }) =>
+        (/** @type {any} */ (source.data)).type === 'work-item' && !isSectionClosed(key),
       getData: () => ({ type: 'section-drop', iterationId: key }),
       onDragEnter: ({ source }) => {
         if ((/** @type {any} */ (source.data)).type !== 'work-item') return;
@@ -584,7 +588,7 @@
       },
       onDrop: ({ source }) => {
         const data = /** @type {any} */ (source.data);
-        if (data.type === 'work-item') handleSectionDrop(data.item, key);
+        if (data.type === 'work-item' && !isSectionClosed(key)) handleSectionDrop(data.item, key);
         sectionDropHighlight = new Map();
       },
     });
@@ -598,95 +602,40 @@
     };
   }
 
-  async function handleEdgeBasedDrop(draggedItem, targetItem, closestEdge, targetSectionId) {
-    // Create a unique identifier for this drop operation
-    const dropId = `${draggedItem.id}-edge-${targetItem.id}-${closestEdge}`;
-
-    try {
-      // Prevent duplicate drops
-      if (pendingDrops.has(dropId)) {
-        return;
-      }
-
-      pendingDrops.add(dropId);
-
-      // Determine target iteration_id from the section the target item lives in
-      const targetIterationId = targetSectionId === 'unassigned' ? null : (typeof targetSectionId === 'string' ? parseInt(targetSectionId) : targetSectionId);
+  // Cross-section moves update the iteration first; the shared composable then
+  // ranks the item within its target section.
+  const { pendingDrops, handleEdgeBasedDrop } = useCollectionDragDrop({
+    reload: () => reloadCollection(),
+    getSiblingItems: ({ target }) => getSectionItems(target.sectionId),
+    beforeReorder: async ({ draggedItem, target }) => {
+      const targetIterationId =
+        target.sectionId === 'unassigned'
+          ? null
+          : typeof target.sectionId === 'string'
+            ? parseInt(target.sectionId)
+            : target.sectionId;
       const sourceSectionId = draggedItem.iteration_id || null;
 
-      // Cross-section move: update iteration_id
-      const crossSection = (sourceSectionId !== targetIterationId);
+      const crossSection = sourceSectionId !== targetIterationId;
       if (crossSection) {
         // Warn if target iteration is active
         const targetIteration = allIterations.find(i => i.id === targetIterationId);
         if (targetIteration?.status === 'active') {
           warningToast(t('iterations.activeScopeWarning'));
         }
-        await api.items.update(draggedItem.id, { iteration_id: targetIterationId });
-        // Update store directly
-        collectionStore.backlogItems = collectionStore.backlogItems.map(i => i.id === draggedItem.id ? { ...i, iteration_id: targetIterationId } : i);
+        await items.update(draggedItem.id, { iteration_id: targetIterationId });
+        collectionStore.patchItem(draggedItem.id, { iteration_id: targetIterationId });
       }
 
-      // Compute prev/next within the target section
-      const sectionItems = getSectionItems(targetSectionId).filter(i => i.id !== draggedItem.id);
-      const targetIndex = sectionItems.findIndex(i => i.id === targetItem.id);
-
-      // Check if we're trying to drop in the same position (only matters for within-section)
-      if (!crossSection) {
-        const fullSectionItems = getSectionItems(targetSectionId);
-        const draggedIndex = fullSectionItems.findIndex(i => i.id === draggedItem.id);
-        const origTargetIndex = fullSectionItems.findIndex(i => i.id === targetItem.id);
-        const isDroppingSamePosition = (
-          (closestEdge === 'top' && draggedIndex === origTargetIndex - 1) ||
-          (closestEdge === 'bottom' && draggedIndex === origTargetIndex + 1)
-        );
-        if (isDroppingSamePosition) return;
-      }
-
-      let prevItemId = null;
-      let nextItemId = null;
-
-      if (closestEdge === 'top') {
-        if (targetIndex > 0) {
-          const prevItem = sectionItems[targetIndex - 1];
-          if (prevItem) prevItemId = prevItem.id;
-        }
-        nextItemId = targetItem.id;
-      } else if (closestEdge === 'bottom') {
-        prevItemId = targetItem.id;
-        if (targetIndex < sectionItems.length - 1) {
-          const nextItem = sectionItems[targetIndex + 1];
-          if (nextItem) nextItemId = nextItem.id;
-        }
-      }
-
-      // Update the frac_index using item IDs
-      const indexData = {
-        previous_item_id: prevItemId,
-        next_item_id: nextItemId
+      return {
+        item: { ...draggedItem, iteration_id: targetIterationId },
+        checkSamePosition: !crossSection,
       };
-      await api.items.updateFracIndex(draggedItem.id, indexData);
-
-      // Reload data from central store to get the correct ordering
-      reloadCollection();
-
-    } catch (error) {
-      console.error('Failed to handle edge-based drop:', error);
-      console.error('Error details:', error.message);
-
-      // If we get a rank ordering error, reload fresh data
-      if (error.status === 500) {
-        reloadCollection();
-      }
-    } finally {
-      // Always remove from pending drops
-      setTimeout(() => {
-        pendingDrops.delete(dropId);
-      }, 500); // Small delay to prevent rapid re-triggering
-    }
-  }
+    },
+  });
 
   async function handleSectionDrop(draggedItem, targetIterationId) {
+    if (isSectionClosed(targetIterationId)) return;
     const dropId = `${draggedItem.id}-section-${targetIterationId}`;
     if (pendingDrops.has(dropId)) return;
     pendingDrops.add(dropId);
@@ -703,8 +652,8 @@
         warningToast(t('iterations.activeScopeWarning'));
       }
 
-      await api.items.update(draggedItem.id, { iteration_id: newIterationId });
-      collectionStore.backlogItems = collectionStore.backlogItems.map(i => i.id === draggedItem.id ? { ...i, iteration_id: newIterationId } : i);
+      await items.update(draggedItem.id, { iteration_id: newIterationId });
+      collectionStore.patchItem(draggedItem.id, { iteration_id: newIterationId });
       reloadCollection();
     } catch (error) {
       console.error('Failed to handle section drop:', error);
@@ -723,6 +672,7 @@
   <StaticViewBackground
     backgroundStyle={styles.backgroundStyle}
     contextVars={styles.contextVars}
+    testid="backlog-view"
   >
     <!-- Content Container -->
       <!-- Header with view tabs -->
@@ -769,8 +719,16 @@
       </div>
 
       <!-- Controls Bar -->
-      <div class="flex items-center mb-6">
-        <SubFilterBar {workspaceId} showCompletionToggle={false} />
+      <div class="flex flex-wrap items-center gap-3 mb-6">
+        <SubFilterBar {workspaceId} {collectionId} showCompletionToggle={false} />
+        <Toggle
+          checked={showCompletedIterations}
+          onchange={setShowCompletedIterations}
+          label={t('iterations.showCompletedIterations')}
+          labelPosition="left"
+          size="small"
+          dataTestid="backlog-show-completed-iterations"
+        />
       </div>
 
       {#if backlogItems.length === 0 && visibleIterations.length === 0}
@@ -872,16 +830,6 @@
       {t('collections.workspaceNotFound')}
     </div>
   </div>
-{/if}
-
-<!-- Item Detail Modal -->
-{#if showItemModal && selectedItemId}
-  <ItemDetail
-    workspaceId={workspaceId}
-    itemId={selectedItemId}
-    isModal={true}
-    onclose={closeItemModal}
-  />
 {/if}
 
 <!-- Complete Iteration Dialog -->
