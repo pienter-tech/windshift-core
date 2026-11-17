@@ -16,6 +16,8 @@
     class: className = '',
     inputTestid = undefined,
     optionTestid = null,
+    // See BasePicker: the results list pushes content below it down.
+    inlineMenu = false,
     onSelect = () => {},
     onCancel = () => {},
   } = $props();
@@ -62,6 +64,7 @@
   serverSearch
   {inputTestid}
   {optionTestid}
+  {inlineMenu}
   onSearchChange={handleSearchChange}
   getValue={(page) => page?.id}
   getLabel={(page) => page?.title ?? ''}

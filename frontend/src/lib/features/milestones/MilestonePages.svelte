@@ -230,6 +230,7 @@
 						placeholder={t('items.pagePickerPlaceholder')}
 						disabled={linking}
 						inputTestid="milestone-page-picker"
+						inlineMenu
 						onSelect={handleSelectPage}
 					/>
 					{#if selectedAlreadyLinked}
