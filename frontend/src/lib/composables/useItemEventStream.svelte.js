@@ -1,16 +1,16 @@
 import { toExternal } from '../runtime/contextPath.js';
-import { itemLiveUpdates } from '../stores/itemLiveUpdates.svelte.js';
 
 const DEBOUNCE_MS = 250;
 
 /**
- * Subscribes to an item's event stream and batches targeted reloads. Every
- * healthy connection (including the first) performs one full reconcile so a
- * mutation between the initial snapshot and the subscription is not missed.
- * Polling remains the fallback while disconnected or after a refresh failure.
+ * Subscribes to an item's coarse change stream. Any `changed` frame batches a
+ * full reload; `deleted` tears the view down. Callers open the stream before
+ * their initial snapshot, so the first healthy connection needs no reconcile;
+ * only a reconnect (or an error before the first connect) reconciles to cover
+ * changes missed while disconnected.
  *
  * @param {() => (number|string|null|undefined)} getItemId
- * @param {{ onReconcile?: Function, onItem?: Function, onChildren?: Function, onComment?: Function, onLinks?: Function, onZammad?: Function, onDeleted?: Function }} handlers
+ * @param {{ onReconcile?: Function, onDeleted?: Function }} handlers
  * @returns {{ readonly connected: boolean }}
  */
 export function useItemEventStream(getItemId, handlers = {}) {
@@ -20,80 +20,55 @@ export function useItemEventStream(getItemId, handlers = {}) {
   $effect(() => {
     const itemId = streamItemId;
     if (!itemId) return;
-    if (typeof EventSource === 'undefined') return; // SSR / unsupported → polling stays the source of truth
+    if (typeof EventSource === 'undefined') return; // SSR / unsupported
 
-    const pending = new Set();
     let timer = null;
+    // A handler that was already running when the subscription was torn down
+    // must not reconcile against the next item's view.
+    let active = true;
     const connectionTracker = createConnectionReconcileTracker();
 
-    const flush = async () => {
+    const reconcile = async () => {
       timer = null;
-      const kinds = new Set(pending);
-      pending.clear();
+      if (!active) return;
       try {
-        // A full reconcile reloads everything, so skip the narrower reloads.
-        if (kinds.has('reconcile')) {
-          await handlers.onReconcile?.();
-          return;
-        }
-        const refreshes = [];
-        if (kinds.has('item')) refreshes.push(handlers.onItem?.());
-        if (kinds.has('children')) refreshes.push(handlers.onChildren?.());
-        if (kinds.has('comment')) refreshes.push(handlers.onComment?.());
-        if (kinds.has('links')) refreshes.push(handlers.onLinks?.());
-        if (kinds.has('zammad')) refreshes.push(handlers.onZammad?.());
-        if (kinds.has('deleted')) refreshes.push(handlers.onDeleted?.());
-        await Promise.all(refreshes);
+        await handlers.onReconcile?.();
       } catch (error) {
-        // The transport is healthy but a data refresh failed, so the view may
-        // be stale. Resume the polling fallback and reconcile on next connect.
-        connectionTracker.markDisconnected();
-        setConnected(false);
-        console.warn('Item event stream refresh failed; falling back to polling:', error);
+        if (!active) return;
+        // The stream stays connected; the next change or reconnect retries.
+        console.warn('Item event stream reconcile failed:', error);
       }
     };
-    const schedule = (...kinds) => {
-      for (const k of kinds) pending.add(k);
-      if (!timer) timer = setTimeout(flush, DEBOUNCE_MS);
+    const scheduleReconcile = () => {
+      if (!timer) timer = setTimeout(reconcile, DEBOUNCE_MS);
     };
 
     const es = new EventSource(toExternal(`/api/items/${itemId}/events`));
-    const setConnected = (value) => {
-      connected = value;
-      itemLiveUpdates.set(itemId, value);
-    };
 
     es.addEventListener('connected', () => {
       const shouldReconcile = connectionTracker.markConnected();
-      setConnected(true);
-      if (shouldReconcile) schedule('reconcile');
+      connected = true;
+      if (shouldReconcile) scheduleReconcile();
     });
-    es.addEventListener('reload', () => schedule('reconcile'));
-    es.addEventListener('comment', () => schedule('comment'));
-    es.addEventListener('status', () => schedule('item'));
-    es.addEventListener('updated', () => schedule('item', 'children'));
-    es.addEventListener('created', () => schedule('item', 'children'));
+    es.addEventListener('changed', scheduleReconcile);
     es.addEventListener('deleted', () => {
       // Deletion is authoritative and must tear down item-bound loaders before
       // their in-flight requests start returning expected 404s.
       if (timer) clearTimeout(timer);
       timer = null;
-      pending.clear();
       handlers.onDeleted?.();
     });
-    es.addEventListener('link', () => schedule('links'));
-    es.addEventListener('zammad', () => schedule('zammad'));
     // The browser auto-reconnects (honoring the server's retry hint). Until it
-    // does, mark disconnected so the components' pollers resume as the fallback.
+    // does, mark disconnected so the UI reflects that changes may be missed.
     es.onerror = () => {
       connectionTracker.markDisconnected();
-      setConnected(false);
+      connected = false;
     };
 
     return () => {
+      active = false;
       if (timer) clearTimeout(timer);
       es.close();
-      itemLiveUpdates.clear(itemId);
       connected = false;
     };
   });
@@ -116,13 +91,21 @@ export function normalizeItemEventStreamID(itemId) {
  * recovery after a gap. Exported as a pure helper for regression tests.
  */
 export function createConnectionReconcileTracker() {
+  let connectedOnce = false;
+  let disconnected = false;
+
   return {
-    // Reconcile on the first healthy connection too: a mutation can land
-    // between the initial snapshot and the subscription, and the stream only
-    // replays changes that happen after it is established.
+    // The caller subscribes before taking its initial snapshot, so the first
+    // healthy connection has no gap to reconcile. A reconnect or an error
+    // before the first connect means changes may have been missed.
     markConnected() {
-      return true;
+      const shouldReconcile = connectedOnce || disconnected;
+      connectedOnce = true;
+      disconnected = false;
+      return shouldReconcile;
     },
-    markDisconnected() {},
+    markDisconnected() {
+      disconnected = true;
+    },
   };
 }

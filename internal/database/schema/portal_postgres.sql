@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS portal_customers (
 	erased_at TIMESTAMPTZ, -- Set when the customer completed Article 17 erasure; the row is kept pseudonymized and never cleared
 	deactivated_at TIMESTAMPTZ, -- Set when an admin cut portal access; every portal auth path rejects deactivated customers; reactivation is an explicit admin action
 	created_via TEXT NOT NULL DEFAULT 'unknown', -- Creation provenance: agent | email-intake | magic-link | ticket-import | unknown (rows predating provenance capture)
+	language TEXT, -- Preferred locale; NULL means never chosen or detected (instance default applies)
+	timezone TEXT, -- Preferred IANA timezone; NULL means never chosen (UTC applies)
 	created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
 	updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
 	FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
@@ -31,6 +33,7 @@ CREATE TABLE IF NOT EXISTS portal_customer_channels (
 );
 
 CREATE INDEX IF NOT EXISTS idx_portal_customers_email ON portal_customers(email);
+CREATE INDEX IF NOT EXISTS idx_portal_customers_email_lower ON portal_customers(LOWER(email));
 CREATE INDEX IF NOT EXISTS idx_portal_customers_user_id ON portal_customers(user_id);
 CREATE INDEX IF NOT EXISTS idx_portal_customers_org_id ON portal_customers(customer_organisation_id);
 CREATE INDEX IF NOT EXISTS idx_portal_customer_channels_customer_id ON portal_customer_channels(portal_customer_id);

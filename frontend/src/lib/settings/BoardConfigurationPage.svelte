@@ -3,18 +3,31 @@
   import ColorDot from '../components/ColorDot.svelte';
   import TabStrip from '../components/TabStrip.svelte';
   import { draggable, dropTargetForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter';
-  import { attachClosestEdge, extractClosestEdge } from '@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge';
   import { navigate } from '../router.js';
-  import { api } from '../api.js';
+  import { collections } from '../api/collections.js';
   import { t } from '../stores/i18n.svelte.js';
   import { errorToast } from '../stores/toasts.svelte.js';
   import { CARD_SELECTABLE_FIELDS } from '../stores/fieldConfig.js';
   import { confirm } from '../composables/useConfirm.js';
+  import { registerReorderable } from '../composables/reorderableDrag.js';
   import { workspacePermissions } from '../stores/workspacePermissions.svelte.js';
   import { collectionStore } from '../stores/collectionContext.svelte.js';
   import { workspaceDataStore } from '../stores/workspaceDataStore.svelte.js';
   import { loadBoardConfigurationPageData } from './boardConfigurationData.js';
-  import { Plus, GripVertical, X, Grip, Settings } from '@lucide/svelte';
+  import {
+    DEFAULT_COMPLETED_LIMIT,
+    MIN_COMPLETED_LIMIT,
+    MAX_COMPLETED_LIMIT,
+    normalizeCompletedLimit,
+  } from '../features/collections/boardConfigPayload.js';
+  import Plus from '@lucide/svelte/icons/plus';
+  import GripVertical from '@lucide/svelte/icons/grip-vertical';
+  import X from '@lucide/svelte/icons/x';
+  import Grip from '@lucide/svelte/icons/grip';
+  import Settings from '@lucide/svelte/icons/settings';
+  import ListChecks from '@lucide/svelte/icons/list-checks';
+  import Columns3 from '@lucide/svelte/icons/columns-3';
+  import IconSelector from '../pickers/IconSelector.svelte';
   import { useGradientStyles, loadWorkspaceGradient } from '../stores/workspaceGradient.svelte.js';
   import ViewHeader from '../layout/ViewHeader.svelte';
   import StaticViewBackground from '../layout/StaticViewBackground.svelte';
@@ -23,6 +36,7 @@
   import EmptyState from '../components/EmptyState.svelte';
   import SearchInput from '../components/SearchInput.svelte';
   import Input from '../components/Input.svelte';
+  import NativeSelect from '../components/NativeSelect.svelte';
   import Checkbox from '../components/Checkbox.svelte';
   import DropIndicator from '../layout/DropIndicator.svelte';
   import DragHandleDots from '../components/DragHandleDots.svelte';
@@ -46,10 +60,12 @@
   let activeTab = $state('columns');
   let backlogStatusIDs = $state([]);
   let cardFields = $state([]);
-  let showRightmostColumnLast50 = $state(false);
-  let trimCompletedItemsByAge = $state(false);
-  let completedItemRetentionDays = $state(30);
-  let completedItemRetentionError = $state('');
+  // Completed-work preset (WI-100) — the board's single display control.
+  let completedVisibility = $state('all');
+  let completedVisibilityDirty = $state(false);
+  // Cap used by the "limit" preset; only meaningful while that preset is on.
+  let completedLimit = $state(DEFAULT_COMPLETED_LIMIT);
+  let completedLimitDirty = $state(false);
   let customFieldDefinitions = $state([]);
   let enabledViews = $state([]);
   // Collection scopes may only toggle collection-scoped views; the workspace
@@ -169,9 +185,7 @@
 
   async function loadData() {
     try {
-      const data = await loadBoardConfigurationPageData(
-        api,
-        workspaceDataStore,
+      const data = await loadBoardConfigurationPageData(workspaceDataStore,
         workspaceId,
         collectionId
       );
@@ -212,19 +226,20 @@
           field => !isPublicCollection ||
             (field.field_type === 'system' && PUBLIC_BOARD_CARD_FIELDS.has(field.field_identifier))
         );
-        showRightmostColumnLast50 = Boolean(boardConfig.show_rightmost_column_last_50);
-        const savedRetentionDays = Number(boardConfig.completed_item_retention_days);
-        trimCompletedItemsByAge = !showRightmostColumnLast50 && Number.isInteger(savedRetentionDays) && savedRetentionDays > 0;
-        completedItemRetentionDays = trimCompletedItemsByAge ? savedRetentionDays : 30;
-        completedItemRetentionError = '';
+        const storedVisibility = boardConfig.view_settings?.completed_visibility ?? '';
+        completedVisibility = storedVisibility || legacyCompletedPreset(boardConfig);
+        completedLimit = normalizeCompletedLimit(boardConfig.view_settings?.completed_limit);
+        // A board saved before presets existed migrates on the next save.
+        completedVisibilityDirty = storedVisibility === '';
+        completedLimitDirty = false;
       } else {
         columns = [];
         backlogStatusIDs = statuses.filter(s => !s.is_default && !s.is_completed).map(s => s.id);
         cardFields = [];
-        showRightmostColumnLast50 = false;
-        trimCompletedItemsByAge = false;
-        completedItemRetentionDays = 30;
-        completedItemRetentionError = '';
+        completedVisibility = 'all';
+        completedVisibilityDirty = false;
+        completedLimit = DEFAULT_COMPLETED_LIMIT;
+        completedLimitDirty = false;
       }
     } catch (error) {
       console.error('Failed to load data:', error);
@@ -266,61 +281,43 @@
       const statusId = columns[colIndex]?.status_ids?.[statusIndex];
       if (statusId == null) return;
 
-      statusDragState.set(`${colIndex}-${statusId}`, { closestEdge: null });
+      const key = `${colIndex}-${statusId}`;
+      const clearEdge = () => {
+        statusDragState.set(key, { closestEdge: null });
+        statusDragState = new Map(statusDragState);
+      };
+      statusDragState.set(key, { closestEdge: null });
 
-      const dragHandle = element.querySelector('.cursor-grab');
-      const draggableCleanup = draggable({
+      setupCleanups.push(registerReorderable({
         element,
-        dragHandle: dragHandle || element,
-        getInitialData: () => ({ statusId, colIndex, statusIndex, type: 'column-status' }),
-        onDragStart: () => { element.style.opacity = '0.5'; },
-        onDrop: () => {
-          element.style.opacity = '';
-          statusDragState.forEach((_, key) => {
-            statusDragState.set(key, { closestEdge: null });
-          });
-          statusDragState = new Map(statusDragState);
-        }
-      });
-
-      const dropTargetCleanup = dropTargetForElements({
-        element,
+        dragHandle: element.querySelector('.cursor-grab'),
+        getDragData: () => ({ statusId, colIndex, statusIndex, type: 'column-status' }),
         canDrop: ({ source }) => {
           const data = source.data;
           if (data.type === 'column-status' && data.colIndex === colIndex && data.statusIndex === statusIndex) return false;
           return data.type === 'available-status' || data.type === 'column-status';
         },
-        getData: ({ input, element }) => {
-          return attachClosestEdge({}, { input, element, allowedEdges: ['top', 'bottom'] });
-        },
-        onDragEnter: ({ self }) => {
-          const closestEdge = extractClosestEdge(self.data);
-          statusDragState.set(`${colIndex}-${statusId}`, { closestEdge });
+        onDragEnd: () => {
+          statusDragState.forEach((_, stateKey) => {
+            statusDragState.set(stateKey, { closestEdge: null });
+          });
           statusDragState = new Map(statusDragState);
         },
-        onDragLeave: () => {
-          statusDragState.set(`${colIndex}-${statusId}`, { closestEdge: null });
+        onEnter: (closestEdge) => {
+          statusDragState.set(key, { closestEdge });
           statusDragState = new Map(statusDragState);
         },
-        onDrop: ({ self, source }) => {
-          const closestEdge = extractClosestEdge(self.data);
+        onLeave: clearEdge,
+        onDrop: ({ source, closestEdge }) => {
           const data = source.data;
-
           if (data.type === 'available-status') {
             addStatusToColumnAtPosition(data.status, colIndex, statusIndex, closestEdge);
           } else if (data.type === 'column-status') {
             moveStatusBetweenColumns(data.statusId, data.colIndex, colIndex, statusIndex, closestEdge);
           }
-
-          statusDragState.set(`${colIndex}-${statusId}`, { closestEdge: null });
-          statusDragState = new Map(statusDragState);
-        }
-      });
-
-      setupCleanups.push(() => {
-        draggableCleanup();
-        dropTargetCleanup();
-      });
+          clearEdge();
+        },
+      }));
     });
 
     // --- Column drop zones (empty area at bottom of each column) ---
@@ -353,57 +350,40 @@
     // --- Column headers (for column reordering) ---
     /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('[data-board-column]')).forEach(element => {
       const colIndex = parseInt(element.dataset.boardColumn);
-
+      const clearEdge = () => {
+        columnDragState.set(colIndex, { closestEdge: null });
+        columnDragState = new Map(columnDragState);
+      };
       columnDragState.set(colIndex, { closestEdge: null });
 
-      const dragHandle = element.querySelector('[data-column-drag-handle]');
-      const draggableCleanup = draggable({
+      setupCleanups.push(registerReorderable({
         element,
-        dragHandle: dragHandle || element,
-        getInitialData: () => ({ colIndex, type: 'board-column' }),
-        onDragStart: () => { element.style.opacity = '0.5'; },
-        onDrop: () => {
-          element.style.opacity = '';
-          columnDragState.forEach((_, key) => {
-            columnDragState.set(key, { closestEdge: null });
-          });
-          columnDragState = new Map(columnDragState);
-        }
-      });
-
-      const dropTargetCleanup = dropTargetForElements({
-        element,
+        dragHandle: element.querySelector('[data-column-drag-handle]'),
+        getDragData: () => ({ colIndex, type: 'board-column' }),
         canDrop: ({ source }) => {
           const data = source.data;
           if (data.type === 'board-column' && data.colIndex === colIndex) return false;
           return data.type === 'board-column';
         },
-        getData: ({ input, element }) => {
-          return attachClosestEdge({}, { input, element, allowedEdges: ['left', 'right'] });
+        allowedEdges: ['left', 'right'],
+        onDragEnd: () => {
+          columnDragState.forEach((_, key) => {
+            columnDragState.set(key, { closestEdge: null });
+          });
+          columnDragState = new Map(columnDragState);
         },
-        onDragEnter: ({ self }) => {
-          const closestEdge = extractClosestEdge(self.data);
+        onEnter: (closestEdge) => {
           columnDragState.set(colIndex, { closestEdge });
           columnDragState = new Map(columnDragState);
         },
-        onDragLeave: () => {
-          columnDragState.set(colIndex, { closestEdge: null });
-          columnDragState = new Map(columnDragState);
-        },
-        onDrop: ({ self, source }) => {
-          const closestEdge = extractClosestEdge(self.data);
+        onLeave: clearEdge,
+        onDrop: ({ source, closestEdge }) => {
           if (source.data.type === 'board-column') {
             reorderColumn(source.data.colIndex, colIndex, closestEdge);
           }
-          columnDragState.set(colIndex, { closestEdge: null });
-          columnDragState = new Map(columnDragState);
-        }
-      });
-
-      setupCleanups.push(() => {
-        draggableCleanup();
-        dropTargetCleanup();
-      });
+          clearEdge();
+        },
+      }));
     });
 
     // --- Card fields (for card-field reordering) ---
@@ -414,54 +394,39 @@
       const fieldIdentifier = element.dataset.cardFieldIdentifier;
       if (!fieldIdentifier || Number.isNaN(fieldIndex)) return;
 
+      const clearEdge = () => {
+        cardFieldDragState.set(fieldIdentifier, { closestEdge: null });
+        cardFieldDragState = new Map(cardFieldDragState);
+      };
       cardFieldDragState.set(fieldIdentifier, { closestEdge: null });
 
-      const dragHandle = element.querySelector('[data-card-field-drag-handle]');
-      const draggableCleanup = draggable({
+      setupCleanups.push(registerReorderable({
         element,
-        dragHandle: dragHandle || element,
-        getInitialData: () => ({ fieldIndex, fieldIdentifier, type: 'card-field' }),
-        onDragStart: () => { element.style.opacity = '0.5'; },
-        onDrop: () => {
-          element.style.opacity = '';
-          cardFieldDragState.forEach((_, key) => {
-            cardFieldDragState.set(key, { closestEdge: null });
-          });
-          cardFieldDragState = new Map(cardFieldDragState);
-        }
-      });
-
-      const dropTargetCleanup = dropTargetForElements({
-        element,
+        dragHandle: element.querySelector('[data-card-field-drag-handle]'),
+        getDragData: () => ({ fieldIndex, fieldIdentifier, type: 'card-field' }),
         canDrop: ({ source }) => {
           const data = source.data;
           if (data.type === 'card-field' && data.fieldIndex === fieldIndex) return false;
           return data.type === 'card-field';
         },
-        getData: ({ input, element }) => {
-          return attachClosestEdge({}, { input, element, allowedEdges: ['top', 'bottom'] });
-        },
-        onDragEnter: ({ self }) => {
-          cardFieldDragState.set(fieldIdentifier, { closestEdge: extractClosestEdge(self.data) });
+        onDragEnd: () => {
+          cardFieldDragState.forEach((_, key) => {
+            cardFieldDragState.set(key, { closestEdge: null });
+          });
           cardFieldDragState = new Map(cardFieldDragState);
         },
-        onDragLeave: () => {
-          cardFieldDragState.set(fieldIdentifier, { closestEdge: null });
+        onEnter: (closestEdge) => {
+          cardFieldDragState.set(fieldIdentifier, { closestEdge });
           cardFieldDragState = new Map(cardFieldDragState);
         },
-        onDrop: ({ self, source }) => {
+        onLeave: clearEdge,
+        onDrop: ({ source, closestEdge }) => {
           if (source.data.type === 'card-field') {
-            reorderCardFields(source.data.fieldIndex, fieldIndex, extractClosestEdge(self.data));
+            reorderCardFields(source.data.fieldIndex, fieldIndex, closestEdge);
           }
-          cardFieldDragState.set(fieldIdentifier, { closestEdge: null });
-          cardFieldDragState = new Map(cardFieldDragState);
-        }
-      });
-
-      setupCleanups.push(() => {
-        draggableCleanup();
-        dropTargetCleanup();
-      });
+          clearEdge();
+        },
+      }));
     });
   }
 
@@ -567,6 +532,12 @@
     hasChanges = true;
   }
 
+  function updateColumnColor(index, color) {
+    columns[index].color = color;
+    columns = [...columns];
+    hasChanges = true;
+  }
+
   function getStatusName(statusId) {
     const s = statuses.find(s => s.id === statusId);
     return s ? objectDisplayName(s, 'status') : statusId;
@@ -591,25 +562,37 @@
 
   // --- Board display options ---
 
-  function setShowRightmostColumnLast50(value) {
-    showRightmostColumnLast50 = value;
-    if (value) {
-      trimCompletedItemsByAge = false;
-      completedItemRetentionError = '';
-    }
+  const COMPLETED_VISIBILITY_OPTIONS = [
+    { value: 'all', labelKey: 'completedAll' },
+    { value: 'last_day', labelKey: 'completedLastDay' },
+    { value: 'last_week', labelKey: 'completedLastWeek' },
+    { value: 'limit', labelKey: 'completedLimit' },
+    { value: 'none', labelKey: 'completedNone' },
+  ];
+  let completedVisibilityOptions = $derived(
+    COMPLETED_VISIBILITY_OPTIONS.map((option) => ({
+      value: option.value,
+      label: t(`boardControls.${option.labelKey}`),
+    }))
+  );
+
+  // A board saved before presets existed maps onto the closest preset.
+  function legacyCompletedPreset(config) {
+    const days = Number(config?.completed_item_retention_days);
+    if (days === 1) return 'last_day';
+    if (days === 7) return 'last_week';
+    return 'all';
+  }
+
+  function setCompletedVisibility(value) {
+    completedVisibility = value;
+    completedVisibilityDirty = true;
     hasChanges = true;
   }
 
-  function setTrimCompletedItemsByAge(value) {
-    trimCompletedItemsByAge = value;
-    if (value) showRightmostColumnLast50 = false;
-    completedItemRetentionError = '';
-    hasChanges = true;
-  }
-
-  function updateCompletedItemRetentionDays(value) {
-    completedItemRetentionDays = value;
-    completedItemRetentionError = '';
+  function setCompletedLimit(value) {
+    completedLimit = value;
+    completedLimitDirty = true;
     hasChanges = true;
   }
 
@@ -705,14 +688,8 @@
   }
 
   async function saveConfiguration() {
-    const retentionDays = Number(completedItemRetentionDays);
-    if (
-      trimCompletedItemsByAge &&
-      (!Number.isInteger(retentionDays) || retentionDays < 1 || retentionDays > 3650)
-    ) {
-      completedItemRetentionError = t('settings.boardConfig.retentionRangeError');
-      return;
-    }
+    const completedRetentionDays =
+      completedVisibility === 'last_day' ? 1 : completedVisibility === 'last_week' ? 7 : null;
 
     saving = true;
     try {
@@ -734,23 +711,33 @@
           display_order: i,
           width: 0
         })),
-        show_rightmost_column_last_50: showRightmostColumnLast50,
-        completed_item_retention_days: trimCompletedItemsByAge ? retentionDays : null
+        show_rightmost_column_last_50: false,
+        completed_item_retention_days: completedRetentionDays
       };
 
       // Only carry view settings when this scope owns an override, the user
       // changed the selection, or an explicit reset was requested — otherwise
       // inheritance stays untouched.
+      const viewSettings = {};
       if (viewsResetPending) {
-        payload.view_settings = { enabled_views: null };
+        viewSettings.enabled_views = null;
       } else if (viewsDirty || boardConfig?.view_settings) {
-        payload.view_settings = { enabled_views: [...enabledViews] };
+        viewSettings.enabled_views = [...enabledViews];
+      }
+      if (completedVisibilityDirty) {
+        viewSettings.completed_visibility = completedVisibility;
+      }
+      if (completedVisibility === 'limit' && (completedVisibilityDirty || completedLimitDirty)) {
+        viewSettings.completed_limit = normalizeCompletedLimit(completedLimit);
+      }
+      if (Object.keys(viewSettings).length > 0) {
+        payload.view_settings = viewSettings;
       }
 
       if (boardConfig && boardConfig.id) {
-        await api.collections.updateBoardConfiguration(collectionId, boardConfig.id, payload, workspaceId);
+        await collections.updateBoardConfiguration(collectionId, boardConfig.id, payload, workspaceId);
       } else {
-        const newConfig = await api.collections.createBoardConfiguration(collectionId, workspaceId, payload);
+        const newConfig = await collections.createBoardConfiguration(collectionId, workspaceId, payload);
         boardConfig = newConfig;
       }
       collectionStore.invalidateBoardConfiguration(workspaceId, collectionId);
@@ -784,15 +771,15 @@
 
     if (boardConfig) {
       try {
-        await api.collections.deleteBoardConfiguration(collectionId, boardConfig.id, workspaceId);
+        await collections.deleteBoardConfiguration(collectionId, boardConfig.id, workspaceId);
         boardConfig = null;
         columns = [];
         backlogStatusIDs = [];
         cardFields = [];
-        showRightmostColumnLast50 = false;
-        trimCompletedItemsByAge = false;
-        completedItemRetentionDays = 30;
-        completedItemRetentionError = '';
+        completedVisibility = 'all';
+        completedVisibilityDirty = false;
+        completedLimit = DEFAULT_COMPLETED_LIMIT;
+        completedLimitDirty = false;
         hasChanges = false;
         goToBoard();
       } catch (error) {
@@ -803,10 +790,10 @@
       columns = [];
       backlogStatusIDs = [];
       cardFields = [];
-      showRightmostColumnLast50 = false;
-      trimCompletedItemsByAge = false;
-      completedItemRetentionDays = 30;
-      completedItemRetentionError = '';
+      completedVisibility = 'all';
+      completedVisibilityDirty = false;
+      completedLimit = DEFAULT_COMPLETED_LIMIT;
+      completedLimitDirty = false;
       hasChanges = false;
     }
   }
@@ -876,74 +863,75 @@
 
         <!-- Columns Tab -->
         {#if activeTab === 'columns'}
-        <div class="mt-4 flex flex-col gap-4 rounded border p-4" style="background-color: var(--ds-surface-raised); border-color: var(--ds-border);">
-          <Checkbox
-            bind:checked={showRightmostColumnLast50}
-            onchange={setShowRightmostColumnLast50}
-            disabled={!canConfigure}
-            dataTestid="board-rightmost-limit-enabled"
-            label={t('settings.boardConfig.latestFiftyRightmost')}
-            hint={t('settings.boardConfig.latestFiftyRightmostHint')}
-            size="small"
-          />
-          {#if !showRightmostColumnLast50}
-            <div class="border-t pt-4" style="border-color: var(--ds-border);">
-              <Checkbox
-                bind:checked={trimCompletedItemsByAge}
-                onchange={setTrimCompletedItemsByAge}
-                disabled={!canConfigure}
-                dataTestid="board-completed-age-enabled"
-                label={t('settings.boardConfig.hideCompletedByAge')}
-                hint={t('settings.boardConfig.hideCompletedByAgeHint')}
-                size="small"
-              />
-              {#if trimCompletedItemsByAge}
-                <div class="ml-6 mt-3 max-w-xs">
-                  <label
-                    for="board-completed-retention-days"
-                    class="mb-1.5 block text-xs font-medium"
-                    style="color: var(--ds-text-subtle);"
-                  >
-                    {t('settings.boardConfig.recentActivityWindow')}
-                  </label>
-                  <div class="flex items-center gap-2">
-                    <Input
-                      id="board-completed-retention-days"
-                      type="number"
-                      value={completedItemRetentionDays}
-                      oninput={(event) => updateCompletedItemRetentionDays(event.currentTarget.value)}
-                      min={1}
-                      max={3650}
-                      step={1}
-                      size="small"
-                      dataTestid="board-completed-retention-days"
-                      ariaDescribedby="board-completed-retention-help"
-                      class="w-24"
-                    />
-                    <span class="text-xs" style="color: var(--ds-text-subtle);">{t('settings.boardConfig.days')}</span>
-                  </div>
-                  <p
-                    id="board-completed-retention-help"
-                    class="mt-1.5 text-xs"
-                    style="color: {completedItemRetentionError ? 'var(--ds-text-danger)' : 'var(--ds-text-subtlest)'};"
-                  >
-                    {completedItemRetentionError || t('settings.boardConfig.retentionWindowHint')}
-                  </p>
-                </div>
-              {/if}
-            </div>
-          {/if}
+        <div class="mt-5 flex flex-col gap-4 rounded-xl border p-5" style="background-color: var(--ds-surface-raised); border-color: var(--ds-border);">
+          <div>
+            <h4 class="text-sm font-semibold" style="color: var(--ds-text);">{t('settings.boardConfig.displayOptions')}</h4>
+            <p class="text-xs mt-0.5" style="color: var(--ds-text-subtle);">{t('settings.boardConfig.displayOptionsHint')}</p>
+          </div>
+          <div class="max-w-xs">
+            <label
+              for="board-completed-visibility"
+              class="mb-1.5 block text-xs font-medium"
+              style="color: var(--ds-text-subtle);"
+            >
+              {t('settings.boardConfig.completedVisibility')}
+            </label>
+            <NativeSelect
+              id="board-completed-visibility"
+              value={completedVisibility}
+              options={completedVisibilityOptions}
+              disabled={!canConfigure}
+              size="small"
+              dataTestid="board-completed-visibility"
+              onchange={(value) => setCompletedVisibility(value)}
+            />
+            <p class="mt-1.5 text-xs" style="color: var(--ds-text-subtlest);">
+              {t('settings.boardConfig.completedVisibilityHint')}
+            </p>
+            {#if completedVisibility === 'limit'}
+              <div class="mt-3">
+                <label
+                  for="board-completed-limit"
+                  class="mb-1.5 block text-xs font-medium"
+                  style="color: var(--ds-text-subtle);"
+                >
+                  {t('settings.boardConfig.completedLimit')}
+                </label>
+                <Input
+                  id="board-completed-limit"
+                  type="number"
+                  value={completedLimit}
+                  oninput={(e) => setCompletedLimit(e.currentTarget.value)}
+                  disabled={!canConfigure}
+                  size="small"
+                  min={MIN_COMPLETED_LIMIT}
+                  max={MAX_COMPLETED_LIMIT}
+                  dataTestid="board-completed-limit"
+                />
+                <p class="mt-1.5 text-xs" style="color: var(--ds-text-subtlest);">
+                  {t('settings.boardConfig.completedLimitHint', { max: MAX_COMPLETED_LIMIT })}
+                </p>
+              </div>
+            {/if}
+          </div>
         </div>
 
-        <div class="grid grid-cols-1 lg:grid-cols-6 gap-3 mt-4 mb-6">
+        <div class="grid grid-cols-1 lg:grid-cols-6 gap-5 mt-5 mb-8">
           <!-- Left Panel: Available Statuses -->
-          <div class="lg:col-span-2 rounded-xl p-3 border" style="background-color: var(--ds-surface); border-color: var(--ds-border);">
-            <h4 class="text-sm font-semibold mb-1" style="color: var(--ds-text);">
-              {t('settings.boardConfig.availableStatuses')} ({availableStatuses.length})
-            </h4>
-            <p class="text-xs mb-3" style="color: var(--ds-text-subtle);">
-              {t('settings.boardConfig.dragStatusesToColumns')}
-            </p>
+          <div class="lg:col-span-2 rounded-xl p-4 border flex flex-col" style="background-color: var(--ds-surface); border-color: var(--ds-border);">
+            <div class="flex items-start gap-3 mb-3">
+              <span class="flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center" style="background-color: var(--ds-interactive-subtle, var(--ds-background-neutral-hovered)); color: var(--ds-interactive);">
+                <ListChecks class="w-4 h-4" />
+              </span>
+              <div class="min-w-0">
+                <h4 class="text-sm font-semibold" style="color: var(--ds-text);">
+                  {t('settings.boardConfig.availableStatuses')} ({availableStatuses.length})
+                </h4>
+                <p class="text-xs mt-0.5" style="color: var(--ds-text-subtle);">
+                  {t('settings.boardConfig.dragStatusesToColumns')}
+                </p>
+              </div>
+            </div>
 
             <SearchInput
               bind:value={statusSearchQuery}
@@ -957,7 +945,7 @@
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
                   data-available-status={JSON.stringify({ id: status.id, name: status.name, color: status.category_color })}
-                  class="available-status-row group flex items-center gap-2 px-2 py-1.5 rounded border transition-all duration-200 cursor-grab hover:border-ds-border-focused active:cursor-grabbing"
+                  class="available-status-row group flex items-center gap-2.5 px-2.5 py-2 rounded-lg border transition-all duration-200 cursor-grab hover:border-ds-border-focused active:cursor-grabbing"
                 >
                   <!-- 6-dot drag handle -->
                   <div class="flex-shrink-0">
@@ -985,24 +973,34 @@
           </div>
 
           <!-- Right Panel: Board Columns -->
-          <div class="lg:col-span-4 rounded-xl p-3 border" style="background-color: var(--ds-surface); border-color: var(--ds-border);">
-            <div class="flex items-center justify-between mb-3">
-              <h4 class="text-sm font-semibold" style="color: var(--ds-text);">
-                {t('settings.boardConfig.boardColumns')}
-              </h4>
+          <div class="lg:col-span-4 rounded-xl p-4 border" style="background-color: var(--ds-surface); border-color: var(--ds-border);">
+            <div class="flex items-center justify-between gap-3 mb-4">
+              <div class="flex items-start gap-3 min-w-0">
+                <span class="flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center" style="background-color: var(--ds-interactive-subtle, var(--ds-background-neutral-hovered)); color: var(--ds-interactive);">
+                  <Columns3 class="w-4 h-4" />
+                </span>
+                <div class="min-w-0">
+                  <h4 class="text-sm font-semibold" style="color: var(--ds-text);">
+                    {t('settings.boardConfig.boardColumns')}
+                  </h4>
+                  <p class="text-xs mt-0.5" style="color: var(--ds-text-subtle);">
+                    {t('settings.boardConfig.dragToReorder')}
+                  </p>
+                </div>
+              </div>
               <Button variant="default" size="small" onclick={addColumn}>
                 <Plus class="w-4 h-4 mr-1" />
                 {t('settings.boardConfig.addColumn')}
               </Button>
             </div>
 
-            <div class="flex gap-2 min-h-48 max-h-[70vh] overflow-x-auto overflow-y-hidden pb-1" style="overscroll-behavior: contain;">
+            <div class="flex gap-3 min-h-56 max-h-[70vh] overflow-x-auto overflow-y-hidden pb-1" style="overscroll-behavior: contain;">
               {#each columns as column, colIndex (colIndex)}
                 <!-- Column section -->
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
                   data-board-column={colIndex}
-                  class="relative rounded-lg border transition-all w-60 flex-shrink-0 flex flex-col"
+                  class="relative rounded-xl border transition-all w-60 flex-shrink-0 flex flex-col overflow-hidden"
                   style="border-color: {column.status_ids.length === 0 ? 'var(--ds-border-warning, #ca8a04)' : 'var(--ds-border)'}; border-style: {column.status_ids.length === 0 ? 'dashed' : 'solid'}; background-color: var(--ds-surface-raised);"
                 >
                   <!-- Column reorder DropIndicator -->
@@ -1010,8 +1008,11 @@
                     <DropIndicator edge={columnDragState.get(colIndex)?.closestEdge} gap={8} />
                   {/if}
 
+                  <!-- Column color accent -->
+                  <div class="h-1.5 flex-shrink-0" style="background-color: {column.color || 'var(--ds-border)'};"></div>
+
                   <!-- Column name and actions -->
-                  <div class="flex items-center gap-1.5 px-2 py-1.5">
+                  <div class="flex items-center gap-1.5 px-2.5 py-2">
                     <!-- svelte-ignore a11y_no_static_element_interactions -->
                     <div
                       data-column-drag-handle
@@ -1040,8 +1041,22 @@
                     </button>
                   </div>
 
+                  <!-- Column color -->
+                  <div class="flex items-center justify-between gap-3 px-2.5 py-2 border-b" style="border-color: var(--ds-border);">
+                    <span class="text-xs font-medium" style="color: var(--ds-text-subtle);">
+                      {t('settings.boardConfig.columnColor')}
+                    </span>
+                    <IconSelector
+                      selectedColor={column.color}
+                      onchange={(event) => updateColumnColor(colIndex, event.detail.color)}
+                      colorOnly
+                      compact
+                      dataTestid={`board-column-color-${colIndex}`}
+                    />
+                  </div>
+
                   <!-- WIP limit -->
-                  <div class="flex items-center justify-between gap-3 px-2 pb-2 border-b" style="border-color: var(--ds-border);">
+                  <div class="flex items-center justify-between gap-3 px-2.5 py-2 border-b" style="border-color: var(--ds-border);">
                     <label
                       for={`board-column-wip-${colIndex}`}
                       class="text-xs font-medium"
@@ -1065,7 +1080,7 @@
                   </div>
 
                   <!-- Column Body -->
-                  <div class="p-1.5 flex flex-col gap-1 flex-1 overflow-y-auto">
+                  <div class="p-2 flex flex-col gap-1.5 flex-1 overflow-y-auto">
                     {#each column.status_ids as statusId, statusIndex (statusId)}
                       <!-- svelte-ignore a11y_no_static_element_interactions -->
                       <div
@@ -1073,7 +1088,7 @@
                         data-status-id={statusId}
                         data-col-index={colIndex}
                         data-status-index={statusIndex}
-                        class="relative group flex items-center gap-2 px-2 py-1.5 rounded border transition-all duration-200"
+                        class="relative group flex items-center gap-2.5 px-2.5 py-2 rounded-lg border transition-all duration-200"
                         style="background: var(--ds-background-input); border-color: var(--ds-border); user-select: none;"
                       >
                         <!-- DropIndicator for status insertion -->
@@ -1092,7 +1107,7 @@
                         <!-- Remove button -->
                         <button
                           onclick={() => removeStatusFromColumn(colIndex, statusId)}
-                          class="remove-btn opacity-0 group-hover:opacity-100 p-0.5 rounded transition-all flex-shrink-0"
+                          class="remove-btn opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100 p-0.5 rounded transition-all flex-shrink-0"
                           title={t('common.remove')}
                         >
                           <X class="w-3.5 h-3.5" />

@@ -1,5 +1,5 @@
 import { derived, get, writable } from 'svelte/store';
-import { api } from '../api.js';
+import { permissions as permissionsApi } from '../api/permissions.js';
 import { authStore } from './auth.svelte.js';
 import { clearPermissionProfiles, loadPermissionProfile } from './permissionProfile.js';
 
@@ -21,7 +21,7 @@ function createPermissionStore() {
   // hide the management surface.
   const hasPortals = writable(false);
   const managesChannels = writable(false);
-  const logbookAvailable = writable(false);
+  const managesAssetSets = writable(false);
   let allPermissionsLoaded = false;
   let allPermissionsLoadPromise = null;
   let allPermissionsLoadGeneration = 0;
@@ -63,20 +63,14 @@ function createPermissionStore() {
     }
   );
 
-  const canAccessLogbook = derived(
-    [authStore, logbookAvailable],
-    ([$authStore, $logbookAvailable]) => {
-      const user = $authStore.currentUser;
-      if (!user) return false;
-      return $logbookAvailable;
+  const canManageAssets = derived(
+    [authStore, userPermissionKeys, managesAssetSets],
+    ([$authStore, $keys, $managesAssetSets]) => {
+      if (!$authStore.currentUser) return false;
+      if ($authStore.currentUser.is_system_admin) return true;
+      return $keys.has('asset.manage') || $managesAssetSets;
     }
   );
-
-  const canManageAssets = derived([authStore, userPermissionKeys], ([$authStore, $keys]) => {
-    if (!$authStore.currentUser) return false;
-    if ($authStore.currentUser.is_system_admin) return true;
-    return $keys.has('asset.manage');
-  });
 
   const canManageChannels = derived(
     [authStore, managesChannels],
@@ -99,9 +93,9 @@ function createPermissionStore() {
       canAccessCustomers,
       canAccessAssets,
       canAccessPortalHub,
-      canAccessLogbook,
       canManageAssets,
       canManageChannels,
+      managesAssetSets,
     ],
     ([
       $permissions,
@@ -114,9 +108,9 @@ function createPermissionStore() {
       $canAccessCustomers,
       $canAccessAssets,
       $canAccessPortalHub,
-      $canAccessLogbook,
       $canManageAssets,
       $canManageChannels,
+      $managesAssetSets,
     ]) => ({
       permissions: $permissions,
       userPermissions: $userPermissions,
@@ -128,9 +122,9 @@ function createPermissionStore() {
       canAccessCustomers: $canAccessCustomers,
       canAccessAssets: $canAccessAssets,
       canAccessPortalHub: $canAccessPortalHub,
-      canAccessLogbook: $canAccessLogbook,
       canManageAssets: $canManageAssets,
       canManageChannels: $canManageChannels,
+      managesAssetSets: $managesAssetSets,
     })
   );
 
@@ -169,12 +163,6 @@ function createPermissionStore() {
       return value;
     },
 
-    get canAccessLogbook() {
-      let value;
-      canAccessLogbook.subscribe((v) => (value = v))();
-      return value;
-    },
-
     get canManageAssets() {
       let value;
       canManageAssets.subscribe((v) => (value = v))();
@@ -184,6 +172,12 @@ function createPermissionStore() {
     get canManageChannels() {
       let value;
       canManageChannels.subscribe((v) => (value = v))();
+      return value;
+    },
+
+    get managesAssetSets() {
+      let value;
+      managesAssetSets.subscribe((v) => (value = v))();
       return value;
     },
 
@@ -207,9 +201,9 @@ function createPermissionStore() {
       managesChannels.set(value);
     },
 
-    // Set whether logbook service is available
-    setLogbookAvailable(value) {
-      logbookAvailable.set(value);
+    // Set whether the current user administers at least one asset set
+    setManagesAssetSets(value) {
+      managesAssetSets.set(value);
     },
 
     // Load user permissions
@@ -263,7 +257,7 @@ function createPermissionStore() {
 
       const generation = ++allPermissionsLoadGeneration;
       loading.set(true);
-      const request = api.permissions
+      const request = permissionsApi
         .getAll()
         .then((allPermissions) => {
           if (generation !== allPermissionsLoadGeneration) return [];
@@ -300,6 +294,7 @@ function createPermissionStore() {
       userPermissions.set(new Set());
       userPermissionKeys.set(new Set());
       managesChannels.set(false);
+      managesAssetSets.set(false);
       loading.set(false);
       error.set(null);
     },

@@ -1,26 +1,39 @@
 <script>
-  import { useEventListener } from 'runed';
-  import { api } from '../../api.js';
   import Lozenge from '../../components/Lozenge.svelte';
-  import { Gauge, AlertTriangle, PauseCircle, Clock, CalendarClock } from '@lucide/svelte';
+  import Tooltip from '../../components/Tooltip.svelte';
+  import Gauge from '@lucide/svelte/icons/gauge';
+  import Clock from '@lucide/svelte/icons/clock';
   import { t } from '../../stores/i18n.svelte.js';
   import { formatInstant } from '../../utils/dateFormatter.js';
+  import { onWorkItemRefresh, workItemRefreshTouchesWorkspace } from '../../stores/workItemRefresh.js';
+  import { getItemSLA } from '../sla/slaState.js';
 
-  let { itemId = null } = $props();
+  let { itemId = null, workspaceId = null } = $props();
+
+  // Server-computed remaining/breach state has to be re-read while a timer is
+  // visible; elapsed time and business-hours transitions never reach the client
+  // otherwise.
+  const SLA_REFRESH_MS = 30000;
 
   let states = $state([]);
   let loading = $state(false);
+  let requestToken = 0;
 
   async function load() {
     if (!itemId) return;
+    const token = ++requestToken;
+    const requestedItemId = itemId;
     loading = true;
     try {
-      states = (await api.sla.getItemSLA(itemId)) ?? [];
+      const result = (await getItemSLA(requestedItemId, workspaceId)) ?? [];
+      // A newer request or an item switch supersedes this response.
+      if (token !== requestToken) return;
+      states = result;
     } catch {
       // SLA state is supplementary; never break the item detail on a read error.
-      states = [];
+      if (token === requestToken) states = [];
     } finally {
-      loading = false;
+      if (token === requestToken) loading = false;
     }
   }
 
@@ -28,9 +41,25 @@
     if (itemId) void load();
   });
 
+  let hasOngoing = $derived(states.some((state) => state.ongoing));
+
+  $effect(() => {
+    // Only poll while a timer is actually running; completed history is static.
+    if (!itemId || !hasOngoing) return;
+    const timer = setInterval(() => void load(), SLA_REFRESH_MS);
+    return () => clearInterval(timer);
+  });
+
   // Item mutations (status, assignee, comments, etc.) are broadcast globally;
-  // refresh the derived SLA state when they happen.
-  useEventListener(() => window, 'refresh-work-items', () => void load());
+  // refresh the derived SLA state when they happen. Reading through slaState
+  // means the panel and any SLA badges in the same workspace share one batch,
+  // and a burst in another workspace is skipped entirely.
+  $effect(() =>
+    onWorkItemRefresh((detail) => {
+      if (!workItemRefreshTouchesWorkspace(detail, workspaceId)) return;
+      void load();
+    })
+  );
 
   function formatDuration(ms) {
     if (ms == null) return '';
@@ -90,37 +119,47 @@
 
           {#if state.ongoing}
             {@const cycle = { ...state.ongoing, display_format: state.display_format }}
-            <div class="flex items-center gap-2 flex-wrap mt-1 text-sm">
-              <Clock class="w-3.5 h-3.5" style="color: var(--ds-text-subtle)" />
-              <span data-testid="item-sla-remaining-{state.metric_id}">{cycleRemaining(cycle)}</span>
-              {#if cycle.breached}
-                <Lozenge color="red" text={t('items.sla.breached')} />
+            {#if cycle.goal_duration_ms > 0}
+              <div class="flex items-center gap-2 flex-wrap mt-1 text-sm">
+                <Clock class="w-3.5 h-3.5" style="color: var(--ds-text-subtle)" />
+                <span data-testid="item-sla-remaining-{state.metric_id}">{cycleRemaining(cycle)}</span>
+                {#if cycle.breached}
+                  <Lozenge color="red" text={t('items.sla.breached')} />
+                {/if}
+                {#if cycle.paused}
+                  <Lozenge color="yellow" text={t('items.sla.paused')} />
+                {/if}
+                {#if !cycle.within_calendar_hours && !cycle.paused}
+                  <Tooltip content={t('items.sla.outsideHours')}>
+                    <Lozenge color="blue" text={t('items.sla.paused')} dataTestid="item-sla-paused-outside-hours-{state.metric_id}" />
+                  </Tooltip>
+                {/if}
+              </div>
+              <div class="text-xs mt-1" style="color: var(--ds-text-subtle)">
+                {t('items.sla.elapsedOfGoal', {
+                  elapsed: formatDuration(cycle.elapsed_ms),
+                  goal: formatDuration(cycle.goal_duration_ms),
+                })}
+              </div>
+              {#if cycle.coverage?.reference === 'team_service_hours' && cycle.coverage.discrepancy && cycle.coverage.discrepancy !== 'aligned'}
+                <div
+                  class="text-xs mt-1"
+                  style="color: var(--ds-text-subtle)"
+                  data-testid="item-sla-coverage-{state.metric_id}"
+                >
+                  {t(`items.sla.coverageDiscrepancies.${cycle.coverage.discrepancy}`)}
+                  {#if cycle.coverage.note}
+                    · {t(`items.sla.coverageNotes.${cycle.coverage.note}`)}
+                  {/if}
+                </div>
               {/if}
-              {#if cycle.paused}
-                <Lozenge color="yellow" text={t('items.sla.paused')} />
-              {/if}
-              {#if cycle.within_calendar_hours}
-                <Lozenge color="green" text={t('items.sla.withinHours')} />
-              {:else if !cycle.paused}
-                <Lozenge color="blue" text={t('items.sla.outsideHours')} />
-              {/if}
-            </div>
-            <div class="text-xs mt-1" style="color: var(--ds-text-subtle)">
-              {t('items.sla.elapsedOfGoal', {
-                elapsed: formatDuration(cycle.elapsed_ms),
-                goal: formatDuration(cycle.goal_duration_ms),
-              })}
-            </div>
-            {#if cycle.coverage?.reference === 'team_service_hours' && cycle.coverage.discrepancy && cycle.coverage.discrepancy !== 'aligned'}
+            {:else}
               <div
                 class="text-xs mt-1"
                 style="color: var(--ds-text-subtle)"
-                data-testid="item-sla-coverage-{state.metric_id}"
+                data-testid="item-sla-no-goal-{state.metric_id}"
               >
-                {t(`items.sla.coverageDiscrepancies.${cycle.coverage.discrepancy}`)}
-                {#if cycle.coverage.note}
-                  · {t(`items.sla.coverageNotes.${cycle.coverage.note}`)}
-                {/if}
+                {t('items.sla.noGoal')}
               </div>
             {/if}
           {:else}

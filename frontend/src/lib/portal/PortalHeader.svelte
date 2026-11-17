@@ -1,21 +1,19 @@
 <script>
-  import {
-    ArrowLeft,
-    BookOpen,
-    CheckSquare,
-    FileText,
-    Home,
-    KeyRound,
-    List,
-    LogOut,
-    Moon,
-    Palette,
-    Settings,
-    ShieldCheck,
-    Sun,
-    User,
-  } from '@lucide/svelte';
-  import { authStore } from '../stores';
+  import ArrowLeft from '@lucide/svelte/icons/arrow-left';
+  import BookOpen from '@lucide/svelte/icons/book-open';
+  import CheckSquare from '@lucide/svelte/icons/square-check';
+  import FileText from '@lucide/svelte/icons/file-text';
+  import Home from '@lucide/svelte/icons/home';
+  import KeyRound from '@lucide/svelte/icons/key-round';
+  import List from '@lucide/svelte/icons/list';
+  import LogOut from '@lucide/svelte/icons/log-out';
+  import Moon from '@lucide/svelte/icons/moon';
+  import Palette from '@lucide/svelte/icons/palette';
+  import Settings from '@lucide/svelte/icons/settings';
+  import ShieldCheck from '@lucide/svelte/icons/shield-check';
+  import Sun from '@lucide/svelte/icons/sun';
+  import User from '@lucide/svelte/icons/user';
+  import { authStore } from '../stores/auth.svelte.js';
   import { portalCustomizationStore as portalStore } from '../stores/portal.svelte.js';
   import {
     portalApprovalsStore,
@@ -267,7 +265,12 @@
               class="absolute top-11 right-0 w-56 rounded-lg border p-1.5 shadow-lg"
               style="background-color: var(--ds-surface-card); border-color: var(--ds-border);"
             >
-              <button type="button" onclick={() => navigate('/')} class="portal-menu-item">
+              <button
+                type="button"
+                onclick={() => navigate('/')}
+                class="portal-menu-item"
+                data-testid="portal-back-to-app"
+              >
                 <ArrowLeft class="w-4 h-4" />
                 <span>{t('portal.backToApp')}</span>
               </button>

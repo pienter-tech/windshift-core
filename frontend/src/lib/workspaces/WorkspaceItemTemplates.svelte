@@ -7,8 +7,11 @@
 
   import { onMount } from 'svelte';
   import StateDisplay from '../components/StateDisplay.svelte';
-import { FileStack, Pencil, Plus, Trash2 } from '@lucide/svelte';
-  import { api } from '../api.js';
+import FileStack from '@lucide/svelte/icons/file-stack';
+import Pencil from '@lucide/svelte/icons/pencil';
+import Plus from '@lucide/svelte/icons/plus';
+import Trash2 from '@lucide/svelte/icons/trash-2';
+  import { itemTemplates, itemTypes as itemTypesApi } from '../api/configuration.js';
   import Panel from '../components/Panel.svelte';
   import Button from '../components/Button.svelte';
   import Checkbox from '../components/Checkbox.svelte';
@@ -28,6 +31,8 @@ import { FileStack, Pencil, Plus, Trash2 } from '@lucide/svelte';
 	import SelectField from '../components/SelectField.svelte';
 
   let { workspaceId } = $props();
+  const uid = $props.id();
+  const bodyLabelId = `${uid}-body-label`;
 
   const MODE_OPTIONS = $derived([
     { value: 'selectable', label: t('workspaceTemplates.mode.selectable') },
@@ -65,8 +70,8 @@ import { FileStack, Pencil, Plus, Trash2 } from '@lucide/svelte';
     loading = true;
     try {
       const [tmpls, types] = await Promise.all([
-        api.itemTemplates.getAll(workspaceId),
-        api.itemTypes.getAll(),
+        itemTemplates.getAll(workspaceId),
+        itemTypesApi.getAll(),
       ]);
       templates = tmpls ?? [];
       itemTypes = types ?? [];
@@ -125,10 +130,10 @@ import { FileStack, Pencil, Plus, Trash2 } from '@lucide/svelte';
     saving = true;
     try {
       if (editingId === null) {
-        await api.itemTemplates.create(workspaceId, body);
+        await itemTemplates.create(workspaceId, body);
         successToast(t('workspaceTemplates.created'));
       } else {
-        await api.itemTemplates.update(workspaceId, editingId, body);
+        await itemTemplates.update(workspaceId, editingId, body);
         successToast(t('workspaceTemplates.updated'));
       }
       closeModal();
@@ -152,7 +157,7 @@ import { FileStack, Pencil, Plus, Trash2 } from '@lucide/svelte';
     pendingDelete = null;
     if (!target) return;
     try {
-      await api.itemTemplates.delete(workspaceId, target.id);
+      await itemTemplates.delete(workspaceId, target.id);
       successToast(t('workspaceTemplates.deleted'));
       await load();
     } catch (err) {
@@ -280,9 +285,9 @@ import { FileStack, Pencil, Plus, Trash2 } from '@lucide/svelte';
       </div>
 
       <div>
-        <Label class="mb-1">{t('workspaceTemplates.descriptionBody')}</Label>
+        <Label id={bodyLabelId} class="mb-1">{t('workspaceTemplates.descriptionBody')}</Label>
         <div class="border rounded-md" style="border-color: var(--ds-border);" data-testid="item-template-body">
-          <MilkdownEditor bind:content={formBody} showToolbar={true} placeholder={t('workspaceTemplates.bodyPlaceholder')} />
+          <MilkdownEditor bind:content={formBody} showToolbar={true} placeholder={t('workspaceTemplates.bodyPlaceholder')} ariaLabelledBy={bodyLabelId} />
         </div>
       </div>
 

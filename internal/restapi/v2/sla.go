@@ -55,7 +55,7 @@ func workspaceItemsSLA(deps Deps) readOperation[map[int][]models.ItemSLA] {
 		for _, item := range items {
 			itemIDs = append(itemIDs, item.ID)
 		}
-		states, err := deps.SLA.ItemsSLA(r.Context(), workspaceID, itemIDs)
+		states, err := deps.SLA.ItemsSLABadges(r.Context(), workspaceID, itemIDs)
 		if err != nil {
 			return nil, internalError(err)
 		}

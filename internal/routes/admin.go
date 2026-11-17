@@ -23,6 +23,12 @@ func RegisterAdminRoutes(deps *Deps) {
 	api.HandleH("GET /admin/security-settings", admin(http.HandlerFunc(deps.Admin.SecuritySettings.GetSecuritySettings)))
 	api.HandleH("PUT /admin/security-settings", admin(http.HandlerFunc(deps.Admin.SecuritySettings.UpdateSecuritySettings)))
 
+	// Instance-wide general configuration (site title and future fields)
+	if deps.Admin.GeneralSettings != nil {
+		api.HandleH("GET /admin/general-settings", admin(http.HandlerFunc(deps.Admin.GeneralSettings.GetSettings)))
+		api.HandleH("PUT /admin/general-settings", admin(http.HandlerFunc(deps.Admin.GeneralSettings.UpdateSettings)))
+	}
+
 	// Coding-agent acting-identity gate (WI-87). Master flag + allowlist
 	// for which service users a workspace admin may bind a run to.
 	if deps.Admin.AgentSecurity != nil {
@@ -48,6 +54,7 @@ func RegisterAdminRoutes(deps *Deps) {
 	api.HandleH("POST /admin/diagnostics/frac-index/migration", admin(http.HandlerFunc(deps.Admin.Diagnostics.ControlGlobalRankMigration)))
 	api.HandleH("GET /admin/diagnostics/llm-providers", admin(http.HandlerFunc(deps.Admin.Diagnostics.GetLLMProviderStatus)))
 	api.HandleH("GET /admin/diagnostics/briefing-failures", admin(http.HandlerFunc(deps.Admin.Diagnostics.GetBriefingFailures)))
+	api.HandleH("GET /admin/diagnostics/briefing-health", admin(http.HandlerFunc(deps.Admin.Diagnostics.GetBriefingHealth)))
 	api.HandleH("GET /admin/diagnostics/runner-pools", admin(http.HandlerFunc(deps.Admin.Diagnostics.GetRunnerPools)))
 	api.HandleH("GET /admin/diagnostics/database-pool", admin(http.HandlerFunc(deps.Admin.Diagnostics.GetDatabasePool)))
 	api.HandleH("GET /admin/diagnostics/cache-memory", admin(http.HandlerFunc(deps.Admin.Diagnostics.GetCacheMemory)))
@@ -56,6 +63,7 @@ func RegisterAdminRoutes(deps *Deps) {
 	api.HandleH("PUT /admin/diagnostics/recurrence-volume", admin(http.HandlerFunc(deps.Admin.Diagnostics.UpdateRecurrenceVolumeSettings)))
 	api.HandleH("GET /admin/diagnostics/domain-events", admin(http.HandlerFunc(deps.Admin.Diagnostics.GetDomainEvents)))
 	api.HandleH("GET /admin/diagnostics/scm-connections", admin(http.HandlerFunc(deps.Admin.Diagnostics.GetSCMConnections)))
+	api.HandleH("GET /admin/diagnostics/email-intake", admin(http.HandlerFunc(deps.Admin.Diagnostics.GetEmailIntakeDiagnostics)))
 	api.HandleH("POST /admin/diagnostics/domain-events/{eventID}/{consumerKey}/replay", admin(http.HandlerFunc(deps.Admin.Diagnostics.ReplayDomainEvent)))
 	api.HandleH("POST /admin/diagnostics/domain-events/{eventID}/{consumerKey}/skip", admin(http.HandlerFunc(deps.Admin.Diagnostics.SkipDomainEvent)))
 
@@ -149,6 +157,7 @@ func RegisterAdminRoutes(deps *Deps) {
 
 	// Jira import.
 	api.HandleH("GET /admin/jira-import/connections", admin(http.HandlerFunc(deps.Admin.JiraImport.GetConnections)))
+	api.HandleH("PUT /admin/jira-import/connections/{connectionId}", admin(http.HandlerFunc(deps.Admin.JiraImport.UpdateConnection)))
 	api.HandleH("DELETE /admin/jira-import/connections/{connectionId}", admin(http.HandlerFunc(deps.Admin.JiraImport.DeleteConnection)))
 	api.HandleH("POST /admin/jira-import/connect", admin(http.HandlerFunc(deps.Admin.JiraImport.Connect)))
 	api.HandleH("GET /admin/jira-import/projects", admin(http.HandlerFunc(deps.Admin.JiraImport.GetProjects)))
@@ -159,6 +168,7 @@ func RegisterAdminRoutes(deps *Deps) {
 	api.HandleH("GET /admin/jira-import/assets/{schemaId}/types", admin(http.HandlerFunc(deps.Admin.JiraImport.GetAssetTypes)))
 	api.HandleH("GET /admin/jira-import/jobs", admin(http.HandlerFunc(deps.Admin.JiraImport.GetImportJobs)))
 	api.HandleH("GET /admin/jira-import/jobs/{jobId}", admin(http.HandlerFunc(deps.Admin.JiraImport.GetJobStatus)))
+	api.HandleH("DELETE /admin/jira-import/jobs/{jobId}", admin(http.HandlerFunc(deps.Admin.JiraImport.HideImportJob)))
 	api.HandleH("DELETE /admin/jira-import/jobs/{jobId}/data", admin(http.HandlerFunc(deps.Admin.JiraImport.DeleteImportedData)))
 	api.HandleH("POST /admin/jira-import/start", admin(deps.SetupLimiter.Limit(http.HandlerFunc(deps.Admin.JiraImport.StartImport))))
 	api.HandleH("GET /admin/jira-import/previous-imports", admin(http.HandlerFunc(deps.Admin.JiraImport.GetPreviousImports)))

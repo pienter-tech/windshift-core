@@ -21,6 +21,14 @@ export default {
     systemDefault: 'System Default',
     themeManager: {
       background: 'Background', text: 'Text',
+      brandLayout: 'Sidebar brand',
+      brandLayoutMarkText: 'Mark + text',
+      brandLayoutMarkOnly: 'Mark only',
+      brandLayoutFullLogo: 'Full logo',
+      brandLayoutHelp: 'Controls the expanded sidebar. The collapsed sidebar always shows the mark.',
+      brandPreview: 'Sidebar preview',
+      brandPreviewExpanded: 'Expanded',
+      brandPreviewCollapsed: 'Collapsed',
       failedToLoad: 'Failed to load themes.', failedToCreate: 'Failed to create theme.',
       failedToUpdate: 'Failed to update theme.', failedToDelete: 'Failed to delete theme.',
       failedToActivate: 'Failed to activate theme.', failedToUploadLogo: 'Failed to upload logo.',
@@ -31,6 +39,18 @@ export default {
       },
     },
 
+    // Instance-wide general configuration (site title and future fields)
+    generalSettings: {
+      title: 'General',
+      subtitle: 'Instance-wide configuration',
+      siteIdentity: 'Site identity',
+      siteIdentityDescription:
+        'The product name shown in the browser tab, the sidebar, and on the login and setup screens.',
+      siteTitle: 'Site title',
+      preview: 'Preview',
+      saved: 'General settings saved',
+    },
+
     // Admin settings
     admin: 'Administration',
     systemSettings: 'System Settings',
@@ -39,6 +59,7 @@ export default {
 
     // Admin panel group labels (for Admin.svelte)
     adminGroups: {
+      general: 'General',
       contentStructure: 'Content & Structure',
       workflowProcess: 'Workflow & Process',
       integrationLinks: 'Integration & Links',
@@ -50,6 +71,7 @@ export default {
 
     // Admin panel item labels and descriptions (for Admin.svelte)
     adminItems: {
+      general: { title: 'General', description: 'Instance-wide configuration such as the site title' },
       customFields: { title: 'Custom Fields', description: 'Manage custom field definitions' },
       screens: { title: 'Screens', description: 'Configure form screens and layouts' },
       hierarchyLevels: {
@@ -160,11 +182,9 @@ export default {
       apply: 'Apply',
       verify: 'Verify',
       cancel: 'Cancel',
-      targetExisting: 'Existing workspace',
       targetNew: 'New workspace',
-      selectWorkspace: 'Select a workspace',
       newWorkspaceName: 'New workspace name',
-      targetRequired: 'Choose a target workspace first',
+      targetRequired: 'Enter a new workspace name first',
       reportTitle: 'Apply report',
       reportStatus: 'Status',
       stagePlugins: 'Plugins',
@@ -339,6 +359,10 @@ export default {
       importing: 'Importing…',
       importWarning: 'The configuration set was imported with warnings.',
       importFailed: 'Failed to import the configuration set.',
+      importNameTitle: 'Name the imported set',
+      importNameDescription:
+        'Importing creates a copy. Choose a name for the imported set.',
+      importInvalidFile: 'That file is not a configuration set template.',
       unresolvedReferencesHeading: 'The import references entities that do not exist on this instance.',
       defaultConflictHeading: 'The import conflicts with a default entity on this instance.',
       unresolvedImportTitle: 'Import: unresolved references',
@@ -598,8 +622,22 @@ export default {
       notConfigured: 'Not configured',
       callbackUrl: 'Callback URL',
       callbackUrlHelp: 'Configure this URL as the redirect/callback URL in your identity provider',
+      baseUrlWarningTitle: 'Server base URL is not configured',
+      baseUrlWarningBody:
+        'Windshift is falling back to {url} for links and OAuth callbacks, so SSO sign-in sends that address to your identity provider. Set the BASE_URL environment variable and restart Windshift before registering the callback URL.',
       scopes: 'Scopes',
       scopesHelp: 'Space-separated list of OIDC scopes',
+      nameClaimsHelp:
+        'Some providers (for example Microsoft Entra ID) only include the display name by default. Add given_name and family_name as optional claims so Windshift receives the structured name instead of parsing the display name.',
+      attributeMapping: 'Attribute mapping',
+      attributeMappingHelp:
+        'Optional. Override the claim each field is read from when your provider uses non-standard claim names. Leave a field blank to use the default claim shown in the placeholder.',
+      attributeEmail: 'Email claim',
+      attributeEmailVerified: 'Email verified claim',
+      attributeName: 'Full name claim',
+      attributeGivenName: 'First name claim',
+      attributeFamilyName: 'Last name claim',
+      attributeUsername: 'Username claim',
       enabled: 'Enabled',
       disabled: 'Disabled',
       default: 'Default',
@@ -694,6 +732,14 @@ export default {
       textBody: 'Plain-text body',
       adminNotes: 'Description (admin notes)',
       activeHint: 'Active (uncheck to fall back to the built-in default)',
+      localeLabel: "Language",
+      defaultLocale: "Default (all languages)",
+      translationHint: "Editing the override for this language. Other languages use the default template.",
+      translationSaved: "Translation saved",
+      translationDelete: "Remove translation",
+      translationDeleted: "Translation removed",
+      translationSaveFailed: "Failed to save translation: {error}",
+      translationDeleteFailed: "Failed to remove translation: {error}",
       availableVariables: 'Available variables',
       syntaxHint:
         "Templates use Go's html/template syntax. Use {open} .Field {close} for values and {open} range .Items {close}…{open} end {close} to iterate.",
@@ -714,6 +760,8 @@ export default {
         invitation: 'New user invitation',
         notification_batch: 'Batched notifications',
         portal_reply: 'Portal customer reply',
+        approval_requested: 'Portal approval request',
+        intake_confirmation: 'Email intake receipt',
       },
     },
 
@@ -889,6 +937,13 @@ export default {
       changeManifest: 'Change manifest.json',
       manifestSelected: 'Manifest selected: {name}',
       registeredRoutes: 'Registered Routes',
+      routeAuth_session: 'Session',
+      routeAuth_admin: 'Admin',
+      routeAuth_none: 'Public',
+      hostFunctionPermissions: 'Host Function Permissions',
+      permissionGranted: 'Granted',
+      permissionDenied: 'Denied',
+      permissionsDeniedNote: 'Some declared permissions are not in effect.',
       moduleSettingsNote:
         'Changes to module settings take effect immediately. Disabling a module will hide it from the navigation.',
       failedToUpload: 'Upload failed: {error}',
@@ -950,11 +1005,6 @@ export default {
         dependency_analysis: {
           name: 'Dependency Analysis',
           description: 'Analyze and suggest dependencies between items',
-        },
-        logbook_articles: {
-          name: 'Logbook Articles',
-          description:
-            'AI-powered document classification, cleaning, and article generation for logbook',
         },
       },
     },
@@ -1114,6 +1164,9 @@ export default {
       manageCustomFields: 'Manage custom fields',
       createCustomField: 'Create custom field',
       customFieldsGlobalNote: 'Custom fields are managed globally by a system administrator.',
+      displayOptions: 'Display options',
+      displayOptionsHint: 'Control how completed work and the rightmost column are shown.',
+      columnColor: 'Column color',
       latestFiftyRightmost: 'Show only the latest 50 items in the rightmost column',
       latestFiftyRightmostHint: 'Useful for busy Done columns without limiting the rest of the board.',
       hideCompletedByAge: 'Hide older completed items',
@@ -1122,6 +1175,11 @@ export default {
       days: 'days',
       retentionWindowHint: 'Completed items without activity during this period are hidden.',
       retentionRangeError: 'Enter a whole number from 1 to 3650.',
+      completedVisibility: 'Completed work',
+      completedVisibilityCustom: 'Custom (use the options below)',
+      completedVisibilityHint: 'Choose how much completed work this board loads. Applies to every viewer.',
+      completedLimit: 'Number of completed items',
+      completedLimitHint: 'Show at most this many completed items on the board (1–{max}).',
       backlogSelected: '{count} statuses selected for the backlog',
       backlogSelected_one: '{count} status selected for the backlog',
       backlogSelected_other: '{count} statuses selected for the backlog',
@@ -1129,7 +1187,7 @@ export default {
         status: 'Status', priority: 'Priority', milestone: 'Milestone', iteration: 'Iteration',
         due_date: 'Due Date', start_date: 'Start Date', end_date: 'End Date', labels: 'Labels',
         created_at: 'Created', project: 'Project', parent: 'Parent', time_in_status: 'Time in Status',
-        story_points: 'Story Points', estimate: 'Estimate',
+        story_points: 'Story Points', estimate: 'Estimate', sla: 'SLA',
       },
     },
   },

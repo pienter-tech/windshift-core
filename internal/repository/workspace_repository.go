@@ -281,7 +281,7 @@ func (r *WorkspaceRepository) FindByIDBasic(id int) (*models.Workspace, error) {
 	var icon, color sql.NullString
 
 	err := r.db.QueryRow(`
-		SELECT id, name, key, description, active, is_personal, is_template, icon, color, internal_comments_enabled
+		SELECT id, name, key, COALESCE(description, ''), active, is_personal, is_template, icon, color, internal_comments_enabled
 		FROM workspaces
 		WHERE id = ?
 	`, id).Scan(&workspace.ID, &workspace.Name, &workspace.Key, &workspace.Description,
@@ -715,6 +715,33 @@ type WorkspaceBasic struct {
 	Icon      string
 	Color     string
 	AvatarURL string
+}
+
+// ListActiveBasics returns active, non-personal, non-template workspaces
+// ordered by name. These are the workspaces an operator can import into.
+func (r *WorkspaceRepository) ListActiveBasics() ([]WorkspaceBasic, error) {
+	rows, err := r.db.Query(`
+		SELECT id, name, key, COALESCE(icon, ''), COALESCE(color, ''), COALESCE(avatar_url, '')
+		FROM workspaces
+		WHERE active = true
+		  AND COALESCE(is_personal, false) = false
+		  AND COALESCE(is_template, false) = false
+		ORDER BY name, id
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list active workspace basics: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	results := make([]WorkspaceBasic, 0)
+	for rows.Next() {
+		var wb WorkspaceBasic
+		if err := rows.Scan(&wb.ID, &wb.Name, &wb.Key, &wb.Icon, &wb.Color, &wb.AvatarURL); err != nil {
+			return nil, fmt.Errorf("scan active workspace basic: %w", err)
+		}
+		results = append(results, wb)
+	}
+	return results, rows.Err()
 }
 
 // FindBasicsByIDs returns basic workspace metadata for the given IDs.

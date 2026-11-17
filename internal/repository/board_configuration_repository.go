@@ -273,6 +273,21 @@ func (r *BoardConfigurationRepository) Update(configID int, req *models.BoardCon
 	return tx.Commit()
 }
 
+// SetViewSettings replaces only the view_settings JSON column, leaving the
+// rest of the configuration (columns, card fields, …) untouched. Used by
+// bundle/pack import, which applies a nav preset to an existing board.
+func (r *BoardConfigurationRepository) SetViewSettings(configID int, settings *models.ViewSettings) error {
+	raw, err := json.Marshal(settings)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.ExecWrite(
+		`UPDATE board_configurations SET view_settings = ?, updated_at = ? WHERE id = ?`,
+		jsonOrNil(raw), time.Now(), configID,
+	)
+	return err
+}
+
 // Delete removes a board configuration (cascade handles columns and status mappings).
 func (r *BoardConfigurationRepository) Delete(configID int) error {
 	_, err := r.db.ExecWrite(`DELETE FROM board_configurations WHERE id = ?`, configID)

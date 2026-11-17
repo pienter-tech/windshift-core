@@ -7,6 +7,8 @@
     truncate = false,
     leading = null,      // 'none', 'tight', 'snug', 'normal', 'relaxed', 'loose'
     align = null,        // 'left', 'center', 'right'
+    dir = undefined,     // override the content-direction default ('auto' unless aligned)
+    style: styleProp = '',
     class: className = '',
     children
   } = $props();
@@ -64,6 +66,10 @@
 
   const colorStyle = $derived(`color: ${variantTokens[variant]};`);
 
+  // Content follows its own direction unless the caller asked for an explicit
+  // alignment, which would fight the dir=auto start rule.
+  const resolvedDir = $derived(dir ?? (align ? undefined : 'auto'));
+
   const allClasses = $derived([
     sizeClasses[size],
     weightClasses[weight],
@@ -74,6 +80,6 @@
   ].filter(Boolean).join(' '));
 </script>
 
-<svelte:element this={as} class={allClasses} style={colorStyle}>
+<svelte:element this={as} class={allClasses} style="{colorStyle} {styleProp}" dir={resolvedDir}>
   {@render children?.()}
 </svelte:element>

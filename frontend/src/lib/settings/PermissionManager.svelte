@@ -1,11 +1,16 @@
 <script>
   import { onMount } from 'svelte';
   import StateDisplay from '../components/StateDisplay.svelte';
-  import { api } from '../api.js';
+  import { permissions as permissionsApi } from '../api/permissions.js';
   import { t } from '../stores/i18n.svelte.js';
   import { authStore } from '../stores/auth.svelte.js';
   import { permissionStore } from '../stores/permissions.svelte.js';
-  import { Shield, Users as UsersIcon, Plus, X, User, Crown } from '@lucide/svelte';
+  import Shield from '@lucide/svelte/icons/shield';
+  import UsersIcon from '@lucide/svelte/icons/users';
+  import Plus from '@lucide/svelte/icons/plus';
+  import X from '@lucide/svelte/icons/x';
+  import User from '@lucide/svelte/icons/user';
+  import Crown from '@lucide/svelte/icons/crown';
   import PageHeader from '../layout/PageHeader.svelte';
   import AssigneePicker from '../pickers/AssigneePicker.svelte';
   import AlertBox from '../components/AlertBox.svelte';
@@ -17,6 +22,7 @@
   import {
     buildPermissionAssignmentMap,
     loadPermissionManagerData,
+    selectGlobalPermissions,
   } from './permissionManagerData.js';
   import { systemPermissionDescription, systemPermissionName } from '../utils/systemLabels.js';
 
@@ -46,7 +52,7 @@
 
     try {
       await permissionStore.loadAllPermissions(authStore.currentUser);
-      const data = await loadPermissionManagerData(api, {
+      const data = await loadPermissionManagerData({
         permissions: $permissionStore.permissions,
       });
       permissions = data.permissions;
@@ -63,7 +69,7 @@
 
   async function loadAllUserPermissions() {
     try {
-      const allUserPerms = await api.permissions.getAllUserGlobalPermissions();
+      const allUserPerms = await permissionsApi.getAllUserGlobalPermissions();
       userPermissions = buildPermissionAssignmentMap(allUserPerms, 'user_id');
     } catch (err) {
       console.warn('Failed to load user permissions:', err);
@@ -75,7 +81,7 @@
 
     try {
       // Fetch all group permissions from backend
-      const allGroupPerms = await api.permissions.getAllGroupPermissions();
+      const allGroupPerms = await permissionsApi.getAllGroupPermissions();
 
       // Defensive check: ensure response is an array
       if (!Array.isArray(allGroupPerms)) {
@@ -87,13 +93,6 @@
     } catch (err) {
       console.warn('Failed to load group permissions:', err);
     }
-  }
-
-  function getGlobalPermissions() {
-    // Hide user.list - any authenticated user can list users (needed for mentions/assignments)
-    // The permission is kept in backend but hidden from management UI
-    const hiddenPermissions = ['user.list'];
-    return permissions.filter(p => p.scope === 'global' && !hiddenPermissions.includes(p.permission_key));
   }
 
   function getUsersWithPermission(permissionId) {
@@ -130,7 +129,7 @@
 
     try {
       if (assignType === 'user' && assignUserId) {
-        await api.permissions.grantGlobal({
+        await permissionsApi.grantGlobal({
           user_id: assignUserId,
           permission_id: permissionId,
         });
@@ -143,7 +142,7 @@
         userPermissions.get(assignUserId).add(permissionId);
         userPermissions = new Map(userPermissions);
       } else if (assignType === 'group' && assignGroupId) {
-        await api.permissions.grantGlobalToGroup({
+        await permissionsApi.grantGlobalToGroup({
           group_id: assignGroupId,
           permission_id: permissionId,
         });
@@ -179,7 +178,7 @@
     }
 
     try {
-      await api.permissions.revokeGlobal(userId, permissionId);
+      await permissionsApi.revokeGlobal(userId, permissionId);
 
       success = t('settings.permissions.permissionRevokedFromUser');
       setTimeout(() => success = '', 3000);
@@ -197,7 +196,7 @@
 
   async function revokePermissionFromGroup(groupId, permissionId) {
     try {
-      await api.permissions.revokeGlobalFromGroup(groupId, permissionId);
+      await permissionsApi.revokeGlobalFromGroup(groupId, permissionId);
 
       success = t('settings.permissions.permissionRevokedFromGroup');
       setTimeout(() => success = '', 3000);
@@ -224,7 +223,7 @@
     return group.name;
   }
 
-  const globalPermissions = $derived(getGlobalPermissions());
+  const globalPermissions = $derived(selectGlobalPermissions(permissions));
 
   const columns = [
     { key: 'permission_name', label: t('settings.permissions.permission'), slot: 'permission' },
