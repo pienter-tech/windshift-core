@@ -1971,6 +1971,7 @@ func (s *Server) initialize() error {
 		planningApplication,
 		permService,
 	)
+	milestoneCommentService.SetMentionNotifier(mentionService)
 	milestonePageLinkService := services.NewMilestonePageLinkService(
 		repository.NewMilestonePageLinkRepository(s.db),
 		planningApplication,

@@ -91,6 +91,7 @@ export default {
         comment: "{actor} vous a mentionné dans un commentaire sur {itemTitle} ({itemKey})",
         description: "{actor} vous a mentionné dans la description de {itemTitle} ({itemKey})",
         item: "{actor} vous a mentionné dans {itemTitle} ({itemKey})",
+        milestoneComment: "{actor} vous a mentionné dans un commentaire sur le jalon {milestoneName}",
     },
     approvalStarted: {
         title: "Approbation requise",

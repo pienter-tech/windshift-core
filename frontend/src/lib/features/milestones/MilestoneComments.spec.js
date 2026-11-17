@@ -8,6 +8,7 @@ import MilestoneComments from './MilestoneComments.svelte';
 const mocks = vi.hoisted(() => ({
   getComments: vi.fn(),
   canEditOthersComments: vi.fn(),
+  editors: [],
 }));
 
 vi.mock('../../api/milestones.js', () => ({
@@ -21,14 +22,22 @@ vi.mock('../../stores/workspacePermissions.svelte.js', () => ({
   workspacePermissions: { canEditOthersComments: mocks.canEditOthersComments },
 }));
 vi.mock('../../composables/useConfirm.js', () => ({ confirm: vi.fn() }));
-// The Markdown editor is irrelevant to ordering; render nothing for it.
+// Render nothing for the Markdown editor; record the props each one gets.
 vi.mock('../../editors/LazyMilkdownEditor.svelte', () => ({
-  default: () => {},
+  default: (_anchor, props) => {
+    mocks.editors.push({
+      readonly: props.readonly ?? false,
+      ariaLabel: props.ariaLabel ?? null,
+      ariaLabelledBy: props.ariaLabelledBy ?? null,
+    });
+    return { focus: () => {}, focusEnd: () => {} };
+  },
 }));
 
 describe('MilestoneComments', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.editors.length = 0;
     // The API returns the newest page first.
     mocks.getComments.mockResolvedValue({
       comments: [
@@ -136,5 +145,28 @@ describe('MilestoneComments', () => {
     // Global milestones have no workspace to grant the permission in.
     render(MilestoneComments, { milestoneId: 50 });
     expect(await editableIds()).toEqual(['3', '1']);
+  });
+
+  it('names the editable editors and leaves read-only renders unnamed', async () => {
+    render(MilestoneComments, { milestoneId: 50 });
+    await screen.findAllByTestId('milestone-comment');
+
+    const editable = () => mocks.editors.filter((editor) => !editor.readonly);
+    expect(editable()).toEqual([
+      { readonly: false, ariaLabel: 'comments.comment', ariaLabelledBy: null },
+    ]);
+    const readOnly = mocks.editors.filter((editor) => editor.readonly);
+    expect(readOnly).toHaveLength(3);
+    for (const editor of readOnly) {
+      expect(editor.ariaLabel).toBeNull();
+      expect(editor.ariaLabelledBy).toBeNull();
+    }
+
+    await fireEvent.click(screen.getAllByTestId('milestone-comment-edit')[0]);
+    expect(editable().at(-1)).toEqual({
+      readonly: false,
+      ariaLabel: 'comments.editComment',
+      ariaLabelledBy: null,
+    });
   });
 });

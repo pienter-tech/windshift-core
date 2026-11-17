@@ -90,6 +90,7 @@ export default {
         comment: "{actor} упомянул вас в комментарии к {itemTitle} ({itemKey})",
         description: "{actor} упомянул вас в описании {itemTitle} ({itemKey})",
         item: "{actor} упомянул вас в {itemTitle} ({itemKey})",
+        milestoneComment: "{actor} упомянул вас в комментарии к вехе {milestoneName}",
     },
     approvalStarted: {
         title: "Требуется согласование",
