@@ -89,6 +89,7 @@ export default {
         comment: "{actor} 在 {itemTitle}（{itemKey}）的评论中提到了您",
         description: "{actor} 在 {itemTitle}（{itemKey}）的描述中提到了您",
         item: "{actor} 在 {itemTitle}（{itemKey}）中提到了您",
+        milestoneComment: "{actor} 在里程碑 {milestoneName} 的评论中提到了您",
     },
     approvalStarted: {
         title: "需要审批",

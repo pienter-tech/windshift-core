@@ -94,7 +94,8 @@ export default {
       title: 'به شما اشاره شد',
       comment: '{actor} در یک دیدگاه در {itemTitle} ({itemKey}) به شما اشاره کرد',
       description: '{actor} در توضیحات {itemTitle} ({itemKey}) به شما اشاره کرد',
-      item: '{actor} در {itemTitle} ({itemKey}) به شما اشاره کرد'
+      item: '{actor} در {itemTitle} ({itemKey}) به شما اشاره کرد',
+      milestoneComment: '{actor} در یک دیدگاه در نقطه عطف {milestoneName} به شما اشاره کرد'
     },
     approvalStarted: {
       title: 'تأیید لازم است',

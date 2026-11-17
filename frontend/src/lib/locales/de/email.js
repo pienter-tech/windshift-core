@@ -92,6 +92,7 @@ export default {
         comment: "{actor} hat Sie in einem Kommentar zu {itemTitle} ({itemKey}) erwähnt",
         description: "{actor} hat Sie in der Beschreibung von {itemTitle} ({itemKey}) erwähnt",
         item: "{actor} hat Sie in {itemTitle} ({itemKey}) erwähnt",
+        milestoneComment: "{actor} hat Sie in einem Kommentar zum Meilenstein {milestoneName} erwähnt",
     },
     approvalStarted: {
         title: "Genehmigung erforderlich",

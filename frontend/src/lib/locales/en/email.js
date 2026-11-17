@@ -96,6 +96,7 @@ export default {
         comment: "{actor} mentioned you in a comment on {itemTitle} ({itemKey})",
         description: "{actor} mentioned you in the description of {itemTitle} ({itemKey})",
         item: "{actor} mentioned you in {itemTitle} ({itemKey})",
+        milestoneComment: "{actor} mentioned you in a comment on milestone {milestoneName}",
     },
     approvalStarted: {
         title: "Approval Required",

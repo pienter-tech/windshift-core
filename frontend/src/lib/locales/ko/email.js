@@ -89,6 +89,7 @@ export default {
         comment: "{actor}님이 {itemTitle}({itemKey})의 댓글에서 회원님을 언급했습니다",
         description: "{actor}님이 {itemTitle}({itemKey})의 설명에서 회원님을 언급했습니다",
         item: "{actor}님이 {itemTitle}({itemKey})에서 회원님을 언급했습니다",
+        milestoneComment: "{actor}님이 마일스톤 {milestoneName}의 댓글에서 회원님을 언급했습니다",
     },
     approvalStarted: {
         title: "승인 필요",
