@@ -2,7 +2,7 @@ package models
 
 import "time"
 
-// Milestone Activity entry types (WCORE-21). Milestone events describe the
+// Milestone Activity entry types. Milestone events describe the
 // milestone itself; item events describe its member items.
 const (
 	MilestoneActivityMilestoneCommentAdded     = "milestone_comment_added"
@@ -24,7 +24,7 @@ const (
 	MilestoneActivityActorSystem         = "system"
 )
 
-// MilestoneActivity is one entry in a milestone's Activity feed (WCORE-21):
+// MilestoneActivity is one entry in a milestone's Activity feed:
 // who did what, when, and to which item or page. OldValue and NewValue carry
 // the change for status and target-date entries (item statuses resolved to
 // names); description edits and comments carry no values.

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"windshift/internal/customfields"
 	"windshift/internal/database"
 	"windshift/internal/models"
 )
@@ -26,7 +27,7 @@ func NewCustomerOrganisationRepository(db database.Database) *CustomerOrganisati
 	return &CustomerOrganisationRepository{db: db}
 }
 
-const customerOrgColumns = "id, name, email, description, active, avatar_url, custom_field_values, settings, created_at, updated_at"
+const customerOrgColumns = "id, COALESCE(builtin_key, ''), name, email, description, active, avatar_url, custom_field_values, settings, created_at, updated_at"
 
 // List returns every customer_organisation, name-ordered. Rows whose
 // custom_field_values JSON fails to parse are returned with the field empty
@@ -40,10 +41,14 @@ func (r *CustomerOrganisationRepository) List() ([]models.CustomerOrganisation, 
 	defer func() { _ = rows.Close() }()
 
 	var customers []models.CustomerOrganisation
+	fieldIndex, _ := customfields.LoadCustomFieldNameIndex(r.db, customfields.AppliesToCustomerOrganisations)
 	for rows.Next() {
 		c, scanErr := scanCustomerOrganisation(rows)
 		if scanErr != nil {
 			return nil, fmt.Errorf("scan customer_organisation: %w", scanErr)
+		}
+		if fieldIndex != nil {
+			fieldIndex.Resolve(c.CustomFieldValues)
 		}
 		customers = append(customers, c)
 	}
@@ -66,6 +71,9 @@ func (r *CustomerOrganisationRepository) GetByID(id int) (*models.CustomerOrgani
 	if err != nil {
 		return nil, fmt.Errorf("get customer_organisation %d: %w", id, err)
 	}
+	if fieldIndex, indexErr := customfields.LoadCustomFieldNameIndex(r.db, customfields.AppliesToCustomerOrganisations); indexErr == nil && fieldIndex != nil {
+		fieldIndex.Resolve(c.CustomFieldValues)
+	}
 	return &c, nil
 }
 
@@ -81,6 +89,23 @@ func (r *CustomerOrganisationRepository) FindIDByName(name string) (int, error) 
 	}
 	if err != nil {
 		return 0, fmt.Errorf("find customer organisation %q: %w", name, err)
+	}
+	return id, nil
+}
+
+// FindIDByBuiltinKey returns the id of the system-managed organisation carrying
+// the given builtin_key. Returns ErrNotFound when no such row exists.
+func (r *CustomerOrganisationRepository) FindIDByBuiltinKey(key string) (int, error) {
+	var id int
+	err := r.db.QueryRow(
+		"SELECT id FROM customer_organisations WHERE builtin_key = ?",
+		key,
+	).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("find customer organisation by builtin_key %q: %w", key, err)
 	}
 	return id, nil
 }
@@ -177,7 +202,7 @@ func scanCustomerOrganisation(scanner interface {
 	var c models.CustomerOrganisation
 	var email, description, avatarURL, cfvStr, settingsStr sql.NullString
 	if err := scanner.Scan(
-		&c.ID, &c.Name, &email, &description, &c.Active,
+		&c.ID, &c.BuiltinKey, &c.Name, &email, &description, &c.Active,
 		&avatarURL, &cfvStr, &settingsStr, &c.CreatedAt, &c.UpdatedAt,
 	); err != nil {
 		return c, err
@@ -200,6 +225,12 @@ func scanCustomerOrganisation(scanner interface {
 		_ = json.Unmarshal([]byte(settingsStr.String), &c.Settings)
 	}
 	return c, nil
+}
+
+// DB exposes the underlying database so callers can run shared custom-field
+// validation helpers that need a database handle.
+func (r *CustomerOrganisationRepository) DB() database.Database {
+	return r.db
 }
 
 // encodeCustomFieldValues returns the JSON string form for SQL params, or

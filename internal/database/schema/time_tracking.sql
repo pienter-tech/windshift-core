@@ -2,6 +2,9 @@
 -- Customer organisations (B2B entities for time tracking)
 CREATE TABLE IF NOT EXISTS customer_organisations (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	-- Stable identity for system-managed rows (e.g. the "no customer"
+	-- placeholder). NULL for ordinary organisations.
+	builtin_key TEXT,
 	name TEXT NOT NULL,
 	email TEXT,
 	description TEXT,
@@ -55,7 +58,6 @@ CREATE TABLE IF NOT EXISTS workspace_time_project_categories (
 CREATE TABLE IF NOT EXISTS time_worklogs (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	project_id INTEGER NOT NULL,
-	customer_id INTEGER NOT NULL,
 	user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
 	item_id INTEGER REFERENCES items(id) ON DELETE SET NULL,
 	description TEXT NOT NULL,
@@ -65,8 +67,7 @@ CREATE TABLE IF NOT EXISTS time_worklogs (
 	duration_minutes INTEGER NOT NULL,
 	created_at INTEGER NOT NULL,
 	updated_at INTEGER NOT NULL,
-	FOREIGN KEY (project_id) REFERENCES time_projects(id) ON DELETE CASCADE,
-	FOREIGN KEY (customer_id) REFERENCES customer_organisations(id) ON DELETE CASCADE
+	FOREIGN KEY (project_id) REFERENCES time_projects(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_time_projects_customer_id ON time_projects(customer_id);
@@ -75,10 +76,10 @@ CREATE INDEX IF NOT EXISTS idx_time_projects_status ON time_projects(status);
 CREATE INDEX IF NOT EXISTS idx_workspace_time_project_categories_workspace_id ON workspace_time_project_categories(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_workspace_time_project_categories_category_id ON workspace_time_project_categories(time_project_category_id);
 CREATE INDEX IF NOT EXISTS idx_time_worklogs_project_id ON time_worklogs(project_id);
-CREATE INDEX IF NOT EXISTS idx_time_worklogs_customer_id ON time_worklogs(customer_id);
 CREATE INDEX IF NOT EXISTS idx_time_worklogs_date ON time_worklogs(date);
 CREATE INDEX IF NOT EXISTS idx_time_worklogs_item_id ON time_worklogs(item_id);
 CREATE INDEX IF NOT EXISTS idx_time_worklogs_user_id ON time_worklogs(user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_customer_organisations_builtin_key ON customer_organisations(builtin_key) WHERE builtin_key IS NOT NULL;
 
 -- Project managers: can edit project, manage members, view all worklogs
 CREATE TABLE IF NOT EXISTS time_project_managers (

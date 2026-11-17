@@ -14,6 +14,7 @@ import (
 	"windshift/internal/csvimport"
 	"windshift/internal/database"
 	"windshift/internal/itemevents"
+	"windshift/internal/logger"
 	"windshift/internal/models"
 	"windshift/internal/repository"
 	"windshift/internal/sanitize"
@@ -116,7 +117,7 @@ func (s *TicketImportService) Start(ctx context.Context, actor AuditActor, works
 		return nil, err
 	}
 	if claimed {
-		emitServiceAudit(s.db, actor, "ticket_import", "workspace", &workspaceID, "", map[string]any{"upload_id": input.UploadID})
+		emitServiceAudit(s.db, actor, logger.ActionTicketImport, logger.ResourceWorkspace, &workspaceID, "", map[string]any{"upload_id": input.UploadID})
 		go s.run(workspaceID, input.UploadID, path, hasHeader, csvimport.ParseDelimiter(input.Delimiter), actor.UserID)
 	}
 	return s.getJob(workspaceID, input.UploadID)
@@ -265,6 +266,9 @@ func (s *TicketImportService) importRow(ctx context.Context, workspaceID int, jo
 		WorkspaceID: workspaceID, Title: title, Description: description,
 		CreatorID: &actorUserID, EventMetadata: itemevents.Import(jobID),
 		CreatedAt: &createdAt,
+		// A bulk import of tickets pre-assigned to an agent user must not
+		// start one agent run per imported row.
+		SkipAssigneeTrigger: true,
 		// The importing actor passes the same create-time validation policy
 		// as normal creation — most importantly the workflow/approval checks
 		// on an explicit status column (WI-1560).

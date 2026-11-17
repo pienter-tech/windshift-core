@@ -1395,6 +1395,13 @@ type githubPullRequest struct {
 	ClosedAt  *time.Time `json:"closed_at"`
 }
 
+// toPullRequest converts a GitHub pull request to the provider-neutral type.
+//
+// GitHub's list endpoint (GET /repos/{owner}/{repo}/pulls) omits the `merged`
+// field, so Merged is always false for listed PRs; only the single-PR endpoint
+// sets it. `merged_at` is present on both, so a non-nil MergedAt also counts as
+// merged. Without it, sync stored merged PRs as "closed" and never emitted
+// scm_pr_merged or ran smart commits (Windshiftapp/core#304).
 func (pr githubPullRequest) toPullRequest() PullRequest {
 	return PullRequest{
 		ID:         pr.ID,
@@ -1407,7 +1414,7 @@ func (pr githubPullRequest) toPullRequest() PullRequest {
 		HeadRepo:   pr.Head.Repo.FullName,
 		HeadSHA:    pr.Head.SHA,
 		BaseBranch: pr.Base.Ref,
-		IsMerged:   pr.Merged,
+		IsMerged:   pr.Merged || pr.MergedAt != nil,
 		IsDraft:    pr.Draft,
 		Author:     pr.User.toUser(),
 		CreatedAt:  pr.CreatedAt,

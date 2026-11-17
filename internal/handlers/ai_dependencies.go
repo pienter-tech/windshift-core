@@ -16,6 +16,7 @@ import (
 	"windshift/internal/itemevents"
 	"windshift/internal/llm"
 	"windshift/internal/models"
+	"windshift/internal/redact"
 	"windshift/internal/repository"
 	"windshift/internal/sanitize"
 	"windshift/internal/services"
@@ -342,7 +343,7 @@ func (h *AIHandler) AnalyzeDependencies(w http.ResponseWriter, r *http.Request) 
 		},
 	})
 	if err != nil {
-		respondLLMError(w, r, err)
+		respondLLMError(w, r, err, h.permService)
 		return
 	}
 
@@ -464,10 +465,23 @@ func (h *AIHandler) AcceptDependencies(w http.ResponseWriter, r *http.Request) {
 	created := 0
 	skipped := 0
 
+	// Resolve every referenced item's workspace in one query rather than two
+	// lookups per suggestion. Items that do not exist are absent from the map
+	// and count as skipped.
+	lookupIDs := make([]int, 0, len(req.Suggestions)*2)
+	for _, s := range req.Suggestions {
+		lookupIDs = append(lookupIDs, s.SourceItemID, s.TargetItemID)
+	}
+	workspaceByItem, err := itemRepo.GetWorkspaceIDs(lookupIDs)
+	if err != nil {
+		respondInternalError(w, r, err)
+		return
+	}
+
 	for _, s := range req.Suggestions {
 		// Verify user has edit permission on the source item's workspace
-		srcWorkspaceID, err := itemRepo.GetWorkspaceID(s.SourceItemID)
-		if err != nil {
+		srcWorkspaceID, ok := workspaceByItem[s.SourceItemID]
+		if !ok {
 			skipped++
 			continue
 		}
@@ -478,8 +492,8 @@ func (h *AIHandler) AcceptDependencies(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Verify user has view permission on target item's workspace
-		tgtWorkspaceID, err := itemRepo.GetWorkspaceID(s.TargetItemID)
-		if err != nil {
+		tgtWorkspaceID, ok := workspaceByItem[s.TargetItemID]
+		if !ok {
 			skipped++
 			continue
 		}
@@ -673,6 +687,27 @@ func reviewVerdictForToolCalls(calls []llm.ToolCallRecord) llm.ReviewVerdict {
 	return llm.EvaluateReview(outcomes, llm.DefaultReviewFlagConfig())
 }
 
+// appendStopReasonReview folds a non-clean loop ending into the review verdict.
+// A truncated, filtered, empty, or stalled answer deserves a human glance just
+// as much as a misused tool, and the banner is the only place the chat surfaces
+// it.
+func appendStopReasonReview(verdict llm.ReviewVerdict, result *llm.AgentResult) llm.ReviewVerdict {
+	switch result.StopReason {
+	case llm.StopReasonMaxTokens:
+		verdict.Reasons = append(verdict.Reasons, "the model hit its output token limit; the answer is truncated")
+	case llm.StopReasonContentFilter:
+		verdict.Reasons = append(verdict.Reasons, "the model's response was blocked by a content filter")
+	case llm.StopReasonNoProgress:
+		verdict.Reasons = append(verdict.Reasons, "the model repeated tool calls without making progress")
+	case llm.StopReasonEmpty:
+		verdict.Reasons = append(verdict.Reasons, "the model returned an empty response")
+	case llm.StopReasonMaxIterations:
+		verdict.Reasons = append(verdict.Reasons, "the model ran out of steps before finishing")
+	}
+	verdict.Flagged = len(verdict.Reasons) > 0
+	return verdict
+}
+
 // Chat handles agentic chat where the LLM can query workspaces and items via tool calls.
 func (h *AIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 	user, ok := RequireAuth(w, r)
@@ -819,7 +854,7 @@ func (h *AIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		_ = runRepo.Finalize(r.Context(), begun.RunID, models.AgentRunStatusFailed,
 			"Configured LLM is unavailable", time.Now().UTC())
-		respondLLMError(w, r, err)
+		respondLLMError(w, r, err, h.permService)
 		return
 	}
 
@@ -830,6 +865,9 @@ func (h *AIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 	extendWriteDeadline(w)
 	ctx, cancel := context.WithTimeout(r.Context(), llm.DefaultRequestTimeout)
 	defer cancel()
+	// A chat session is the provider-visible conversation: its id stays stable
+	// across turns so routing and prompt caching survive the whole conversation.
+	ctx = llm.WithSessionID(ctx, fmt.Sprintf("ws-chat-%d", session.ID))
 	actingTimezone, err := services.LookupUserTimezone(h.db, mode.actingUserID)
 	if err != nil {
 		_ = runRepo.Finalize(r.Context(), begun.RunID, models.AgentRunStatusFailed,
@@ -872,14 +910,17 @@ func (h *AIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 	result, err := llm.RunAgent(ctx, llmClient, llm.AgentConfig{
 		SystemPrompt:  systemPrompt,
 		Tools:         aitooladapter.BuildTools(mode.entries),
-		MaxTokens:     2048,
-		Temperature:   0.1,
+		MaxTokens:     chatMaxOutputTokens(llmDescriptor),
+		Temperature:   llm.ChatTemperature,
 		MaxIterations: 12,
 		TerminalTools: mode.terminalTools,
 	}, promptMessage, executor.Execute, history)
 	if err != nil {
+		// Persist the provider's own message (redacted) so the failed turn is
+		// diagnosable from the run history, not just the process log.
+		detail := redact.String(err.Error())
 		_ = runRepo.Finalize(context.Background(), begun.RunID, models.AgentRunStatusFailed,
-			"Agent chat execution failed", time.Now().UTC())
+			detail, time.Now().UTC())
 		slog.ErrorContext(r.Context(), "chat agent run failed",
 			slog.Int("user_id", user.ID),
 			slog.String("ctx_view", chatContextView(req.Context)),
@@ -889,8 +930,9 @@ func (h *AIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 			slog.Int("ctx_item_id", chatContextItemID(req.Context)),
 			slog.String("ctx_item_key", chatContextItemKey(req.Context)),
 			slog.String("error_type", fmt.Sprintf("%T", err)),
+			slog.String("error", detail),
 		)
-		respondLLMError(w, r, err)
+		respondLLMError(w, r, err, h.permService)
 		return
 	}
 
@@ -912,6 +954,7 @@ func (h *AIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 	// coding agent uses). Persist only the verdict and sanitized tool summaries;
 	// exact user and assistant content belongs exclusively to the transcript.
 	verdict := reviewVerdictForToolCalls(result.ToolCalls)
+	verdict = appendStopReasonReview(verdict, result)
 	toolSummaries := make([]map[string]string, 0, len(result.ToolCalls))
 	for _, call := range result.ToolCalls {
 		status := "succeeded"
@@ -975,6 +1018,16 @@ func (h *AIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 		Model:         llmDescriptor.Model,
 		Usage:         chatUsageOrNil(usage, meterErr),
 	})
+}
+
+// chatMaxOutputTokens sizes the chat turn's per-request output cap from the
+// resolved model limit. The fallback keeps the turn usable when the descriptor
+// cannot name a limit (for example the env-var client).
+func chatMaxOutputTokens(descriptor llm.ConnectionDescriptor) int {
+	if descriptor.MaxOutputTokens > 0 {
+		return descriptor.MaxOutputTokens
+	}
+	return llm.FallbackMaxOutputTokens
 }
 
 // chatUsageOrNil reports the metered totals, or nil when metering failed or

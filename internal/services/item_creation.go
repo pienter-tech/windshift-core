@@ -25,6 +25,9 @@ type itemCreation struct {
 	updatedAt  time.Time
 	statusID   *int
 	priorityID *int
+	// eventMetadata is the merged provenance recorded with the creation fact.
+	// finish() consults it so import-origin writes never start an agent run.
+	eventMetadata itemevents.Metadata
 }
 
 func prepareItemCreation(ctx context.Context, db database.Database, params ItemCreationParams) (*itemCreation, error) {
@@ -203,7 +206,11 @@ func (c *itemCreation) resolvePriority() error {
 	if params.PriorityID != nil {
 		c.priorityID = params.PriorityID
 	} else if params.Priority != "" {
-		c.priorityID = mapTextPriorityToID(params.Priority)
+		resolved, err := resolvePriorityIDByName(c.db, params.Priority)
+		if err != nil {
+			return err
+		}
+		c.priorityID = resolved
 	}
 	if c.priorityID == nil {
 		c.priorityID = c.defaultPriorityID()
@@ -247,9 +254,9 @@ func (c *itemCreation) insert() (int, error) {
 		if err != nil {
 			return 0, fmt.Errorf("failed to generate frac_index: %w", err)
 		}
-		itemNumber, err := repository.NewItemRepository(c.db).GetNextWorkspaceItemNumber(tx, c.params.WorkspaceID)
+		itemNumber, err := c.resolveItemNumber(tx)
 		if err != nil {
-			return 0, fmt.Errorf("failed to generate workspace item number: %w", err)
+			return 0, err
 		}
 		itemID, err := c.insertRow(tx, itemNumber, fracIndex)
 		if err != nil {
@@ -265,31 +272,56 @@ func (c *itemCreation) insert() (int, error) {
 	})
 }
 
-func (c *itemCreation) insertRow(tx database.Tx, itemNumber int, fracIndex string) (int, error) {
-	p := c.params
-	query := `
-		INSERT INTO items (
-			workspace_id, workspace_item_number, item_type_id, title, description, status_id, priority_id, is_task,
-			iteration_id, project_id, inherit_project, time_project_id, assignee_id, team_id, reporter_id, creator_id, creator_portal_customer_id,
-			channel_id, request_type_id, portal_org_shared, due_date, start_date, end_date, related_work_item_id,
-			story_points, estimate_minutes, custom_field_values, virtual_field_data, parent_id,
-			frac_index, created_at, updated_at, last_active_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		RETURNING id
-	`
-
-	var itemID int
-	err := tx.QueryRow(query,
-		p.WorkspaceID, itemNumber, p.ItemTypeID, p.Title, p.Description, c.statusID, c.priorityID, p.IsTask,
-		p.IterationID, p.ProjectID, p.InheritProject, p.TimeProjectID, p.AssigneeID, p.TeamID, p.ReporterID, p.CreatorID,
-		p.CreatorPortalCustomerID, p.ChannelID, p.RequestTypeID, p.PortalOrgShared, p.DueDate, p.StartDate, p.EndDate,
-		p.RelatedWorkItemID, p.StoryPoints, p.EstimateMinutes, nullString(p.CustomFieldValuesJSON),
-		nullString(p.VirtualFieldDataJSON), p.ParentID, fracIndex, c.createdAt, c.updatedAt, c.updatedAt,
-	).Scan(&itemID)
-	if err != nil {
-		return 0, fmt.Errorf("failed to insert item: %w", err)
+// resolveItemNumber honors a pinned number while it is free and otherwise
+// falls back to the MAX+1 allocator. The availability check runs inside the
+// creation transaction, so a concurrent create that takes the same number
+// pushes the retry onto the fallback path instead of failing the import.
+func (c *itemCreation) resolveItemNumber(tx database.Tx) (int, error) {
+	repo := repository.NewItemRepository(c.db)
+	if c.params.PinnedItemNumber == nil {
+		number, err := repo.GetNextWorkspaceItemNumber(tx, c.params.WorkspaceID)
+		if err != nil {
+			return 0, fmt.Errorf("failed to generate workspace item number: %w", err)
+		}
+		return number, nil
 	}
-	return itemID, nil
+
+	requested := *c.params.PinnedItemNumber
+	taken, err := repo.IsWorkspaceItemNumberTaken(tx, c.params.WorkspaceID, requested)
+	if err != nil {
+		return 0, fmt.Errorf("failed to check pinned workspace item number: %w", err)
+	}
+	if !taken {
+		c.recordPinnedItemNumber(requested, requested, false)
+		return requested, nil
+	}
+
+	number, err := repo.GetNextWorkspaceItemNumber(tx, c.params.WorkspaceID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to allocate fallback workspace item number: %w", err)
+	}
+	c.recordPinnedItemNumber(requested, number, true)
+	return number, nil
+}
+
+func (c *itemCreation) recordPinnedItemNumber(requested, assigned int, fellBack bool) {
+	if c.params.PinnedItemNumberResult == nil {
+		return
+	}
+	*c.params.PinnedItemNumberResult = PinnedItemNumberOutcome{
+		Requested: requested,
+		Assigned:  assigned,
+		FellBack:  fellBack,
+	}
+}
+
+func (c *itemCreation) insertRow(tx database.Tx, itemNumber int, fracIndex string) (int, error) {
+	item, err := c.eventItem(0, itemNumber)
+	if err != nil {
+		return 0, err
+	}
+	item.FracIndex = &fracIndex
+	return repository.NewItemRepository(c.db).Create(tx, item)
 }
 
 func (c *itemCreation) extendTransaction(tx database.Tx, itemID int) error {
@@ -320,15 +352,16 @@ func (c *itemCreation) recordCreation(tx database.Tx, itemID, itemNumber int) er
 		return err
 	}
 	metadata := itemCreateEventMetadata(c.params, c.createdAt)
+	c.eventMetadata = metadata
+	creatorUserID := 0
 	if c.params.CreatorID != nil {
-		history := append(
-			creationHistoryEntries(*item, *c.params.CreatorID, metadata.OccurredAt),
-			creationMilestonesHistory(itemID, *c.params.CreatorID, c.params.MilestoneIDs, metadata.OccurredAt)...,
-		)
-		history = stampHistorySource(history, metadata)
-		if err := repository.NewItemRepository(c.db).RecordHistoryBatch(tx, history); err != nil {
-			return fmt.Errorf("record item creation history: %w", err)
-		}
+		creatorUserID = *c.params.CreatorID
+	}
+	if err := RecordItemCreationHistory(c.db, tx, item, creatorUserID, c.params.CreatorPortalCustomerID, metadata); err != nil {
+		return fmt.Errorf("record item creation history: %w", err)
+	}
+	if err := RecordItemCreationMilestonesHistory(c.db, tx, itemID, c.params.MilestoneIDs, creatorUserID, c.params.CreatorPortalCustomerID, metadata); err != nil {
+		return fmt.Errorf("record item creation milestones history: %w", err)
 	}
 	_, err = itemevents.NewRecorder(c.db).Created(c.ctx, tx, item, c.params.MilestoneIDs, metadata)
 	return err
@@ -350,7 +383,8 @@ func (c *itemCreation) eventItem(itemID, itemNumber int) (*models.Item, error) {
 		StatusID: c.statusID, PriorityID: c.priorityID, IsTask: p.IsTask,
 		AssigneeID: p.AssigneeID, TeamID: p.TeamID, ReporterID: p.ReporterID, CreatorID: p.CreatorID,
 		CreatorPortalCustomerID: p.CreatorPortalCustomerID, ChannelID: p.ChannelID,
-		RequestTypeID: p.RequestTypeID, ParentID: p.ParentID, IterationID: p.IterationID,
+		RequestTypeID: p.RequestTypeID, IntakeID: p.IntakeID, PortalOrgShared: p.PortalOrgShared,
+		ParentID: p.ParentID, IterationID: p.IterationID,
 		ProjectID: p.ProjectID, InheritProject: p.InheritProject, TimeProjectID: p.TimeProjectID,
 		RelatedWorkItemID: p.RelatedWorkItemID, DueDate: p.DueDate, StartDate: p.StartDate,
 		EndDate: p.EndDate, StoryPoints: p.StoryPoints, EstimateMinutes: p.EstimateMinutes,
@@ -373,7 +407,11 @@ func decodeItemEventFields(raw, name string) (map[string]any, error) {
 func (c *itemCreation) finish(itemID int) {
 	p := c.params
 	maybeRecordPortalThreadAnchor(c.db, int64(itemID), p.ChannelID, p.CreatorPortalCustomerID, p.Title)
-	if !p.SkipAssigneeTrigger && p.AssigneeID != nil {
+	// A bulk import of pre-assigned items must not start one agent run per row.
+	// The import marker on the creation fact is authoritative, so a caller that
+	// forgets SkipAssigneeTrigger is still safe.
+	if !p.SkipAssigneeTrigger && p.AssigneeID != nil &&
+		!itemevents.IsImportOrigin(c.eventMetadata.ActorKind, c.eventMetadata.SourceKind) {
 		triggeredBy := p.ValidatingUserID
 		if triggeredBy == 0 && p.CreatorID != nil {
 			triggeredBy = *p.CreatorID
@@ -384,9 +422,9 @@ func (c *itemCreation) finish(itemID int) {
 	if p.SkipPublish {
 		return
 	}
-	PublishItemChange(itemID, ItemChangeCreated)
-	PublishWorkspaceChange(p.WorkspaceID, WorkspaceChangeItems)
+	PublishItemChange(itemID)
+	PublishWorkspaceChange(p.WorkspaceID)
 	if p.ParentID != nil {
-		PublishItemChange(*p.ParentID, ItemChangeUpdated)
+		PublishItemChange(*p.ParentID)
 	}
 }

@@ -1,11 +1,27 @@
 import { derived, get, writable } from 'svelte/store';
-import { api } from '../api.js';
+import { priorities } from '../api/configuration.js';
+import { items } from '../api/items.js';
+import { queryLanguage } from '../api/queryLanguage.js';
+import { statusCategories as statusCategoriesApi, statuses } from '../api/workflows.js';
 import { confirm } from '../composables/useConfirm.js';
 import { QLBuilder } from '../utils/ql.js';
 import { completionFieldToFilterField } from '../utils/qlCompletion.js';
 import { t } from './i18n.svelte.js';
 import { warningToast } from './toasts.svelte.js';
 import { workspacesStore } from './workspaces.svelte.js';
+
+// A dynamic filter carries a condition when it has a field plus a value, an
+// IN list, or a value-free null predicate. Null predicates are meaningful even
+// though their value and values are empty.
+function isMeaningfulDynamicFilter(filter) {
+  return Boolean(
+    filter?.field &&
+      (filter.operator === 'IS NULL' ||
+        filter.operator === 'IS NOT NULL' ||
+        filter.value !== '' ||
+        (filter.values && filter.values.length > 0))
+  );
+}
 
 /**
  * Factory that creates a fresh work-item search/filter store.
@@ -78,9 +94,7 @@ export function createWorkItemSearchStore({ allowEmptyQuery = false } = {}) {
     ],
     ([$ws, $st, $pr, $q, $df, $raw, $rawQl]) => {
       if ($raw) return $rawQl.trim().length > 0;
-      const hasDyn = $df.some(
-        (f) => f.field && (f.value !== '' || (f.values && f.values.length > 0))
-      );
+      const hasDyn = $df.some(isMeaningfulDynamicFilter);
       return $ws.length > 0 || $st.length > 0 || $pr.length > 0 || $q.trim().length > 0 || hasDyn;
     }
   );
@@ -152,9 +166,9 @@ export function createWorkItemSearchStore({ allowEmptyQuery = false } = {}) {
     try {
       const [wsData, stData, prData, catData] = await Promise.all([
         workspacesStore.load(),
-        api.statuses.getAll(),
-        api.priorities.getAll(),
-        api.statusCategories.getAll(),
+        statuses.getAll(),
+        priorities.getAll(),
+        statusCategoriesApi.getAll(),
       ]);
       workspaces.set(wsData || []);
       allStatuses.set(
@@ -173,18 +187,25 @@ export function createWorkItemSearchStore({ allowEmptyQuery = false } = {}) {
   }
 
   // ===== Search execution =====
+  // Only the most recent request may update results, pagination, error, and
+  // loading state; an earlier response that resolves late is discarded.
+  let searchGeneration = 0;
+
   async function executeSearch({ page = 1, limit = 50 } = {}) {
+    const generation = ++searchGeneration;
     const finalQl = get(qlQuery);
     if (!allowEmptyQuery && !finalQl?.trim()) {
       workItems.set([]);
       pagination.set(null);
       qlError.set(null);
+      loadingItems.set(false);
       return;
     }
     loadingItems.set(true);
     qlError.set(null);
     try {
-      const response = await api.items.getAll({ ql: finalQl, page, limit });
+      const response = await items.getAll({ ql: finalQl, page, limit });
+      if (generation !== searchGeneration) return;
       if (response?.data) {
         workItems.set(response.data);
         pagination.set(response.pagination || null);
@@ -193,12 +214,13 @@ export function createWorkItemSearchStore({ allowEmptyQuery = false } = {}) {
         pagination.set(null);
       }
     } catch (err) {
+      if (generation !== searchGeneration) return;
       console.error('Search failed:', err);
       qlError.set(err.message || 'Search failed');
       workItems.set([]);
       pagination.set(null);
     } finally {
-      loadingItems.set(false);
+      if (generation === searchGeneration) loadingItems.set(false);
     }
   }
 
@@ -235,9 +257,9 @@ export function createWorkItemSearchStore({ allowEmptyQuery = false } = {}) {
     let priorityCatalog = get(allPriorities);
     try {
       const [catalog, st, pr] = await Promise.all([
-        api.queryLanguage.getCatalog(),
-        statusCatalog.length ? null : api.statuses.getAll(),
-        priorityCatalog.length ? null : api.priorities.getAll(),
+        queryLanguage.getCatalog(),
+        statusCatalog.length ? null : statuses.getAll(),
+        priorityCatalog.length ? null : priorities.getAll(),
       ]);
       customFieldsCatalog = (catalog?.fields || [])
         .filter((field) => /^cfid_\d+$/i.test(field.name))
@@ -328,9 +350,7 @@ export function createWorkItemSearchStore({ allowEmptyQuery = false } = {}) {
       if (sp.length > 0) url.searchParams.set('priorities', sp.join(','));
       if (sq.trim()) url.searchParams.set('search', sq);
 
-      const dfSerializable = df.filter(
-        (f) => f.field && (f.value !== '' || (f.values && f.values.length > 0))
-      );
+      const dfSerializable = df.filter(isMeaningfulDynamicFilter);
       if (dfSerializable.length > 0) {
         url.searchParams.set('dynamicFilters', JSON.stringify(dfSerializable));
       }

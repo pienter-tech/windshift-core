@@ -577,7 +577,7 @@ func (h *WorkspaceAgentBindingHandler) CreateProfile(w http.ResponseWriter, r *h
 		}
 		return
 	}
-	h.auditor.LogWithDetails(r, user, "agent_profile.create", "workspace_agent_binding", &profile.ID, "", map[string]any{
+	h.auditor.LogWithDetails(r, user, logger.ActionAgentProfileCreate, logger.ResourceWorkspaceAgentBinding, &profile.ID, "", map[string]any{
 		"workspace_id":   workspaceID,
 		"acting_user_id": profile.ActingUserID,
 		"profile_type":   profile.ProfileType,
@@ -631,7 +631,7 @@ func (h *WorkspaceAgentBindingHandler) UpdateProfile(w http.ResponseWriter, r *h
 		}
 		return
 	}
-	h.auditor.LogWithDetails(r, user, "agent_profile.update", "workspace_agent_binding", &profile.ID, "", map[string]any{
+	h.auditor.LogWithDetails(r, user, logger.ActionAgentProfileUpdate, logger.ResourceWorkspaceAgentBinding, &profile.ID, "", map[string]any{
 		"workspace_id": workspaceID,
 	})
 	respondJSON(w, http.StatusOK, h.withSkillIDs(r, toBindingResponse(profile)))
@@ -680,7 +680,7 @@ func (h *WorkspaceAgentBindingHandler) MigrateLegacyProfile(w http.ResponseWrite
 		}
 		return
 	}
-	h.auditor.LogWithDetails(r, user, "agent_profile.migrate_runner", "workspace_agent_binding", &profile.ID, "", map[string]any{
+	h.auditor.LogWithDetails(r, user, logger.ActionAgentProfileMigrateRunner, logger.ResourceWorkspaceAgentBinding, &profile.ID, "", map[string]any{
 		"workspace_id":   workspaceID,
 		"target_pool_id": body.TargetPoolID,
 		"profile_type":   profile.ProfileType,
@@ -720,7 +720,7 @@ func (h *WorkspaceAgentBindingHandler) ConnectCodingRunner(w http.ResponseWriter
 		}
 		return
 	}
-	h.auditor.LogWithDetails(r, user, "agent_profile.connect_runner", "workspace_agent_binding", &profile.ID, "", map[string]any{
+	h.auditor.LogWithDetails(r, user, logger.ActionAgentProfileConnectRunner, logger.ResourceWorkspaceAgentBinding, &profile.ID, "", map[string]any{
 		"workspace_id":   workspaceID,
 		"target_pool_id": body.TargetPoolID,
 	})
@@ -791,7 +791,7 @@ func (h *WorkspaceAgentBindingHandler) MintRunnerSetupToken(w http.ResponseWrite
 		respondInternalError(w, r, err)
 		return
 	}
-	h.auditor.LogWithDetails(r, user, "agent_runner_setup.token_mint", "runner_registration_token", &token.ID, "", map[string]any{
+	h.auditor.LogWithDetails(r, user, logger.ActionAgentRunnerSetupTokenMint, logger.ResourceRunnerRegistrationToken, &token.ID, "", map[string]any{
 		"workspace_id": workspaceID,
 		"pool_id":      poolID,
 	})
@@ -844,7 +844,7 @@ func (h *WorkspaceAgentBindingHandler) RevokeRunnerSetupToken(w http.ResponseWri
 		respondInternalError(w, r, err)
 		return
 	}
-	h.auditor.LogWithDetails(r, user, "agent_runner_setup.token_revoke", "runner_registration_token", &tokenID, "", map[string]any{
+	h.auditor.LogWithDetails(r, user, logger.ActionAgentRunnerSetupTokenRevoke, logger.ResourceRunnerRegistrationToken, &tokenID, "", map[string]any{
 		"workspace_id": workspaceID,
 		"pool_id":      poolID,
 	})
@@ -919,7 +919,7 @@ func (h *WorkspaceAgentBindingHandler) TestProfile(w http.ResponseWriter, r *htt
 		}
 		return
 	}
-	h.auditor.LogWithDetails(r, user, "agent_profile.test", "workspace_agent_binding", &profileID, "", map[string]any{
+	h.auditor.LogWithDetails(r, user, logger.ActionAgentProfileTest, logger.ResourceWorkspaceAgentBinding, &profileID, "", map[string]any{
 		"workspace_id": workspaceID,
 		"mode":         result.Mode,
 		"run_id":       result.RunID,
@@ -974,7 +974,7 @@ func (h *WorkspaceAgentBindingHandler) ActivateProfile(w http.ResponseWriter, r 
 		}
 		return
 	}
-	h.auditor.LogWithDetails(r, user, "agent_profile.ready", "workspace_agent_binding", &profile.ID, "", map[string]any{
+	h.auditor.LogWithDetails(r, user, logger.ActionAgentProfileReady, logger.ResourceWorkspaceAgentBinding, &profile.ID, "", map[string]any{
 		"workspace_id":    workspaceID,
 		"profile_version": profile.ProfileVersion,
 	})
@@ -1112,7 +1112,7 @@ func (h *WorkspaceAgentBindingHandler) Create(w http.ResponseWriter, r *http.Req
 		}
 		return
 	}
-	h.auditor.LogWithDetails(r, user, "agent_binding.create", "workspace_agent_binding", &binding.ID, "", map[string]any{
+	h.auditor.LogWithDetails(r, user, logger.ActionAgentBindingCreate, logger.ResourceWorkspaceAgentBinding, &binding.ID, "", map[string]any{
 		"workspace_id":     workspaceID,
 		"acting_user_id":   binding.ActingUserID,
 		"acting_user_kind": binding.ActingUserKind,
@@ -1193,7 +1193,7 @@ func (h *WorkspaceAgentBindingHandler) Update(w http.ResponseWriter, r *http.Req
 		}
 		return
 	}
-	h.auditor.LogWithDetails(r, user, "agent_binding.update", "workspace_agent_binding", &binding.ID, "", map[string]any{
+	h.auditor.LogWithDetails(r, user, logger.ActionAgentBindingUpdate, logger.ResourceWorkspaceAgentBinding, &binding.ID, "", map[string]any{
 		"workspace_id": workspaceID,
 	})
 	respondJSON(w, http.StatusOK, h.withSkillIDs(r, toBindingResponse(binding)))
@@ -1233,12 +1233,16 @@ type updateAgentConfigBody struct {
 	// (including "") sets/clears it.
 	RunnerImage *string `json:"runner_image"`
 	SkillIDs    []int   `json:"skill_ids"`
+	// LLMConnectionID is presence-aware: nil leaves the binding's model
+	// connection untouched; a present value retargets the profile at another
+	// enabled connection and returns it to Draft for re-validation.
+	LLMConnectionID *int `json:"llm_connection_id"`
 }
 
 // UpdateAgentConfig rewrites the binding's prompt-shaping configuration —
-// custom instructions + skill attachments (WI-258). Bindings stay
-// create/delete-only for everything else; this narrow update lets admins
-// iterate on personas without recreating the binding.
+// custom instructions, skill attachments (WI-258), and the model connection.
+// Bindings stay create/delete-only for everything else; this narrow update lets
+// admins iterate on personas and models without recreating the binding.
 func (h *WorkspaceAgentBindingHandler) UpdateAgentConfig(w http.ResponseWriter, r *http.Request) {
 	workspaceID, id, user, ok := h.requireBindingAdmin(w, r)
 	if !ok {
@@ -1250,7 +1254,7 @@ func (h *WorkspaceAgentBindingHandler) UpdateAgentConfig(w http.ResponseWriter, 
 		return
 	}
 	sanitize.Apply(&body.Instructions, sanitize.RichText)
-	if err := h.bindings.UpdateAgentConfig(r.Context(), workspaceID, id, body.Instructions, body.RunnerImage, body.SkillIDs); err != nil {
+	if err := h.bindings.UpdateAgentConfig(r.Context(), workspaceID, id, body.Instructions, body.RunnerImage, body.SkillIDs, body.LLMConnectionID); err != nil {
 		switch {
 		case errors.Is(err, services.ErrBindingNotFound):
 			respondNotFound(w, r, "agent binding")
@@ -1259,6 +1263,7 @@ func (h *WorkspaceAgentBindingHandler) UpdateAgentConfig(w http.ResponseWriter, 
 		case errors.Is(err, services.ErrBindingInstructionsTooLong),
 			errors.Is(err, services.ErrBindingRunnerImageRequiresPool),
 			errors.Is(err, services.ErrBindingInvalidRunnerImage),
+			errors.Is(err, services.ErrLLMConnectionInvalid),
 			isSkillAttachError(err):
 			respondBadRequest(w, r, err.Error())
 		default:
@@ -1266,7 +1271,7 @@ func (h *WorkspaceAgentBindingHandler) UpdateAgentConfig(w http.ResponseWriter, 
 		}
 		return
 	}
-	h.auditor.LogWithDetails(r, user, "agent_binding.update_config", "workspace_agent_binding", &id, "", map[string]any{
+	h.auditor.LogWithDetails(r, user, logger.ActionAgentBindingUpdateConfig, logger.ResourceWorkspaceAgentBinding, &id, "", map[string]any{
 		"workspace_id": workspaceID,
 		"skill_count":  len(body.SkillIDs),
 	})
@@ -1289,7 +1294,7 @@ func (h *WorkspaceAgentBindingHandler) Delete(w http.ResponseWriter, r *http.Req
 		respondNotFound(w, r, "agent binding")
 		return
 	}
-	h.auditor.LogWithDetails(r, user, "agent_binding.archive", "workspace_agent_binding", &id, "", map[string]any{
+	h.auditor.LogWithDetails(r, user, logger.ActionAgentBindingArchive, logger.ResourceWorkspaceAgentBinding, &id, "", map[string]any{
 		"workspace_id": workspaceID,
 	})
 	w.WriteHeader(http.StatusNoContent)
@@ -1313,7 +1318,7 @@ func (h *WorkspaceAgentBindingHandler) Restore(w http.ResponseWriter, r *http.Re
 		}
 		return
 	}
-	h.auditor.LogWithDetails(r, user, "agent_binding.restore", "workspace_agent_binding", &id, "", map[string]any{
+	h.auditor.LogWithDetails(r, user, logger.ActionAgentBindingRestore, logger.ResourceWorkspaceAgentBinding, &id, "", map[string]any{
 		"workspace_id": workspaceID,
 	})
 	respondJSON(w, http.StatusOK, h.withSkillIDs(r, toBindingResponse(binding)))
@@ -1408,7 +1413,7 @@ func (h *WorkspaceAgentBindingHandler) TestRun(w http.ResponseWriter, r *http.Re
 		}
 		return
 	}
-	h.auditor.LogWithDetails(r, user, "agent_binding.test_run", "workspace_agent_binding", &id, "", map[string]any{
+	h.auditor.LogWithDetails(r, user, logger.ActionAgentBindingTestRun, logger.ResourceWorkspaceAgentBinding, &id, "", map[string]any{
 		"workspace_id": workspaceID,
 		"run_id":       runID,
 	})

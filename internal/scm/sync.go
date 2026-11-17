@@ -900,7 +900,7 @@ func (s *SyncService) removeUnnamedPullRequestLinks(ctx context.Context, repoID 
 			return fmt.Errorf("delete stale link %d: %w", link.id, err)
 		}
 		if removed, _ := result.RowsAffected(); removed > 0 {
-			services.PublishItemChange(link.itemID, services.ItemChangeLink)
+			services.PublishItemChange(link.itemID)
 		}
 	}
 	for _, itemID := range dismissedItems {
@@ -1244,7 +1244,7 @@ func (s *SyncService) upsertItemSCMLink(ctx context.Context, itemID, repoID int,
 		if err == nil {
 			// Live-update publish (WI-484): a webhook/poll detected an external
 			// PR/branch/commit for this item; refresh its SCM-links section.
-			services.PublishItemChange(itemID, services.ItemChangeLink)
+			services.PublishItemChange(itemID)
 		}
 		return err
 	}
@@ -1264,7 +1264,7 @@ func (s *SyncService) upsertItemSCMLink(ctx context.Context, itemID, repoID int,
 	if err == nil {
 		// Live-update publish (WI-484): an external link changed state (e.g. PR
 		// merged/closed) — a visible SCM-section change.
-		services.PublishItemChange(itemID, services.ItemChangeLink)
+		services.PublishItemChange(itemID)
 	}
 
 	return err
@@ -1380,7 +1380,7 @@ func (s *SyncService) upsertPullRequestSCMLink(
 	if err := tx.Commit(); err != nil {
 		return observed, fmt.Errorf("commit PR link observation: %w", err)
 	}
-	services.PublishItemChange(itemID, services.ItemChangeLink)
+	services.PublishItemChange(itemID)
 	return observed, nil
 }
 
@@ -1727,7 +1727,7 @@ func (s *SyncService) updateLinkFromProvider(ctx context.Context, provider Provi
 			return err
 		}
 		if changed {
-			services.PublishItemChange(itemID, services.ItemChangeLink)
+			services.PublishItemChange(itemID)
 		}
 		if emitMerged && s.durableActionEvents == nil {
 			s.emitPRMergedEvent(workspaceID, itemID, repoID, owner, repo, *pr)
@@ -1764,7 +1764,7 @@ func (s *SyncService) updateLinkFromProvider(ctx context.Context, provider Provi
 			return err
 		}
 		if refreshed != stored {
-			services.PublishItemChange(itemID, services.ItemChangeLink)
+			services.PublishItemChange(itemID)
 		}
 		return nil
 

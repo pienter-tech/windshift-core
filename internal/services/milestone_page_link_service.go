@@ -14,10 +14,6 @@ var (
 	// workspace, so only workspace (local) milestones link pages.
 	ErrMilestonePageLinksGlobal = errors.New("page links are only available on workspace milestones")
 
-	// ErrMilestonePageLinksForbidden rejects page-link changes by a user who
-	// can view the milestone but not edit it.
-	ErrMilestonePageLinksForbidden = errors.New("changing page links requires edit rights on the milestone")
-
 	// ErrMilestonePageNotFound covers a page that does not exist, lives in
 	// another workspace, or is hidden from the user. They share one response
 	// so page existence does not leak.
@@ -41,11 +37,11 @@ type MilestonePageLinkStore interface {
 	ListHistory(milestoneID int) ([]models.MilestonePageLinkEvent, error)
 }
 
-// MilestonePageLinkService links pages to workspace milestones (WCORE-19).
+// MilestonePageLinkService links pages to workspace milestones.
 // Anyone who can view the milestone sees the linked pages they may view;
 // users with edit rights on the milestone link and unlink pages from the
 // milestone's own workspace. Global milestones have no page links. Each link
-// and unlink is kept in the milestone history (WCORE-26).
+// and unlink is kept in the milestone history.
 type MilestonePageLinkService struct {
 	links  MilestonePageLinkStore
 	access MilestonePageLinkAccess
@@ -94,7 +90,7 @@ func (s *MilestonePageLinkService) List(userID, milestoneID int) ([]models.Miles
 }
 
 // History returns the milestone's recorded page links and unlinks for pages
-// the user may view, oldest first (WCORE-26). Archived, deleted, and hidden
+// the user may view, oldest first. Archived, deleted, and hidden
 // pages are left out; global milestones always return an empty list.
 func (s *MilestonePageLinkService) History(userID, milestoneID int) ([]models.MilestonePageLinkEvent, error) {
 	milestone, err := s.access.AuthorizeMilestoneRead(userID, milestoneID)
@@ -174,9 +170,6 @@ func (s *MilestonePageLinkService) requireEditable(userID, milestoneID int) (int
 		return 0, ErrMilestonePageLinksGlobal
 	}
 	if _, err := s.access.AuthorizeMilestoneWrite(userID, milestoneID); err != nil {
-		if errors.Is(err, ErrPlanningForbidden) {
-			return 0, ErrMilestonePageLinksForbidden
-		}
 		return 0, err
 	}
 	return *milestone.WorkspaceID, nil

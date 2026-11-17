@@ -206,11 +206,11 @@ func TestMilestonePageLinkServiceRequiresEditRights(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := service.Create(pageLinkViewer, pageLinkLocalMilestone, 101); !errors.Is(err, ErrMilestonePageLinksForbidden) {
-		t.Fatalf("viewer create: got %v, want ErrMilestonePageLinksForbidden", err)
+	if _, err := service.Create(pageLinkViewer, pageLinkLocalMilestone, 101); !errors.Is(err, ErrPlanningForbidden) {
+		t.Fatalf("viewer create: got %v, want ErrPlanningForbidden", err)
 	}
-	if err := service.Delete(pageLinkViewer, pageLinkLocalMilestone, created.ID); !errors.Is(err, ErrMilestonePageLinksForbidden) {
-		t.Fatalf("viewer delete: got %v, want ErrMilestonePageLinksForbidden", err)
+	if err := service.Delete(pageLinkViewer, pageLinkLocalMilestone, created.ID); !errors.Is(err, ErrPlanningForbidden) {
+		t.Fatalf("viewer delete: got %v, want ErrPlanningForbidden", err)
 	}
 	if _, err := service.Create(pageLinkEditor, 99, 100); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("missing milestone: got %v, want ErrNotFound", err)
@@ -382,7 +382,7 @@ func (a localMilestoneAccess) AuthorizeMilestoneWrite(userID, milestoneID int) (
 }
 
 // TestMilestoneActivityKeepsPageLinkHistory covers the SQLite repository and
-// the Activity feed (WCORE-26): linking and unlinking a page records history
+// the Activity feed: linking and unlinking a page records history
 // rows, the feed shows both entries after the unlink, entries for deleted or
 // hidden pages stay out, and links made without history get no entry.
 func TestMilestoneActivityKeepsPageLinkHistory(t *testing.T) {
@@ -468,12 +468,12 @@ func TestMilestoneActivityKeepsPageLinkHistory(t *testing.T) {
 		activityWorkspaces{},
 		links,
 	)
-	entries, total, err := activity.List(1, milestoneID, MilestoneActivityListParams{Limit: 50})
+	entries, hasMore, err := activity.List(1, milestoneID, MilestoneActivityListParams{Limit: 50})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if total != 3 || len(entries) != 3 {
-		t.Fatalf("feed: %d entries (total %d), want 3: %+v", len(entries), total, entries)
+	if hasMore || len(entries) != 3 {
+		t.Fatalf("feed: %d entries (hasMore %v), want 3: %+v", len(entries), hasMore, entries)
 	}
 	types := map[string]int{}
 	for _, entry := range entries {

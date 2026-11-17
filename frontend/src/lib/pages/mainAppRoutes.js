@@ -40,7 +40,7 @@ export const MAIN_APP_COMPONENT_LOADERS = {
   assets: () => import('../features/assets/AssetBrowser.svelte'),
   'asset-detail': () => import('../features/assets/AssetBrowser.svelte'),
   'asset-settings': () => import('../features/assets/AssetManager.svelte'),
-  'channel-manager': () => import('../features/channels/ManagerChannels.svelte'),
+  'delegated-admin': () => import('./DelegatedAdmin.svelte'),
   'workspace-queue': () => import('../features/support/SupportQueue.svelte'),
   'workspace-nav-config': () => import('../workspaces/NavigationConfigPage.svelte'),
   'workspace-board': () => import('../features/collections/CollectionBoard.svelte'),
@@ -83,8 +83,6 @@ export const MAIN_APP_COMPONENT_LOADERS = {
   'configuration-set-detail': () => import('../settings/ConfigurationSetDetail.svelte'),
   'workspace-look-and-feel': () => import('../workspaces/WorkspaceLookAndFeel.svelte'),
   'personal-plan': () => import('../features/personal/PlanMyDay.svelte'),
-  logbook: () => import('../features/logbook/Logbook.svelte'),
-  'logbook-document': () => import('../features/logbook/DocumentDetail.svelte'),
   'chat-panel': () => import('../features/chat/ChatPanel.svelte'),
   'terminal-panel': () => import('../features/terminal/TerminalPanel.svelte'),
 };
@@ -251,8 +249,8 @@ export const MAIN_APP_ROUTE_CONFIG = {
     }
   ),
   assets: route('Loading Assets...', 'Failed to load Assets', { wrapper: 'surface-full' }),
-  'channel-manager': route('Loading Channels...', 'Failed to load Channels', {
-    wrapper: 'surface-padded',
+  'delegated-admin': route('Loading Delegated Admin...', 'Failed to load Delegated Admin', {
+    wrapper: 'none',
   }),
   'asset-detail': route('Loading Asset...', 'Failed to load Asset', {
     wrapper: 'surface-full',
@@ -464,13 +462,6 @@ export const MAIN_APP_ROUTE_CONFIG = {
   'personal-plan': route('Loading Plan My Day...', 'Failed to load Plan My Day', {
     wrapper: 'surface-full',
   }),
-  logbook: route('Loading Knowledge Base...', 'Failed to load Knowledge Base', {
-    wrapper: 'surface-full',
-  }),
-  'logbook-document': route('Loading Document...', 'Failed to load Document', {
-    wrapper: 'surface-full',
-    getProps: (currentRoute) => ({ documentId: currentRoute.params.documentId }),
-  }),
 };
 
 export const MAIN_APP_TEST_VIEWS = new Set([
@@ -485,6 +476,39 @@ export const MAIN_APP_TEST_VIEWS = new Set([
   'test-execution',
   'test-case-detail',
   'test-set-detail',
+]);
+
+// Views whose content grows with the document and should end with the app
+// footer. Viewport-filling surfaces (boards, canvases, editors, Svelte Flow
+// designers, and two-panel pages that fill the viewport and scroll one of their
+// own panes) are intentionally absent: the footer wrapper is not viewport tall,
+// so an `h-full` pane inside it collapses to its content height.
+export const MAIN_APP_FOOTER_VIEWS = new Set([
+  'homepage',
+  'workspaces',
+  'workspace-settings',
+  'workspace-list',
+  'collection-list',
+  'collections-edit',
+  'teams-list',
+  'team-detail',
+  'profile',
+  'security',
+  'notifications',
+  'approvals-inbox',
+  'search',
+  'about',
+  'licenses',
+  '404',
+  'workspace-detail',
+  'workspace-overview',
+  'personal-workspace',
+  'workspace-look-and-feel',
+  'workspace-board-config',
+  'collection-board-config',
+  'workspace-nav-config',
+  'collection-nav-config',
+  'asset-settings',
 ]);
 
 export const WORKSPACE_SETTINGS_TABS = {
@@ -537,6 +561,12 @@ export function resolveMainAppRoute(view) {
   return { key: null, config: null };
 }
 
+/** True when the view ends with the app footer. Resolves through matchViews so
+ * settings tabs and similar aliases map to their base route. */
+export function isMainAppFooterView(view) {
+  return MAIN_APP_FOOTER_VIEWS.has(resolveMainAppRoute(view).key);
+}
+
 export function resolveEffectiveMainAppView(currentRoute, personalWorkspaceId) {
   if (currentRoute.view !== 'item-detail') return currentRoute.view;
 
@@ -565,4 +595,47 @@ export function getMainAppLazyState(lazyComponents, view) {
     config,
     loaderKey,
   };
+}
+
+// Route chunks already prefetched in this session. The dynamic import cache
+// makes a later load() call resolve instantly, so each chunk is only fetched
+// once even if the user hovers the same link repeatedly.
+const prefetchedLoaderKeys = new Set();
+
+/** Fetches a route chunk ahead of navigation without touching the lazy loader
+ * state, so failures stay silent and the pending spinner never appears. */
+export function prefetchMainAppComponent(key) {
+  if (!key || prefetchedLoaderKeys.has(key)) return;
+  const loader = MAIN_APP_COMPONENT_LOADERS[key];
+  if (!loader) return;
+
+  prefetchedLoaderKeys.add(key);
+  Promise.resolve()
+    .then(loader)
+    .catch(() => prefetchedLoaderKeys.delete(key));
+}
+
+/** Prefetches the chunk behind a route view name (hover/focus on a link). */
+export function prefetchMainAppForView(view) {
+  const { key } = resolveMainAppRoute(view);
+  if (key) prefetchMainAppComponent(key);
+}
+
+// Destinations users most often open next; warmed while the browser is idle.
+// Kept small: every entry pulls its route chunk's full static subtree.
+const IDLE_PREFETCH_LOADER_KEYS = [
+  'homepage',
+  'collections-list',
+  'workspaces',
+  'search',
+  'notifications',
+];
+
+/** Prefetches the likely next routes once the browser is idle. Uses
+ * requestIdleCallback, so test environments without it simply skip. */
+export function prefetchIdleMainAppComponents() {
+  if (typeof requestIdleCallback !== 'function') return;
+  requestIdleCallback(() => {
+    for (const key of IDLE_PREFETCH_LOADER_KEYS) prefetchMainAppComponent(key);
+  });
 }

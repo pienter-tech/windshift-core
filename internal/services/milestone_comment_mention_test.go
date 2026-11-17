@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"windshift/internal/database"
+	"windshift/internal/i18n"
 	"windshift/internal/models"
 )
 
@@ -110,7 +111,9 @@ func newMilestoneMentionTestService(t *testing.T) (*MilestoneCommentService, *re
 			mentionGlobalMilestone:    {mentionAlice: true, mentionBob: true, mentionCarol: true, mentionDave: true},
 		},
 	}
-	service := NewMilestoneCommentService(newFakeMilestoneCommentStore(), access)
+	// Alice may comment in the workspace; the other users only read.
+	permissions := fakeCommentPermissions{mentionAlice: {models.PermissionItemComment: true}}
+	service := NewMilestoneCommentService(newFakeMilestoneCommentStore(), access, permissions)
 	service.SetMentionNotifier(mentions)
 	return service, manager
 }
@@ -159,6 +162,16 @@ func TestMilestoneCommentMentionNotifiesViewersOnce(t *testing.T) {
 	}
 	if !strings.Contains(n.Message, "Alice Author") || !strings.Contains(n.Message, "Beta") {
 		t.Fatalf("expected actor and milestone in message, got %q", n.Message)
+	}
+	titleKey, messageKey, params, ok := models.ParseNotificationI18n(n.Metadata)
+	if !ok || titleKey != "notification.mention.title" || messageKey != "notification.mention.milestoneComment" {
+		t.Fatalf("expected translatable mention copy, got metadata %q", n.Metadata)
+	}
+	if got := i18n.Translate("en", messageKey, params); got != n.Message {
+		t.Fatalf("expected the English catalog entry to match the fallback message, got %q want %q", got, n.Message)
+	}
+	if got := i18n.Translate("de", messageKey, params); got != "Alice Author hat Sie in einem Kommentar zum Meilenstein Beta erwähnt" {
+		t.Fatalf("expected German copy, got %q", got)
 	}
 }
 

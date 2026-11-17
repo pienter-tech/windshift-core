@@ -166,26 +166,51 @@ func (s *EmailTrackingRetentionSweeper) collectInboundEmailChannels(ctx context.
 // sweepChannel deletes tracking rows older than retentionDays except for
 // thread anchors: rows whose message_id is referenced by a more recent
 // in_reply_to, and synthetic portal anchors (outbound rows with no comment —
-// they are the thread root for the ticket's whole lifetime). Returns the
-// number of rows deleted.
+// they are the thread root for the ticket's whole lifetime). It also keeps
+// completed rows whose item/comment was deleted (completed_at set, refs NULL):
+// those are the only thing preventing the message from being recreated if the
+// mailbox is refetched. Returns the number of rows deleted.
 func (s *EmailTrackingRetentionSweeper) sweepChannel(ctx context.Context, channelID, retentionDays int) (int64, error) {
 	const maxDays = int64(1<<63-1) / int64(24*time.Hour)
 	if int64(retentionDays) > maxDays || int64(retentionDays) < -maxDays {
 		return 0, fmt.Errorf("retention days out of range: %d", retentionDays)
 	}
 	cutoff := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour)
-	res, err := s.db.ExecWriteContext(ctx, `
-		DELETE FROM email_message_tracking
-		WHERE channel_id = ?
-		  AND processed_at < ?
-		  AND (direction <> 'outbound' OR comment_id IS NOT NULL)
-		  AND (message_id = '' OR message_id NOT IN (
-		      SELECT in_reply_to FROM email_message_tracking
-		      WHERE channel_id = ? AND in_reply_to IS NOT NULL AND in_reply_to <> ''
-		  ))
-	`, channelID, cutoff, channelID)
-	if err != nil {
-		return 0, fmt.Errorf("delete: %w", err)
+	// Delete in bounded batches so one sweep cannot hold the SQLite write
+	// connection for the whole table. NOT EXISTS lets the planner use
+	// idx_email_message_tracking_in_reply_to instead of materializing a NOT IN
+	// list over every reply in the channel.
+	const batchSize = 1000
+	var total int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+		res, err := s.db.ExecWriteContext(ctx, `
+			DELETE FROM email_message_tracking
+			WHERE id IN (
+				SELECT t.id FROM email_message_tracking t
+				WHERE t.channel_id = ?
+				  AND t.processed_at < ?
+				  AND (t.direction <> 'outbound' OR t.comment_id IS NOT NULL)
+				  AND NOT (t.completed_at IS NOT NULL AND t.item_id IS NULL AND t.comment_id IS NULL)
+				  AND (t.message_id = '' OR NOT EXISTS (
+				      SELECT 1 FROM email_message_tracking r
+				      WHERE r.channel_id = ? AND r.in_reply_to = t.message_id
+				  ))
+				LIMIT ?
+			)
+		`, channelID, cutoff, channelID, batchSize)
+		if err != nil {
+			return total, fmt.Errorf("delete: %w", err)
+		}
+		deleted, err := res.RowsAffected()
+		if err != nil {
+			return total, fmt.Errorf("count deleted rows: %w", err)
+		}
+		total += deleted
+		if deleted < batchSize {
+			return total, nil
+		}
 	}
-	return res.RowsAffected()
 }

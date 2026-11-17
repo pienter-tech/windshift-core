@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { IconTag as Tag } from '@tabler/icons-svelte-runes';
+  import Tag from '@tabler/icons-svelte-runes/icons/tag';
   import { navigate, currentRoute } from '../../router.js';
   import { categoriesStore } from '../../stores/categories.js';
   import { permissionStore, isSystemAdmin } from '../../stores/permissions.svelte.js';
@@ -84,17 +84,4 @@
 
 
 <style>
-  .nav-link {
-    color: var(--ds-text-subtle);
-  }
-
-  .nav-link:hover:not(.active) {
-    background: var(--ds-background-neutral-hovered);
-    color: var(--ds-text);
-  }
-
-  .nav-link.active {
-    background: var(--ds-surface-selected);
-    color: var(--ds-text);
-  }
 </style>

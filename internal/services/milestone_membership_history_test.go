@@ -10,7 +10,7 @@ import (
 )
 
 // TestMilestoneActivityKeepsMembershipHistory covers item creation and the
-// workspace move end to end on SQLite (WCORE-27): creating an item in
+// workspace move end to end on SQLite: creating an item in
 // milestones records a milestones history row, the Activity feed shows one
 // "item added" for it, a move keeps global memberships and records "item
 // removed" for the workspace milestone it leaves, and items created before

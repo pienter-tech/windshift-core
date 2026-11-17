@@ -269,13 +269,9 @@ func (s *ItemTypeChangeService) ApplyChange(itemID, userID, targetTypeID int, ne
 	}
 
 	// Live-update publish (WI-483): the type change (and optional status change)
-	// committed. A status kind triggers the status-aware reload on the client.
-	kind := ItemChangeUpdated
-	if nextStatusID != nil {
-		kind = ItemChangeStatus
-	}
-	PublishItemChange(itemID, kind)
-	PublishWorkspaceChange(original.WorkspaceID, WorkspaceChangeItems)
+	// committed.
+	PublishItemChange(itemID)
+	PublishWorkspaceChange(original.WorkspaceID)
 
 	return history, nil
 }

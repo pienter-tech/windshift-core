@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -258,7 +259,7 @@ func (h *AIHandler) PlanMyDay(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 	if err != nil {
-		respondLLMError(w, r, err)
+		respondLLMError(w, r, err, h.permService)
 		return
 	}
 
@@ -304,7 +305,7 @@ func (h *AIHandler) StatusSnapshot() AIStatusResponse {
 
 	// Load per-feature config
 	cfg, _ := llm.LoadAIFeaturesConfig(h.db)
-	featureKeys := []string{"ai_chat", "daily_briefing", "plan_my_day", "catch_me_up", "find_similar", "decompose", "release_notes", "dependency_analysis"}
+	featureKeys := []string{"ai_chat", "daily_briefing", "plan_my_day", "catch_me_up", "find_similar", "decompose", "release_notes", "dependency_analysis", "custom_widget"}
 	features := make(map[string]AIFeatureStatus, len(featureKeys))
 	for _, key := range featureKeys {
 		fc, ok := cfg[key]
@@ -346,7 +347,12 @@ func (h *AIHandler) GetDailyBriefing(w http.ResponseWriter, r *http.Request) {
 
 	briefing, err := repository.NewAIRepository(h.db).GetLatestSuccessfulDailyBriefing(user.ID)
 	if err != nil {
-		slog.Warn("GetDailyBriefing: no briefing found", slog.Int("user_id", user.ID), slog.Any("error", err))
+		// A missing briefing is the normal state before the scheduler has
+		// generated one — and always, when no AI provider is configured — so
+		// don't log it as a failure.
+		if !errors.Is(err, repository.ErrNotFound) {
+			slog.Warn("GetDailyBriefing: failed to load briefing", slog.Int("user_id", user.ID), slog.Any("error", err))
+		}
 		respondJSONOK(w, map[string]any{"content": ""})
 		return
 	}

@@ -216,6 +216,14 @@ export default {
 
     // Approval Set Picker
     selectApprovalSet: 'Select approval set',
+
+    // Date Picker
+    datePicker: {
+      previousMonth: 'Previous month',
+      nextMonth: 'Next month',
+      openCalendar: 'Open calendar',
+      selectDate: 'Select date...',
+    },
   },
 
   editors: {
@@ -240,6 +248,7 @@ export default {
     numberedList: 'Numbered List',
     insertImage: 'Insert Image',
     userNotFound: 'User not found',
+    multipleUsersMatch: 'Multiple users match',
     insertDiagram: 'Insert diagram',
     insertPageLink: 'Insert knowledge page link',
     searchPagesToLink: 'Search pages…',
@@ -256,6 +265,14 @@ export default {
     mermaidRendering: 'Rendering diagram',
     mermaidParseError: 'Mermaid parse error',
     mermaidEmpty: 'Empty mermaid block',
+    useProvider: 'Edit with {label}',
+    useRichText: 'Use rich text editor',
+    providerActive: '{label} is active',
+    discardProviderChanges: 'Discard unsaved changes?',
+    discardProviderChangesMessage:
+      'Your edits in {label} have not been saved. Switching editors discards them.',
+    discardChanges: 'Discard',
+    providerError: 'The editor plugin reported an error: {message}',
   },
 
   dialogs: {
@@ -440,7 +457,7 @@ export default {
     widthTwoThirds: 'Two-thirds',
     widthFull: 'Full',
     resizeAriaLabel: 'Resize widget',
-    resizeColumnsValue: '{count} of 12 columns',
+    resizeColumnsValue: '{count} of {total} columns',
     rowCount: 'Row count',
     density: 'Density',
     densityComfortable: 'Comfortable',
@@ -455,6 +472,7 @@ export default {
     chart: {
       items: 'items',
       noDataAvailable: 'No data available',
+      otherSlices: 'Other ({count} more)',
     },
     completionChart: {
       title: 'Completion Chart',
@@ -549,6 +567,7 @@ export default {
   },
 
   recurrence: {
+    gregorianRuleHint: 'Monthly and yearly recurrence rules use the Gregorian calendar.',
     title: 'Recurrence',
     description: 'Manage recurring task rules',
     frequency: 'Frequency',

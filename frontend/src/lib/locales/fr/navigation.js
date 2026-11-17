@@ -20,6 +20,9 @@ export default {
     aiChat: 'Discussion IA',
     terminal: 'Terminal',
     admin: 'Admin',
+    delegatedAdmin: 'Administration déléguée',
+    delegatedAdminSubtitle: 'Gérez les domaines qui vous sont attribués',
+    delegatedAdminUnauthorized: "Vous n'avez accès à aucun domaine d'administration déléguée.",
     notifications: 'Notifications',
     profile: 'Profil',
     expand: 'Développer',
@@ -197,8 +200,8 @@ export default {
         description: 'Gérer les configurations de notification',
       },
       adminEmailTemplates: {
-        label: 'Modèles de courriels',
-        description: 'Personnaliser le sujet et le corps des courriels transactionnels',
+        label: 'Modèles d’e-mails',
+        description: 'Personnaliser le sujet et le corps des e-mails transactionnels',
       },
 
       // Commandes système
@@ -214,7 +217,7 @@ export default {
       myProfile: { label: 'Mon profil', description: 'Afficher et modifier votre profil' },
       notifications: { label: 'Notifications', description: 'Afficher les notifications' },
       about: { label: 'À propos', description: 'À propos de cette application' },
-      assets: { label: 'Ressources', description: 'Gérer les ensembles de ressources et les articles' },
+      assets: { label: 'Ressources', description: 'Gérer les ensembles de ressources et les éléments' },
       organizations: { label: 'Organisations', description: 'Gérer les organisations clientes' },
 
       // Commandes dynamiques d'espace de travail

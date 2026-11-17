@@ -152,14 +152,12 @@ type AssetService struct {
 	db            database.Database
 	repo          *repository.AssetRepository
 	eventRecorder assetEventRecorder
-	compatibility *DurableAssetActionIngress
 }
 
 // NewAssetService constructs an AssetService backed by the given repository.
 func NewAssetService(db database.Database, repo *repository.AssetRepository) *AssetService {
 	return &AssetService{
 		db: db, repo: repo, eventRecorder: assetevents.NewRecorder(db),
-		compatibility: NewDurableAssetActionIngress(db),
 	}
 }
 
@@ -175,13 +173,6 @@ func (s *AssetService) events() assetEventRecorder {
 		return assetevents.NewRecorder(s.db)
 	}
 	return s.eventRecorder
-}
-
-func (s *AssetService) compatibilityEvents() *DurableAssetActionIngress {
-	if s.compatibility == nil {
-		return NewDurableAssetActionIngress(s.db)
-	}
-	return s.compatibility
 }
 
 // ValidateActionTaxonomyReferences rejects asset action nodes whose taxonomy
@@ -271,16 +262,6 @@ func assetEventSnapshot(assetID, setID, assetTypeID int, categoryID, statusID *i
 		ID: assetID, SetID: setID, AssetTypeID: assetTypeID,
 		CategoryID: categoryID, StatusID: statusID, Title: title,
 		Description: description, AssetTag: assetTag,
-	}
-}
-
-func assetCompatibilityEvent(eventType models.AssetActionTriggerType, snapshot assetevents.AssetSnapshot, actorUserID int, oldValues, newValues map[string]any, automation AssetAutomationContext) *models.AssetActionEvent {
-	return &models.AssetActionEvent{
-		EventType: eventType, SetID: snapshot.SetID, AssetID: snapshot.ID, ActorUserID: actorUserID,
-		OldValues: oldValues, NewValues: newValues,
-		TriggeredByAction: automation.TriggeredByAction, ExecutionChainID: automation.ExecutionChainID,
-		CascadeDepth: automation.CascadeDepth, SourceApplication: automation.SourceApplication,
-		CausationEventKey: automation.CausationEventKey,
 	}
 }
 
@@ -462,7 +443,7 @@ func coerceAssetFieldValue(f models.AssetTypeField, v any) any {
 			}
 		}
 		return v
-	case "multiselect":
+	case "multiselect", "multi_milestone":
 		if arr, ok := toInterfaceSlice(v); ok {
 			return arr
 		}
@@ -611,10 +592,10 @@ func validateAssetFieldValue(f models.AssetTypeField, v any) error {
 
 // assetFieldOptionAllowed reports whether the given value matches any
 // option in the field's declared option whitelist. It accepts either
-// an option ID (as a JSON number or numeric string) or an option label
-// (legacy string values). Returns true when no options are declared
-// (the field accepts any value) or when the stored options JSON is
-// malformed (fail-open — better to accept than to block legitimate
+// an option ID (as an integral JSON number or numeric string) or an
+// option label (legacy string values). Returns true when no options are
+// declared (the field accepts any value) or when the stored options JSON
+// is malformed (fail-open — better to accept than to block legitimate
 // writes against a misconfigured field).
 func assetFieldOptionAllowed(f models.AssetTypeField, value any) bool {
 	if value == nil || f.Options == "" {
@@ -630,29 +611,17 @@ func assetFieldOptionAllowed(f models.AssetTypeField, value any) bool {
 		allowedIDs[item.ID] = struct{}{}
 		allowedLabels[item.Label] = struct{}{}
 	}
-	switch v := value.(type) {
-	case int:
-		_, ok := allowedIDs[v]
-		return ok
-	case int64:
-		_, ok := allowedIDs[int(v)]
-		return ok
-	case float64:
-		_, ok := allowedIDs[int(v)]
-		return ok
-	case string:
-		if _, ok := allowedLabels[v]; ok {
+	if label, ok := value.(string); ok {
+		if _, ok := allowedLabels[label]; ok {
 			return true
 		}
-		// Also accept numeric strings that match an option ID.
-		if id, err := strconv.Atoi(v); err == nil {
-			_, ok := allowedIDs[id]
-			return ok
-		}
-		return false
-	default:
+	}
+	id, ok := validation.CoerceOptionID(value)
+	if !ok {
 		return false
 	}
+	_, ok = allowedIDs[id]
+	return ok
 }
 
 // customFieldValuePresent reports whether the values map carries a
@@ -691,7 +660,10 @@ func isEmptyCustomFieldValue(v any) bool {
 // action service is wired. Returns the freshly-loaded row.
 //
 // All required fields declared on the asset type must be present in
-// customFieldValues (EnforceRequired is on for creates).
+// customFieldValues (EnforceRequired is on for creates). String values are
+// coerced to the field's declared type first, matching updates and imports,
+// so automation literals and API clients can send "7" for a user or "true"
+// for a boolean.
 func (s *AssetService) CreateAsset(actor AuditActor, in repository.CreateAssetInput, customFieldValues map[string]any) (*models.Asset, error) {
 	return s.CreateAssetWithContext(actor, in, customFieldValues, AssetAutomationContext{})
 }
@@ -702,9 +674,11 @@ func (s *AssetService) CreateAssetWithContext(actor AuditActor, in repository.Cr
 	if err := s.validateAssetTaxonomy(in.SetID, in.AssetTypeID, in.CategoryID, in.StatusID); err != nil {
 		return nil, err
 	}
-	if err := s.ValidateCustomFieldsSchema(in.AssetTypeID, customFieldValues, CustomFieldsValidationOpts{EnforceRequired: true}); err != nil {
+	coerced, err := s.CoerceAndValidateCustomFieldValues(in.AssetTypeID, customFieldValues)
+	if err != nil {
 		return nil, err
 	}
+	customFieldValues = coerced
 	if err := reencodeCustomFieldValues(customFieldValues, &in.CustomFieldValuesJSON); err != nil {
 		return nil, err
 	}
@@ -720,7 +694,7 @@ func (s *AssetService) CreateAssetWithContext(actor AuditActor, in repository.Cr
 		return nil, &AssetValidationError{Msg: "title is required"}
 	}
 	var assetID int
-	err := database.WithTx(s.db, func(tx database.Tx) error {
+	err = database.WithTx(s.db, func(tx database.Tx) error {
 		var err error
 		assetID, err = s.repo.CreateAssetInTx(tx, in)
 		if err != nil {
@@ -733,12 +707,7 @@ func (s *AssetService) CreateAssetWithContext(actor AuditActor, in repository.Cr
 			newValues,
 			assetEventMetadata(actor.UserID, "application", context),
 		)
-		if err != nil {
-			return err
-		}
-		return s.compatibilityEvents().EmitInTx(stdctx.Background(), tx, assetCompatibilityEvent(
-			models.AssetTriggerAssetCreated, snapshot, actor.UserID, nil, newValues, context,
-		))
+		return err
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create asset: %w", err)
@@ -771,14 +740,9 @@ func (s *AssetService) InsertImportedAsset(in repository.ImportAssetRowInput) (i
 		_, err = s.events().Created(
 			stdctx.Background(), tx, snapshot,
 			newValues,
-			assetEventMetadata(in.CreatedBy, "asset_import", AssetAutomationContext{}),
+			assetevents.Import(in.ImportJobID),
 		)
-		if err != nil {
-			return err
-		}
-		return s.compatibilityEvents().EmitInTx(stdctx.Background(), tx, assetCompatibilityEvent(
-			models.AssetTriggerAssetCreated, snapshot, in.CreatedBy, nil, newValues, AssetAutomationContext{},
-		))
+		return err
 	})
 	return assetID, err
 }
@@ -858,18 +822,9 @@ func (s *AssetService) UpdateAssetWithContext(actor AuditActor, assetID int, old
 			if _, err := recorder.StatusChanged(stdctx.Background(), tx, snapshot, oldStatusID, newStatusID, oldValues, newValues, metadata); err != nil {
 				return err
 			}
-			if err := s.compatibilityEvents().EmitInTx(stdctx.Background(), tx, assetCompatibilityEvent(
-				models.AssetTriggerAssetStatusChanged, snapshot, actor.UserID, oldValues, newValues, context,
-			)); err != nil {
-				return err
-			}
 		}
-		if _, err := recorder.Updated(stdctx.Background(), tx, snapshot, nil, newValues, metadata); err != nil {
-			return err
-		}
-		return s.compatibilityEvents().EmitInTx(stdctx.Background(), tx, assetCompatibilityEvent(
-			models.AssetTriggerAssetUpdated, snapshot, actor.UserID, nil, newValues, context,
-		))
+		_, err = recorder.Updated(stdctx.Background(), tx, snapshot, nil, newValues, metadata)
+		return err
 	})
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
@@ -1026,9 +981,7 @@ func (s *AssetService) DeleteAsset(actor AuditActor, assetID int) error {
 		if _, err := s.events().Deleted(stdctx.Background(), tx, snapshot, oldValues, metadata); err != nil {
 			return err
 		}
-		return s.compatibilityEvents().EmitInTx(stdctx.Background(), tx, assetCompatibilityEvent(
-			models.AssetTriggerAssetDeleted, snapshot, actor.UserID, oldValues, nil, AssetAutomationContext{},
-		))
+		return nil
 	})
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {

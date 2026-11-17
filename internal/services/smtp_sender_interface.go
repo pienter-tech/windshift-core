@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"errors"
 
 	"windshift/internal/smtp"
@@ -26,7 +27,16 @@ var ErrRecipientIsAgent = errors.New("recipient is an agent or service user; ref
 // fake.
 type TransactionalEmailSender interface {
 	IsSMTPConfigured() bool
-	SendTransactional(toEmail, templateName string, data any) error
+	SendTransactional(toEmail, locale, templateName string, data any) error
+}
+
+// MentionEmailSender renders and sends the dedicated @mention email. It is a
+// narrower surface than ThreadedEmailSender: mentions are fresh, unthreaded
+// messages to internal users, so the sender only needs a context-aware
+// transactional send of a named template.
+type MentionEmailSender interface {
+	IsSMTPConfigured() bool
+	SendTransactionalContext(ctx context.Context, toEmail, locale, templateName string, data any) error
 }
 
 // ThreadedEmailSender abstracts the SMTP sending capability for the threaded
@@ -38,5 +48,7 @@ type TransactionalEmailSender interface {
 type ThreadedEmailSender interface {
 	IsSMTPConfigured() bool
 	SendThreadedEmail(params smtp.ThreadedEmailParams) error
+	SendThreadedEmailContext(ctx context.Context, params smtp.ThreadedEmailParams) error
 	RenderEmail(templateName string, data any) (subject, htmlBody, textBody string, err error)
+	RenderEmailLocale(locale, templateName string, data any) (subject, htmlBody, textBody string, err error)
 }

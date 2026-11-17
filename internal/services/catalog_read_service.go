@@ -62,6 +62,9 @@ type CatalogPageParams struct {
 	Sort   string
 	Desc   bool
 	Search string
+	// IDs, when set, restricts the page to exactly these resources. Callers
+	// use it to resolve a known id set in one read instead of one read per id.
+	IDs []int
 }
 
 func (s *CatalogReadService) ListWorkspaces(userID int, page CatalogPageParams) ([]models.Workspace, int, error) {
@@ -87,6 +90,14 @@ func (s *CatalogReadService) ListWorkspaces(userID int, page CatalogPageParams) 
 			visibleIDs = append(visibleIDs, candidate.ID)
 		}
 	}
+	if len(page.IDs) > 0 {
+		// The caller named the exact set, so return all of it in one page:
+		// ids outside the visible set are dropped and never leak existence.
+		visibleIDs = intersectIDs(visibleIDs, page.IDs)
+		page.Search = ""
+		page.Limit = len(visibleIDs)
+		page.Offset = 0
+	}
 	workspaces, total, err := s.workspaceRepo.FindByIDsPage(repository.WorkspaceIDPageParams{
 		IDs:    visibleIDs,
 		Search: page.Search,
@@ -106,6 +117,22 @@ func (s *CatalogReadService) ListWorkspaces(userID int, page CatalogPageParams) 
 		workspaces[i].IsRestricted = restricted[workspaces[i].ID]
 	}
 	return workspaces, total, nil
+}
+
+// intersectIDs returns the available ids that appear in requested, in the
+// available order. Requested ids absent from available are omitted.
+func intersectIDs(available, requested []int) []int {
+	wanted := make(map[int]struct{}, len(requested))
+	for _, id := range requested {
+		wanted[id] = struct{}{}
+	}
+	result := make([]int, 0, len(requested))
+	for _, id := range available {
+		if _, ok := wanted[id]; ok {
+			result = append(result, id)
+		}
+	}
+	return result
 }
 
 func (s *CatalogReadService) ListWorkspaceTemplates(ctx context.Context, userID int) ([]models.WorkspaceTemplateSummary, error) {
@@ -278,6 +305,61 @@ func (s *CatalogReadService) GetUser(userID, targetID int) (*models.User, error)
 		return nil, ErrCatalogNotFound
 	}
 	return user, nil
+}
+
+// GetUserDisplayBatch returns active users for a bounded id set. Self is
+// returned without user.list; any other id requires it. Forbidden, inactive,
+// and nonexistent ids are omitted identically, and results preserve the
+// caller's request order.
+func (s *CatalogReadService) GetUserDisplayBatch(ctx context.Context, userID int, ids []int) ([]models.User, error) {
+	if len(ids) == 0 {
+		return []models.User{}, nil
+	}
+
+	allowedIDs := ids
+	needsDirectory := false
+	for _, id := range ids {
+		if id != userID {
+			needsDirectory = true
+			break
+		}
+	}
+	if needsDirectory {
+		allowed, err := s.access.HasGlobalPermission(userID, models.PermissionUserList)
+		if err != nil {
+			return nil, err
+		}
+		if !allowed {
+			allowedIDs = nil
+			for _, id := range ids {
+				if id == userID {
+					allowedIDs = []int{id}
+					break
+				}
+			}
+		}
+	}
+	if len(allowedIDs) == 0 {
+		return []models.User{}, nil
+	}
+
+	users, err := s.users.ListByIDs(ctx, allowedIDs)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[int]models.User, len(users))
+	for _, user := range users {
+		if user.IsActive {
+			byID[user.ID] = user
+		}
+	}
+	result := make([]models.User, 0, len(byID))
+	for _, id := range allowedIDs {
+		if user, ok := byID[id]; ok {
+			result = append(result, user)
+		}
+	}
+	return result, nil
 }
 
 func (s *CatalogReadService) ListLabels(userID, workspaceID int) ([]models.Label, error) {

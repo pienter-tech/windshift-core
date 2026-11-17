@@ -203,6 +203,7 @@ func (r *SCIMRepository) ReplaceUser(id int, email, username, firstName, lastNam
 type SCIMUserPatch struct {
 	SetActive       *bool
 	SetUsername     *string
+	SetEmail        *string
 	SetFirstName    *string
 	SetLastName     *string
 	SetExternalID   *string
@@ -232,6 +233,9 @@ func (r *SCIMRepository) ApplyUserPatch(id int, patch SCIMUserPatch) (Deprovisio
 		}
 		if patch.SetUsername != nil {
 			addColumn("username", *patch.SetUsername)
+		}
+		if patch.SetEmail != nil {
+			addColumn("email", *patch.SetEmail)
 		}
 		if patch.SetFirstName != nil {
 			addColumn("first_name", *patch.SetFirstName)
@@ -453,37 +457,6 @@ func (r *SCIMRepository) AddGroupMember(groupID, userID int) error {
 	return err
 }
 
-// UpsertGroupMember inserts a SCIM-managed membership, flipping an existing
-// local membership into scim_managed state on conflict (PATCH add semantics).
-func (r *SCIMRepository) UpsertGroupMember(groupID, userID int) error {
-	_, err := r.db.ExecWrite(`
-		INSERT INTO group_members (group_id, user_id, scim_managed, added_at)
-		VALUES (?, ?, true, CURRENT_TIMESTAMP)
-		ON CONFLICT(group_id, user_id) DO UPDATE SET scim_managed = true
-	`, groupID, userID)
-	return err
-}
-
-// RemoveGroupMember deletes a membership, scoped to SCIM-managed rows so a
-// SCIM PATCH can't wipe a locally-added row. Matches the bulk DELETE inside
-// ReplaceGroup.
-func (r *SCIMRepository) RemoveGroupMember(groupID, userID int) error {
-	_, err := r.db.ExecWrite(`DELETE FROM group_members WHERE group_id = ? AND user_id = ? AND scim_managed = true`, groupID, userID)
-	return err
-}
-
-// UpdateGroupName applies a SCIM PATCH to displayName.
-func (r *SCIMRepository) UpdateGroupName(id int, name string) error {
-	_, err := r.db.ExecWrite(`UPDATE groups SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, name, id)
-	return err
-}
-
-// UpdateGroupExternalID applies a SCIM PATCH to externalId.
-func (r *SCIMRepository) UpdateGroupExternalID(id int, externalID string) error {
-	_, err := r.db.ExecWrite(`UPDATE groups SET scim_external_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, externalID, id)
-	return err
-}
-
 // DeleteGroup deletes a group row.
 func (r *SCIMRepository) DeleteGroup(id int) error {
 	_, err := r.db.ExecWrite(`DELETE FROM groups WHERE id = ?`, id)
@@ -550,4 +523,85 @@ func (r *SCIMRepository) ReplaceGroup(ctx context.Context, id int, name, externa
 	}
 
 	return priorMemberIDs, nil
+}
+
+// SCIM group member operation kinds.
+const (
+	SCIMGroupMemberAdd     = "add"
+	SCIMGroupMemberRemove  = "remove"
+	SCIMGroupMemberReplace = "replace"
+)
+
+// SCIMGroupMemberOp is one resolved membership mutation. Replace carries the
+// full desired SCIM-managed member set in UserIDs; Add/Remove carry a single
+// UserID.
+type SCIMGroupMemberOp struct {
+	Kind    string
+	UserID  int
+	UserIDs []int
+}
+
+// SCIMGroupPatch carries the resolved group PATCH writes. Fields are nil when
+// the request leaves the attribute unchanged; member operations are applied in
+// request order.
+type SCIMGroupPatch struct {
+	SetName       *string
+	SetExternalID *string
+	MemberOps     []SCIMGroupMemberOp
+}
+
+// ApplyGroupPatch applies every resolved group PATCH write in one transaction
+// so a failure anywhere leaves the group and its memberships untouched
+// (RFC 7644 §3.5.2 all-or-none). A replace rewrites only the SCIM-managed
+// member set, leaving locally-added memberships alone.
+func (r *SCIMRepository) ApplyGroupPatch(ctx context.Context, id int, patch SCIMGroupPatch) error {
+	return database.WithTx(r.db, func(tx database.Tx) error {
+		for _, op := range patch.MemberOps {
+			switch op.Kind {
+			case SCIMGroupMemberReplace:
+				if _, err := tx.Exec(`DELETE FROM group_members WHERE group_id = ? AND scim_managed = true`, id); err != nil {
+					return fmt.Errorf("failed to replace group members: %w", err)
+				}
+				for _, userID := range op.UserIDs {
+					if _, err := tx.Exec(`
+						INSERT INTO group_members (group_id, user_id, scim_managed, added_at)
+						VALUES (?, ?, true, CURRENT_TIMESTAMP)
+						ON CONFLICT(group_id, user_id) DO UPDATE SET scim_managed = true
+					`, id, userID); err != nil {
+						return fmt.Errorf("failed to replace group member: %w", err)
+					}
+				}
+			case SCIMGroupMemberAdd:
+				if _, err := tx.Exec(`
+					INSERT INTO group_members (group_id, user_id, scim_managed, added_at)
+					VALUES (?, ?, true, CURRENT_TIMESTAMP)
+					ON CONFLICT(group_id, user_id) DO UPDATE SET scim_managed = true
+				`, id, op.UserID); err != nil {
+					return fmt.Errorf("failed to add group member: %w", err)
+				}
+			default: // SCIMGroupMemberRemove
+				if _, err := tx.Exec(`DELETE FROM group_members WHERE group_id = ? AND user_id = ? AND scim_managed = true`, id, op.UserID); err != nil {
+					return fmt.Errorf("failed to remove group member: %w", err)
+				}
+			}
+		}
+
+		if patch.SetName != nil || patch.SetExternalID != nil {
+			sets := []string{"updated_at = CURRENT_TIMESTAMP"}
+			args := []any{}
+			if patch.SetName != nil {
+				sets = append(sets, "name = ?")
+				args = append(args, *patch.SetName)
+			}
+			if patch.SetExternalID != nil {
+				sets = append(sets, "scim_external_id = ?")
+				args = append(args, scimNullIfEmpty(*patch.SetExternalID))
+			}
+			args = append(args, id)
+			if _, err := tx.Exec(`UPDATE groups SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...); err != nil {
+				return fmt.Errorf("failed to apply group patch: %w", err)
+			}
+		}
+		return nil
+	})
 }

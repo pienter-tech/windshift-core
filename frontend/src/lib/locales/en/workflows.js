@@ -112,6 +112,7 @@ export default {
     connectByDragging: 'Connect statuses by dragging from connection points',
     saveWorkflow: 'Save Workflow',
     failedToSaveDesign: 'Failed to save workflow design',
+    failedToSaveScreen: 'Failed to save a transition screen',
     initialStatus: 'Initial status',
     setAsInitialStatus: 'Set as initial status',
     initial: 'Initial',
@@ -177,7 +178,7 @@ export default {
       'Cannot delete the default screen. This screen is required for workspaces without a configuration set.',
     confirmDeleteScreen:
       'Are you sure you want to delete screen "{name}"? This will affect all workspaces using this screen.',
-    defaults: { default: { name: 'Default Screen', description: 'Default screen with essential work item fields' } },
+    defaults: { default: { name: 'Default Screen', description: 'Default screen with essential work item fields' }, default_create: { name: 'Default Create Screen', description: 'Focused screen for creating work items' } },
     fieldWidths: {
       full: 'Full Width',
       half: 'Half Width',
@@ -375,5 +376,26 @@ export default {
       'Items moved into statuses within this category will be treated as completed in reports and reviews.',
     updateCategory: 'Update Category',
     createCategory: 'Create Category',
+  },
+  workflowInspector: {
+    subtitle: 'Transition settings',
+    screen: 'Screen',
+    noScreen: 'No screen is attached to this transition.',
+    chooseScreen: 'Choose a screen…',
+    changeScreen: 'Change screen…',
+    unbind: 'Unbind',
+    fieldSummary: '{fields} field(s), {required} required',
+    newScreenPlaceholder: 'New screen name',
+    createAndBind: 'Create & bind',
+    createHeading: 'Create a new screen',
+    createHint:
+      'Creates an empty screen, binds it to this transition, and opens the field editor.',
+    editFields: 'Edit fields',
+    editFieldsTitle: 'Screen fields — {name}',
+    screenSaved: 'Transition screen saved',
+    screenStaged: 'Screen will be attached when you save the workflow',
+    pendingHint: 'This transition is not saved yet. The screen is attached when you save the workflow.',
+    screenSaveFailed: 'Could not save the transition screen',
+    screenCreateFailed: 'Could not create the screen',
   },
 };

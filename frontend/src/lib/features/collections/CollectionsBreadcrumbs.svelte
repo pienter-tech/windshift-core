@@ -1,7 +1,12 @@
 <script>
   import { navigate } from '../../router.js';
   import { t } from '../../stores/i18n.svelte.js';
-  import { IconLayoutKanban as SquareKanban, IconDeviceFloppy as Save, IconTag as Tag, IconWorld } from '@tabler/icons-svelte-runes';
+  import SquareKanban from '@tabler/icons-svelte-runes/icons/layout-kanban';
+  import Save from '@tabler/icons-svelte-runes/icons/device-floppy';
+  import Tag from '@tabler/icons-svelte-runes/icons/tag';
+  import IconWorld from '@tabler/icons-svelte-runes/icons/world';
+  import IconLock from '@tabler/icons-svelte-runes/icons/lock';
+  import IconLockOpen2 from '@tabler/icons-svelte-runes/icons/lock-open-2';
   import Button from '../../components/Button.svelte';
   import Input from '../../components/Input.svelte';
   import Select from '../../components/Select.svelte';
@@ -12,6 +17,7 @@
     collection = null,
     workspace = null,
     isEditing = false,
+    canEdit = true,
     canSave = false,
     categories = [],
     returnPath = null,
@@ -22,10 +28,14 @@
     oncategorychange = null,
     isPublic = false,
     publicSlug = null,
+    publicMilestoneSwimlanes = false,
     onpublicsave = null,
     saving = false,
     slugSaved = false,
     showPublicBoard = false,
+    isPrivate = false,
+    showPrivacyToggle = false,
+    onprivacytoggle = null,
   } = $props();
 
   // Computed: is this a global collection (no workspace)?
@@ -75,8 +85,7 @@
     ondescriptionchange?.(event.currentTarget.value);
   }
 
-  function handleCategoryChange(event) {
-    const value = event.currentTarget.value;
+  function handleCategoryChange(value) {
     oncategorychange?.(value === '' || value === 'null' ? null : parseInt(value, 10));
   }
 
@@ -113,7 +122,7 @@
         <span>/</span>
       {/if}
 
-      {#if isEditing && collection}
+      {#if isEditing && collection && canEdit}
         <!-- Editable collection name -->
         <Input
           dataTestid="collection-name"
@@ -133,7 +142,19 @@
 
     <!-- Action buttons -->
     <div class="flex items-center gap-2">
-      {#if isEditing && collection}
+      {#if isEditing && collection && canEdit}
+        {#if showPrivacyToggle}
+          <Button
+            dataTestid="collection-privacy-toggle"
+            onclick={() => onprivacytoggle?.()}
+            variant={isPrivate ? 'selected' : 'default'}
+            size="sm"
+            icon={isPrivate ? IconLock : IconLockOpen2}
+          >
+            {isPrivate ? t('collections.private') : t('collections.shared')}
+          </Button>
+        {/if}
+
         {#if showPublicBoard}
           <Button
             dataTestid="public-board-button"
@@ -142,7 +163,7 @@
             size="sm"
             icon={IconWorld}
           >
-            {isPublic ? 'Shared' : 'Share'}
+            {isPublic ? t('collections.public') : t('collections.publish')}
           </Button>
         {/if}
 
@@ -166,25 +187,27 @@
           {t('common.cancel')}
         </Button>
       {/if}
-      <Button
-        dataTestid="collection-save"
-        onclick={handleSave}
-        variant="primary"
-        size="sm"
-        disabled={!canSave}
-      >
-        <Save class="w-4 h-4 mr-2" />
-        {#if isEditing && collection}
-          {t('collections.updateCollection')}
-        {:else}
-          {t('collections.saveCollection')}
-        {/if}
-      </Button>
+      {#if !collection || canEdit}
+        <Button
+          dataTestid="collection-save"
+          onclick={handleSave}
+          variant="primary"
+          size="sm"
+          disabled={!canSave}
+        >
+          <Save class="w-4 h-4 mr-2" />
+          {#if isEditing && collection}
+            {t('collections.updateCollection')}
+          {:else}
+            {t('collections.saveCollection')}
+          {/if}
+        </Button>
+      {/if}
     </div>
   </div>
 
   <!-- Editable description (only when editing) -->
-  {#if isEditing && collection}
+  {#if isEditing && collection && canEdit}
     <div class="mt-2 flex items-center gap-4">
       <Input
         type="text"
@@ -202,7 +225,7 @@
           <Select
             options={[{ value: '', label: t('collections.noCategory') }, ...categories.map(c => ({ value: c.id, label: c.name }))]}
             value={collection.category_id || ''}
-            onchange={(v) => handleCategoryChange({ target: { value: v } })}
+            onchange={handleCategoryChange}
             size="small"
           />
         </div>
@@ -224,6 +247,7 @@
   isOpen={showPublicDialog}
   {isPublic}
   {publicSlug}
+  {publicMilestoneSwimlanes}
   {slugSaved}
   {saving}
   onclose={closePublicDialog}

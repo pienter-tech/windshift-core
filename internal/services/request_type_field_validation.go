@@ -62,9 +62,9 @@ type virtualRequestField struct {
 	required  bool
 }
 
-// isPublicFormFillableCustomFieldType keeps public forms to values that can be
+// IsPublicFormFillableCustomFieldType keeps public forms to values that can be
 // entered without loading options from authenticated internal APIs.
-func isPublicFormFillableCustomFieldType(fieldType string) bool {
+func IsPublicFormFillableCustomFieldType(fieldType string) bool {
 	switch models.CanonicalCustomFieldType(fieldType) {
 	case "text", "textarea", "select", "multiselect", "number", "date",
 		models.CustomFieldTypeBoolean, "email", "url":
@@ -159,7 +159,7 @@ func AllowedCreateScreenCustomFieldIdentifiers(db database.Database, workspaceID
 	}
 	for _, field := range fields {
 		if field.FieldType == "custom" && field.FieldIdentifier != "" && field.FieldName != "" &&
-			isPublicFormFillableCustomFieldType(field.CustomFieldType) {
+			IsPublicFormFillableCustomFieldType(field.CustomFieldType) {
 			allowed[field.FieldIdentifier] = struct{}{}
 		}
 	}
@@ -193,23 +193,21 @@ func allowedRequestTypeCustomFieldIdentifiers(ctx context.Context, db database.D
 			servedWorkspaceIDs = config.FormWorkspaceIDs
 		}
 	}
-	if len(servedWorkspaceIDs) == 0 {
+	// A request type pins its workspace at creation; an unpinned row is not
+	// routable and exposes no custom fields.
+	if len(servedWorkspaceIDs) == 0 || !workspaceID.Valid {
 		return map[string]struct{}{}, nil
 	}
-
-	effectiveWorkspaceID := servedWorkspaceIDs[0]
-	if workspaceID.Valid {
-		effectiveWorkspaceID = int(workspaceID.Int64)
-		served := false
-		for _, candidate := range servedWorkspaceIDs {
-			if candidate == effectiveWorkspaceID {
-				served = true
-				break
-			}
+	effectiveWorkspaceID := int(workspaceID.Int64)
+	served := false
+	for _, candidate := range servedWorkspaceIDs {
+		if candidate == effectiveWorkspaceID {
+			served = true
+			break
 		}
-		if !served {
-			return map[string]struct{}{}, nil
-		}
+	}
+	if !served {
+		return map[string]struct{}{}, nil
 	}
 	return AllowedCreateScreenCustomFieldIdentifiers(db, effectiveWorkspaceID, itemTypeID)
 }

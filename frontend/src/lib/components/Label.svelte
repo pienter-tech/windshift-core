@@ -1,6 +1,7 @@
 <script>
   let {
     for: forId = null,
+    id = null,
     required = false,
     size = 'sm',           // 'xs' | 'sm' | 'md'
     color = 'subtle',      // 'default' | 'subtle'
@@ -18,6 +19,7 @@
 </script>
 
 <label
+  {id}
   for={forId}
   class="block font-medium {sizeClass} {className}"
   style="color: var({colorToken});"

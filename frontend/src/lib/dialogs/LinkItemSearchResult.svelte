@@ -1,5 +1,5 @@
 <script>
-  import ItemKey from '../features/items/ItemKey.svelte';
+  import ItemKey from '../components/ItemKey.svelte';
   import ItemTypeIcon from '../components/ItemTypeIcon.svelte';
   import { t } from '../stores/i18n.svelte.js';
 
@@ -28,12 +28,12 @@
     />
 
     <div class="flex-1 min-w-0">
-      <div class="font-medium text-sm truncate">{result.title}</div>
-      <div class="text-xs" style="color: var(--ds-text-subtle);">
+      <div class="font-medium text-sm truncate" dir="auto">{result.title}</div>
+      <div class="text-xs" dir="auto" style="color: var(--ds-text-subtle);">
         {#if result.type === 'test_case'}
           {result.description || `Test Case #${result.id}`}
         {:else}
-          <ItemKey item={result} />
+          <ItemKey item={result} clickable={false} />
         {/if}
       </div>
     </div>

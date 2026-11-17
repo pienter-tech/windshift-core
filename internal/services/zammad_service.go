@@ -1668,7 +1668,7 @@ func (s *ZammadService) syncClaimedTicketLink(ctx context.Context, link *models.
 	if err != nil {
 		return nil, err
 	}
-	PublishItemChange(updated.ItemID, ItemChangeZammad)
+	PublishItemChange(updated.ItemID)
 	return updated, nil
 }
 
@@ -1676,7 +1676,7 @@ func (s *ZammadService) recordZammadSyncError(link *models.ZammadTicketLink, syn
 	if updateErr := s.repo.UpdateTicketLinkSync(link.ID, syncOwner, link.LastStatusID, link.LastStatusName,
 		link.GroupID, link.GroupName, link.OwnerID, link.OwnerName,
 		"", RedactString(err.Error()), time.Now(), false, false); updateErr == nil {
-		PublishItemChange(link.ItemID, ItemChangeZammad)
+		PublishItemChange(link.ItemID)
 	}
 }
 
@@ -1742,7 +1742,7 @@ func (s *ZammadService) persistTicketSnapshot(ctx context.Context, link *models.
 					ticket.GroupID, groupName, ticket.OwnerID, ownerName, ticket.Title,
 					safeError, time.Now(), completionCommitted, completionCommitted)
 				if updateErr == nil {
-					PublishItemChange(link.ItemID, ItemChangeZammad)
+					PublishItemChange(link.ItemID)
 				}
 				return completionErr
 			}

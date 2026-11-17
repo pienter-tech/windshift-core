@@ -1,19 +1,23 @@
 <script>
   import { onDestroy } from 'svelte';
-  import { Globe } from '@lucide/svelte';
-  import { api } from '../api.js';
+  import Globe from '@lucide/svelte/icons/globe';
+  import { updateUserRegionalSettings, userPreferences } from '../api/users.js';
+  import { collectionPreferences } from '../stores/collectionPreferences.svelte.js';
   import AlertBox from '../components/AlertBox.svelte';
   import Button from '../components/Button.svelte';
   import FormField from '../components/FormField.svelte';
   import BasePicker from '../pickers/BasePicker.svelte';
-  import { authStore } from '../stores';
+  import TimezonePicker from '../pickers/TimezonePicker.svelte';
+  import { authStore } from '../stores/auth.svelte.js';
   import { i18n, SUPPORTED_LOCALES, t } from '../stores/i18n.svelte.js';
-  import { listIanaTimezones } from '../utils/timeUtils.js';
+  import { getCalendarPreference, setCalendarPreference } from '../stores/calendar.svelte.js';
 
   let { user = $bindable(null), userId = null } = $props();
 
   let selectedTimezone = $state('UTC');
   let selectedLanguage = $state('en');
+  let selectedCalendar = $state('auto');
+  let calendarHydrated = null;
   let saving = $state(false);
   let saved = $state(false);
   let error = $state('');
@@ -29,6 +33,12 @@
     selectedLanguage = user.language || 'en';
   });
 
+  $effect(() => {
+    if (user?.id && collectionPreferences.loaded && calendarHydrated !== user.id) {
+      selectedCalendar = getCalendarPreference();
+      calendarHydrated = user.id;
+    }
+  });
   onDestroy(() => {
     if (savedTimer) clearTimeout(savedTimer);
   });
@@ -39,55 +49,53 @@
     saving = true;
     saved = false;
     error = '';
+    const savingUserId = userId;
     try {
-      const updatedUser = await api.updateUserRegionalSettings(userId, {
+      const updatedUser = await updateUserRegionalSettings(userId, {
         timezone: selectedTimezone,
         language: selectedLanguage,
       });
+      if (authStore.currentUser?.id !== savingUserId) return;
       const savedLanguage = updatedUser?.language || selectedLanguage;
       authStore.patchCurrentUser({
         language: savedLanguage,
         timezone: updatedUser?.timezone || selectedTimezone,
       });
+      if (collectionPreferences.loaded && selectedCalendar !== getCalendarPreference()) {
+        try {
+          const prefs = await userPreferences.update({ calendar: selectedCalendar });
+          if (authStore.currentUser?.id !== savingUserId) return;
+          setCalendarPreference(prefs.calendar);
+        } catch (err) {
+          if (authStore.currentUser?.id !== savingUserId) return;
+          await i18n.setLocale(savedLanguage);
+          if (authStore.currentUser?.id !== savingUserId) return;
+          user = updatedUser || { ...user, timezone: selectedTimezone, language: savedLanguage };
+          throw new Error(t('users.calendarSaveFailed'));
+        }
+      }
       await i18n.setLocale(savedLanguage);
+      if (authStore.currentUser?.id !== savingUserId) return;
       user = updatedUser || { ...user, timezone: selectedTimezone, language: savedLanguage };
       saved = true;
       if (savedTimer) clearTimeout(savedTimer);
       savedTimer = setTimeout(() => (saved = false), 3000);
     } catch (err) {
+      if (authStore.currentUser?.id !== savingUserId) return;
       error = err.message || t('dialogs.alerts.failedToSave', { error: 'regional settings' });
     } finally {
       saving = false;
     }
   }
 
-  // Offer every IANA zone the runtime knows. Keep a stored value visible even
-  // when it is an alias or no longer canonical (e.g. legacy "Local").
-  const baseTimezoneIds = listIanaTimezones();
-  const timezoneIds = $derived.by(() => {
-    const stored = user?.timezone;
-    if (stored && !baseTimezoneIds.includes(stored)) {
-      return [stored, ...baseTimezoneIds];
-    }
-    return baseTimezoneIds;
-  });
-
-  function timezoneLabel(timezone) {
-    try {
-      const formatter = new Intl.DateTimeFormat(i18n.locale, {
-        timeZone: timezone,
-        timeZoneName: timezone === 'UTC' ? 'long' : 'longGeneric',
-      });
-      const name = formatter.formatToParts(new Date()).find((part) => part.type === 'timeZoneName')?.value;
-      if (!name) return timezone;
-      return timezone === 'UTC' ? `UTC (${name})` : `${name} (${timezone})`;
-    } catch {
-      return timezone;
-    }
-  }
-
-  const timezones = $derived(timezoneIds.map((value) => ({ value, label: timezoneLabel(value) })));
   const languages = SUPPORTED_LOCALES.map((locale) => ({ value: locale.code, label: locale.name }));
+  const calendars = $derived([
+    { value: 'auto', label: t('users.calendarAutomatic') },
+    { value: 'gregory', label: t('users.gregorian') },
+    { value: 'persian', label: t('users.persian') },
+  ]);
+
+
 </script>
 
 <div class="mb-6">
@@ -102,24 +110,42 @@
   <AlertBox message={error} />
 {/if}
 
+{#if collectionPreferences.loadError}
+  <AlertBox message={t('dialogs.alerts.failedToLoad', { error: t('users.calendar') })} />
+  <Button variant="secondary" onclick={() => collectionPreferences.ensureLoaded(userId)}>
+    {t('common.retry')}
+  </Button>
+{/if}
+
 <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
   <FormField label={t('users.timezone')} id="timezone" helper={t('users.timezoneHint')}>
-    <BasePicker
+    <TimezonePicker
+      id="timezone"
       bind:value={selectedTimezone}
-      items={timezones}
       placeholder={t('users.timezone')}
+      disabled={!user || saving}
+    />
+  </FormField>
+
+  <FormField label={t('users.language')} id="language" helper={t('users.languageHint')}>
+    <BasePicker
+      id="language"
+      bind:value={selectedLanguage}
+      items={languages}
+      placeholder={t('users.language')}
       disabled={!user || saving}
       getValue={(item) => item.value}
       getLabel={(item) => item.label}
     />
   </FormField>
 
-  <FormField label={t('users.language')} id="language" helper={t('users.languageHint')}>
+  <FormField label={t('users.calendar')} id="calendar" helper={t('users.calendarHint')}>
     <BasePicker
-      bind:value={selectedLanguage}
-      items={languages}
-      placeholder={t('users.language')}
-      disabled={!user || saving}
+      id="calendar"
+      bind:value={selectedCalendar}
+      items={calendars}
+      placeholder={t('users.calendar')}
+      disabled={!user || saving || !collectionPreferences.loaded}
       getValue={(item) => item.value}
       getLabel={(item) => item.label}
     />

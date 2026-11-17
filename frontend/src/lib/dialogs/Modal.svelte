@@ -1,4 +1,10 @@
+<script module>
+  // Context key through which a ModalHeader names its dialog.
+  export const modalTitleKey = Symbol('modal-title');
+</script>
+
 <script>
+  import { onDestroy, setContext, untrack } from 'svelte';
   import { getShortcut, matchesShortcut, getDisplayString } from '../utils/keyboardShortcuts.js';
   import { portal } from '../actions/portal.js';
 
@@ -19,6 +25,22 @@
     dataTestid = undefined,
     children
   } = $props();
+
+  // A ModalHeader inside this dialog registers through context, takes this
+  // id for its heading, and so gives the dialog its accessible name
+  // (aria-labelledby). The id is per instance, so stacked dialogs don't clash.
+  const uid = $props.id();
+  const titleId = `${uid}-title`;
+  let titleCount = $state(0);
+  setContext(modalTitleKey, {
+    id: titleId,
+    // Called from the header's effect; untracked so that effect doesn't
+    // depend on the count it changes.
+    register() {
+      untrack(() => (titleCount += 1));
+      return () => untrack(() => (titleCount -= 1));
+    }
+  });
 
   let backdropElement = $state(null);
   let modalContentElement = $state(null);
@@ -110,12 +132,20 @@
   // browser when Escape blurs a picker's search field), focus would fall to
   // <body> and the next Escape would not close the dialog (WCORE-65). Move
   // it to the dialog itself instead. Focus lost by a mouse press, such as a
-  // click in a picker's dropdown portalled outside the dialog, is left to
-  // that interaction: the picker returns focus to its field afterwards.
+  // click in a picker's dropdown portalled outside the dialog, is first left
+  // to that interaction: a picker may refocus its field or move focus on
+  // after a pick. A press that ends with focus still on <body> (e.g. on the
+  // dropdown's empty space, where no picker code runs) gets the field back,
+  // or the dialog if the field is gone (WCORE-67).
   let mousePressed = false;
+  let blurredByPress = null;
 
   function handleFocusOut(e) {
-    if (e.relatedTarget || mousePressed) return;
+    if (e.relatedTarget) return;
+    if (mousePressed) {
+      blurredByPress = e.target;
+      return;
+    }
     queueMicrotask(() => {
       if (!isOpen || !backdropElement?.isConnected) return;
       const active = document.activeElement;
@@ -124,47 +154,115 @@
     });
   }
 
+  // Return focus to the control that opened the dialog once it closes
+  // (WCORE-63). The opener is whatever had focus when the dialog opened; this
+  // pre-effect runs before the dialog moves focus into itself. The restore
+  // waits a microtask so the dialog is gone, and only runs when focus fell
+  // to <body> with it: a caller that already moved focus elsewhere keeps
+  // it. It also skips an opener that left the document and a close caused
+  // by navigating to another page.
+  $effect.pre(() => {
+    if (!isOpen || inline) return;
+    const opener = /** @type {HTMLElement | null} */ (document.activeElement);
+    const path = location.pathname;
+    return () => {
+      queueMicrotask(() => {
+        if (!opener || opener === document.body || !opener.isConnected) return;
+        if (location.pathname !== path) return;
+        const active = document.activeElement;
+        if (active && active !== document.body) return;
+        opener.focus();
+      });
+    };
+  });
+
   $effect(() => {
     if (!isOpen || inline) return;
+    let timer;
     const press = () => {
       mousePressed = true;
+      blurredByPress = null;
     };
     const release = () => {
       mousePressed = false;
+      const field = blurredByPress;
+      blurredByPress = null;
+      if (!field) return;
+      // A timer runs after the click and its follow-up microtasks (a pick
+      // that focuses another control wins). Unlike an animation frame, it
+      // also runs in a background tab.
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (!isOpen || !backdropElement?.isConnected) return;
+        const active = document.activeElement;
+        if (active && active !== document.body) return;
+        const target =
+          field.isConnected && backdropElement.contains(field) ? field : backdropElement;
+        target.focus({ preventScroll: true });
+      });
     };
     document.addEventListener('mousedown', press, true);
     document.addEventListener('mouseup', release, true);
     return () => {
       document.removeEventListener('mousedown', press, true);
       document.removeEventListener('mouseup', release, true);
+      clearTimeout(timer);
       mousePressed = false;
+      blurredByPress = null;
     };
   });
 
+  // Auto-focus runs once per open. The effect below re-runs whenever the modal
+  // content is (re)mounted, so a timer scheduled inside it would keep resetting
+  // and could fire late — after the user has opened a dropdown — stealing focus
+  // back to the first field and scrolling the modal away from the control.
+  let autoFocusTimer = null;
+
+  onDestroy(() => {
+    if (autoFocusTimer !== null) clearTimeout(autoFocusTimer);
+  });
+
   $effect(() => {
-    if (isOpen && modalContentElement && backdropElement) {
-      const timer = setTimeout(() => {
+    if (!isOpen) {
+      if (autoFocusTimer !== null) {
+        clearTimeout(autoFocusTimer);
+        autoFocusTimer = null;
+      }
+      return;
+    }
+    if (!modalContentElement || !backdropElement) return;
+
+    if (autoFocusTimer === null) {
+      autoFocusTimer = setTimeout(() => {
+        autoFocusTimer = null;
+        if (!modalContentElement || !backdropElement) return;
         detectTextarea();
         if (modalContentElement.contains(document.activeElement)) return;
-        backdropElement.focus();
+        // Never steal focus from an open portaled overlay (select listbox,
+        // menu, nested dialog). Those render outside the modal content, so the
+        // containment check above cannot see them.
+        const active = document.activeElement;
+        if (active && active !== document.body && active.closest?.('[data-escapee]')) return;
+        // Focus without scrolling: the timer can fire after the user (or a
+        // test) has scrolled a tall modal, and a plain focus() would yank the
+        // backdrop back to the first field.
+        backdropElement.focus({ preventScroll: true });
         if (autoFocus) {
           const focusable = modalContentElement.querySelector(
             'input:not([disabled]):not([type="hidden"]), textarea:not([disabled]), select:not([disabled])'
           );
           if (focusable) {
-            focusable.focus();
+            focusable.focus({ preventScroll: true });
           }
         }
       }, 100);
-      // A lazily-mounted editor may appear after the initial detect — keep the
-      // submit hint in sync as the modal's subtree changes.
-      const observer = new MutationObserver(detectTextarea);
-      observer.observe(modalContentElement, { childList: true, subtree: true });
-      return () => {
-        clearTimeout(timer);
-        observer.disconnect();
-      };
     }
+
+    // A lazily-mounted editor may appear after the initial detect — keep the
+    // submit hint in sync as the modal's subtree changes.
+    const observer = new MutationObserver(detectTextarea);
+    observer.observe(modalContentElement, { childList: true, subtree: true });
+    return () => observer.disconnect();
   });
 </script>
 
@@ -191,6 +289,7 @@
     onfocusout={handleFocusOut}
     role="dialog"
     aria-modal="true"
+    aria-labelledby={titleCount > 0 ? titleId : undefined}
     data-testid={dataTestid}
   >
     <div

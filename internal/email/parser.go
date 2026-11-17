@@ -501,13 +501,19 @@ func StripSignature(body string) string {
 
 	for i := searchStart; i < totalLines; i++ {
 		trimmed := strings.TrimSpace(lines[i])
-		if isSignOff(trimmed) {
-			// Validate: what follows should be short (≤10 lines) and/or contain contact info
-			remaining := lines[i+1:]
-			if validateSignatureBlock(remaining) {
-				result := strings.TrimRight(strings.Join(lines[:i], "\n"), " \t\r\n")
-				return result
-			}
+		if !isSignOff(trimmed) {
+			continue
+		}
+		// A sign-off with nothing before it is the message itself, not a
+		// signature: stripping it would discard the customer's request
+		// ("Thanks / Please close the request").
+		if strings.TrimSpace(strings.Join(lines[:i], "\n")) == "" {
+			continue
+		}
+		// Validate: what follows should be short (≤10 lines) and/or contain contact info
+		if validateSignatureBlock(lines[i+1:]) {
+			result := strings.TrimRight(strings.Join(lines[:i], "\n"), " \t\r\n")
+			return result
 		}
 	}
 

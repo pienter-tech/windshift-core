@@ -1,6 +1,7 @@
 <script>
-  import { Search } from '@lucide/svelte';
+  import Search from '@lucide/svelte/icons/search';
   import { t } from '../stores/i18n.svelte.js';
+  import { controlSizeClasses } from '../utils/controlSizes.js';
 
   let {
     value = $bindable(''),
@@ -24,11 +25,7 @@
     if (on_keydown) on_keydown(event);
   }
 
-  const sizeClasses = {
-    small: 'px-3 py-1.5 text-sm',
-    medium: 'px-4 py-2 text-sm',
-    large: 'px-4 py-3 text-base'
-  };
+  const sizeClasses = $derived(controlSizeClasses(size));
 
   const iconSizeClasses = {
     small: 'w-3.5 h-3.5',
@@ -48,7 +45,7 @@
     placeholder={placeholder || t('common.search')}
     {disabled}
     data-testid={dataTestid}
-    class="pl-10 pr-4 {sizeClasses[size]} rounded border w-full transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-ds-border-focused focus:border-transparent disabled:opacity-50 disabled:cursor-not-allowed"
+    class="pl-10 pr-4 {sizeClasses} rounded border w-full transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-ds-border-focused focus:border-transparent disabled:opacity-50 disabled:cursor-not-allowed"
     style="background-color: var(--ctx-surface-raised, var(--ds-background-input)); border-color: var(--ctx-border, var(--ds-border)); color: var(--ds-text); backdrop-filter: var(--ctx-backdrop, none);"
     oninput={handleInput}
     onkeydown={handleKeydown}

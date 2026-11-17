@@ -687,9 +687,11 @@ func (s *BindingService) UpdateBinding(ctx context.Context, req UpdateBindingReq
 	return updated, nil
 }
 
-// UpdateAgentConfig updates workspace-scoped prompt settings. A nil runner image
-// preserves the current value; an empty non-nil value clears the override.
-func (s *BindingService) UpdateAgentConfig(ctx context.Context, workspaceID, bindingID int, instructions string, runnerImage *string, skillIDs []int) error {
+// UpdateAgentConfig updates workspace-scoped prompt settings and, when
+// llmConnectionID is non-nil, the model connection. A nil runner image or
+// connection preserves the current value; an empty non-nil runner image clears
+// the override.
+func (s *BindingService) UpdateAgentConfig(ctx context.Context, workspaceID, bindingID int, instructions string, runnerImage *string, skillIDs []int, llmConnectionID *int) error {
 	if len(instructions) > maxBindingInstructionsLen {
 		return ErrBindingInstructionsTooLong
 	}
@@ -716,13 +718,20 @@ func (s *BindingService) UpdateAgentConfig(ctx context.Context, workspaceID, bin
 			return ErrBindingRunnerImageRequiresPool
 		}
 	}
-	if err := s.repo.UpdateInstructions(ctx, bindingID, workspaceID, instructions); err != nil {
-		return err
-	}
-	if runnerImage != nil {
-		if err := s.repo.UpdateRunnerImage(ctx, bindingID, workspaceID, newRunnerImage); err != nil {
-			return err
+	if llmConnectionID != nil && s.llmRuntime != nil {
+		if _, err := s.llmRuntime.ConnectionRuntime(ctx, *llmConnectionID); err != nil {
+			return ErrLLMConnectionInvalid
 		}
+	}
+	var runnerImageArg *string
+	if runnerImage != nil {
+		runnerImageArg = &newRunnerImage
+	}
+	// One atomic write so the model connection, readiness invalidation, and the
+	// single version bump land together; a concurrent activation must never see
+	// the old connection with a fresh version.
+	if err := s.repo.UpdateAgentConfig(ctx, bindingID, workspaceID, instructions, llmConnectionID, runnerImageArg); err != nil {
+		return err
 	}
 	if s.skills == nil {
 		if len(skillIDs) > 0 {

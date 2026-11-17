@@ -742,11 +742,11 @@ func (s *ItemWorkspaceMoveService) MoveContext(ctx context.Context, itemID, acto
 		return nil, err
 	}
 	updated = &items[0]
-	PublishItemChange(itemID, ItemChangeUpdated)
-	PublishWorkspaceChange(item.WorkspaceID, WorkspaceChangeItems)
-	PublishWorkspaceChange(input.DestinationWorkspaceID, WorkspaceChangeItems)
+	PublishItemChange(itemID)
+	PublishWorkspaceChange(item.WorkspaceID)
+	PublishWorkspaceChange(input.DestinationWorkspaceID)
 	for _, childID := range childIDs {
-		PublishItemChange(childID, ItemChangeUpdated)
+		PublishItemChange(childID)
 	}
 	return &ItemWorkspaceMoveResult{
 		Item:             updated,
