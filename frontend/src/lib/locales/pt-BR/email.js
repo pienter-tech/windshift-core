@@ -90,6 +90,7 @@ export default {
         comment: "{actor} mencionou você em um comentário em {itemTitle} ({itemKey})",
         description: "{actor} mencionou você na descrição de {itemTitle} ({itemKey})",
         item: "{actor} mencionou você em {itemTitle} ({itemKey})",
+        milestoneComment: "{actor} mencionou você em um comentário no marco {milestoneName}",
     },
     approvalStarted: {
         title: "Aprovação necessária",

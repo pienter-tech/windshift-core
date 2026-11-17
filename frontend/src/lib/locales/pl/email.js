@@ -97,6 +97,7 @@ export default {
         comment: '{actor} wspomniał o Tobie w komentarzu do {itemTitle} ({itemKey})',
         description: '{actor} wspomniał o Tobie w opisie {itemTitle} ({itemKey})',
         item: '{actor} wspomniał o Tobie w {itemTitle} ({itemKey})',
+        milestoneComment: '{actor} wspomniał o Tobie w komentarzu do kamienia milowego {milestoneName}',
     },
     approvalStarted: {
         title: 'Wymagane zatwierdzenie',
