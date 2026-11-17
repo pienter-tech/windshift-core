@@ -71,6 +71,7 @@ const (
 	mentionBob   = 2 // can view both milestones
 	mentionCarol = 3 // can't view the workspace milestone
 	mentionDave  = 4 // can view both milestones
+	mentionEve   = 5 // can view the workspace milestone but has no role in its workspace
 
 	mentionWorkspaceID        = 5
 	mentionWorkspaceMilestone = 20
@@ -91,14 +92,34 @@ func newMilestoneMentionTestService(t *testing.T) (*MilestoneCommentService, *re
 		(1, 'alice@example.test', 'alice', 'Alice', 'Author'),
 		(2, 'bob@example.test', 'bob', 'Bob', 'Builder'),
 		(3, 'carol@example.test', 'carol', 'Carol', 'Outsider'),
-		(4, 'dave@example.test', 'dave', 'Dave', 'Viewer')`); err != nil {
+		(4, 'dave@example.test', 'dave', 'Dave', 'Viewer'),
+		(5, 'eve@example.test', 'eve', 'Eve', 'Elsewhere')`); err != nil {
 		t.Fatal(err)
 	}
+	// Alice, Bob and Dave hold a role in the workspace, so they can act in it;
+	// Carol and Eve hold none.
+	if _, err := db.ExecWrite(`INSERT INTO workspaces (id, name, key) VALUES (5, 'Mentions', 'MEN')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecWrite(`INSERT INTO user_workspace_roles (user_id, workspace_id, role_id, granted_by)
+		SELECT u.id, 5, r.id, 1 FROM users u, workspace_roles r
+		WHERE u.id IN (1, 2, 4) AND r.name = 'Viewer'`); err != nil {
+		t.Fatal(err)
+	}
+	config := DefaultPermissionCacheConfig()
+	config.WarmupOnStartup = false
+	config.PreWarmActive = false
+	permService, err := NewPermissionService(db, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = permService.Close() })
 
 	manager := &recordingNotificationManager{}
 	notifications := NewNotificationService(db, manager, nil, NotificationServiceConfig{})
 	t.Cleanup(func() { _ = notifications.Close() })
-	mentions := NewMentionService(db, notifications, nil)
+	mentions := NewMentionService(db, notifications, permService)
+	mentions.SetWorkspaceUserResolver(NewWorkspaceUserResolver(db, permService))
 
 	workspaceID := mentionWorkspaceID
 	access := perUserMilestoneAccess{
@@ -107,8 +128,8 @@ func newMilestoneMentionTestService(t *testing.T) (*MilestoneCommentService, *re
 			mentionGlobalMilestone:    {ID: mentionGlobalMilestone, Name: "Launch", IsGlobal: true},
 		},
 		viewers: map[int]map[int]bool{
-			mentionWorkspaceMilestone: {mentionAlice: true, mentionBob: true, mentionDave: true},
-			mentionGlobalMilestone:    {mentionAlice: true, mentionBob: true, mentionCarol: true, mentionDave: true},
+			mentionWorkspaceMilestone: {mentionAlice: true, mentionBob: true, mentionDave: true, mentionEve: true},
+			mentionGlobalMilestone:    {mentionAlice: true, mentionBob: true, mentionCarol: true, mentionDave: true, mentionEve: true},
 		},
 	}
 	// Alice may comment in the workspace; the other users only read.
@@ -188,6 +209,26 @@ func TestMilestoneCommentMentionOnGlobalMilestone(t *testing.T) {
 	n := got[0]
 	if n.ActionURL != "/milestones/21" || n.AuthorizationScope != models.NotificationScopeSystem || n.WorkspaceID != nil {
 		t.Fatalf("expected a system-scoped link to the global milestone, got %+v", n)
+	}
+}
+
+func TestMilestoneCommentMentionSkipsViewersWhoCannotActInWorkspace(t *testing.T) {
+	service, manager := newMilestoneMentionTestService(t)
+
+	// Eve may view the workspace milestone but holds no role in its workspace.
+	if _, err := service.Create(mentionAlice, mentionWorkspaceMilestone, "@eve and @bob"); err != nil {
+		t.Fatal(err)
+	}
+	if got := notifiedUsers(manager.take()); !sameUsers(got, []int{mentionBob}) {
+		t.Fatalf("expected only Bob notified on the workspace milestone, got %v", got)
+	}
+
+	// A global milestone has no workspace, so viewing it is enough.
+	if _, err := service.Create(mentionAlice, mentionGlobalMilestone, "@eve"); err != nil {
+		t.Fatal(err)
+	}
+	if got := notifiedUsers(manager.take()); !sameUsers(got, []int{mentionEve}) {
+		t.Fatalf("expected Eve notified on the global milestone, got %v", got)
 	}
 }
 

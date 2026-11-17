@@ -493,7 +493,15 @@ func (s *MentionService) emitMentionNotification(params ProcessMentionsParams, m
 		return
 	}
 
-	actorName := s.actorName(params.ActorUserID)
+	var actorFirstName, actorLastName string
+	err = s.db.QueryRow(`
+		SELECT first_name, last_name FROM users WHERE id = ?
+	`, params.ActorUserID).Scan(&actorFirstName, &actorLastName)
+	if err != nil {
+		slog.Error("Error fetching actor name", slog.String("component", "mentions"), slog.Any("error", err))
+		actorFirstName = "Someone"
+	}
+	actorName := strings.TrimSpace(actorFirstName + " " + actorLastName)
 
 	itemKey := fmt.Sprintf("%s-%d", item.WorkspaceKey, item.WorkspaceItemNumber)
 
@@ -573,8 +581,9 @@ func (s *MentionService) emitMentionNotification(params ProcessMentionsParams, m
 	}
 }
 
-// actorName returns the display name used in mention notifications.
-func (s *MentionService) actorName(userID int) string {
+// milestoneMentionActorName returns the actor's display name for a milestone
+// comment mention, falling back to "Someone" like the item mention path.
+func (s *MentionService) milestoneMentionActorName(userID int) string {
 	var firstName, lastName string
 	err := s.db.QueryRow(`
 		SELECT first_name, last_name FROM users WHERE id = ?
@@ -600,18 +609,33 @@ type MilestoneCommentMentionParams struct {
 // NotifyMilestoneCommentMentions notifies users @mentioned in a milestone
 // comment. It follows the item comment rule: only users newly mentioned by
 // this write are notified (an edit re-notifies nobody it already mentioned),
-// the author is never notified, and users who can't view the milestone are
-// skipped. Milestone comments keep no mention records, so "already mentioned"
+// the author is never notified, and users who can't view the milestone (or,
+// on a workspace milestone, can't act in its workspace) are skipped.
+// Milestone comments keep no mention records, so "already mentioned"
 // is read from the previous content. The notification opens the milestone.
 func (s *MentionService) NotifyMilestoneCommentMentions(params MilestoneCommentMentionParams) error {
 	if s.notificationService == nil || params.Milestone == nil {
 		return nil
 	}
-	current, err := s.ResolveMentionedUserIDs(params.Content)
+	milestone := params.Milestone
+	var workspaceID *int
+	if !milestone.IsGlobal {
+		workspaceID = milestone.WorkspaceID
+	}
+	// A workspace milestone resolves only users who can act in its workspace,
+	// as upstream advises for workspace-sensitive callers; CanView still
+	// applies. Both sides of the diff use the same resolver.
+	resolve := s.ResolveMentionedUserIDs
+	if workspaceID != nil {
+		resolve = func(content string) ([]int, error) {
+			return s.ResolveActionableMentionedUserIDs(content, *workspaceID)
+		}
+	}
+	current, err := resolve(params.Content)
 	if err != nil || len(current) == 0 {
 		return err
 	}
-	previous, err := s.ResolveMentionedUserIDs(params.PreviousContent)
+	previous, err := resolve(params.PreviousContent)
 	if err != nil {
 		return err
 	}
@@ -629,12 +653,7 @@ func (s *MentionService) NotifyMilestoneCommentMentions(params MilestoneCommentM
 		return nil
 	}
 
-	milestone := params.Milestone
-	var workspaceID *int
-	if !milestone.IsGlobal {
-		workspaceID = milestone.WorkspaceID
-	}
-	actorName := s.actorName(params.ActorUserID)
+	actorName := s.milestoneMentionActorName(params.ActorUserID)
 	title := "You were mentioned"
 	message := fmt.Sprintf("%s mentioned you in a comment on milestone %s",
 		actorName, milestone.Name)
