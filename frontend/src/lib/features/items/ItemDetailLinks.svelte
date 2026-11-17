@@ -410,7 +410,7 @@
               <button
                 type="button"
                 data-testid="linked-item-delete"
-                class="delete-button p-1 rounded flex cursor-pointer opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus:opacity-100 transition-opacity"
+                class="delete-button p-1 rounded flex cursor-pointer opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100 focus:opacity-100 transition-opacity"
                 onclick={() => removeLink(link.id)}
                 title={t('items.removeLink')}
                 aria-label={t('items.removeLink')}
@@ -483,7 +483,7 @@
               <button
                 type="button"
                 data-testid="linked-page-delete"
-                class="delete-button p-1 rounded flex cursor-pointer opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus:opacity-100 transition-opacity"
+                class="delete-button p-1 rounded flex cursor-pointer opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100 focus:opacity-100 transition-opacity"
                 onclick={() => removeLink(link.id)}
                 title={t('items.removeLink')}
                 aria-label={t('items.removeLink')}
