@@ -1,7 +1,8 @@
 <script>
-  import { ExternalLink } from '@lucide/svelte';
+  import ExternalLink from '@lucide/svelte/icons/external-link';
   import Lozenge from '../../components/Lozenge.svelte';
   import DescriptionText from '../../components/DescriptionText.svelte';
+  import ItemKey from '../../components/ItemKey.svelte';
 
   let { similarItems = [], summary = '', onnavigate = null } = $props();
 
@@ -45,7 +46,7 @@
           <div class="flex items-start justify-between gap-2">
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2 mb-1">
-                <span class="text-xs font-mono flex-shrink-0" style="color: var(--ds-text-subtle);">{item.item_key}</span>
+                <ItemKey itemKey={item.item_key} />
                 <Lozenge color={getSimilarityColor(item.similarity)} size="sm">
                   {getSimilarityLabel(item.similarity)}
                 </Lozenge>

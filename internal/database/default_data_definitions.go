@@ -49,6 +49,9 @@ type defaultScreenField struct {
 	fieldWidth      string
 }
 
+// defaultScreenFields is the full edit/view layout. Planning fields
+// (milestone, iteration, start/end dates) live here so they stay available
+// after an item exists.
 var defaultScreenFields = []defaultScreenField{
 	{"system", "title", 1, true, "full"},
 	{"system", "description", 2, false, "full"},
@@ -63,7 +66,18 @@ var defaultScreenFields = []defaultScreenField{
 	{"system", "labels", 11, false, "full"},
 }
 
-var defaultScreenContexts = []string{"create", "edit", "view"}
+// defaultCreateScreenFields is the leaner create layout. Planning fields are
+// intentionally omitted so first-run creation stays focused; they remain on
+// the edit screen once the item exists.
+var defaultCreateScreenFields = []defaultScreenField{
+	{"system", "title", 1, true, "full"},
+	{"system", "description", 2, false, "full"},
+	{"system", "status", 3, true, "half"},
+	{"system", "priority", 4, false, "half"},
+	{"system", "assignee", 5, false, "half"},
+	{"system", "due_date", 6, false, "half"},
+	{"system", "labels", 7, false, "full"},
+}
 
 type defaultLinkType struct {
 	builtinKey         string
@@ -102,6 +116,7 @@ var defaultSystemSettings = []defaultSystemSetting{
 	{"ai_feature_config", "{}", "json", "Per-feature AI LLM configuration", "ai"},
 	{"setup_completed", "false", "boolean", "Whether initial setup has been completed", "setup"},
 	{"admin_user_created", "false", "boolean", "Whether admin user has been created", "setup"},
+	{"site_title", "Windshift", "string", "Instance site title", "branding"},
 	{"calendar_feed_enabled", "true", "boolean", "Allow users to generate ICS calendar feed URLs", "security"},
 	{"plugin_cli_exec_enabled", "false", "boolean", "Allow plugins to execute CLI commands", "security"},
 	{"max_custom_field_indexes_per_table", "20", "integer", "Maximum number of custom field indexes per table", "performance"},
@@ -152,7 +167,8 @@ const defaultNotificationChannelConfig = `{
 	"smtp_password": "",
 	"smtp_from_email": "",
 	"smtp_from_name": "Windshift",
-	"smtp_encryption": "tls"
+	"smtp_encryption": "tls",
+	"smtp_auth_method": "auto"
 }`
 
 type defaultTheme struct {

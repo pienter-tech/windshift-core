@@ -56,6 +56,67 @@ type WorkspaceBundlePayload struct {
 	Labels    []WorkspaceBundleLabel    `json:"labels,omitempty"`
 	Items     []WorkspaceBundleItem     `json:"items,omitempty"`
 	ItemLinks []WorkspaceBundleItemLink `json:"item_links,omitempty"`
+	// ViewSettings is the workspace-scope nav-visibility preset. Absent means
+	// the workspace default (every nav id except the queue).
+	ViewSettings *WorkspaceBundleViewSettings `json:"view_settings,omitempty"`
+	// SLAs seeds working calendars and SLA metrics. References are by name so
+	// the bundle stays portable across instances.
+	SLAs *WorkspaceBundleSLAs `json:"slas,omitempty"`
+}
+
+// WorkspaceBundleViewSettings is the bundle's nav-visibility preset: the
+// workspace-scope enabled_views allowlist.
+type WorkspaceBundleViewSettings struct {
+	EnabledViews []string `json:"enabled_views"`
+}
+
+// WorkspaceBundleSLAs is the bundle's SLA seed: working calendars plus the
+// metrics that reference them. Priorities and statuses/categories are matched
+// by name at import time.
+type WorkspaceBundleSLAs struct {
+	Calendars []WorkspaceBundleSLACalendar `json:"calendars,omitempty"`
+	Metrics   []WorkspaceBundleSLAMetric   `json:"metrics,omitempty"`
+}
+
+type WorkspaceBundleSLACalendar struct {
+	Ref             string          `json:"ref"`
+	Name            string          `json:"name"`
+	Description     string          `json:"description,omitempty"`
+	Timezone        string          `json:"timezone,omitempty"`
+	WeeklyIntervals json.RawMessage `json:"weekly_intervals,omitempty"`
+	Holidays        json.RawMessage `json:"holidays,omitempty"`
+	IsDefault       bool            `json:"is_default,omitempty"`
+}
+
+type WorkspaceBundleSLAMetric struct {
+	Name          string                        `json:"name"`
+	DisplayFormat string                        `json:"display_format,omitempty"`
+	IsActive      *bool                         `json:"is_active,omitempty"`
+	Conditions    []WorkspaceBundleSLACondition `json:"conditions,omitempty"`
+	Goals         []WorkspaceBundleSLAGoal      `json:"goals,omitempty"`
+}
+
+// WorkspaceBundleSLACondition is one name-based start/pause/stop condition.
+// StatusNames and CategoryNames are resolved to ids at import time; condition
+// types that carry no target (created, assignee_set, …) leave both empty.
+type WorkspaceBundleSLACondition struct {
+	Phase         string   `json:"phase"`
+	ConditionType string   `json:"condition_type"`
+	StatusNames   []string `json:"status_names,omitempty"`
+	CategoryNames []string `json:"category_names,omitempty"`
+}
+
+type WorkspaceBundleSLAGoal struct {
+	Position int                        `json:"position"`
+	QLQuery  string                     `json:"ql_query"`
+	Targets  []WorkspaceBundleSLATarget `json:"targets"`
+}
+
+type WorkspaceBundleSLATarget struct {
+	PriorityName string `json:"priority_name,omitempty"`
+	IsFallback   bool   `json:"is_fallback,omitempty"`
+	TargetMs     int64  `json:"target_ms"`
+	CalendarRef  string `json:"calendar_ref"`
 }
 
 type WorkspaceBundlePageLabel struct {
@@ -218,6 +279,87 @@ func SanitizeWorkspaceBundle(bundle *WorkspaceBundle) error {
 		}
 		if !itemRefs[link.SourceRef] || !itemRefs[link.TargetRef] {
 			return fmt.Errorf("item_links[%d]: source_ref and target_ref must reference bundled items", i)
+		}
+	}
+
+	if p.ViewSettings != nil {
+		if len(p.ViewSettings.EnabledViews) == 0 {
+			return errors.New("view_settings.enabled_views must contain at least one view")
+		}
+		seen := make(map[string]bool, len(p.ViewSettings.EnabledViews))
+		for i := range p.ViewSettings.EnabledViews {
+			id := &p.ViewSettings.EnabledViews[i]
+			sanitize.Apply(id, sanitize.ShortIdentifier)
+			if !models.IsWorkspaceNavID(*id) {
+				return fmt.Errorf("view_settings.enabled_views[%d]: unknown view %q", i, *id)
+			}
+			if seen[*id] {
+				return fmt.Errorf("view_settings.enabled_views[%d]: duplicate view %q", i, *id)
+			}
+			seen[*id] = true
+		}
+	}
+
+	if p.SLAs != nil {
+		calendarRefs := make(map[string]bool, len(p.SLAs.Calendars))
+		for i := range p.SLAs.Calendars {
+			cal := &p.SLAs.Calendars[i]
+			sanitize.ApplyAll(
+				sanitize.Pair{Target: &cal.Ref, Policy: sanitize.ShortIdentifier},
+				sanitize.Pair{Target: &cal.Name, Policy: sanitize.PlainTextField},
+				sanitize.Pair{Target: &cal.Description, Policy: sanitize.PlainTextField},
+				sanitize.Pair{Target: &cal.Timezone, Policy: sanitize.ShortIdentifier},
+			)
+			if cal.Ref == "" || cal.Name == "" {
+				return fmt.Errorf("slas.calendars[%d]: ref and name are required", i)
+			}
+			if calendarRefs[cal.Ref] {
+				return fmt.Errorf("slas.calendars[%d]: duplicate ref %q", i, cal.Ref)
+			}
+			calendarRefs[cal.Ref] = true
+			if err := sanitize.ValidateJSONPayload(fmt.Sprintf("slas.calendars[%d].weekly_intervals", i), string(cal.WeeklyIntervals)); err != nil {
+				return err
+			}
+			if err := sanitize.ValidateJSONPayload(fmt.Sprintf("slas.calendars[%d].holidays", i), string(cal.Holidays)); err != nil {
+				return err
+			}
+		}
+		for i := range p.SLAs.Metrics {
+			metric := &p.SLAs.Metrics[i]
+			sanitize.ApplyAll(
+				sanitize.Pair{Target: &metric.Name, Policy: sanitize.PlainTextField},
+				sanitize.Pair{Target: &metric.DisplayFormat, Policy: sanitize.ShortIdentifier},
+			)
+			if metric.Name == "" {
+				return fmt.Errorf("slas.metrics[%d]: name is required", i)
+			}
+			for j := range metric.Conditions {
+				condition := &metric.Conditions[j]
+				sanitize.ApplyAll(
+					sanitize.Pair{Target: &condition.Phase, Policy: sanitize.ShortIdentifier},
+					sanitize.Pair{Target: &condition.ConditionType, Policy: sanitize.ShortIdentifier},
+				)
+				for k := range condition.StatusNames {
+					sanitize.Apply(&condition.StatusNames[k], sanitize.PlainTextField)
+				}
+				for k := range condition.CategoryNames {
+					sanitize.Apply(&condition.CategoryNames[k], sanitize.PlainTextField)
+				}
+			}
+			for j := range metric.Goals {
+				goal := &metric.Goals[j]
+				sanitize.Apply(&goal.QLQuery, sanitize.PlainTextField)
+				for k := range goal.Targets {
+					target := &goal.Targets[k]
+					sanitize.ApplyAll(
+						sanitize.Pair{Target: &target.PriorityName, Policy: sanitize.PlainTextField},
+						sanitize.Pair{Target: &target.CalendarRef, Policy: sanitize.ShortIdentifier},
+					)
+					if target.CalendarRef != "" && !calendarRefs[target.CalendarRef] {
+						return fmt.Errorf("slas.metrics[%d].goals[%d].targets[%d]: calendar_ref %q is not a bundled calendar", i, j, k, target.CalendarRef)
+					}
+				}
+			}
 		}
 	}
 	return nil

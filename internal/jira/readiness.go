@@ -71,7 +71,7 @@ func ClassifyField(s FieldMappingSuggestion, usageCount int) Finding {
 		(strings.Contains(strings.ToLower(s.JiraFieldType), "datetime") ||
 			strings.Contains(s.Notes, "time-of-day editing is lossy")) {
 		sev = SeverityLossy
-		reason = "Jira datetime values retain their timestamp, but Windshift exposes calendar-date editing and rendering."
+		reason = "Jira datetime values are stored as calendar dates with the original timestamp retained in item metadata, but Windshift exposes calendar-date editing and rendering."
 	}
 	if s.Notes != "" {
 		reason += " " + s.Notes

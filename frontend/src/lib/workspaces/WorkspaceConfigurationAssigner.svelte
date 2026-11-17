@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { api } from '../api.js';
+  import { configurationSets as configurationSetsApi } from '../api/configuration.js';
   import { t } from '../stores/i18n.svelte.js';
   import { isSystemAdmin } from '../stores/permissions.svelte.js';
   import { errorToast } from '../stores/toasts.svelte.js';
@@ -30,7 +30,7 @@
       loading = true;
 
       // Load all configuration sets
-      const response = await api.configurationSets.getAll();
+      const response = await configurationSetsApi.getAll();
       // Filter out Personal Tasks Configuration (system-managed) and the default config set
       // (since selecting "Default Configuration" option uses it automatically)
       configurationSets = (response?.configuration_sets || []).filter(cs =>
@@ -71,7 +71,7 @@
 
         try {
           // Analyze comprehensive migration requirements (item types, statuses, custom fields, priorities)
-          const migrationAnalysis = await api.configurationSets.analyzeComprehensiveMigration(newConfigSet.id, parseInt(workspaceId));
+          const migrationAnalysis = await configurationSetsApi.analyzeComprehensiveMigration(newConfigSet.id, parseInt(workspaceId));
           
           if (migrationAnalysis.requires_migration) {
             // Migrations mutate shared configuration state and are executed
@@ -99,18 +99,12 @@
             return;
           }
         } catch (error) {
+          // Surface the analysis failure directly. Opening the migration
+          // assistant would re-run the same failing request and cannot produce
+          // an executable plan, so revert the picker to the assigned set.
           console.error('Failed to analyze migration requirements:', error);
-          // If analysis fails, show migration assistant as a fallback
-          pendingConfigurationChange = {
-            currentConfigSet,
-            newConfigSet,
-            newConfigSetId
-          };
-          migrationConfigSet = {
-            ...newConfigSet,
-            workspace_ids: [parseInt(workspaceId)]
-          };
-          showMigrationAssistant = true;
+          errorToast(t('dialogs.alerts.failedToUpdate', { error: error.message || error }));
+          selectedConfigurationSetId = currentConfigSet ? currentConfigSet.id : null;
           return;
         }
       }
@@ -130,7 +124,7 @@
   // endpoint swaps the workspace-assignment join rows atomically; a required
   // data migration surfaces as a 409 before anything is written.
   async function applyConfigurationChange(newConfigSetId, currentConfigSet, newConfigSet) {
-    await api.configurationSets.assignToWorkspace(parseInt(workspaceId), newConfigSetId);
+    await configurationSetsApi.assignToWorkspace(parseInt(workspaceId), newConfigSetId);
 
     await loadData(); // Reload to refresh the data
     
@@ -152,13 +146,16 @@
     
     try {
       if (success && pendingConfigurationChange) {
-        // Migration was successful - apply the configuration change
+        // The comprehensive migration already swapped the workspace assignment
+        // inside the migration transaction. Reload the server state and notify
+        // the parent instead of issuing a second assignment request, which
+        // could fail after an otherwise successful migration.
         saving = true;
-        await applyConfigurationChange(
-          pendingConfigurationChange.newConfigSetId,
-          pendingConfigurationChange.currentConfigSet,
-          pendingConfigurationChange.newConfigSet
-        );
+        await loadData();
+        onconfigurationChanged?.({
+          oldConfigSet: pendingConfigurationChange.currentConfigSet,
+          newConfigSet: pendingConfigurationChange.newConfigSet
+        });
       } else if (cancelled || !success) {
         // Migration was cancelled or failed - revert the UI selection
         const currentConfigSet = configurationSets.find(cs => 
@@ -167,7 +164,7 @@
         selectedConfigurationSetId = currentConfigSet ? currentConfigSet.id : null;
       }
     } catch (error) {
-      console.error('Failed to apply configuration change after migration:', error);
+      console.error('Failed to refresh state after migration:', error);
       errorToast(t('dialogs.alerts.failedToApplyConfig', { error: error.message || error }));
       
       // Revert the UI selection on error
@@ -186,12 +183,9 @@
 </script>
 
 <div class="space-y-6">
-  <div>
-    <h3 class="text-lg font-medium mb-4" style="color: var(--ds-text);">{t('settings.configSets.title')}</h3>
-    <p class="text-sm mb-6" style="color: var(--ds-text-subtle);">
-      {t('settings.configSets.assignerDescription')}
-    </p>
-  </div>
+  <p class="text-sm" style="color: var(--ds-text-subtle);">
+    {t('settings.configSets.assignerDescription')}
+  </p>
 
   {#if loading}
     <Card rounded="xl" shadow padding="loose" class="text-center">

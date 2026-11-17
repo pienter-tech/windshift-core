@@ -10,8 +10,8 @@ import (
 	"windshift/internal/models"
 )
 
-// MilestoneCommentRepository persists Markdown comments on milestones
-// (WCORE-20). Milestone comments live in their own table so they never feed
+// MilestoneCommentRepository persists Markdown comments on milestones.
+// Milestone comments live in their own table so they never feed
 // item events, notifications, mentions, or webhooks.
 type MilestoneCommentRepository struct {
 	db database.Database
@@ -30,18 +30,41 @@ const milestoneCommentSelect = `
 	FROM milestone_comments mc
 	LEFT JOIN users u ON u.id = mc.author_id`
 
-// ListByMilestone returns one page of a milestone's comments in creation
-// order (oldest first unless desc), with author name and avatar joined.
-func (r *MilestoneCommentRepository) ListByMilestone(milestoneID, limit, offset int, desc bool) ([]models.MilestoneComment, error) {
-	order := "ASC"
-	if desc {
-		order = "DESC"
-	}
+// MilestoneCommentPosition is a comment's place in the feed order:
+// created_at, then ID.
+type MilestoneCommentPosition struct {
+	CreatedAt time.Time
+	ID        int
+}
+
+// MilestoneCommentFeedQuery selects up to Limit comments of one milestone.
+// Without a position it reads the newest comments, newest first. Before reads
+// older comments, newest first; Since reads newer comments, oldest first.
+type MilestoneCommentFeedQuery struct {
+	Limit  int
+	Before *MilestoneCommentPosition
+	Since  *MilestoneCommentPosition
+}
+
+// ListFeed returns comments of a milestone in feed order, with author name
+// and avatar joined.
+func (r *MilestoneCommentRepository) ListFeed(milestoneID int, feed MilestoneCommentFeedQuery) ([]models.MilestoneComment, error) {
 	query := milestoneCommentSelect + `
-	WHERE mc.milestone_id = ?
-	ORDER BY mc.created_at ` + order + `, mc.id ` + order + `
-	LIMIT ? OFFSET ?`
-	rows, err := r.db.Query(query, milestoneID, limit, offset)
+	WHERE mc.milestone_id = ?`
+	args := []any{milestoneID}
+	order := "DESC"
+	switch {
+	case feed.Before != nil:
+		query += ` AND (mc.created_at < ? OR (mc.created_at = ? AND mc.id < ?))`
+		args = append(args, feed.Before.CreatedAt, feed.Before.CreatedAt, feed.Before.ID)
+	case feed.Since != nil:
+		query += ` AND (mc.created_at > ? OR (mc.created_at = ? AND mc.id > ?))`
+		args = append(args, feed.Since.CreatedAt, feed.Since.CreatedAt, feed.Since.ID)
+		order = "ASC"
+	}
+	query += fmt.Sprintf("\n\tORDER BY mc.created_at %s, mc.id %s\n\tLIMIT ?", order, order)
+	args = append(args, feed.Limit)
+	rows, err := r.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list comments for milestone %d: %w", milestoneID, err)
 	}
@@ -78,14 +101,20 @@ func (r *MilestoneCommentRepository) GetByID(id int) (*models.MilestoneComment, 
 	return &comment, nil
 }
 
-// Create inserts a milestone comment and returns its ID.
+// Create inserts a milestone comment, moves the milestone's last activity
+// time, and returns the comment ID.
 func (r *MilestoneCommentRepository) Create(milestoneID, authorID int, content string) (int, error) {
 	now := time.Now().UTC()
 	var id int
-	err := r.db.QueryRow(`
-		INSERT INTO milestone_comments (milestone_id, author_id, content, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?) RETURNING id
-	`, milestoneID, authorID, content, now, now).Scan(&id)
+	err := database.WithTx(r.db, func(tx database.Tx) error {
+		if err := tx.QueryRow(`
+			INSERT INTO milestone_comments (milestone_id, author_id, content, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?) RETURNING id
+		`, milestoneID, authorID, content, now, now).Scan(&id); err != nil {
+			return err
+		}
+		return TouchMilestoneActivity(tx, now, milestoneID)
+	})
 	if err != nil {
 		return 0, fmt.Errorf("create milestone comment: %w", err)
 	}

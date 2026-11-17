@@ -8,29 +8,29 @@ import (
 	"windshift/internal/services"
 )
 
-// recordedItemChanges records item-change publishes for one item.
+// recordedItemChanges counts item-change publishes for one item.
 type recordedItemChanges struct {
 	mu     sync.Mutex
 	itemID int
-	kinds  []services.ItemChangeKind
+	count  int
 }
 
-func (r *recordedItemChanges) PublishItemChange(itemID int, kind services.ItemChangeKind) {
+func (r *recordedItemChanges) PublishItemChange(itemID int) {
 	if itemID != r.itemID {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.kinds = append(r.kinds, kind)
+	r.count++
 }
 
-// take returns the publishes recorded since the last take.
-func (r *recordedItemChanges) take() []services.ItemChangeKind {
+// take returns the number of publishes recorded since the last take.
+func (r *recordedItemChanges) take() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	kinds := r.kinds
-	r.kinds = nil
-	return kinds
+	count := r.count
+	r.count = 0
+	return count
 }
 
 // recordItemChanges installs a recording publisher for the fixture's item. The
@@ -45,14 +45,8 @@ func recordItemChanges(t *testing.T, f *prMergedFixture) *recordedItemChanges {
 
 func requireLinkPublishes(t *testing.T, recorded *recordedItemChanges, want int, after string) {
 	t.Helper()
-	kinds := recorded.take()
-	if len(kinds) != want {
-		t.Fatalf("after %s: published %v, want %d link change(s)", after, kinds, want)
-	}
-	for _, kind := range kinds {
-		if kind != services.ItemChangeLink {
-			t.Fatalf("after %s: published %q, want %q", after, kind, services.ItemChangeLink)
-		}
+	if got := recorded.take(); got != want {
+		t.Fatalf("after %s: published %d item change(s), want %d", after, got, want)
 	}
 }
 

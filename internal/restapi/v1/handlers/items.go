@@ -1196,8 +1196,16 @@ func (h *ItemHandler) GetChildren(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use service layer for getting children
-	childrenPtrs, err := h.itemCRUD.GetChildren(item.ID)
+	// Cross-workspace children exist by design, so scope the child query to
+	// workspaces the caller can view plus the already-authorized parent
+	// workspace.
+	accessibleWorkspaceIDs, err := h.Perms.GetAccessibleWorkspaceIDs(user.ID)
+	if err != nil {
+		h.RespondInternalError(w, r)
+		return
+	}
+	allowedWorkspaceIDs := append([]int{item.WorkspaceID}, accessibleWorkspaceIDs...)
+	childrenPtrs, err := h.itemCRUD.GetChildrenInWorkspacesContext(r.Context(), item.ID, allowedWorkspaceIDs)
 	if err != nil {
 		h.RespondInternalError(w, r)
 		return

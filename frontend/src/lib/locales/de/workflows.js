@@ -111,6 +111,7 @@ export default {
     connectByDragging: 'Verbinden Sie Status durch Ziehen von Verbindungspunkten',
     saveWorkflow: 'Workflow speichern',
     failedToSaveDesign: 'Workflow-Design konnte nicht gespeichert werden',
+    failedToSaveScreen: 'Ein Übergangsbildschirm konnte nicht gespeichert werden',
     initialStatus: 'Anfangsstatus',
     setAsInitialStatus: 'Als Anfangsstatus festlegen',
     initial: 'Anfang',
@@ -127,7 +128,7 @@ export default {
 
   screens: {
     title: 'Masken',
-    subtitle: 'Feldlayouts für Einträge und Projekte definieren',
+    subtitle: 'Feldlayouts für Vorgänge und Projekte definieren',
     screen: 'Maske',
     screens_one: '{count} Maske',
     screens_other: '{count} Masken',
@@ -175,7 +176,7 @@ export default {
       'Die Standardmaske kann nicht gelöscht werden. Diese Maske wird für Arbeitsbereiche ohne Konfigurationsset benötigt.',
     confirmDeleteScreen:
       'Möchten Sie die Maske "{name}" wirklich löschen? Dies betrifft alle Arbeitsbereiche, die diese Maske verwenden.',
-    defaults: { default: { name: 'Standardmaske', description: 'Standardmaske mit den wichtigsten Aufgabenfeldern' } },
+    defaults: { default: { name: 'Standardmaske', description: 'Standardmaske mit den wichtigsten Aufgabenfeldern' }, default_create: { name: 'Standard-Erstellungsmaske', description: 'Fokussierte Maske zum Erstellen von Aufgaben' } },
     fieldWidths: {
       full: 'Volle Breite',
       half: 'Halbe Breite',
@@ -195,5 +196,26 @@ export default {
       'Vorgänge, die in Status dieser Kategorie verschoben werden, werden in Berichten und Rückblicken als abgeschlossen behandelt.',
     updateCategory: 'Kategorie aktualisieren',
     createCategory: 'Kategorie erstellen',
+  },
+  workflowInspector: {
+    subtitle: 'Übergangseinstellungen',
+    screen: 'Bildschirm',
+    noScreen: 'Diesem Übergang ist kein Bildschirm zugeordnet.',
+    chooseScreen: 'Bildschirm auswählen…',
+    changeScreen: 'Bildschirm ändern…',
+    unbind: 'Trennen',
+    fieldSummary: '{fields} Feld(er), {required} erforderlich',
+    newScreenPlaceholder: 'Name des neuen Bildschirms',
+    createAndBind: 'Erstellen & binden',
+    createHeading: 'Neuen Bildschirm erstellen',
+    createHint:
+      'Erstellt einen leeren Bildschirm, bindet ihn an diesen Übergang und öffnet den Feldeditor.',
+    editFields: 'Felder bearbeiten',
+    editFieldsTitle: 'Bildschirmfelder – {name}',
+    screenSaved: 'Übergangsbildschirm gespeichert',
+    screenStaged: 'Der Bildschirm wird beim Speichern des Workflows zugeordnet',
+    pendingHint: 'Dieser Übergang ist noch nicht gespeichert. Der Bildschirm wird beim Speichern des Workflows zugeordnet.',
+    screenSaveFailed: 'Der Übergangsbildschirm konnte nicht gespeichert werden',
+    screenCreateFailed: 'Der Bildschirm konnte nicht erstellt werden',
   },
 };

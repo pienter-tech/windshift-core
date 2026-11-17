@@ -1,8 +1,29 @@
 <script>
   import { onMount, untrack } from 'svelte';
-  import { api } from '../api.js';
+  import { assetSets as assetSetsApi } from '../api/assets.js';
+  import { customFields as customFieldsApi, itemTypes as itemTypesApi, linkTypes as linkTypesApi } from '../api/configuration.js';
   import { currentRoute, navigate } from '../router.js';
-  import { Plus, Edit, Trash2, MoreHorizontal, Circle, Database, Settings, Type, AlignLeft, ChevronDownCircle, ListChecks, Hash, Calendar, User, Repeat, Flag, Box, Globe, Building2, Link2, CheckSquare } from '@lucide/svelte';
+  import Plus from '@lucide/svelte/icons/plus';
+  import Edit from '@lucide/svelte/icons/edit';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
+  import MoreHorizontal from '@lucide/svelte/icons/more-horizontal';
+  import Circle from '@lucide/svelte/icons/circle';
+  import Database from '@lucide/svelte/icons/database';
+  import Settings from '@lucide/svelte/icons/settings';
+  import Type from '@lucide/svelte/icons/type';
+  import AlignLeft from '@lucide/svelte/icons/align-left';
+  import ChevronDownCircle from '@lucide/svelte/icons/chevron-down-circle';
+  import ListChecks from '@lucide/svelte/icons/list-checks';
+  import Hash from '@lucide/svelte/icons/hash';
+  import Calendar from '@lucide/svelte/icons/calendar';
+  import User from '@lucide/svelte/icons/user';
+  import Repeat from '@lucide/svelte/icons/repeat';
+  import Flag from '@lucide/svelte/icons/flag';
+  import Box from '@lucide/svelte/icons/box';
+  import Globe from '@lucide/svelte/icons/globe';
+  import Building2 from '@lucide/svelte/icons/building-2';
+  import Link2 from '@lucide/svelte/icons/link-2';
+  import CheckSquare from '@lucide/svelte/icons/square-check';
   import Button from '../components/Button.svelte';
   import Input from '../components/Input.svelte';
   import DataTable from '../components/DataTable.svelte';
@@ -24,11 +45,10 @@
   import { formatDateSimple } from '../utils/dateFormatter.js';
   import BasePicker from '../pickers/BasePicker.svelte';
   import { fieldOptionsObject, parseFieldOptions, serializeOptions } from '../utils/optionUtils.js';
-  import { X as XIcon } from '@lucide/svelte';
+  import XIcon from '@lucide/svelte/icons/x';
   import DescriptionText from '../components/DescriptionText.svelte';
   import { customFieldFormData, customFieldUpdatePayload, linkingFieldOptions, loadCustomFieldsOverview } from './customFieldsData.js';
   import { BOOLEAN_CUSTOM_FIELD_TYPE, canonicalCustomFieldType, isBooleanCustomFieldType } from '../utils/customFieldTypes.js';
-  import { workspaceDataStore } from '../stores/workspaceDataStore.svelte.js';
 	import TextField from '../components/TextField.svelte';
 	import SelectField from '../components/SelectField.svelte';
 	import TextareaField from '../components/TextareaField.svelte';
@@ -82,6 +102,7 @@
     { value: 'multi_user', label: 'Multi User', icon: User, iconColor: '#4D9DC5' },
     { value: 'iteration', label: 'Iteration', icon: Repeat, iconColor: '#D95B5B' },
     { value: 'milestone', label: 'Milestone', icon: Flag, iconColor: '#C9A84C' },
+    { value: 'multi_milestone', label: 'Multi Milestone', icon: Flag, iconColor: '#C9A84C' },
     { value: 'asset', label: 'Asset', icon: Box, iconColor: '#7B8A9E' },
     { value: 'portalcustomer', label: 'Portal Customer', icon: Globe, iconColor: '#E07BAF' },
     { value: 'customerorganisation', label: 'Customer Organisation', icon: Building2, iconColor: '#8B7EC8' },
@@ -154,9 +175,9 @@
     };
     const [, loadedAssetSets, loadedLinkTypes, loadedItemTypes] = await Promise.all([
       loadCustomFields(),
-      loadCatalog(() => api.assetSets.getAll(), 'asset sets'),
-      loadCatalog(() => api.linkTypes.getAll(), 'link types'),
-      loadCatalog(() => api.itemTypes.getAll(), 'item types'),
+      loadCatalog(() => assetSetsApi.getAll(), 'asset sets'),
+      loadCatalog(() => linkTypesApi.getAll(), 'link types'),
+      loadCatalog(() => itemTypesApi.getAll(), 'item types'),
     ]);
     assetSets = loadedAssetSets;
     linkTypes = loadedLinkTypes;
@@ -165,7 +186,7 @@
 
   async function loadCustomFields() {
     try {
-      const overview = await loadCustomFieldsOverview(api);
+      const overview = await loadCustomFieldsOverview();
       customFields = overview.customFields;
       indexCounts = overview.indexCounts;
       screens = overview.screens;
@@ -184,7 +205,7 @@
 
   async function saveSettings() {
     try {
-      await api.customFields.updateSettings({ max_indexes_per_table: settingsMaxIndexes });
+      await customFieldsApi.updateSettings({ max_indexes_per_table: settingsMaxIndexes });
       showSettingsModal = false;
       await loadCustomFields();
     } catch (error) {
@@ -332,7 +353,7 @@
       if (formData.field_config.max_length) {
         config.max_length = parseInt(formData.field_config.max_length);
       }
-    } else if (formData.field_type === 'milestone') {
+    } else if (formData.field_type === 'milestone' || formData.field_type === 'multi_milestone') {
       // Milestone fields don't need special configuration
       // They reference existing milestones from the system
     } else if (formData.field_type === 'date') {
@@ -400,9 +421,9 @@
         if (isIndexableType(formData.field_type)) {
           data.indexed = { items: indexedItems, assets: indexedAssets };
         }
-        saveResult = await api.customFields.update(editingField.id, data);
+        saveResult = await customFieldsApi.update(editingField.id, data);
       } else {
-        saveResult = await api.customFields.create(data);
+        saveResult = await customFieldsApi.create(data);
       }
 
       if (saveResult?.indexing_deferred) {
@@ -415,9 +436,7 @@
       }
 
       await loadCustomFields();
-      await workspaceDataStore.invalidate('customFieldDefinitions');
       cancelForm();
-      window.dispatchEvent(new CustomEvent('refresh-workspace-data'));
     } catch (error) {
       console.error('Failed to save custom field:', error);
       errorToast(t('dialogs.alerts.failedToSave', { error: error.message || error }));
@@ -434,9 +453,8 @@
     });
     if (confirmed) {
       try {
-        await api.customFields.delete(field.id);
+        await customFieldsApi.delete(field.id);
         await loadCustomFields();
-        window.dispatchEvent(new CustomEvent('refresh-workspace-data'));
       } catch (error) {
         console.error('Failed to delete custom field:', error);
         errorToast(t('dialogs.alerts.failedToDelete', { error: error.message || error }));
@@ -474,7 +492,7 @@
 
   const needsOptions = $derived(formData.field_type === 'select' || formData.field_type === 'multiselect');
   const needsMaxLength = $derived(formData.field_type === 'text' || formData.field_type === 'textarea');
-  const isMilestoneField = $derived(formData.field_type === 'milestone');
+  const isMilestoneField = $derived(formData.field_type === 'milestone' || formData.field_type === 'multi_milestone');
   const isDateField = $derived(formData.field_type === 'date');
   const isAssetField = $derived(formData.field_type === 'asset');
   const isPortalCustomerField = $derived(formData.field_type === 'portalcustomer');
@@ -679,6 +697,7 @@
         bind:value={searchQuery}
         placeholder={t('fields.searchFields')}
         class="w-64"
+        dataTestid="custom-fields-search"
       />
       {#if boardReturnTarget && !boardCreateFlow}
         <Button

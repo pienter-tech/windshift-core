@@ -3,9 +3,11 @@ package services
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,6 +31,7 @@ type ItemCRUDService struct {
 	repo                  *repository.ItemRepository
 	workspaceRepo         *repository.WorkspaceRepository
 	integrationLinkGuards *IntegrationLinkGuards
+	itemCache             *ItemCacheService
 }
 
 // NewItemCRUDService creates a new item CRUD service
@@ -39,6 +42,14 @@ func NewItemCRUDService(db database.Database) *ItemCRUDService {
 		workspaceRepo:         repository.NewWorkspaceRepository(db),
 		integrationLinkGuards: NewIntegrationLinkGuards(db),
 	}
+}
+
+// WithCache makes effective-project resolution read through the shared item
+// cache instead of walking the parent chain on every read. A nil cache keeps
+// the uncached resolver.
+func (s *ItemCRUDService) WithCache(cache *ItemCacheService) *ItemCRUDService {
+	s.itemCache = cache
+	return s
 }
 
 // GetByID retrieves an item by ID with all details
@@ -89,6 +100,7 @@ func (s *ItemCRUDService) DeleteSingleWithMetadata(itemID int, metadata itemeven
 func (s *ItemCRUDService) deleteSingleWithAuthorization(itemID int, metadata itemevents.Metadata, authorize func([]*models.Item) error) ([]int, error) {
 	var root *models.Item
 	var children []*models.Item
+	var attachmentPaths []string
 	err := database.WithTx(s.db, func(tx database.Tx) error {
 		ctx := context.Background()
 		var err error
@@ -96,14 +108,18 @@ func (s *ItemCRUDService) deleteSingleWithAuthorization(itemID int, metadata ite
 		if err != nil {
 			return err
 		}
-		if authorize != nil {
-			if err := authorize([]*models.Item{root}); err != nil {
-				return err
-			}
-		}
 		children, err = s.repo.FindChildrenForUpdateContext(ctx, tx, []int{itemID})
 		if err != nil {
 			return err
+		}
+		if authorize != nil {
+			// Deleting the parent detaches every direct child, including children
+			// in other workspaces. Authorize root and children together and refuse
+			// the whole operation if the actor lacks item.delete in any of them.
+			targets := append([]*models.Item{root}, children...)
+			if err := authorize(targets); err != nil {
+				return err
+			}
 		}
 		hasProtectedLinks, err := s.integrationLinkGuards.HasLinksForItemsTx(tx, []int{itemID})
 		if err != nil {
@@ -140,7 +156,22 @@ func (s *ItemCRUDService) deleteSingleWithAuthorization(itemID int, metadata ite
 		if _, err := recorder.Deleted(ctx, tx, root, 0, metadata); err != nil {
 			return err
 		}
+		if err := s.stampEmailTrackingCompletedTx(tx, []int{itemID}); err != nil {
+			return err
+		}
+		// Collect the root's blob paths inside the transaction (a SELECT only);
+		// removal happens after commit on the background workers so S3 I/O never
+		// holds the write connection.
+		if itemAttachmentBlobRemover != nil {
+			attachmentPaths, err = s.repo.AttachmentPathsForItemsTx(tx, []int{itemID})
+			if err != nil {
+				return err
+			}
+		}
 		if err := s.deleteItemRelationsTx(tx, itemID); err != nil {
+			return err
+		}
+		if err := s.repo.ReserveDeletedItemNumbers(tx, []*models.Item{root}, deleteActorUserID(metadata)); err != nil {
 			return err
 		}
 		return s.repo.Delete(tx, itemID)
@@ -148,12 +179,13 @@ func (s *ItemCRUDService) deleteSingleWithAuthorization(itemID int, metadata ite
 	if err != nil {
 		return nil, err
 	}
+	enqueueAttachmentDeletions(attachmentPaths)
 	s.finishItemDeletion(root.WorkspaceID, []int{itemID}, root.ParentID)
 	childIDs := make([]int, 0, len(children))
 	for _, child := range children {
 		childIDs = append(childIDs, child.ID)
 		repository.InvalidateItemListCountCache(s.db, child.WorkspaceID)
-		PublishItemChange(child.ID, ItemChangeUpdated)
+		PublishItemChange(child.ID)
 	}
 	return childIDs, nil
 }
@@ -171,6 +203,7 @@ func (s *ItemCRUDService) DeleteWithMetadata(itemID int, metadata itemevents.Met
 func (s *ItemCRUDService) deleteWithAuthorization(itemID int, metadata itemevents.Metadata, authorize func([]*models.Item) error) (*DeleteResult, error) {
 	var items []*models.Item
 	var result DeleteResult
+	var attachmentPaths []string
 	err := database.WithTx(s.db, func(tx database.Tx) error {
 		ctx := context.Background()
 		var err error
@@ -216,6 +249,23 @@ func (s *ItemCRUDService) deleteWithAuthorization(itemID int, metadata itemevent
 				return err
 			}
 		}
+		if err := s.stampEmailTrackingCompletedTx(tx, itemIDs); err != nil {
+			return err
+		}
+		// Collect attachment paths inside the transaction (a SELECT only) and
+		// remove them after commit. S3 I/O must not hold the write connection,
+		// especially on SQLite's single-writer pool.
+		if itemAttachmentBlobRemover != nil {
+			attachmentPaths, err = s.repo.AttachmentPathsForItemsTx(tx, itemIDs)
+			if err != nil {
+				return err
+			}
+		}
+		// Retire the highest removed number across the whole subtree so the
+		// allocator cannot reissue a key the delete just freed.
+		if err := s.repo.ReserveDeletedItemNumbers(tx, items, deleteActorUserID(metadata)); err != nil {
+			return err
+		}
 		// Remove children first so the foreign key cannot bypass their cleanup.
 		for i := len(items) - 1; i >= 0; i-- {
 			id := items[i].ID
@@ -231,16 +281,64 @@ func (s *ItemCRUDService) deleteWithAuthorization(itemID int, metadata itemevent
 	if err != nil {
 		return nil, err
 	}
+	enqueueAttachmentDeletions(attachmentPaths)
 	for _, item := range items {
 		s.finishItemDeletion(item.WorkspaceID, []int{item.ID}, nil)
 	}
 	if result.AffectedParent != nil {
-		PublishItemChange(*result.AffectedParent, ItemChangeUpdated)
+		PublishItemChange(*result.AffectedParent)
 	}
 	return &result, nil
 }
 
+// stampEmailTrackingCompletedTx marks the inbound-email tracking rows tied to
+// the items about to be deleted. The item/comment FKs null their references
+// during the delete, but completed_at is the durable tombstone that keeps the
+// message deduplicated, so a mailbox refetch cannot recreate the deleted
+// ticket. Rows for reply comments are matched through the comment's item.
+func (s *ItemCRUDService) stampEmailTrackingCompletedTx(tx database.Tx, itemIDs []int) error {
+	if len(itemIDs) == 0 {
+		return nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(itemIDs)), ",")
+	args := make([]any, 0, len(itemIDs)*2)
+	for _, id := range itemIDs {
+		args = append(args, id)
+	}
+	for _, id := range itemIDs {
+		args = append(args, id)
+	}
+	if _, err := tx.Exec(`
+		UPDATE email_message_tracking
+		SET completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP)
+		WHERE item_id IN (`+placeholders+`)
+		   OR comment_id IN (SELECT id FROM comments WHERE item_id IN (`+placeholders+`))
+	`, args...); err != nil {
+		return fmt.Errorf("stamp email tracking completed for deleted items: %w", err)
+	}
+	return nil
+}
+
+// deleteActorUserID extracts the deleting user for key-reservation provenance.
+// System, integration, and agent actors have no user row, so they leave NULL.
+func deleteActorUserID(metadata itemevents.Metadata) int {
+	if metadata.ActorKind != "user" {
+		return 0
+	}
+	id, err := strconv.Atoi(metadata.ActorRef)
+	if err != nil || id <= 0 {
+		return 0
+	}
+	return id
+}
+
 func (s *ItemCRUDService) deleteItemRelationsTx(tx database.Tx, itemID int) error {
+	if _, err := tx.Exec(`
+		DELETE FROM attachments
+		WHERE item_id = ? AND COALESCE(entity_type, 'item') = 'item'
+	`, itemID); err != nil {
+		return fmt.Errorf("failed to delete item attachments: %w", err)
+	}
 	if err := s.repo.DeleteItemWatches(tx, itemID); err != nil {
 		return err
 	}
@@ -258,12 +356,12 @@ func (s *ItemCRUDService) deleteItemRelationsTx(tx database.Tx, itemID int) erro
 
 func (s *ItemCRUDService) finishItemDeletion(workspaceID int, itemIDs []int, parentID *int) {
 	repository.InvalidateItemListCountCache(s.db, workspaceID)
-	PublishWorkspaceChange(workspaceID, WorkspaceChangeItems)
+	PublishWorkspaceChange(workspaceID)
 	for _, id := range itemIDs {
 		PublishItemDeletion(id, workspaceID)
 	}
 	if parentID != nil {
-		PublishItemChange(*parentID, ItemChangeUpdated)
+		PublishItemChange(*parentID)
 	}
 }
 
@@ -293,54 +391,48 @@ func (s *ItemCRUDService) Copy(itemID int, opts CopyOptions) (*CopyResult, error
 	if parentID == nil {
 		parentID = source.ParentID
 	}
-	newItem := &models.Item{
-		WorkspaceID:       source.WorkspaceID,
-		ItemTypeID:        source.ItemTypeID,
-		Title:             opts.NewTitle,
-		Description:       source.Description,
-		StatusID:          source.StatusID,
-		PriorityID:        source.PriorityID,
-		DueDate:           source.DueDate,
-		StartDate:         source.StartDate,
-		EndDate:           source.EndDate,
-		IsTask:            source.IsTask,
-		IterationID:       source.IterationID,
-		ProjectID:         source.ProjectID,
-		InheritProject:    source.InheritProject,
-		AssigneeID:        source.AssigneeID,
-		CreatorID:         &opts.CreatorID,
-		CustomFieldValues: source.CustomFieldValues,
-		ParentID:          parentID,
-		RelatedWorkItemID: source.RelatedWorkItemID,
-		StoryPoints:       source.StoryPoints,
-	}
-	if err := validation.ValidateTaskState(s.db, newItem.WorkspaceID, opts.CreatorID, newItem.IsTask, newItem.StatusID); err != nil {
+	if err := validation.ValidateTaskState(s.db, source.WorkspaceID, opts.CreatorID, source.IsTask, source.StatusID); err != nil {
 		return nil, err
 	}
 
-	newID, err := s.repo.CreateWithRetry(context.Background(), newItem, func(tx database.Tx, itemID int) error {
-		now := time.Now()
-		if _, err := tx.Exec(`
-			INSERT INTO item_milestones (item_id, milestone_id, created_at)
-			SELECT ?, milestone_id, ? FROM item_milestones WHERE item_id = ?
-		`, itemID, now, source.ID); err != nil {
-			return fmt.Errorf("copy item milestones: %w", err)
-		}
-		created, err := s.repo.FindByIDForUpdate(tx, itemID)
+	milestoneIDs, err := s.repo.GetMilestoneIDs(source.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load source milestones: %w", err)
+	}
+	customFieldValuesJSON := ""
+	if len(source.CustomFieldValues) > 0 {
+		encoded, err := json.Marshal(source.CustomFieldValues)
 		if err != nil {
-			return err
+			return nil, fmt.Errorf("encode source custom fields: %w", err)
 		}
-		metadata := itemevents.User(opts.CreatorID, "application")
-		metadata.OccurredAt = now
-		milestoneIDs, err := itemMilestoneIDsInTx(tx, itemID)
-		if err != nil {
-			return err
-		}
-		if err := s.repo.RecordHistoryBatch(tx, creationHistoryEntries(*created, opts.CreatorID, metadata.OccurredAt)); err != nil {
-			return fmt.Errorf("record copied item creation history: %w", err)
-		}
-		_, err = itemevents.NewRecorder(s.db).Created(context.Background(), tx, created, milestoneIDs, metadata)
-		return err
+		customFieldValuesJSON = string(encoded)
+	}
+
+	newID, err := CreateItem(s.db, ItemCreationParams{
+		WorkspaceID:           source.WorkspaceID,
+		ItemTypeID:            source.ItemTypeID,
+		ValidatingUserID:      opts.CreatorID,
+		Title:                 opts.NewTitle,
+		Description:           source.Description,
+		StatusID:              source.StatusID,
+		PriorityID:            source.PriorityID,
+		DueDate:               source.DueDate,
+		StartDate:             source.StartDate,
+		EndDate:               source.EndDate,
+		IsTask:                source.IsTask,
+		IterationID:           source.IterationID,
+		ProjectID:             source.ProjectID,
+		InheritProject:        source.InheritProject,
+		AssigneeID:            source.AssigneeID,
+		CreatorID:             &opts.CreatorID,
+		CustomFieldValuesJSON: customFieldValuesJSON,
+		ParentID:              parentID,
+		RelatedWorkItemID:     source.RelatedWorkItemID,
+		StoryPoints:           source.StoryPoints,
+		MilestoneIDs:          milestoneIDs,
+		SkipMandatoryTemplate: true,
+		SkipAssigneeTrigger:   true,
+		SkipPublish:           true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("copy item %d: %w", source.ID, err)
@@ -348,21 +440,27 @@ func (s *ItemCRUDService) Copy(itemID int, opts CopyOptions) (*CopyResult, error
 
 	// Live-update publish (WI-483): the copy committed. Announce the new item and
 	// refresh the destination parent's child list.
-	PublishItemChange(newID, ItemChangeCreated)
+	PublishItemChange(int(newID))
 	effectiveParent := opts.NewParentID
 	if effectiveParent == nil {
 		effectiveParent = source.ParentID
 	}
 	if effectiveParent != nil {
-		PublishItemChange(*effectiveParent, ItemChangeUpdated)
+		PublishItemChange(*effectiveParent)
 	}
 
-	return &CopyResult{NewItemID: newID, CopyCount: 1}, nil
+	return &CopyResult{NewItemID: int(newID), CopyCount: 1}, nil
 }
 
 // GetChildren returns direct children of an item
 func (s *ItemCRUDService) GetChildren(parentID int) ([]*models.Item, error) {
 	return s.repo.GetChildren(parentID)
+}
+
+// GetChildrenInWorkspacesContext returns direct children restricted to the
+// given accessible workspaces.
+func (s *ItemCRUDService) GetChildrenInWorkspacesContext(ctx context.Context, parentID int, workspaceIDs []int) ([]*models.Item, error) {
+	return s.repo.GetChildrenInWorkspacesContext(ctx, parentID, workspaceIDs)
 }
 
 // GetDescendants returns all descendants of an item
@@ -522,7 +620,8 @@ type BacklogParams struct {
 	OmitDescriptions bool
 }
 
-// GetBacklogItems retrieves items with non-completed statuses for a workspace/collection
+// GetBacklogItems retrieves items whose status is configured for the backlog
+// of the requested collection or workspace.
 func (s *ItemCRUDService) GetBacklogItems(params BacklogParams) ([]models.Item, int, error) {
 	return s.GetBacklogItemsContext(context.Background(), params)
 }
@@ -534,7 +633,7 @@ func (s *ItemCRUDService) GetBacklogItemsContext(ctx context.Context, params Bac
 	}
 
 	// Resolve backlog status IDs
-	backlogStatusIDs, err := s.repo.GetBacklogStatusIDsContext(ctx, params.WorkspaceID)
+	backlogStatusIDs, err := s.repo.GetBacklogStatusIDsContext(ctx, params.WorkspaceID, params.CollectionID)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to get backlog statuses: %w", err)
 	}
@@ -685,6 +784,74 @@ func (s *ItemCRUDService) ListDistinctWorkspaceIDsWithQLContext(
 	})
 }
 
+// HierarchyListParams contains parameters for an ancestor-scoped hierarchy read.
+type HierarchyListParams struct {
+	WorkspaceID      int
+	CollectionID     int
+	QLQuery          string
+	SubQLQuery       string
+	WorkspaceIDs     []int
+	UserID           int
+	RootIDs          []int
+	MaxDepth         int
+	PerRootLimit     int
+	PerRootOffset    int
+	OmitDescriptions bool
+}
+
+// HierarchyDescendantsContext resolves the collection/QL once and returns the
+// matching descendants of each root, grouped and capped per root.
+func (s *ItemCRUDService) HierarchyDescendantsContext(ctx context.Context, params HierarchyListParams) ([]repository.HierarchyRootGroup, error) {
+	if len(params.WorkspaceIDs) == 0 || len(params.RootIDs) == 0 {
+		return []repository.HierarchyRootGroup{}, nil
+	}
+	resolvedQL, err := s.resolveItemListQLContext(ctx, params.QLQuery, params.CollectionID, params.SubQLQuery, params.UserID)
+	if err != nil {
+		return nil, err
+	}
+	filters := ItemFilters{}
+	if resolvedQL.sql != "" {
+		filters.QLQuery = resolvedQL.sql
+		filters.QLArgs = resolvedQL.args
+	}
+	if !resolvedQL.collectionResolved && params.WorkspaceID > 0 {
+		filters.WorkspaceID = &params.WorkspaceID
+	}
+	return s.repo.HierarchyDescendantsContext(ctx, repository.HierarchyReadParams{
+		RootIDs:          params.RootIDs,
+		WorkspaceIDs:     params.WorkspaceIDs,
+		Filters:          filters,
+		MaxDepth:         params.MaxDepth,
+		PerRootLimit:     params.PerRootLimit,
+		PerRootOffset:    params.PerRootOffset,
+		OmitDescriptions: params.OmitDescriptions,
+	})
+}
+
+// LevelCountsContext resolves the collection/QL once and returns the filtered
+// item count per item-type hierarchy level.
+func (s *ItemCRUDService) LevelCountsContext(ctx context.Context, params ListWithQLParams) ([]repository.HierarchyLevelCount, error) {
+	if len(params.WorkspaceIDs) == 0 {
+		return []repository.HierarchyLevelCount{}, nil
+	}
+	resolvedQL, err := s.resolveItemListQLContext(ctx, params.QLQuery, params.CollectionID, params.SubQLQuery, params.UserID)
+	if err != nil {
+		return nil, err
+	}
+	filters := params.Filters
+	if resolvedQL.sql != "" {
+		filters.QLQuery = resolvedQL.sql
+		filters.QLArgs = resolvedQL.args
+	}
+	if !resolvedQL.collectionResolved && params.WorkspaceID > 0 {
+		filters.WorkspaceID = &params.WorkspaceID
+	}
+	return s.repo.CountByHierarchyLevelContext(ctx, ItemListParams{
+		WorkspaceIDs: params.WorkspaceIDs,
+		Filters:      filters,
+	})
+}
+
 // GetWithEffectiveProject retrieves an item with effective project calculated
 // This is the most comprehensive Get method, used by the handler
 // deadcode-keep: called by core-tests/internal/services/item_crud_service_test.go
@@ -694,24 +861,15 @@ func (s *ItemCRUDService) GetWithEffectiveProject(id int) (*models.Item, error) 
 		return nil, err
 	}
 
-	// Resolve the effective project through the canonical resolver so this
-	// shares the single source of truth with the item handler and the cache
-	// (it keys off the inherit_project boolean and stops at the first ancestor
-	// with a direct project).
-	res, err := s.repo.ResolveEffectiveProject(id)
+	// Resolve the effective project through the shared cache when one is wired,
+	// so a repeat read does not re-walk the parent chain. The cache and the
+	// uncached path share ResolveEffectiveProject as the single source of truth.
+	effectiveProjectID, inheritanceMode, err := s.resolveEffectiveProject(id)
 	if err != nil {
 		return nil, err
 	}
-	switch {
-	case res.DirectProjectID == nil && !res.InheritProject:
-		item.ProjectInheritanceMode = "none"
-	case res.InheritProject:
-		item.EffectiveProjectID = res.EffectiveProjectID
-		item.ProjectInheritanceMode = "inherit"
-	default:
-		item.EffectiveProjectID = res.EffectiveProjectID
-		item.ProjectInheritanceMode = "direct"
-	}
+	item.EffectiveProjectID = effectiveProjectID
+	item.ProjectInheritanceMode = inheritanceMode
 
 	// Populate the effective project name when one resolved.
 	if item.EffectiveProjectID != nil {
@@ -729,6 +887,26 @@ func (s *ItemCRUDService) GetWithEffectiveProject(id int) (*models.Item, error) 
 	}
 
 	return item, nil
+}
+
+// resolveEffectiveProject returns (effective_project_id, mode, error) for an
+// item, preferring the shared cache when one is wired.
+func (s *ItemCRUDService) resolveEffectiveProject(id int) (effectiveProjectID *int, inheritanceMode string, err error) {
+	if s.itemCache != nil {
+		return s.itemCache.GetEffectiveProjectForItem(id)
+	}
+	res, err := s.repo.ResolveEffectiveProject(id)
+	if err != nil {
+		return nil, "", err
+	}
+	switch {
+	case res.DirectProjectID == nil && !res.InheritProject:
+		return nil, "none", nil
+	case res.InheritProject:
+		return res.EffectiveProjectID, "inherit", nil
+	default:
+		return res.EffectiveProjectID, "direct", nil
+	}
 }
 
 // GetHistory retrieves the change history for an item, with actor names

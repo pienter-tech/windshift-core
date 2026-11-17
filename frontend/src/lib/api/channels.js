@@ -63,11 +63,41 @@ export const channels = {
     fetchAPI(`/channels/${id}/email/replies/${commentId}/discard`, {
       method: 'POST',
     }),
+  // Row-scoped discard for outbox rows without a comment, i.e. intake receipts.
+  discardEmailReplyById: (id, replyId) =>
+    fetchAPI(`/channels/${id}/email/outbox/${replyId}/discard`, {
+      method: 'POST',
+    }),
+  // Bulk cancel of the channel's whole pending reply queue.
+  discardPendingEmailReplies: (id) =>
+    fetchAPI(`/channels/${id}/email/replies/discard-pending`, {
+      method: 'POST',
+    }),
   // Email OAuth (inline per-channel OAuth credentials)
   startEmailOAuth: (channelId, restoreChannelEnabled = false) =>
     fetchAPI(`/channels/${channelId}/inline-oauth/start`, {
       method: 'POST',
       body: JSON.stringify({ restore_channel_enabled: restoreChannelEnabled }),
+    }),
+};
+
+// Mailbox intakes (WI-1644): routing for an email channel (mailbox). The
+// mailbox owns the connection; each intake owns one folder and its target.
+export const channelIntakes = {
+  list: (channelId) => fetchAPI(`/channels/${channelId}/intakes`),
+  create: (channelId, data) =>
+    fetchAPI(`/channels/${channelId}/intakes`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  update: (channelId, intakeId, data) =>
+    fetchAPI(`/channels/${channelId}/intakes/${intakeId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  delete: (channelId, intakeId) =>
+    fetchAPI(`/channels/${channelId}/intakes/${intakeId}`, {
+      method: 'DELETE',
     }),
 };
 
