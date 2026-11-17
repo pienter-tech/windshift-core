@@ -1,7 +1,7 @@
 export default {
   actions: {
     title: '操作',
-    description: '使用基于规则的行动自动化工作流',
+    description: '使用基于规则的操作自动化工作流',
     create: '创建操作',
     createFirst: '创建您的第一个操作',
     noActions: '暂无操作',
@@ -23,6 +23,7 @@ export default {
     },
     trigger: {
       statusTransition: '状态转换',
+      statusLoop: '状态循环',
       itemCreated: '事项已创建',
       itemUpdated: '事项已更新',
       itemLinked: '事项已关联',
@@ -79,6 +80,7 @@ export default {
       triggerType: '触发器类型',
       fromStatus: '从状态',
       toStatus: '到状态',
+      loopStatus: '循环状态',
       anyStatus: '任何状态',
       recipientType: '接收者',
       notifyMessage: '消息',

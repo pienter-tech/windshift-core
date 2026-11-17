@@ -1,27 +1,25 @@
 <script>
-  import { Menu } from '@lucide/svelte';
+  import Menu from '@lucide/svelte/icons/menu';
   import { useEventListener } from 'runed';
-  import { api } from '../api.js';
+  import { auth } from '../api/auth.js';
   import Button from '../components/Button.svelte';
   import Spinner from '../components/Spinner.svelte';
   import EmailVerificationBanner from '../features/notifications/EmailVerificationBanner.svelte';
   import CollectionNavigation from '../features/collections/CollectionNavigation.svelte';
-  import Footer from '../layout/Footer.svelte';
   import MainSidebar from '../layout/MainSidebar.svelte';
   import {
     GLOBAL_COLLECTION_VIEWS,
     currentRoute,
     isWorkspaceRoute,
+    matchRoute,
     navigate,
   } from '../router.js';
+  import { toLogical } from '../runtime/contextPath.js';
   import { hydrateCurrentWorkspaceFromSharedData } from '../services/authenticatedShellUI.js';
-  import {
-    authStore,
-    currentWorkspace,
-    uiStore,
-    workspaceDataStore,
-    workspacesStore,
-  } from '../stores';
+  import { authStore } from '../stores/auth.svelte.js';
+  import { currentWorkspace, workspacesStore } from '../stores/workspaces.svelte.js';
+  import { uiStore } from '../stores/ui.svelte.js';
+  import { workspaceDataStore } from '../stores/workspaceDataStore.svelte.js';
   import { aiStore } from '../stores/aiStore.svelte.js';
   import { terminalStore } from '../stores/terminalStore.svelte.js';
   import { clearWorkspaceGradient } from '../stores/workspaceGradient.svelte.js';
@@ -37,6 +35,8 @@
     CREATE_MODAL_WORKSPACE_VIEWS,
     MAIN_APP_COMPONENT_LOADERS,
     MAIN_APP_TEST_VIEWS,
+    prefetchIdleMainAppComponents,
+    prefetchMainAppForView,
     resolveEffectiveMainAppView,
   } from './mainAppRoutes.js';
   import {
@@ -72,6 +72,23 @@
       void recoverFromLazyLoadFailure();
     },
   });
+
+  // Warm the likely next routes once the browser is idle (WI-1761).
+  prefetchIdleMainAppComponents();
+
+  /** Hover/focus prefetch: load the route chunk behind a link before the
+   * click, so warm navigations resolve without ever showing a spinner. */
+  function prefetchRouteChunkFromLink(target) {
+    const anchor = target?.closest?.('a[href]');
+    if (!anchor) return;
+    try {
+      const url = new URL(anchor.href, window.location.href);
+      const { view } = matchRoute(toLogical(url.pathname)) ?? {};
+      if (view) prefetchMainAppForView(view);
+    } catch {
+      // Unparseable href — navigation itself will surface the problem.
+    }
+  }
 
   async function loadTerminalPanel() {
     if (TerminalPanelComponent || terminalLoading) return;
@@ -114,6 +131,15 @@
   useEventListener(() => (isResizingTerminal ? document : null), 'mousemove', onTerminalMouseMove);
   useEventListener(() => (isResizingTerminal ? document : null), 'mouseup', onTerminalMouseUp);
 
+  let lastDisplayCacheUserID = null;
+  $effect(() => {
+    const userID = $authStore.user?.id ?? null;
+    if (lastDisplayCacheUserID !== null && userID !== lastDisplayCacheUserID) {
+      workspaceDataStore.resetUserDisplayCache();
+    }
+    lastDisplayCacheUserID = userID;
+  });
+
   $effect(() => {
     if (!isResizingTerminal) return;
     document.body.style.cursor = 'col-resize';
@@ -127,7 +153,7 @@
   async function recoverFromLazyLoadFailure() {
     if (!authStore.isAuthenticated) return;
 
-    sessionRevalidationPromise ??= hasSessionExpired(api.auth.getCurrentUser);
+    sessionRevalidationPromise ??= hasSessionExpired(auth.getCurrentUser);
     const sessionExpired = await sessionRevalidationPromise;
     sessionRevalidationPromise = null;
 
@@ -282,14 +308,15 @@
     if (redirect) navigate(redirect, { replace: true });
   });
 
-  // Redirect direct navigation to a view or nav entry the scope has
-  // disabled. The load is awaited through the reactive entry so the decision
-  // uses real settings, and waits for the workspace record so the default
-  // view is known.
+  // Redirect direct navigation to a collection view the scope has disabled.
+  // The load is awaited through the reactive entry so the decision uses real
+  // settings, and waits for the workspace record so the default view is
+  // known. Workspace-only tools entries are visibility toggles and stay
+  // reachable, so they are not part of this guard.
   $effect(() => {
     const route = $currentRoute;
     const viewId = route.view?.startsWith('workspace-') ? route.view.slice('workspace-'.length) : route.view;
-    if (!viewId || !viewSettingsStore.allNavIds.includes(viewId)) return;
+    if (!viewId || !viewSettingsStore.allViewIds.includes(viewId)) return;
     const workspaceId = route.params?.id;
     if (!workspaceId) return;
     if (!$currentWorkspace?.id) return; // hydration re-runs this effect
@@ -308,7 +335,13 @@
   });
 </script>
 
-<div class="desktop-app-shell h-dvh min-h-0 overflow-hidden flex flex-col" style="background-color: var(--ds-surface);">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+  class="desktop-app-shell h-dvh min-h-0 overflow-hidden flex flex-col"
+  style="background-color: var(--ds-surface);"
+  onpointerover={(event) => prefetchRouteChunkFromLink(event.target)}
+  onfocusin={(event) => prefetchRouteChunkFromLink(event.target)}
+>
   <EmailVerificationBanner
     show={showEmailVerificationBanner}
     ondismiss={() => showEmailVerificationBanner = false}
@@ -388,7 +421,10 @@
             ? `width: ${terminalState.splitPercent}%; flex-shrink: 0;`
             : 'flex: 1;'}
         >
-          <main data-testid="main-content-scroll" class="flex-1 min-h-0 overflow-y-auto overscroll-contain">
+          <main
+            data-testid="main-content-scroll"
+            class="flex-1 min-h-0 overflow-y-auto overscroll-contain"
+          >
             <MainRouteContent view={effectiveView} route={$currentRoute} {lazyComponents} />
           </main>
         </div>
@@ -417,14 +453,6 @@
     </div>
   </div>
 
-  <footer
-    class="authenticated-footer flex-shrink-0 transition-[margin] duration-200 ease-[cubic-bezier(0.25,1,0.5,1)] motion-reduce:transition-none"
-    style={!$uiStore.reviewFullscreen
-      ? `margin-left: ${$uiStore.navExpanded ? '200px' : '64px'}`
-      : ''}
-  >
-    <Footer />
-  </footer>
 </div>
 
 <MainAppOverlays
@@ -491,11 +519,6 @@
       inset: 3rem 0 0 4rem;
       border: 0;
       background: color-mix(in srgb, var(--ds-blanket, #091e42) 54%, transparent);
-    }
-
-    .authenticated-footer {
-      margin-left: 4rem !important;
-      transform: none !important;
     }
   }
 

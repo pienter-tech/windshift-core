@@ -46,6 +46,7 @@ export default {
     emptyPaneDescription: 'Выберите страницу в дереве или создайте новую.',
     titlePlaceholder: 'Без названия',
     editorPlaceholder: 'Начните писать…',
+    contentLabel: 'Содержимое страницы',
     tocHeading: 'На этой странице',
     tocAriaLabel: 'Оглавление',
 

@@ -1,10 +1,15 @@
 <script>
   import { onDestroy, onMount } from 'svelte';
   import Spinner from '../../components/Spinner.svelte';
-  import { api } from '../../api.js';
-  import { ExternalLink, Plus, RefreshCw, Trash2, ChevronDown, ChevronRight, Link2 } from '@lucide/svelte';
+  import { itemIntegrationLinks, userIntegrations } from '../../api/integrations.js';
+  import ExternalLink from '@lucide/svelte/icons/external-link';
+  import Plus from '@lucide/svelte/icons/plus';
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
+  import Link2 from '@lucide/svelte/icons/link-2';
   import Button from '../../components/Button.svelte';
   import Text from '../../components/Text.svelte';
+  import LinkSectionHeader from './LinkSectionHeader.svelte';
   import { t } from '../../stores/i18n.svelte.js';
   import { confirm } from '../../composables/useConfirm.js';
   import { successToast, errorToast } from '../../stores/toasts.svelte.js';
@@ -36,13 +41,13 @@
 
   async function checkStatus(signal) {
     try {
-      const available = await api.userIntegrations.getAvailableProviders({ signal }) || [];
+      const available = await userIntegrations.getAvailableProviders({ signal }) || [];
       const linkableProviders = available.filter((provider) =>
         LINKABLE_PROVIDER_TYPES.has(provider.provider_type?.toLowerCase())
       );
       hasProviders = linkableProviders.length > 0;
       if (hasProviders) {
-        const connections = await api.userIntegrations.getConnections({ signal }) || [];
+        const connections = await userIntegrations.getConnections({ signal }) || [];
         const connectedProviderIds = new Set(
           connections.map((connection) => connection.integration_provider_id)
         );
@@ -64,7 +69,7 @@
     error = null;
 
     try {
-      links = await api.itemIntegrationLinks.get(itemId, signal ? { signal } : undefined) || [];
+      links = await itemIntegrationLinks.get(itemId, signal ? { signal } : undefined) || [];
     } catch (err) {
       if (signal?.aborted || err?.name === 'AbortError' || err?.status === 404) return;
       console.error('Failed to load integration links:', err);
@@ -78,7 +83,7 @@
   async function refreshLink(linkId) {
     refreshingId = linkId;
     try {
-      const updated = await api.itemIntegrationLinks.refresh(linkId);
+      const updated = await itemIntegrationLinks.refresh(linkId);
       links = links.map(l => l.id === linkId ? updated : l);
       successToast(t('integrations.refreshed'));
     } catch (err) {
@@ -100,7 +105,7 @@
     if (!confirmed) return;
 
     try {
-      await api.itemIntegrationLinks.delete(linkId);
+      await itemIntegrationLinks.delete(linkId);
       links = links.filter(l => l.id !== linkId);
       successToast(t('integrations.removed'));
     } catch (err) {
@@ -124,40 +129,25 @@
 
 {#if hasProviders || links.length > 0 || checkingStatus}
 <div class="mb-4">
-  <div class="border-t my-4" style="border-color: var(--ds-border);"></div>
-
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    class="w-full flex items-center justify-between mb-3 group cursor-pointer"
-    onclick={() => expanded = !expanded}
+  <LinkSectionHeader
+    title={t('integrations.title')}
+    count={links.length}
+    {expanded}
+    ontoggle={() => (expanded = !expanded)}
   >
-    <div class="flex items-center gap-2">
-      <Text variant="subtle" size="xs" weight="semibold" class="uppercase tracking-wider">{t('integrations.title')}</Text>
-      {#if links.length > 0}
-        <span class="text-xs px-1.5 py-0.5 rounded" style="background-color: var(--ds-background-neutral); color: var(--ds-text-subtle);">
-          {links.length}
-        </span>
-      {/if}
-    </div>
-    <div class="flex items-center gap-1">
+    {#snippet actions()}
       {#if hasConnection}
         <button
-          class="p-1 rounded transition-colors opacity-0 group-hover:opacity-100"
+          class="p-1 rounded transition-colors opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100"
           class:invisible={!expanded}
-          onclick={e => { e.stopPropagation(); onaddlink?.(); }}
+          onclick={(e) => { e.stopPropagation(); onaddlink?.(); }}
           title={t('integrations.linkPage')}
         >
           <Plus class="w-4 h-4" style="color: var(--ds-text-subtle);" />
         </button>
       {/if}
-      {#if expanded}
-        <ChevronDown class="w-4 h-4" style="color: var(--ds-text-subtle);" />
-      {:else}
-        <ChevronRight class="w-4 h-4" style="color: var(--ds-text-subtle);" />
-      {/if}
-    </div>
-  </div>
+    {/snippet}
+  </LinkSectionHeader>
 
   {#if expanded}
     <div class="space-y-2 mt-1">
@@ -217,7 +207,7 @@
               </div>
             </div>
 
-            <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+            <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100 transition-opacity">
               <button
                 class="p-1 rounded hover:bg-[var(--ds-background-neutral-hovered)]"
                 onclick={() => refreshLink(link.id)}

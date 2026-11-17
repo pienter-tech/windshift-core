@@ -336,7 +336,7 @@ const itemDetailsSelectBody = `
 	       creator.first_name || ' ' || creator.last_name as creator_name, creator.email as creator_email,
 	       pri.name as priority_name, COALESCE(pri.builtin_key, '') as priority_builtin_key, pri.icon as priority_icon, pri.color as priority_color,
 	       s.name as status_name, COALESCE(s.builtin_key, '') as status_builtin_key,
-	       it.name as item_type_name, COALESCE(it.builtin_key, '') as item_type_builtin_key,
+	       it.name as item_type_name, COALESCE(it.builtin_key, '') as item_type_builtin_key, COALESCE(it.icon, '') as item_type_icon, COALESCE(it.color, '') as item_type_color,
 	       i.related_work_item_id,
 	       rw.title as related_work_item_title,
 	       rw_ws.key as related_work_item_workspace_key,
@@ -380,7 +380,7 @@ func scanItemDetailsRow(scanner rowScanner) (models.Item, bool, error) {
 	var assigneeName, assigneeEmail, assigneeAvatar, creatorName, creatorEmail sql.NullString
 	var priorityName, priorityBuiltinKey, priorityIcon, priorityColor sql.NullString
 	var statusName, statusBuiltinKey sql.NullString
-	var itemTypeName, itemTypeBuiltinKey sql.NullString
+	var itemTypeName, itemTypeBuiltinKey, itemTypeIcon, itemTypeColor sql.NullString
 	var relatedWorkItemID sql.NullInt64
 	var relatedWorkItemTitle, relatedWorkItemWorkspaceKey sql.NullString
 	var relatedWorkItemWorkspaceID, relatedWorkItemNumber sql.NullInt64
@@ -406,7 +406,7 @@ func scanItemDetailsRow(scanner rowScanner) (models.Item, bool, error) {
 		&assigneeName, &assigneeEmail, &assigneeAvatar, &creatorName, &creatorEmail,
 		&priorityName, &priorityBuiltinKey, &priorityIcon, &priorityColor,
 		&statusName, &statusBuiltinKey,
-		&itemTypeName, &itemTypeBuiltinKey,
+		&itemTypeName, &itemTypeBuiltinKey, &itemTypeIcon, &itemTypeColor,
 		&relatedWorkItemID,
 		&relatedWorkItemTitle,
 		&relatedWorkItemWorkspaceKey,
@@ -466,6 +466,8 @@ func scanItemDetailsRow(scanner rowScanner) (models.Item, bool, error) {
 	assignNullableString(&item.StatusBuiltinKey, statusBuiltinKey)
 	assignNullableString(&item.ItemTypeName, itemTypeName)
 	assignNullableString(&item.ItemTypeBuiltinKey, itemTypeBuiltinKey)
+	assignNullableString(&item.ItemTypeIcon, itemTypeIcon)
+	assignNullableString(&item.ItemTypeColor, itemTypeColor)
 	assignNullableString(&item.TeamName, teamName)
 	assignNullableString(&item.TeamColor, teamColor)
 	assignNullableString(&item.TeamAvatarURL, teamAvatar)
@@ -529,6 +531,35 @@ func (r *ItemRepository) GetWorkspaceIDCtx(ctx context.Context, itemID int) (int
 		return 0, mapItemErr(err, "get workspace id")
 	}
 	return workspaceID, nil
+}
+
+// GetWorkspaceIDs resolves the owning workspace of many items in one query.
+// Items that do not exist are absent from the returned map, so callers can
+// treat a missing entry as "not found".
+func (r *ItemRepository) GetWorkspaceIDs(itemIDs []int) (map[int]int, error) {
+	resolved := make(map[int]int, len(itemIDs))
+	if len(itemIDs) == 0 {
+		return resolved, nil
+	}
+
+	clause, args := inPlaceholders(itemIDs)
+	rows, err := r.db.Query("SELECT id, workspace_id FROM items WHERE id IN ("+clause+")", args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query item workspace ids: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var itemID, workspaceID int
+		if err := rows.Scan(&itemID, &workspaceID); err != nil {
+			return nil, fmt.Errorf("failed to scan item workspace id: %w", err)
+		}
+		resolved[itemID] = workspaceID
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate item workspace ids: %w", err)
+	}
+	return resolved, nil
 }
 
 // ChildItemSummary is the projection used by item briefings. It carries
@@ -956,9 +987,74 @@ func (r *ItemRepository) GetNextWorkspaceItemNumber(tx database.Tx, workspaceID 
 	return int(maxNumber + 1), nil
 }
 
-// Create inserts an item in a caller-owned transaction. Production creation
-// flows should use CreateWithRetry so rank and item-number conflicts restart
-// the full transaction.
+// IsWorkspaceItemNumberTaken reports whether a workspace item number is already
+// in use by an item or retired in item_key_reservations. Import paths use it to
+// honor a source key's number when it is free and fall back when it is not.
+func (r *ItemRepository) IsWorkspaceItemNumberTaken(tx database.Tx, workspaceID, number int) (bool, error) {
+	var conflicts int
+	if err := tx.QueryRow(`
+		SELECT COUNT(*) FROM (
+			SELECT 1 FROM items WHERE workspace_id = ? AND workspace_item_number = ?
+			UNION ALL
+			SELECT 1 FROM item_key_reservations WHERE workspace_id = ? AND workspace_item_number = ?
+		) AS conflicts
+	`, workspaceID, number, workspaceID, number).Scan(&conflicts); err != nil {
+		return false, fmt.Errorf("check workspace item number %d: %w", number, err)
+	}
+	return conflicts > 0, nil
+}
+
+// ReserveDeletedItemNumbers retires, per workspace, the highest item number
+// among the rows being removed. Deletion is a hard DELETE, so without a
+// reservation the MAX+1 allocator would reissue the workspace's top key after
+// its item is gone. Retiring a number below the workspace max is harmless, so
+// this needs no "was it the max?" read. movedBy and moved_item_id are
+// provenance only; the allocator never reads them.
+func (r *ItemRepository) ReserveDeletedItemNumbers(tx database.Tx, items []*models.Item, movedBy int) error {
+	type topNumber struct {
+		itemID int
+		number int
+	}
+	highest := make(map[int]topNumber)
+	for _, item := range items {
+		if item == nil || item.WorkspaceID == 0 || item.WorkspaceItemNumber <= 0 {
+			continue
+		}
+		current, ok := highest[item.WorkspaceID]
+		if !ok || item.WorkspaceItemNumber > current.number {
+			highest[item.WorkspaceID] = topNumber{itemID: item.ID, number: item.WorkspaceItemNumber}
+		}
+	}
+	if len(highest) == 0 {
+		return nil
+	}
+	now := time.Now()
+	for workspaceID, top := range highest {
+		var movedByArg, movedItemArg any
+		if movedBy > 0 {
+			movedByArg = movedBy
+		}
+		if top.itemID > 0 {
+			movedItemArg = top.itemID
+		}
+		if _, err := tx.Exec(`
+			INSERT INTO item_key_reservations (
+				workspace_id, workspace_item_number, moved_item_id, moved_by, created_at
+			) VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT (workspace_id, workspace_item_number) DO NOTHING
+		`, workspaceID, top.number, movedItemArg, movedByArg, now); err != nil {
+			return fmt.Errorf("reserve deleted item key %d-%d: %w", workspaceID, top.number, err)
+		}
+	}
+	return nil
+}
+
+// Create inserts an item in a caller-owned transaction. It is the single
+// items-row insert: every creation path (services.CreateItem, workspace clone,
+// and the CreateWithRetry wrapper) goes through it, so all callers write the
+// same columns. WorkspaceItemNumber, FracIndex, and the timestamps are honored
+// when set (imports backdate rows; clone pins numbers and ranks) and defaulted
+// otherwise.
 func (r *ItemRepository) Create(tx database.Tx, item *models.Item) (int, error) {
 	if err := acquireGlobalRankMutationLock(tx, r.db.GetDriverName()); err != nil {
 		return 0, err
@@ -966,6 +1062,10 @@ func (r *ItemRepository) Create(tx database.Tx, item *models.Item) (int, error) 
 	customFieldValuesJSON, err := marshalCustomFields(item.CustomFieldValues)
 	if err != nil {
 		return 0, err
+	}
+	virtualFieldDataJSON, err := marshalCustomFields(item.VirtualFieldData)
+	if err != nil {
+		return 0, fmt.Errorf("failed to marshal virtual field data: %w", err)
 	}
 	fracIndex := item.FracIndex
 	if fracIndex == nil || *fracIndex == "" {
@@ -977,20 +1077,36 @@ func (r *ItemRepository) Create(tx database.Tx, item *models.Item) (int, error) 
 	}
 
 	now := time.Now()
+	createdAt := item.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = now
+	}
+	updatedAt := item.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = createdAt
+	}
+	lastActiveAt := item.LastActiveAt
+	if lastActiveAt.IsZero() {
+		lastActiveAt = updatedAt
+	}
+
 	var id int64
 	err = tx.QueryRow(`
 		INSERT INTO items (
-			workspace_id, workspace_item_number, item_type_id, title, description, status_id,
-			priority_id, due_date, start_date, end_date, is_task, iteration_id, project_id, inherit_project,
-			assignee_id, creator_id, custom_field_values, parent_id, related_work_item_id,
-			story_points, estimate_minutes, frac_index, created_at, updated_at, last_active_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
+			workspace_id, workspace_item_number, item_type_id, title, description, status_id, priority_id, is_task,
+			iteration_id, project_id, inherit_project, time_project_id, assignee_id, team_id, reporter_id, creator_id, creator_portal_customer_id,
+			channel_id, request_type_id, intake_id, portal_org_shared, due_date, start_date, end_date, related_work_item_id,
+			story_points, estimate_minutes, custom_field_values, virtual_field_data, parent_id,
+			frac_index, created_at, updated_at, last_active_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
 	`,
 		item.WorkspaceID, item.WorkspaceItemNumber, item.ItemTypeID, item.Title, item.Description,
-		item.StatusID, item.PriorityID, item.DueDate, item.StartDate, item.EndDate, item.IsTask,
-		item.IterationID, item.ProjectID, item.InheritProject, item.AssigneeID, item.CreatorID,
-		customFieldValuesJSON, item.ParentID, item.RelatedWorkItemID,
-		item.StoryPoints, item.EstimateMinutes, fracIndex, now, now, now,
+		item.StatusID, item.PriorityID, item.IsTask, item.IterationID, item.ProjectID, item.InheritProject,
+		item.TimeProjectID, item.AssigneeID, item.TeamID, item.ReporterID, item.CreatorID, item.CreatorPortalCustomerID,
+		item.ChannelID, item.RequestTypeID, item.IntakeID, item.PortalOrgShared,
+		item.DueDate, item.StartDate, item.EndDate, item.RelatedWorkItemID,
+		item.StoryPoints, item.EstimateMinutes, customFieldValuesJSON, virtualFieldDataJSON, item.ParentID,
+		fracIndex, createdAt, updatedAt, lastActiveAt,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create item: %w", err)
@@ -1197,32 +1313,54 @@ func (r *ItemRepository) ClearWorklogItemReferences(tx database.Tx, itemID int) 
 	return nil
 }
 
+// AttachmentPathsForItemsTx returns the main file and thumbnail paths for the
+// item-scoped attachments of the given items. Item deletion uses it to remove
+// blobs before deleting the attachment rows.
+func (r *ItemRepository) AttachmentPathsForItemsTx(tx database.Tx, itemIDs []int) ([]string, error) {
+	if len(itemIDs) == 0 {
+		return nil, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(itemIDs)), ",")
+	args := make([]any, 0, len(itemIDs))
+	for _, id := range itemIDs {
+		args = append(args, id)
+	}
+	rows, err := tx.Query(`
+		SELECT file_path, COALESCE(thumbnail_path, '')
+		FROM attachments
+		WHERE COALESCE(entity_type, 'item') = 'item'
+		  AND item_id IN (`+placeholders+`)
+	`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query item attachment paths: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var paths []string
+	for rows.Next() {
+		var filePath, thumbnailPath string
+		if err := rows.Scan(&filePath, &thumbnailPath); err != nil {
+			return nil, fmt.Errorf("scan item attachment path: %w", err)
+		}
+		if filePath != "" {
+			paths = append(paths, filePath)
+		}
+		if thumbnailPath != "" {
+			paths = append(paths, thumbnailPath)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate item attachment paths: %w", err)
+	}
+	return paths, nil
+}
+
 func (r *ItemRepository) GetParentID(itemID int) (*int, error) {
 	var parentID sql.NullInt64
 	if err := r.scanItemColumn(itemID, "parent_id", "get parent id", &parentID); err != nil {
 		return nil, err
 	}
 	return nullIntPtr(parentID), nil
-}
-
-// GetParentIDAndHierarchyLevel returns the stored parent and hierarchy level.
-func (r *ItemRepository) GetParentIDAndHierarchyLevel(itemID int) (parentID, hierarchyLevel *int, err error) {
-	var parent, level sql.NullInt64
-	err = r.db.QueryRow(`
-		SELECT i.parent_id, it.hierarchy_level
-		FROM items i
-		LEFT JOIN item_types it ON i.item_type_id = it.id
-		WHERE i.id = ?
-	`, itemID).Scan(&parent, &level)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, nil, fmt.Errorf("get parent and hierarchy level: %w", err)
-	}
-	assignNullableInt(&parentID, parent)
-	assignNullableInt(&hierarchyLevel, level)
-	return parentID, hierarchyLevel, nil
 }
 
 // GetParentIDTx locks and reads the parent inside the supplied transaction.
@@ -1296,6 +1434,44 @@ func (r *ItemRepository) CountByField(column string, value any) (int, error) {
 		return 0, fmt.Errorf("failed to count items by %s: %w", column, err)
 	}
 	return count, nil
+}
+
+// CountByFieldIn counts items grouped by an allowlisted column across many
+// values in one query. Values with no matching items are absent from the
+// returned map.
+func (r *ItemRepository) CountByFieldIn(column string, values []int) (map[int]int, error) {
+	if !itemCountableColumns[column] {
+		return nil, fmt.Errorf("CountByFieldIn: column %q is not in the allow-list", column)
+	}
+	counts := make(map[int]int, len(values))
+	if len(values) == 0 {
+		return counts, nil
+	}
+
+	clause, args := inPlaceholders(values)
+	// The column name is validated against a fixed allow-list above, so the
+	// fmt.Sprintf here cannot splice attacker-controlled input.
+	query := fmt.Sprintf(
+		"SELECT %s, COUNT(*) FROM items WHERE %s IN (%s) GROUP BY %s",
+		column, column, clause, column,
+	)
+	rows, err := r.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count items by %s: %w", column, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var value, count int
+		if err := rows.Scan(&value, &count); err != nil {
+			return nil, fmt.Errorf("failed to scan item count by %s: %w", column, err)
+		}
+		counts[value] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate item counts by %s: %w", column, err)
+	}
+	return counts, nil
 }
 
 // FindIDByKeyAndNumber resolves a case-insensitive KEY-NUMBER reference.
@@ -1463,7 +1639,8 @@ func (r *ItemRepository) SearchLinkableItems(query string, workspaceIDs, itemTyp
 			i.item_type_id,
 			COALESCE(it.name, '') AS item_type_name,
 			COALESCE(it.icon, '') AS item_type_icon,
-			COALESCE(it.color, '') AS item_type_color
+			COALESCE(it.color, '') AS item_type_color,
+			i.creator_portal_customer_id
 		FROM items i
 		LEFT JOIN workspaces w ON i.workspace_id = w.id
 		LEFT JOIN statuses s ON i.status_id = s.id
@@ -1484,13 +1661,14 @@ func (r *ItemRepository) SearchLinkableItems(query string, workspaceIDs, itemTyp
 	for rows.Next() {
 		var item models.LinkableItem
 		var description, workspaceName, workspaceKey, statusName, priorityName, itemTypeName, itemTypeIcon, itemTypeColor sql.NullString
-		var workspaceID, workspaceItemNumber, itemTypeID sql.NullInt64
+		var workspaceID, workspaceItemNumber, itemTypeID, creatorPortalCustomerID sql.NullInt64
 
 		if err := rows.Scan(
 			&item.ID, &item.Title, &description,
 			&workspaceID, &workspaceName, &workspaceKey, &workspaceItemNumber,
 			&statusName, &priorityName,
 			&itemTypeID, &itemTypeName, &itemTypeIcon, &itemTypeColor,
+			&creatorPortalCustomerID,
 		); err != nil {
 			return nil, err
 		}
@@ -1515,6 +1693,10 @@ func (r *ItemRepository) SearchLinkableItems(query string, workspaceIDs, itemTyp
 		item.ItemTypeName = itemTypeName.String
 		item.ItemTypeIcon = itemTypeIcon.String
 		item.ItemTypeColor = itemTypeColor.String
+		if creatorPortalCustomerID.Valid {
+			v := int(creatorPortalCustomerID.Int64)
+			item.CreatorPortalCustomerID = &v
+		}
 		item.Type = "item"
 		items = append(items, item)
 	}
@@ -1656,17 +1838,19 @@ func (r *ItemRepository) ResolveItemKeyReferencesInWorkspaces(keys []string, wor
 }
 
 type CandidateItem struct {
-	ID          int
-	ItemKey     string
-	Title       string
-	StatusName  string
-	Description string
+	ID                      int
+	ItemKey                 string
+	Title                   string
+	StatusName              string
+	Description             string
+	CreatorPortalCustomerID *int
 }
 
 func (r *ItemRepository) ListOpenCandidatesInWorkspace(workspaceID, excludeID, limit int) ([]CandidateItem, error) {
 	rows, err := r.db.Query(
 		`SELECT i.id, w.key || '-' || CAST(i.workspace_item_number AS TEXT) as item_key, i.title,
-		        COALESCE(s.name, '') as status_name, COALESCE(i.description, '') as description
+		        COALESCE(s.name, '') as status_name, COALESCE(i.description, '') as description,
+		        i.creator_portal_customer_id
 		 FROM items i
 		 JOIN workspaces w ON i.workspace_id = w.id
 		 LEFT JOIN statuses s ON i.status_id = s.id
@@ -1684,8 +1868,13 @@ func (r *ItemRepository) ListOpenCandidatesInWorkspace(workspaceID, excludeID, l
 	results := []CandidateItem{}
 	for rows.Next() {
 		var c CandidateItem
-		if err := rows.Scan(&c.ID, &c.ItemKey, &c.Title, &c.StatusName, &c.Description); err != nil {
+		var creatorPortalCustomerID sql.NullInt64
+		if err := rows.Scan(&c.ID, &c.ItemKey, &c.Title, &c.StatusName, &c.Description, &creatorPortalCustomerID); err != nil {
 			return nil, fmt.Errorf("scan candidate row: %w", err)
+		}
+		if creatorPortalCustomerID.Valid {
+			v := int(creatorPortalCustomerID.Int64)
+			c.CreatorPortalCustomerID = &v
 		}
 		results = append(results, c)
 	}

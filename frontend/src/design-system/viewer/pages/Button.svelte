@@ -1,6 +1,10 @@
 <script>
   import Button from '../../../lib/components/Button.svelte'
-  import { Settings, ArrowRight, Plus, Download, Trash2 } from '@lucide/svelte'
+  import Settings from '@lucide/svelte/icons/settings';
+  import ArrowRight from '@lucide/svelte/icons/arrow-right';
+  import Plus from '@lucide/svelte/icons/plus';
+  import Download from '@lucide/svelte/icons/download';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
 </script>
 
 <div class="p-8 max-w-6xl">
@@ -16,6 +20,7 @@
       <Button variant="primary">Primary</Button>
       <Button variant="default">Default</Button>
       <Button variant="secondary">Secondary</Button>
+      <Button variant="context">Context</Button>
       <Button variant="danger">Danger</Button>
       <Button variant="selected">Selected</Button>
       <Button variant="ghost">Ghost</Button>

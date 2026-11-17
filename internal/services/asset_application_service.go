@@ -132,6 +132,32 @@ func (s *AssetApplicationService) HasAccessibleAssetSets(userID int) (bool, erro
 	return len(sets) > 0, err
 }
 
+// ManagesAssetSets reports whether the user can manage at least one asset set:
+// a system admin, a global asset.manage holder, or a set-level Administrator.
+func (s *AssetApplicationService) ManagesAssetSets(userID int) (bool, error) {
+	admin, err := s.permissions.HasGlobalPermission(userID, "system.admin")
+	if err != nil {
+		return false, err
+	}
+	manage, err := s.permissions.HasGlobalPermission(userID, "asset.manage")
+	if err != nil {
+		return false, err
+	}
+	if admin || manage {
+		return true, nil
+	}
+	sets, err := s.ListSets(userID)
+	if err != nil {
+		return false, err
+	}
+	for i := range sets {
+		if sets[i].UserPermission == "Administrator" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (s *AssetApplicationService) GetSet(userID, id int) (*models.AssetManagementSet, error) {
 	if err := s.require(userID, id, AssetPermissionKeyView); err != nil {
 		return nil, err

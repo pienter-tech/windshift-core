@@ -36,12 +36,27 @@ func RegisterChannelRoutes(deps *Deps) {
 	api.HandleH("GET /channels/{id}/email-log", channelMgmt(http.HandlerFunc(deps.Channels.Channel.GetEmailLog)))
 	api.HandleH("POST /channels/{id}/email/requeue-rate-limited", channelMgmt(http.HandlerFunc(deps.Channels.Channel.RequeueRateLimitedEmails)))
 	api.HandleH("GET /channels/{id}/email/replies", channelMgmt(http.HandlerFunc(deps.Channels.Channel.ListEmailReplies)))
+	// Bulk recovery after a burst queued a whole channel's pending replies at once.
+	api.HandleH("POST /channels/{id}/email/replies/discard-pending", channelMgmt(http.HandlerFunc(deps.Channels.Channel.DiscardPendingEmailReplies)))
 	api.HandleH("POST /channels/{id}/email/replies/{commentId}/retry", channelMgmt(http.HandlerFunc(deps.Channels.Channel.RetryEmailReply)))
 	api.HandleH("POST /channels/{id}/email/replies/{commentId}/discard", channelMgmt(http.HandlerFunc(deps.Channels.Channel.DiscardEmailReply)))
+	// Row-scoped discard: intake receipts have no comment_id, so a stuck receipt
+	// is canceled through its outbox row id instead.
+	api.HandleH("POST /channels/{id}/email/outbox/{replyId}/discard", channelMgmt(http.HandlerFunc(deps.Channels.Channel.DiscardEmailReplyByID)))
+
+	// Mailbox intake endpoints (WI-1644). channelMgmt gates the mailbox; the
+	// handler additionally requires manage on the intake target for writes.
+	api.HandleH("GET /channels/{id}/intakes", channelMgmt(http.HandlerFunc(deps.Channels.Channel.ListChannelIntakes)))
+	api.HandleH("POST /channels/{id}/intakes", channelMgmt(http.HandlerFunc(deps.Channels.Channel.CreateChannelIntake)))
+	api.HandleH("PUT /channels/{id}/intakes/{intakeId}", channelMgmt(http.HandlerFunc(deps.Channels.Channel.UpdateChannelIntake)))
+	api.HandleH("DELETE /channels/{id}/intakes/{intakeId}", channelMgmt(http.HandlerFunc(deps.Channels.Channel.DeleteChannelIntake)))
 
 	// Channel email OAuth endpoints
 	api.HandleH("POST /channels/{id}/inline-oauth/start", admin(http.HandlerFunc(deps.Channels.Channel.StartChannelEmailOAuth)))
-	api.Handle("GET /channels/inline-oauth/callback", deps.Channels.Channel.ChannelEmailOAuthCallback) // No auth - OAuth redirect
+	// OptionalAuth so the callback can bind the completing browser to the
+	// account that started the flow; the handler rejects unauthenticated or
+	// mismatched callers.
+	api.HandleH("GET /channels/inline-oauth/callback", deps.AuthMiddleware.OptionalAuth(http.HandlerFunc(deps.Channels.Channel.ChannelEmailOAuthCallback)))
 
 	// Request Type endpoints (channel-scoped). Write paths nest under /channels/{channel_id}/
 	// so the channelMgmt middleware can gate them and the handler/SQL constrains by channel_id.
@@ -72,6 +87,7 @@ func RegisterChannelRoutes(deps *Deps) {
 	api.HandleH("GET /notifications/events", auth(http.HandlerFunc(deps.Channels.Notification.NotificationEvents)))
 	api.HandleH("POST /notifications", auth(http.HandlerFunc(deps.Channels.Notification.CreateNotification)))
 	api.HandleH("DELETE /notifications", auth(http.HandlerFunc(deps.Channels.Notification.ClearNotifications)))
+	api.HandleH("DELETE /notifications/{id}", auth(http.HandlerFunc(deps.Channels.Notification.DeleteNotification)))
 	api.HandleH("PATCH /notifications/read-all", auth(http.HandlerFunc(deps.Channels.Notification.MarkAllNotificationsAsRead)))
 	api.HandleH("PATCH /notifications/{id}/read", auth(http.HandlerFunc(deps.Channels.Notification.MarkNotificationAsRead)))
 	api.HandleH("PATCH /notifications/seen-all", auth(http.HandlerFunc(deps.Channels.Notification.MarkAllNotificationsAsSeen)))
@@ -82,6 +98,8 @@ func RegisterChannelRoutes(deps *Deps) {
 	api.HandleH("GET /email-templates", admin(http.HandlerFunc(deps.Channels.EmailTemplate.List)))
 	api.HandleH("GET /email-templates/{id}", admin(http.HandlerFunc(deps.Channels.EmailTemplate.Get)))
 	api.HandleH("PUT /email-templates/{id}", admin(http.HandlerFunc(deps.Channels.EmailTemplate.Update)))
+	api.HandleH("PUT /email-templates/{id}/translations/{locale}", admin(http.HandlerFunc(deps.Channels.EmailTemplate.UpdateTranslation)))
+	api.HandleH("DELETE /email-templates/{id}/translations/{locale}", admin(http.HandlerFunc(deps.Channels.EmailTemplate.DeleteTranslation)))
 	api.HandleH("POST /email-templates/preview", admin(http.HandlerFunc(deps.Channels.EmailTemplate.Preview)))
 
 	// Webhook manual trigger endpoints

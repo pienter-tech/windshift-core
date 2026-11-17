@@ -1,12 +1,14 @@
 <script>
-  import ItemKey from '../../../lib/features/items/ItemKey.svelte'
+  import ItemKey from '../../../lib/components/ItemKey.svelte'
 </script>
 
 <div class="p-8 max-w-6xl">
   <h1 class="text-2xl font-bold mb-2" style="color: var(--ds-text);">ItemKey</h1>
   <p class="mb-8" style="color: var(--ds-text-subtle);">
     Standard display component for work item keys. Shows the workspace key with the item number in a consistent format.
-    Styling is baked in: <code>text-xs font-mono</code> with <code>var(--ds-text-subtle)</code> color by default.
+    Accepts an <code>item</code> object or a pre-formatted <code>itemKey</code> string.
+    The default <code>plain</code> variant is <code>text-xs font-mono</code> with <code>var(--ds-text-subtle)</code> color;
+    the <code>badge</code> variant adds the neutral metadata chip used in ticket lists and card rows.
     Interactive variants (href or onClick) automatically add <code>hover:underline cursor-pointer</code>.
   </p>
 
@@ -58,6 +60,20 @@
         workspace={{ key: 'WIND' }}
         href="#/workspace/WIND/item/123"
       />
+    </div>
+  </section>
+
+  <!-- Badge Variant -->
+  <section class="mb-10">
+    <h2 class="text-lg font-semibold mb-4" style="color: var(--ds-text);">Badge Variant</h2>
+    <p class="mb-4 text-sm" style="color: var(--ds-text-subtle);">
+      Use <code>variant="badge"</code> for the neutral metadata chip in ticket lists and card rows.
+    </p>
+    <div class="flex items-center gap-3">
+      <ItemKey item={{ workspace_item_number: 42 }} workspace={{ key: 'PROJ' }} variant="badge" />
+      <ItemKey item={{ workspace_item_number: 123 }} workspace={{ key: 'WIND' }} variant="badge" />
+      <ItemKey itemKey="DEV-7" variant="badge" />
+      <ItemKey itemKey="DEV-8" variant="badge" size="compact" />
     </div>
   </section>
 
@@ -140,9 +156,24 @@
             <td class="p-2">-</td>
           </tr>
           <tr style="border-bottom: 1px solid var(--ds-border);">
+            <td class="p-2"><code>itemKey</code></td>
+            <td class="p-2">string | null</td>
+            <td class="p-2">null</td>
+          </tr>
+          <tr style="border-bottom: 1px solid var(--ds-border);">
             <td class="p-2"><code>workspace</code></td>
             <td class="p-2">{`{ key: string } | null`}</td>
             <td class="p-2">null</td>
+          </tr>
+          <tr style="border-bottom: 1px solid var(--ds-border);">
+            <td class="p-2"><code>variant</code></td>
+            <td class="p-2">'plain' | 'badge'</td>
+            <td class="p-2">'plain'</td>
+          </tr>
+          <tr style="border-bottom: 1px solid var(--ds-border);">
+            <td class="p-2"><code>size</code></td>
+            <td class="p-2">'default' | 'compact'</td>
+            <td class="p-2">'default'</td>
           </tr>
           <tr style="border-bottom: 1px solid var(--ds-border);">
             <td class="p-2"><code>href</code></td>

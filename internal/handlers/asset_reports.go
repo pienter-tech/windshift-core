@@ -220,9 +220,8 @@ func (h *AssetReportHandler) availableFieldsForAssetReport(ar *models.AssetRepor
 }
 
 // validateAssetReportFormBinding applies the same workspace and item-type
-// authorization as request-type routing. A nil workspace is supported for
-// forms that use only default/virtual fields; binding custom fields requires a
-// portal-served workspace the manager can administer.
+// authorization as request-type routing. A form-mode report must pin both: the
+// binding resolves the form's custom fields and is fixed at creation.
 func (h *AssetReportHandler) validateAssetReportFormBinding(w http.ResponseWriter, r *http.Request, userID int, ar *models.AssetReport) bool {
 	switch ar.RunMode {
 	case "direct":
@@ -241,20 +240,8 @@ func (h *AssetReportHandler) validateAssetReportFormBinding(w http.ResponseWrite
 		respondValidationError(w, r, "Item type ID is required for form-mode asset reports")
 		return false
 	}
-	if ar.WorkspaceID == nil {
-		exists, err := h.repo.ItemTypeExists(*ar.ItemTypeID)
-		if err != nil {
-			respondInternalError(w, r, err)
-			return false
-		}
-		if !exists {
-			respondValidationError(w, r, "Item type not found")
-			return false
-		}
-		return true
-	}
-	if *ar.WorkspaceID <= 0 {
-		respondValidationError(w, r, "Workspace ID is invalid")
+	if ar.WorkspaceID == nil || *ar.WorkspaceID <= 0 {
+		respondValidationError(w, r, "Workspace ID is required for form-mode asset reports")
 		return false
 	}
 
@@ -291,6 +278,14 @@ func (h *AssetReportHandler) validateAssetReportFormBinding(w http.ResponseWrite
 		return false
 	}
 	return true
+}
+
+// sameOptionalInt reports whether two optional binding IDs are equal.
+func sameOptionalInt(left, right *int) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 // Create creates a new asset report
@@ -399,7 +394,7 @@ func (h *AssetReportHandler) Create(w http.ResponseWriter, r *http.Request) {
 	currentUser := utils.GetCurrentUser(r)
 	if currentUser != nil {
 		h.auditor.LogWithDetails(r, currentUser,
-			"asset_report_create", "asset_report",
+			logger.ActionAssetReportCreate, logger.ResourceAssetReport,
 			&ar.ID, ar.Name,
 			map[string]any{
 				"channel_id":   ar.ChannelID,
@@ -487,13 +482,34 @@ func (h *AssetReportHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if ar.RunMode == "" {
-		ar.RunMode = "direct"
+		ar.RunMode = old.RunMode
 	}
 	if ar.RunMode != "direct" && ar.RunMode != "form" {
 		respondValidationError(w, r, "Invalid run_mode")
 		return
 	}
 	ar.ChannelID = channelID
+
+	// A form-mode report's workspace and item type resolve its configured
+	// fields and are fixed at creation. Omitted values preserve the binding.
+	// A direct report may be upgraded to form once, after which it is fixed.
+	if old.RunMode == "form" {
+		if ar.WorkspaceID == nil {
+			ar.WorkspaceID = old.WorkspaceID
+		}
+		if ar.ItemTypeID == nil {
+			ar.ItemTypeID = old.ItemTypeID
+		}
+		if ar.RunMode != "form" {
+			respondValidationError(w, r, "A form-mode asset report cannot be changed to direct mode")
+			return
+		}
+		if !sameOptionalInt(old.WorkspaceID, ar.WorkspaceID) || !sameOptionalInt(old.ItemTypeID, ar.ItemTypeID) {
+			respondValidationError(w, r, "Asset report workspace and item type cannot be changed after creation")
+			return
+		}
+	}
+
 	if !h.validateAssetReportFormBinding(w, r, user.ID, &ar) {
 		return
 	}
@@ -534,7 +550,7 @@ func (h *AssetReportHandler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 
 		h.auditor.LogWithDetails(r, currentUser,
-			"asset_report_update", "asset_report",
+			logger.ActionAssetReportUpdate, logger.ResourceAssetReport,
 			&ar.ID, ar.Name, details,
 		)
 	}
@@ -577,7 +593,7 @@ func (h *AssetReportHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	currentUser := utils.GetCurrentUser(r)
 	if currentUser != nil {
 		h.auditor.LogWithDetails(r, currentUser,
-			"asset_report_delete", "asset_report",
+			logger.ActionAssetReportDelete, logger.ResourceAssetReport,
 			&id, assetReportName,
 			map[string]any{
 				"channel_id": channelID,
@@ -624,7 +640,7 @@ func (h *AssetReportHandler) UpdateVisibility(w http.ResponseWriter, r *http.Req
 	currentUser := utils.GetCurrentUser(r)
 	if currentUser != nil {
 		h.auditor.LogWithDetails(r, currentUser,
-			"asset_report_visibility_update", "asset_report",
+			logger.ActionAssetReportVisibilityUpdate, logger.ResourceAssetReport,
 			&ar.ID, ar.Name,
 			map[string]any{
 				"visibility_group_ids": ar.VisibilityGroupIDs,
@@ -758,7 +774,7 @@ func (h *AssetReportHandler) UpdateFields(w http.ResponseWriter, r *http.Request
 	currentUser := utils.GetCurrentUser(r)
 	if currentUser != nil {
 		h.auditor.LogWithDetails(r, currentUser,
-			"asset_report_fields_update", "asset_report",
+			logger.ActionAssetReportFieldsUpdate, logger.ResourceAssetReport,
 			&assetReportID, "",
 			map[string]any{"field_count": len(fields)},
 		)

@@ -82,7 +82,14 @@ function fetchBacklog(
   workspaceId,
   ql = null,
   collectionId = null,
-  /** @type {any} */ { page, limit, sub_ql, omit_descriptions, include_watermark } = {}
+  /** @type {any} */ {
+    page,
+    limit,
+    sub_ql,
+    omit_descriptions,
+    include_watermark,
+    requestOptions = {},
+  } = {}
 ) {
   const params = new URLSearchParams();
   if (collectionId) {
@@ -96,7 +103,7 @@ function fetchBacklog(
   if (include_watermark) params.append('include_watermark', 'true');
   if (page) params.append('page', String(page));
   if (limit) params.append('page_size', String(Math.min(Number(limit), 100)));
-  return fetchAPIV2(`/items/backlog?${params}`);
+  return fetchAPIV2(`/items/backlog?${params}`, requestOptions);
 }
 
 async function fetchBacklogBoundary(workspaceId, collectionId, subQL, boundary) {
@@ -166,7 +173,8 @@ export const items = {
     );
     return results.flat();
   },
-  getChanges: (filters = {}) => fetchV2Data(`/items/changes${buildQueryString(filters)}`),
+  getChanges: (filters = {}, requestOptions = {}) =>
+    fetchV2Data(`/items/changes${buildQueryString(filters)}`, requestOptions),
   /** Sum of open story points per assignee; optional workspace narrowing. */
   getStoryPointsByAssignee: (filters = {}) =>
     fetchV2Data(`/items/story-points/by-assignee${buildQueryString(filters)}`),
@@ -205,6 +213,27 @@ export const items = {
       }),
     'update'
   ),
+  // Apply one target status to many items in a single server-side request.
+  // Returns per-item failures instead of fanning out one transition call per
+  // item from the client.
+  bulkTransition: withCrossTabNotice(
+    (itemIds, toStatusId) =>
+      fetchV2Data('/items/bulk-transition', {
+        method: 'POST',
+        body: JSON.stringify({ item_ids: itemIds, to_status_id: toStatusId }),
+      }),
+    'transition'
+  ),
+  // Delete many items in a single server-side request. Returns per-item
+  // failures; each deletion keeps its single-item history and audit record.
+  bulkDelete: withCrossTabNotice(
+    (itemIds) =>
+      fetchV2Data('/items/bulk-delete', {
+        method: 'POST',
+        body: JSON.stringify({ item_ids: itemIds }),
+      }),
+    'delete'
+  ),
   getRoadmapHierarchyDates: (rootIds) =>
     fetchV2Data('/items/roadmap-hierarchy-dates', {
       method: 'POST',
@@ -213,11 +242,17 @@ export const items = {
   // Perform a workflow status transition. Use this instead of passing
   // status_id to update() — the update endpoint rejects status_id so that
   // validator-mode and condition-mode workflow rules are always enforced.
+  // `fields` carries the transition screen's submitted values; the server
+  // validates required screen fields and applies them atomically with the move.
   // Returns the updated item (unwrapped from the {item, old_status_id, ...} envelope).
-  transition: withCrossTabNotice(async (id, toStatusId) => {
+  transition: withCrossTabNotice(async (id, toStatusId, fields = null) => {
+    const body = { to_status_id: toStatusId };
+    if (fields && Object.keys(fields).length > 0) {
+      body.fields = fields;
+    }
     const response = await fetchV2Data(`/items/${id}/transition`, {
       method: 'POST',
-      body: JSON.stringify({ to_status_id: toStatusId }),
+      body: JSON.stringify(body),
     });
     return response.item;
   }, 'transition'),
@@ -339,6 +374,57 @@ export const items = {
     const params = maxDepth ? `?max_depth=${maxDepth}` : '';
     return fetchV2Data(`/items/${itemId}/descendants${params}`);
   },
+  /**
+   * Filtered item count per item-type hierarchy level, backing the level
+   * picker. `scope` mirrors the item list: workspace_id or collection_id, plus
+   * an optional sub_ql/ql filter.
+   */
+  getLevelCounts: (scope = {}, requestOptions = {}) =>
+    fetchV2Data(`/items/level-counts${buildQueryString(scope)}`, requestOptions),
+  /**
+   * Ancestor-scoped descendants of a set of roots, grouped by root. Returns
+   * [{ root_id, total, has_more, items: [{ ...item, depth, has_children }] }].
+   * Root ids are chunked under the server's 500-id cap.
+   */
+  getHierarchy: async (
+    {
+      rootIds = [],
+      workspaceId = null,
+      collectionId = null,
+      subQl = null,
+      ql = null,
+      maxDepth = 0,
+      perRootLimit = 100,
+      perRootOffset = 0,
+    } = {},
+    requestOptions = {}
+  ) => {
+    const unique = [...new Set(rootIds)].filter((id) => id != null);
+    if (unique.length === 0) return [];
+    const chunks = [];
+    for (let i = 0; i < unique.length; i += ITEM_BATCH_CHUNK) {
+      chunks.push(unique.slice(i, i + ITEM_BATCH_CHUNK));
+    }
+    const results = await Promise.all(
+      chunks.map((chunk) =>
+        fetchV2Data('/items/hierarchy', {
+          method: 'POST',
+          body: JSON.stringify({
+            root_ids: chunk,
+            workspace_id: workspaceId != null ? Number(workspaceId) : null,
+            collection_id: collectionId != null ? Number(collectionId) : null,
+            sub_ql: subQl,
+            ql: ql,
+            max_depth: maxDepth,
+            per_root_limit: perRootLimit,
+            per_root_offset: perRootOffset,
+          }),
+          ...requestOptions,
+        })
+      )
+    );
+    return results.flat();
+  },
   getTimeRollup: (itemId, { maxDepth = 10 } = {}) =>
     fetchV2Data(`/items/${itemId}/time-rollup?max_depth=${maxDepth}`),
   // Get available status transitions for a specific item based on workflow configuration
@@ -382,6 +468,16 @@ export const items = {
       method: 'DELETE',
     }),
   getWatchStatus: (id, requestOptions = {}) => fetchV2Data(`/items/${id}/watch`, requestOptions),
+  // Everyone watching an item; add/remove return the updated watcher list.
+  listWatchers: (id) => fetchV2Data(`/items/${id}/watchers`),
+  addWatcher: (id, userId) =>
+    fetchV2Data(`/items/${id}/watchers/${userId}`, {
+      method: 'PUT',
+    }),
+  removeWatcher: (id, userId) =>
+    fetchV2Data(`/items/${id}/watchers/${userId}`, {
+      method: 'DELETE',
+    }),
 
   // Personal tasks relationship
   getPersonalTasks: (itemId, requestOptions = {}) =>

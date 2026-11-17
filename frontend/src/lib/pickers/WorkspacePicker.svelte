@@ -2,7 +2,8 @@
   import { BasePicker } from '.';
   import { onMount } from 'svelte';
   import { workspacesStore } from '../stores/workspaces.svelte.js';
-  import { Briefcase, Package } from '@lucide/svelte';
+  import Briefcase from '@lucide/svelte/icons/briefcase';
+  import Package from '@lucide/svelte/icons/package';
   import { workspaceIconMap } from '../utils/icons.js';
   import { t } from '../stores/i18n.svelte.js';
 
@@ -10,10 +11,12 @@
     value = $bindable([]),
     placeholder = '',
     label = '',
+    id = undefined,
     disabled = false,
     multiple = true,
     allowClear = false,
     items = null,
+    optionTestid = null,
     class: className = '',
     onChange = () => {},
     onSelect = () => {},
@@ -106,6 +109,8 @@
   items={workspaces}
   {loading}
   {error}
+  {id}
+  {optionTestid}
   placeholder={resolvedPlaceholder}
   {label}
   {disabled}

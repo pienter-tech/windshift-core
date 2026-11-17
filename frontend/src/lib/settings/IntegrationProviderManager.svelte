@@ -1,8 +1,10 @@
 <script>
 	import { onMount } from 'svelte';
   import StateDisplay from '../components/StateDisplay.svelte';
-	import { api } from '../api.js';
- import { Plus, Edit2, Trash2 } from '@lucide/svelte';
+	import { integrationProviders } from '../api/integrations.js';
+ import Plus from '@lucide/svelte/icons/plus';
+ import Edit2 from '@lucide/svelte/icons/edit-2';
+ import Trash2 from '@lucide/svelte/icons/trash-2';
 	import Button from '../components/Button.svelte';
 	import CopyButton from '../components/CopyButton.svelte';
 	import Modal from '../dialogs/Modal.svelte';
@@ -24,6 +26,7 @@
 	const providerTypes = [
 		{ value: 'notion', label: 'Notion' },
 		{ value: 'todoist', label: 'Todoist' },
+		{ value: 'docmost', label: 'Docmost' },
 	];
 
 	let providers = $state([]);
@@ -41,6 +44,7 @@
 		oauth_client_id: '',
 		oauth_client_secret: '',
 		provider_config: '',
+		docmost_base_url: '',
 	});
 
 	const callbackUrl = $derived(() => {
@@ -55,7 +59,7 @@
 		loading = true;
 		error = '';
 		try {
-			providers = await api.integrationProviders.getAll() || [];
+			providers = await integrationProviders.getAll() || [];
 		} catch (err) {
 			console.error('Failed to load providers:', err);
 			error = t('integrations.providers.loadFailed');
@@ -74,12 +78,19 @@
 			oauth_client_id: '',
 			oauth_client_secret: '',
 			provider_config: '',
+			docmost_base_url: '',
 		};
 		showModal = true;
 	}
 
 	function openEdit(provider) {
 		editingProvider = provider;
+		let baseUrl = '';
+		try {
+			baseUrl = JSON.parse(provider.provider_config || '{}').base_url || '';
+		} catch {
+			baseUrl = '';
+		}
 		formData = {
 			slug: provider.slug,
 			name: provider.name,
@@ -88,6 +99,7 @@
 			oauth_client_id: provider.oauth_client_id || '',
 			oauth_client_secret: '',
 			provider_config: provider.provider_config || '',
+			docmost_base_url: baseUrl,
 		};
 		showModal = true;
 	}
@@ -96,18 +108,27 @@
 		saving = true;
 		try {
 			const data = { ...formData };
-			if (!data.oauth_client_secret) {
+			delete data.docmost_base_url;
+			if (data.provider_type === 'docmost') {
+				// Public client: Windshift self-registers, so no client id/secret.
+				// The base URL is the only provider-specific config.
+				delete data.oauth_client_id;
 				delete data.oauth_client_secret;
-			}
-			if (!data.provider_config) {
-				delete data.provider_config;
+				data.provider_config = JSON.stringify({ base_url: formData.docmost_base_url || '' });
+			} else {
+				if (!data.oauth_client_secret) {
+					delete data.oauth_client_secret;
+				}
+				if (!data.provider_config) {
+					delete data.provider_config;
+				}
 			}
 
 			if (editingProvider) {
-				await api.integrationProviders.update(editingProvider.id, data);
+				await integrationProviders.update(editingProvider.id, data);
 				successToast(t('integrations.providers.updated'));
 			} else {
-				await api.integrationProviders.create(data);
+				await integrationProviders.create(data);
 				successToast(t('integrations.providers.created'));
 			}
 
@@ -129,7 +150,7 @@
 		if (!confirmed) return;
 
 		try {
-			await api.integrationProviders.delete(provider.id);
+			await integrationProviders.delete(provider.id);
 			successToast(t('integrations.providers.deleted'));
 			await loadProviders();
 		} catch (err) {
@@ -227,17 +248,26 @@
 				/>
 			</FormField>
 
-			<FormField label={t('integrations.oauthClientId')}>
-				<Input bind:value={formData.oauth_client_id} placeholder={t('integrations.oauthClientId')} />
-			</FormField>
-
-			<FormField label={t('integrations.oauthClientSecret')}>
-				<Input
-					bind:value={formData.oauth_client_secret}
-					type="password"
-					placeholder={editingProvider?.has_oauth_client_secret ? '••••••••' : t('integrations.oauthClientSecret')}
-				/>
-			</FormField>
+			{#if formData.provider_type === 'docmost'}
+				<FormField label="Base URL" required>
+					<Input bind:value={formData.docmost_base_url} placeholder="https://wiki.example.com" />
+				</FormField>
+				<p class="text-xs" style="color: var(--ds-text-subtle);">
+					The Docmost instance URL. Windshift registers its own OAuth client, so no client
+					ID or secret is needed. Docmost must have an enterprise license and MCP enabled.
+				</p>
+			{:else}
+				<FormField label={t('integrations.oauthClientId')}>
+					<Input bind:value={formData.oauth_client_id} placeholder={t('integrations.oauthClientId')} />
+				</FormField>
+				<FormField label={t('integrations.oauthClientSecret')}>
+					<Input
+						bind:value={formData.oauth_client_secret}
+						type="password"
+						placeholder={editingProvider?.has_oauth_client_secret ? '••••••••' : t('integrations.oauthClientSecret')}
+					/>
+				</FormField>
+			{/if}
 
 			{#if formData.slug}
 				<FormField label={t('integrations.callbackUrl')}>

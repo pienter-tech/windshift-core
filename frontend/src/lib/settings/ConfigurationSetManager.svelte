@@ -3,14 +3,25 @@
   import { t } from '../stores/i18n.svelte.js';
   import { errorToast, successToast } from '../stores/toasts.svelte.js';
   import { confirm } from '../composables/useConfirm.js';
-  import { api } from '../api.js';
+  import { get } from '../api/core.js';
+  import { workflows as workflowsApi } from '../api/workflows.js';
+  import { notificationSettings as notificationSettingsApi } from '../api/notifications.js';
+  import { configurationSets as configurationSetsApi } from '../api/configuration.js';
   import { workspacesStore } from '../stores/workspaces.svelte.js';
   import { navigate } from '../router.js';
   import { formatDateSimple } from '../utils/dateFormatter.js';
-  import {
-    Plus, Edit, Trash2, Settings, Workflow,
-    FileText, Search, AlertCircle, Upload, Layers, Copy, Download
-  } from '@lucide/svelte';
+  import Plus from '@lucide/svelte/icons/plus';
+  import Edit from '@lucide/svelte/icons/edit';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
+  import Settings from '@lucide/svelte/icons/settings';
+  import Workflow from '@lucide/svelte/icons/workflow';
+  import FileText from '@lucide/svelte/icons/file-text';
+  import Search from '@lucide/svelte/icons/search';
+  import AlertCircle from '@lucide/svelte/icons/alert-circle';
+  import Upload from '@lucide/svelte/icons/upload';
+  import Layers from '@lucide/svelte/icons/layers';
+  import Copy from '@lucide/svelte/icons/copy';
+  import Download from '@lucide/svelte/icons/download';
   import ItemTypeIcon from '../components/ItemTypeIcon.svelte';
   import Button from '../components/Button.svelte';
   import EmptyState from '../components/EmptyState.svelte';
@@ -22,6 +33,7 @@
   import Lozenge from '../components/Lozenge.svelte';
   import DialogFooter from '../dialogs/DialogFooter.svelte';
   import Input from '../components/Input.svelte';
+  import TextField from '../components/TextField.svelte';
   import FileInput from '../components/FileInput.svelte';
   import { toHotkeyString } from '../utils/keyboardShortcuts.js';
   import { objectDisplayName, objectDisplayValue } from '../utils/systemLabels.js';
@@ -46,6 +58,13 @@
   let importing = $state(false);
   let unresolvedRefs = $state(null);
   let unresolvedHeading = $state('');
+
+  // Import doubles as the clone path, so the picked template is parsed and the
+  // operator names the copy before anything is written; the exported name would
+  // otherwise collide with the set it came from.
+  let importTemplate = $state(null);
+  let importName = $state('');
+  let importNameError = $state('');
 
 
   function getConfigurationSetDisplayValue(configSet, field) {
@@ -82,11 +101,11 @@
       }
 
       const [configSetsResponse, workspacesData, workflowsData, screensData, notificationSettingsData] = await Promise.all([
-        api.get(`/configuration-sets?${params.toString()}`),
+        get(`/configuration-sets?${params.toString()}`),
         workspacesStore.load(),
-        api.workflows.getAll(),
-        api.get('/screens'),
-        api.notificationSettings.getAll()
+        workflowsApi.getAll(),
+        get('/screens'),
+        notificationSettingsApi.getAll()
       ]);
 
       // Extract pagination data from response
@@ -146,7 +165,7 @@
     if (!confirmed) return;
 
     try {
-      await api.configurationSets.delete(configSet.id);
+      await configurationSetsApi.delete(configSet.id);
       configurationSets = configurationSets.filter(cs => cs.id !== configSet.id);
     } catch (error) {
       console.error('Failed to delete configuration set:', error);
@@ -192,7 +211,7 @@
     // Browser-native download: hits the GET endpoint with the session cookie
     // and streams the JSON to a file. No JS-side parsing required.
     const a = document.createElement('a');
-    a.href = api.configurationSets.exportUrl(configSet.id);
+    a.href = configurationSetsApi.exportUrl(configSet.id);
     a.download = '';
     document.body.appendChild(a);
     a.click();
@@ -209,11 +228,58 @@
     // Reset the input so the same file can be re-selected after a failure.
     if (event.target) event.target.value = '';
     if (!file) return;
-    importing = true;
+
+    let template;
     try {
-      const result = await api.configurationSets.import(file);
-      // Backend may return either the bare configuration set, or
-      // { data, warnings } when warnings were emitted.
+      template = JSON.parse(await file.text());
+    } catch {
+      errorToast(t('settings.configSets.importInvalidFile'));
+      return;
+    }
+    const originalName = template?.payload?.configuration_set?.name;
+    if (typeof originalName !== 'string' || originalName.trim() === '') {
+      errorToast(t('settings.configSets.importInvalidFile'));
+      return;
+    }
+
+    importTemplate = template;
+    importName = suggestImportName(originalName);
+    importNameError = '';
+  }
+
+  // Seed the copy's name with the bundle name so the operator only has to
+  // confirm or tweak it.
+  function suggestImportName(name) {
+    const base = name.trim();
+    return `${base} Copy`;
+  }
+
+  function cancelImport() {
+    importTemplate = null;
+    importName = '';
+    importNameError = '';
+  }
+
+  async function confirmImport() {
+    if (!importTemplate || importing) return;
+    const name = importName.trim();
+    if (!name) {
+      importNameError = t('validation.requiredField', { field: t('settings.configSets.name') });
+      return;
+    }
+
+    const template = {
+      ...importTemplate,
+      payload: {
+        ...importTemplate.payload,
+        configuration_set: { ...importTemplate.payload.configuration_set, name },
+      },
+    };
+
+    importing = true;
+    importNameError = '';
+    try {
+      const result = await configurationSetsApi.import(template);
       const created = result && result.data ? result.data : result;
       const warnings = (result && result.warnings) || [];
       if (created && created.id) {
@@ -222,8 +288,12 @@
       for (const warning of warnings) {
         errorToast(warning);
       }
+      cancelImport();
       await loadData(currentPage, itemsPerPage, searchQuery);
     } catch (err) {
+      // Close the name prompt so the structured failure modal is the only
+      // dialog on screen; the operator re-picks the file to retry.
+      cancelImport();
       if (err && err.status === 422 && err.code === 'unresolved_references') {
         unresolvedHeading = t('settings.configSets.unresolvedReferencesHeading');
         unresolvedRefs = (err.details && err.details.unresolved) || [];
@@ -279,6 +349,7 @@
 
 <FileInput
   accept="application/json,.json"
+  dataTestid="configuration-set-import-file"
   bind:inputRef={importFileInput}
   onchange={handleImportFileChange}
   style="display: none;"
@@ -487,6 +558,42 @@
       {/if}
     {/if}
   {/if}
+
+<!-- Import name prompt — import is the supported clone path. The bundle name is
+     prefilled with a Copy suffix so the new set does not collide with the one it
+     was exported from. -->
+<Modal isOpen={!!importTemplate} onclose={cancelImport} onSubmit={confirmImport} submitDisabled={importing} maxWidth="max-w-lg">
+  {#snippet children()}
+  <ModalHeader title={t('settings.configSets.importNameTitle')} showCloseButton={true} onclose={cancelImport} />
+  <div class="px-6 py-4 space-y-4">
+    <p class="text-sm text-ds-text-subtle">
+      {t('settings.configSets.importNameDescription')}
+    </p>
+    <TextField
+      label={t('settings.configSets.name')}
+      requiredMark
+      placeholder={t('settings.configSets.namePlaceholder')}
+      bind:value={importName}
+      autofocus
+      dataTestid="configuration-set-import-name"
+      oninput={() => (importNameError = '')}
+      onkeydown={(e) => {
+        if (e.key === 'Enter') confirmImport();
+      }}
+    />
+    {#if importNameError}
+      <p class="text-sm text-ds-text-danger">{importNameError}</p>
+    {/if}
+  </div>
+  <DialogFooter
+    onCancel={cancelImport}
+    onConfirm={confirmImport}
+    confirmLabel={t('settings.configSets.import')}
+    loading={importing}
+    showKeyboardHint={true}
+  />
+  {/snippet}
+</Modal>
 
 <!-- Unresolved References Modal — surfaces 422 from /configuration-sets/import.
      Lists every role/group/user/status_category the bundle expected and the

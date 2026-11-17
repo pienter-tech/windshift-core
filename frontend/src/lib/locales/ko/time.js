@@ -20,6 +20,7 @@ export default {
     "resumeTimer": "타이머 재개",
     "timeLogged": "시간을 기록했습니다",
     "timeTrackingProject": "시간 기록 프로젝트",
+    "noCustomer": "고객 없음",
     "workItemOptional": "작업(선택 사항)",
     "whatDidYouWorkOn": "어떤 작업을 했나요?",
     "start": "시작",
@@ -211,6 +212,7 @@ export default {
       "emailOptional": "이메일(선택 사항)",
       "contactPersonOptional": "연락 담당자(선택 사항)",
       "failedToSave": "조직을 저장하지 못했습니다",
+      "failedToDelete": "조직을 삭제하지 못했습니다",
       "deleteOrganization": "조직 삭제",
       "confirmDelete": "\"{name}\"을(를) 삭제하시겠습니까?"
     },

@@ -2,7 +2,7 @@ package models
 
 import "time"
 
-// Milestone Activity entry types (WCORE-21). Milestone events describe the
+// Milestone Activity entry types. Milestone events describe the
 // milestone itself; item events describe its member items.
 const (
 	MilestoneActivityMilestoneCommentAdded     = "milestone_comment_added"
@@ -10,6 +10,7 @@ const (
 	MilestoneActivityMilestoneStatusChanged    = "milestone_status_changed"
 	MilestoneActivityMilestoneTargetDateChange = "milestone_target_date_changed"
 	MilestoneActivityMilestonePageLinked       = "milestone_page_linked"
+	MilestoneActivityMilestonePageUnlinked     = "milestone_page_unlinked"
 	MilestoneActivityItemCommentAdded          = "item_comment_added"
 	MilestoneActivityItemStatusChanged         = "item_status_changed"
 	MilestoneActivityItemAdded                 = "item_added"
@@ -23,7 +24,7 @@ const (
 	MilestoneActivityActorSystem         = "system"
 )
 
-// MilestoneActivity is one entry in a milestone's Activity feed (WCORE-21):
+// MilestoneActivity is one entry in a milestone's Activity feed:
 // who did what, when, and to which item or page. OldValue and NewValue carry
 // the change for status and target-date entries (item statuses resolved to
 // names); description edits and comments carry no values.
@@ -49,7 +50,8 @@ type MilestoneActivityItem struct {
 	WorkspaceID int    `json:"workspace_id"`
 }
 
-// MilestoneActivityPage references the page a "page linked" entry is about.
+// MilestoneActivityPage references the page a "page linked" or "page
+// unlinked" entry is about.
 type MilestoneActivityPage struct {
 	ID          int    `json:"id"`
 	Title       string `json:"title"`

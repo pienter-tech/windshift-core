@@ -1,4 +1,5 @@
-import { api } from '../api.js';
+import { links } from '../api/configuration.js';
+import { BACKGROUND_READ } from '../api/readScheduler.js';
 import { BaseCacheStore } from './BaseCacheStore.svelte.js';
 
 const TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -61,7 +62,7 @@ class ItemTestCaseLinksStore extends BaseCacheStore {
     const scopedWorkspaceId = this.workspaceId;
     const promise = (async () => {
       try {
-        const groups = await api.links.getForItems(chunk);
+        const groups = await links.getForItems(chunk, BACKGROUND_READ);
         if (generation !== this._generation || scopedWorkspaceId !== this.workspaceId) return;
         const now = Date.now();
         for (const itemId of chunk) {
@@ -96,8 +97,18 @@ class ItemTestCaseLinksStore extends BaseCacheStore {
       .map((link) => {
         const isSource = link.source_type === 'item' && link.source_id === itemId;
         const testCaseData = isSource
-          ? { id: link.target_id, title: link.target_title, type: link.target_type }
-          : { id: link.source_id, title: link.source_title, type: link.source_type };
+          ? {
+              id: link.target_id,
+              title: link.target_title,
+              type: link.target_type,
+              workspaceId: link.target_workspace_id,
+            }
+          : {
+              id: link.source_id,
+              title: link.source_title,
+              type: link.source_type,
+              workspaceId: link.source_workspace_id,
+            };
         return testCaseData.type === 'test_case' ? testCaseData : null;
       })
       .filter((tc) => tc !== null);

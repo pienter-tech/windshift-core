@@ -48,6 +48,9 @@ type CreateAttachmentParams struct {
 	HasThumbnail               bool
 	ThumbnailPath              string
 	Category                   string // e.g. "avatar", "" for regular attachments
+	// IsInternal hides the attachment from portal customers while keeping it
+	// visible to workspace members.
+	IsInternal bool
 }
 
 // CanModifyItemAttachment checks if a user can upload/delete attachments on an item.
@@ -106,6 +109,7 @@ func (s *AttachmentService) CanViewItemAttachment(userID, itemID int) (bool, err
 // AttachmentDetails contains attachment info needed for deletion
 type AttachmentDetails struct {
 	FilePath         string
+	ThumbnailPath    string
 	ItemID           *int
 	OriginalFilename string
 	EntityType       string
@@ -116,15 +120,16 @@ type AttachmentDetails struct {
 // Returns repository.ErrNotFound if the attachment doesn't exist.
 func (s *AttachmentService) GetAttachmentDetails(attachmentID int) (*AttachmentDetails, error) {
 	var filePath string
+	var thumbnailPath string
 	var itemID sql.NullInt64
 	var originalFilename string
 	var entityType string
 	var uploadedBy sql.NullInt64
 
 	err := s.db.QueryRow(`
-		SELECT file_path, item_id, original_filename, COALESCE(entity_type, 'item'), uploaded_by
+		SELECT file_path, COALESCE(thumbnail_path, ''), item_id, original_filename, COALESCE(entity_type, 'item'), uploaded_by
 		FROM attachments WHERE id = ?
-	`, attachmentID).Scan(&filePath, &itemID, &originalFilename, &entityType, &uploadedBy)
+	`, attachmentID).Scan(&filePath, &thumbnailPath, &itemID, &originalFilename, &entityType, &uploadedBy)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, repository.ErrNotFound
@@ -134,6 +139,7 @@ func (s *AttachmentService) GetAttachmentDetails(attachmentID int) (*AttachmentD
 
 	details := &AttachmentDetails{
 		FilePath:         filePath,
+		ThumbnailPath:    thumbnailPath,
 		OriginalFilename: originalFilename,
 		EntityType:       entityType,
 	}
@@ -186,11 +192,11 @@ func (s *AttachmentService) CreateRecord(params CreateAttachmentParams) (int64, 
 
 	var attachmentID int64
 	err := s.db.QueryRow(`
-		INSERT INTO attachments (item_id, entity_type, filename, original_filename, file_path, mime_type, file_size, uploaded_by, uploaded_by_portal_customer_id, has_thumbnail, thumbnail_path, category)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
+		INSERT INTO attachments (item_id, entity_type, filename, original_filename, file_path, mime_type, file_size, uploaded_by, uploaded_by_portal_customer_id, has_thumbnail, thumbnail_path, category, is_internal)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
 	`, itemID, params.EntityType, params.Filename, params.OriginalFilename, params.FilePath,
 		params.MimeType, params.FileSize, params.UploadedBy, params.UploadedByPortalCustomerID,
-		params.HasThumbnail, params.ThumbnailPath, params.Category).Scan(&attachmentID)
+		params.HasThumbnail, params.ThumbnailPath, params.Category, params.IsInternal).Scan(&attachmentID)
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert attachment record: %w", err)
 	}

@@ -1,29 +1,33 @@
 <script>
   import { onMount, onDestroy, tick } from 'svelte';
-  import { authStore, homepageStore, permissionStore, isSystemAdmin, workspacesStore } from '../stores';
+  import { authStore } from '../stores/auth.svelte.js';
+  import { homepageStore } from '../stores/homepageStore.svelte.js';
+  import { permissionStore, isSystemAdmin } from '../stores/permissions.svelte.js';
+  import { workspacesStore } from '../stores/workspaces.svelte.js';
   import { t } from '../stores/i18n.svelte.js';
   import DashboardOnboarding from './DashboardOnboarding.svelte';
   import Text from '../components/Text.svelte';
   import Button from '../components/Button.svelte';
   import Input from '../components/Input.svelte';
-  import {
-    ChevronDown,
-    ChevronUp,
-    Edit3,
-    LayoutGrid,
-    Plus,
-    Pencil,
-    Trash2,
-    X,
-  } from '@lucide/svelte';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
+  import ChevronUp from '@lucide/svelte/icons/chevron-up';
+  import Edit3 from '@lucide/svelte/icons/edit-3';
+  import LayoutGrid from '@lucide/svelte/icons/layout-grid';
+  import Plus from '@lucide/svelte/icons/plus';
+  import Pencil from '@lucide/svelte/icons/pencil';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
+  import X from '@lucide/svelte/icons/x';
   import { useEventListener } from 'runed';
+  import { onWorkItemRefresh } from '../stores/workItemRefresh.js';
+  import { createDashboardWidgetDrag } from '../composables/dashboardWidgetDrag.js';
+  import { useDashboardCustomization } from '../composables/useDashboardCustomization.svelte.js';
   import { confirm } from '../composables/useConfirm.js';
-  import { draggable, dropTargetForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter';
 
   import {
     getDashboardSectionDisplay,
     getDashboardSectionSaveValues,
     getDashboardWidgetMetadata,
+    getDashboardWidgetTitle,
   } from '../services/dashboardWidgetRegistry.js';
 
   import WidgetWrapper from '../widgets/WidgetWrapper.svelte';
@@ -38,9 +42,13 @@
   import WatchedItemsWidget from '../widgets/dashboard/WatchedItemsWidget.svelte';
   import RecentWorkspacesWidget from '../widgets/dashboard/RecentWorkspacesWidget.svelte';
   import AssignedToMeWidget from '../widgets/dashboard/AssignedToMeWidget.svelte';
+  import CreatedByMeWidget from '../widgets/dashboard/CreatedByMeWidget.svelte';
   import PersonalTasksWidget from '../widgets/dashboard/PersonalTasksWidget.svelte';
   import SupportOverviewWidget from '../widgets/SupportOverviewWidget.svelte';
   import SavedSearchWidget from '../widgets/dashboard/SavedSearchWidget.svelte';
+  import CustomWidgetWidget from '../widgets/dashboard/CustomWidgetWidget.svelte';
+  import WidgetBuilderModal from '../openui/WidgetBuilderModal.svelte';
+  import { aiStore } from '../stores/aiStore.svelte.js';
 
   let greeting = $derived(homepageStore.greeting);
   let greetingText = $derived(greeting ? t(greeting) : '');
@@ -71,15 +79,17 @@
   let customizationCategory = $state('activity');
 
   // Section editing
-  let editingSectionId = $state(null);
-  let editingSectionTitle = $state('');
-  let editingSectionSubtitle = $state('');
-  let isNewSection = $state(false);
+  const customization = useDashboardCustomization({
+    updateSection: (sectionId, values) => homepageStore.updateSection(sectionId, values),
+    removeSection: (sectionId) => homepageStore.deleteSection(sectionId),
+    findSection: (sectionId) => sections.find((candidate) => candidate.id === sectionId),
+    getSectionDisplay: (section) => getDashboardSectionDisplay(section, t),
+    getSectionSaveValues: (section, draft) => getDashboardSectionSaveValues(section, draft, t),
+  });
 
   // Drag state
   let draggedWidget = $state(null);
   let dropZoneStates = $state(new Map());
-  let dragCleanups = [];
 
   $effect(() => {
     homepageStore.setAccessibleWorkspaces(accessibleWorkspaces, canCreateWorkspaces);
@@ -95,7 +105,7 @@
   });
 
   onDestroy(() => {
-    cleanupDragAndDrop();
+    dnd.cleanup();
   });
 
   function handleRefresh() {
@@ -103,21 +113,17 @@
   }
 
   useEventListener(() => window, 'refresh-workspaces', handleRefresh);
-  useEventListener(() => window, 'refresh-work-items', handleRefresh);
+  $effect(() => onWorkItemRefresh(handleRefresh));
 
   // --- Layout / mode handlers ---
 
   function toggleEditMode() {
     // If exiting edit mode while creating a new section, keep or discard it.
-    if (homepageStore.isEditMode && isNewSection && editingSectionId) {
-      if (editingSectionTitle.trim()) {
-        saveSection();
-      } else {
-        homepageStore.deleteSection(editingSectionId);
-      }
+    if (homepageStore.isEditMode) {
+      customization.commitOrDiscardDraft();
+    } else {
+      customization.resetDraft();
     }
-    editingSectionId = null;
-    isNewSection = false;
     homepageStore.toggleEditMode();
   }
 
@@ -127,10 +133,7 @@
 
   async function addSection() {
     const created = homepageStore.addSection(t('dashboard.editor.newSection'), '');
-    editingSectionId = created.id;
-    editingSectionTitle = created.title;
-    editingSectionSubtitle = created.subtitle;
-    isNewSection = true;
+    customization.beginNewSection(created);
 
     await tick();
     const titleInput = /** @type {HTMLInputElement | null} */ (
@@ -142,47 +145,6 @@
       behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
       block: 'center',
     });
-  }
-
-  function startEditingSection(section) {
-    const display = getDashboardSectionDisplay(section, t);
-    editingSectionId = section.id;
-    editingSectionTitle = display.title;
-    editingSectionSubtitle = display.subtitle || '';
-    isNewSection = false;
-  }
-
-  function saveSection() {
-    if (!editingSectionId) return;
-    const draft = {
-      title: editingSectionTitle,
-      subtitle: editingSectionSubtitle,
-    };
-    const section = sections.find((candidate) => candidate.id === editingSectionId);
-    homepageStore.updateSection(
-      editingSectionId,
-      section ? getDashboardSectionSaveValues(section, draft, t) : draft
-    );
-    editingSectionId = null;
-    isNewSection = false;
-  }
-
-  function cancelEditingSection() {
-    if (isNewSection && editingSectionId) {
-      homepageStore.deleteSection(editingSectionId);
-    }
-    editingSectionId = null;
-    isNewSection = false;
-  }
-
-  function handleSectionEditKeydown(event) {
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      saveSection();
-    } else if (event.key === 'Escape') {
-      event.preventDefault();
-      cancelEditingSection();
-    }
   }
 
   async function handleDeleteSection(sectionId) {
@@ -211,78 +173,84 @@
 
   // --- Drag and drop ---
 
+  const dnd = createDashboardWidgetDrag({
+    widgetCardSelector: '[data-dashboard-widget-card]',
+    dropZoneSelector: '[data-dashboard-drop-zone]',
+    dragType: 'dashboard-widget-type',
+    setDraggedWidget: (value) => {
+      draggedWidget = value;
+    },
+    setDropZoneState: (sectionId, state) => {
+      dropZoneStates.set(sectionId, state);
+      dropZoneStates = new Map(dropZoneStates);
+    },
+    resetDropZones: () => {
+      dropZoneStates = new Map();
+    },
+    onDropWidget: (sectionId, widgetType) => {
+      // A custom widget needs a definition first, so the builder decides what
+      // to add once it saves.
+      if (widgetType === 'custom-widget') {
+        // The catalog hides this type when generation is unavailable; a stale
+        // drag must not add an empty card.
+        if (!aiStore.available || !aiStore.isFeatureEnabled('custom_widget')) return;
+        builderSectionId = sectionId;
+        builderWidgetId = null;
+        builderOpen = true;
+        return;
+      }
+      homepageStore.addWidgetToSection(sectionId, widgetType);
+    },
+  });
+
   let dragSetupKey = $derived(isCustomizeMode ? customizationCategory : null);
   $effect(() => {
     if (dragSetupKey === null) {
-      cleanupDragAndDrop();
+      dnd.cleanup();
       return;
     }
-    const id = setTimeout(() => setupDragAndDrop(), 350);
-    return () => clearTimeout(id);
+    dnd.schedule();
+    return () => dnd.cleanup();
   });
 
-  function setupDragAndDrop() {
-    cleanupDragAndDrop();
+  let builderOpen = $state(false);
+  let builderWidgetId = $state(null);
+  let builderSectionId = $state(null);
+  // Bumped after an edit so the card reloads its definition.
+  let builderRefresh = $state(0);
 
-    const widgetCards = /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('[data-dashboard-widget-card]'));
-    widgetCards.forEach((cardElement) => {
-      const cleanup = draggable({
-        element: cardElement,
-        getInitialData: () => ({
-          type: 'dashboard-widget-type',
-          widgetType: cardElement.dataset.widgetType,
-        }),
-        onDragStart: () => {
-          const currentType = cardElement.dataset.widgetType;
-          draggedWidget = currentType ? { type: currentType } : null;
-          cardElement.style.opacity = '0.5';
-        },
-        onDrop: () => {
-          draggedWidget = null;
-          cardElement.style.opacity = '';
-          dropZoneStates = new Map();
-        },
-      });
-      dragCleanups.push(cleanup);
-    });
-
-    const sectionDropZones = /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('[data-dashboard-drop-zone]'));
-    sectionDropZones.forEach((element) => {
-      const sectionId = element.dataset.sectionId;
-      dropZoneStates.set(sectionId, { isOver: false });
-
-      const cleanup = dropTargetForElements({
-        element,
-        canDrop: ({ source }) => source.data.type === 'dashboard-widget-type',
-        onDragEnter: () => {
-          dropZoneStates.set(sectionId, { isOver: true });
-          dropZoneStates = new Map(dropZoneStates);
-        },
-        onDragLeave: () => {
-          dropZoneStates.set(sectionId, { isOver: false });
-          dropZoneStates = new Map(dropZoneStates);
-        },
-        onDrop: ({ source }) => {
-          dropZoneStates.set(sectionId, { isOver: false });
-          dropZoneStates = new Map(dropZoneStates);
-          const data = source.data;
-          if (data.type === 'dashboard-widget-type') {
-            homepageStore.addWidgetToSection(sectionId, data.widgetType);
-          }
-        },
-      });
-      dragCleanups.push(cleanup);
-    });
+  function handleWidgetSaved(widget) {
+    if (!widget) return;
+    if (builderWidgetId) {
+      // Renaming in the builder must move the card header too.
+      homepageStore.setCustomWidgetTitle(widget.id, widget.name);
+      builderRefresh += 1;
+      return;
+    }
+    if (builderSectionId) {
+      homepageStore.addCustomWidgetToSection(builderSectionId, widget.id, widget.name);
+    }
   }
 
-  function cleanupDragAndDrop() {
-    dragCleanups.forEach((cleanup) => cleanup());
-    dragCleanups = [];
+  function getWidgetTitle(widget) {
+    return getDashboardWidgetTitle(widget, t);
   }
 
-  function getWidgetTitle(type) {
-    const metadata = getDashboardWidgetMetadata(type);
-    return metadata ? t(metadata.nameKey) : type;
+  function openBuilderFor(widget) {
+    builderWidgetId = Number(widget?.config?.customWidgetId) || null;
+    builderSectionId = null;
+    builderOpen = true;
+  }
+
+  function widgetMenuItems(widget) {
+    if (widget?.type !== 'custom-widget' || !widget.config?.customWidgetId) return [];
+    return [
+      {
+        title: t('dashboard.widgetBuilder.editTitle'),
+        testid: 'widget-menu-edit',
+        onClick: () => openBuilderFor(widget),
+      },
+    ];
   }
 
   function getSectionWidgets(sectionId) {
@@ -296,19 +264,20 @@
 />
 
 <div
-  class="max-w-7xl mx-auto px-6 pt-8 pb-6"
-  style="background-color: var(--ds-surface);"
+  class="min-h-full w-full"
+  style="{homepageStore.backgroundStyle} background-attachment: fixed;"
   data-testid="homepage"
   data-ready={layoutLoaded}
 >
+  <div class="max-w-7xl mx-auto px-6 pt-8 pb-6">
   <!-- Greeting + action buttons -->
   {#if !isOnboarding}
     <div class="mb-6 flex items-start justify-between gap-4">
       <div>
-        <Text as="h1" size="2xl" weight="semibold">
+        <Text as="h1" size="2xl" weight="semibold" style={homepageStore.backgroundTextStyle}>
           {personalizedGreeting}
         </Text>
-        <Text as="p" size="sm" variant="subtle">{currentDate}</Text>
+        <Text as="p" size="sm" variant="subtle" style={homepageStore.backgroundSubtleTextStyle}>{currentDate}</Text>
       </div>
       <div class="flex items-center gap-2 shrink-0">
         <Button
@@ -323,6 +292,7 @@
           variant={isCustomizeMode ? 'primary' : 'default'}
           icon={isCustomizeMode ? X : LayoutGrid}
           onclick={toggleCustomizeMode}
+          dataTestid="dashboard-customize-toggle"
         >
           {isCustomizeMode ? t('common.done') : t('dashboard.editor.customize')}
         </Button>
@@ -390,28 +360,28 @@
           >
             <!-- Section header -->
             <div class="flex items-center justify-between mb-4">
-              {#if editingSectionId === section.id}
+              {#if customization.editingSectionId === section.id}
                 <div class="flex-1 flex items-center gap-2 flex-wrap">
                   <Input
                     id={`dashboard-section-title-${section.id}`}
                     type="text"
-                    bind:value={editingSectionTitle}
+                    bind:value={customization.editingSectionTitle}
                     class="text-lg font-semibold"
                     placeholder={t('dashboard.editor.sectionTitlePlaceholder')}
-                    onkeydown={handleSectionEditKeydown}
+                    onkeydown={customization.handleSectionEditKeydown}
                     dataTestid="dashboard-section-title-input"
                   />
                   <Input
                     type="text"
-                    bind:value={editingSectionSubtitle}
+                    bind:value={customization.editingSectionSubtitle}
                     placeholder={t('dashboard.editor.sectionSubtitlePlaceholder')}
-                    onkeydown={handleSectionEditKeydown}
+                    onkeydown={customization.handleSectionEditKeydown}
                     size="small"
                   />
-                  <Button variant="primary" size="small" onclick={saveSection}>
+                  <Button variant="primary" size="small" onclick={customization.save}>
                     {t('common.save')} <span class="ml-1 opacity-60">⏎</span>
                   </Button>
-                  <Button variant="default" size="small" onclick={cancelEditingSection}>
+                  <Button variant="default" size="small" onclick={customization.cancel}>
                     {t('common.cancel')} <span class="ml-1 opacity-60">Esc</span>
                   </Button>
                 </div>
@@ -420,10 +390,10 @@
                   <h2
                     id={`dashboard-section-heading-${section.id}`}
                     class="text-lg font-semibold"
-                    style="color: var(--ds-text);"
+                    style={homepageStore.backgroundTextStyle}
                   >{sectionDisplay.title}</h2>
                   {#if sectionDisplay.subtitle}
-                    <p class="text-sm mt-0.5" style="color: var(--ds-text-subtle);">{sectionDisplay.subtitle}</p>
+                    <p class="text-sm mt-0.5" style={homepageStore.backgroundSubtleTextStyle}>{sectionDisplay.subtitle}</p>
                   {/if}
                 </div>
                 {#if isEditMode}
@@ -431,7 +401,7 @@
                     <button
                       type="button"
                       class="p-2 rounded transition-colors hover:bg-[var(--ds-background-neutral-hovered)] disabled:cursor-not-allowed disabled:opacity-30"
-                      style="color: var(--ds-text-subtle);"
+                      style={homepageStore.backgroundSubtleTextStyle}
                       onclick={() => homepageStore.moveSection(section.id, -1)}
                       disabled={sectionIndex === 0}
                       title={t('layout.moveUp')}
@@ -443,7 +413,7 @@
                     <button
                       type="button"
                       class="p-2 rounded transition-colors hover:bg-[var(--ds-background-neutral-hovered)] disabled:cursor-not-allowed disabled:opacity-30"
-                      style="color: var(--ds-text-subtle);"
+                      style={homepageStore.backgroundSubtleTextStyle}
                       onclick={() => homepageStore.moveSection(section.id, 1)}
                       disabled={sectionIndex === sections.length - 1}
                       title={t('layout.moveDown')}
@@ -455,8 +425,8 @@
                     <button
                       type="button"
                       class="p-2 rounded transition-colors hover:bg-[var(--ds-background-neutral-hovered)]"
-                      style="color: var(--ds-text-subtle);"
-                      onclick={() => startEditingSection(section)}
+                      style={homepageStore.backgroundSubtleTextStyle}
+                      onclick={() => customization.startEditing(section)}
                       title={t('dashboard.editor.renameSection')}
                       aria-label={t('dashboard.editor.renameSection')}
                     >
@@ -465,7 +435,7 @@
                     <button
                       type="button"
                       class="p-2 rounded transition-colors hover:bg-[var(--ds-background-neutral-hovered)]"
-                      style="color: var(--ds-text-subtle);"
+                      style={homepageStore.backgroundSubtleTextStyle}
                       onclick={() => handleDeleteSection(section.id)}
                       title={t('dashboard.editor.deleteSection')}
                       aria-label={t('dashboard.editor.deleteSection')}
@@ -496,7 +466,7 @@
                   {#each sectionWidgets as widget (widget.id)}
                     {@const resizeBounds = homepageStore.getWidgetResizeBounds(widget.id)}
                     <WidgetWrapper
-                      title={getWidgetTitle(widget.type)}
+                      title={getWidgetTitle(widget)}
                       widgetId={widget.id}
                       widgetType={widget.type}
                       width={widget.width}
@@ -507,6 +477,7 @@
                       onremove={() => removeWidget(widget.id)}
                       onwidthchange={(newWidth) => updateWidgetWidth(widget.id, newWidth)}
                       onconfigchange={(changes) => updateWidgetConfig(widget.id, changes)}
+                      extraMenuItems={widgetMenuItems(widget)}
                     >
                       {#if widget.type === 'daily-briefing'}
                         <DailyBriefingWidget />
@@ -524,6 +495,8 @@
                         <RecentWorkspacesWidget />
                       {:else if widget.type === 'assigned-to-me'}
                         <AssignedToMeWidget config={widget.config ?? {}} />
+                      {:else if widget.type === 'created-by-me'}
+                        <CreatedByMeWidget config={widget.config ?? {}} />
                       {:else if widget.type === 'personal-tasks'}
                         <PersonalTasksWidget config={widget.config ?? {}} />
                       {:else if widget.type === 'support-overview'}
@@ -531,13 +504,19 @@
                           config={widget.config ?? {}}
                           onconfigchange={(changes) => updateWidgetConfig(widget.id, changes)}
                         />
+                      {:else if widget.type === 'custom-widget'}
+                        <CustomWidgetWidget
+                          config={widget.config ?? {}}
+                          refreshKey={builderRefresh}
+                          title={getWidgetTitle(widget)}
+                        />
                       {:else if widget.type === 'saved-search'}
                         <SavedSearchWidget
                           config={widget.config ?? {}}
                           onconfigchange={(changes) => updateWidgetConfig(widget.id, changes)}
                         />
                       {:else}
-                        <div class="text-center py-8 text-sm" style="color: var(--ds-text-subtle);">
+                        <div class="text-center py-8 text-sm" style={homepageStore.backgroundSubtleTextStyle}>
                           {t('dashboard.editor.unknownWidgetType', { type: widget.type })}
                         </div>
                       {/if}
@@ -545,7 +524,7 @@
                   {/each}
                 </div>
               {:else}
-                <div class="text-center py-8" style="color: var(--ds-text-subtle);">
+                <div class="text-center py-8" style={homepageStore.backgroundSubtleTextStyle}>
                   <p class="text-sm">{t('dashboard.editor.noWidgets')}</p>
                   <p class="text-xs mt-1">{t('dashboard.editor.addWidgetsHint')}</p>
                 </div>
@@ -555,7 +534,7 @@
         {/each}
 
         {#if sections.length === 0}
-          <div class="flex flex-col items-center justify-center py-16" style="color: var(--ds-text-subtle);">
+          <div class="flex flex-col items-center justify-center py-16" style={homepageStore.backgroundSubtleTextStyle}>
             <LayoutGrid class="h-16 w-16 mb-4 opacity-30" />
             <p class="text-lg font-medium">{t('dashboard.editor.noSections')}</p>
             <p class="text-sm mt-2">{t('dashboard.editor.addSectionsHint')}</p>
@@ -564,4 +543,16 @@
       </div>
     {/if}
   {/if}
+  </div>
 </div>
+
+<WidgetBuilderModal
+  bind:isOpen={builderOpen}
+  widgetId={builderWidgetId}
+  workspaceId={null}
+  onclose={() => {
+    builderWidgetId = null;
+    builderSectionId = null;
+  }}
+  onsaved={handleWidgetSaved}
+/>

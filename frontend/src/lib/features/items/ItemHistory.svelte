@@ -1,10 +1,12 @@
 <script>
 	import { onMount } from 'svelte';
   import StateDisplay from '../../components/StateDisplay.svelte';
-	import { api } from '../../api.js';
-	import { authStore } from '../../stores';
+
+	import { authStore } from '../../stores/auth.svelte.js';
 	import { formatHistoryTimestamp, formatRelativeTime, getUserTimezone } from '../../utils/dateFormatter.js';
-	import { Clock, User, Bot } from '@lucide/svelte';
+	import Clock from '@lucide/svelte/icons/clock';
+	import User from '@lucide/svelte/icons/user';
+	import Bot from '@lucide/svelte/icons/bot';
 	import AlertBox from '../../components/AlertBox.svelte';
 	import EmptyState from '../../components/EmptyState.svelte';
 	import Tooltip from '../../components/Tooltip.svelte';
@@ -41,7 +43,7 @@
 		loading = true;
 		error = '';
 		try {
-			history = await loadAttributedItemHistory(api, itemId);
+			history = await loadAttributedItemHistory(itemId);
 		} catch (err) {
 			error = err.message || 'Failed to load item history';
 			console.error('Error loading item history:', err);
@@ -152,6 +154,7 @@
 
 			currentGroup.changes.push({
 				field_name: entry.field_name,
+				resolved_field_name: entry.resolved_field_name,
 				old_value: entry.old_value,
 				new_value: entry.new_value,
 				resolved_old_value: entry.resolved_old_value,
@@ -184,6 +187,33 @@
 		return typeof fieldName === 'string' && fieldName.startsWith('approval_');
 	}
 
+	// Merge and split rows name another ticket by id; the server resolves the
+	// key into resolved_new_value. They render as a single reference line
+	// instead of an "old → new" pair.
+	function isTicketReferenceEntry(fieldName) {
+		return fieldName === 'merged_into_item_id' || fieldName === 'merged_item_id' || fieldName === 'split_item_id';
+	}
+
+	// The server resolves custom-field and virtual-field keys to their
+	// configured label; fall back to the raw key for the canonical fields.
+	function fieldLabel(change) {
+		return change.resolved_field_name || formatFieldName(change.field_name);
+	}
+
+	// A workspace move stores the destination key in the new_value JSON and the
+	// source key in old_value. Render the two keys instead of the raw payload.
+	function workspaceMoveKeys(change) {
+		let newKey = '';
+		if (change.new_value) {
+			try {
+				newKey = JSON.parse(change.new_value)?.new_key || '';
+			} catch {
+				newKey = '';
+			}
+		}
+		return { oldKey: change.old_value || '', newKey: newKey || change.new_value || '' };
+	}
+
 	// Format field name for display
 	function formatFieldName(fieldName) {
 		// Handle special field names for attachments and diagrams
@@ -193,6 +223,9 @@
 			'diagram_created': 'diagram',
 			'diagram_updated': 'diagram',
 			'diagram_deleted': 'diagram removed',
+			'merged_into_item_id': 'merged into',
+			'merged_item_id': 'merged duplicate',
+			'split_item_id': 'split into',
 			'approval_requested': 'Approval requested',
 			'approval_approve': 'Approved',
 			'approval_reject': 'Rejected',
@@ -353,17 +386,27 @@
 							</span>
 						</div>
 						{#each group.changes as change}
+							{@const label = fieldLabel(change)}
 							<div class="change">
 								{#if isApprovalEntry(change.field_name)}
-									<span class="action">{formatFieldName(change.field_name)}</span>
+									<span class="action">{label}</span>
 									{#if change.new_value && change.new_value !== ''}
 										<span class="quote">"{formatValue(change.new_value, change.resolved_new_value)}"</span>
 									{/if}
+								{:else if change.field_name === 'workspace_move'}
+									{@const move = workspaceMoveKeys(change)}
+									<span class="action">moved workspace</span>
+									<span class="old">{move.oldKey}</span>
+									<span class="arrow">→</span>
+									<span class="new">{move.newKey}</span>
+								{:else if isTicketReferenceEntry(change.field_name)}
+									<span class="action">{label}</span>
+									<span class="new">{formatValue(change.new_value, change.resolved_new_value)}</span>
 								{:else if change.field_name === 'diagram_updated' && (change.old_value === null || change.old_value === undefined || change.old_value === '')}
 									<span class="action">updated</span>
 									<span class="new">{formatValue(change.new_value, change.resolved_new_value)}</span>
 								{:else}
-									<span class="action">changed {formatFieldName(change.field_name)}</span>
+									<span class="action">changed {label}</span>
 									<span class="old">{formatValue(change.old_value, change.resolved_old_value)}</span>
 									<span class="arrow">→</span>
 									<span class="new">{formatValue(change.new_value, change.resolved_new_value)}</span>

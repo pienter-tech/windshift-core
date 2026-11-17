@@ -4,11 +4,13 @@ import (
 	"errors"
 	"net/http"
 
+	"windshift/internal/customfields"
 	"windshift/internal/logger"
 	"windshift/internal/models"
 	"windshift/internal/repository"
 	"windshift/internal/sanitize"
 	"windshift/internal/services"
+	"windshift/internal/validation"
 )
 
 type TimeCustomerHandler struct {
@@ -135,11 +137,18 @@ func (h *TimeCustomerHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// builtin_key is server-managed; never let a client create a system row.
+	c.BuiltinKey = ""
 
 	warnings := sanitize.ApplyAllWithWarnings(
 		sanitize.Pair{Target: &c.Name, Policy: sanitize.PlainTextField, Label: "Name"},
 		sanitize.Pair{Target: &c.Description, Policy: sanitize.Comment, Label: "Description"},
 	)
+
+	index, ok := h.prepareCustomFieldValues(w, r, &c)
+	if !ok {
+		return
+	}
 
 	id, now, err := h.repo.Create(&c)
 	if err != nil {
@@ -150,6 +159,10 @@ func (h *TimeCustomerHandler) Create(w http.ResponseWriter, r *http.Request) {
 	c.ID = id
 	c.CreatedAt = now
 	c.UpdatedAt = now
+
+	if index != nil {
+		index.Resolve(c.CustomFieldValues)
+	}
 
 	if user != nil {
 		h.auditor.Log(r, user, logger.ActionTimeCustomerCreate, logger.ResourceTimeCustomer, &id, c.Name)
@@ -177,10 +190,39 @@ func (h *TimeCustomerHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	existing, err := h.repo.GetByID(id)
+	if errors.Is(err, repository.ErrNotFound) {
+		respondNotFound(w, r, "customer")
+		return
+	}
+	if err != nil {
+		respondInternalError(w, r, err)
+		return
+	}
+	if existing.BuiltinKey != "" {
+		respondValidationError(w, r, "Built-in customers cannot be edited")
+		return
+	}
+
+	// A metadata-only update must not clear structured columns the form does
+	// not carry. An omitted blob keeps its stored value; an explicit empty
+	// object still clears it.
+	if c.Settings == nil {
+		c.Settings = existing.Settings
+	}
+	if c.CustomFieldValues == nil {
+		c.CustomFieldValues = existing.CustomFieldValues
+	}
+
 	warnings := sanitize.ApplyAllWithWarnings(
 		sanitize.Pair{Target: &c.Name, Policy: sanitize.PlainTextField, Label: "Name"},
 		sanitize.Pair{Target: &c.Description, Policy: sanitize.Comment, Label: "Description"},
 	)
+
+	index, ok := h.prepareCustomFieldValues(w, r, &c)
+	if !ok {
+		return
+	}
 
 	now, err := h.repo.Update(id, &c)
 	if errors.Is(err, repository.ErrNotFound) {
@@ -194,6 +236,10 @@ func (h *TimeCustomerHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	c.ID = id
 	c.UpdatedAt = now
+
+	if index != nil {
+		index.Resolve(c.CustomFieldValues)
+	}
 
 	if user != nil {
 		h.auditor.Log(r, user, logger.ActionTimeCustomerUpdate, logger.ResourceTimeCustomer, &id, c.Name)
@@ -213,6 +259,20 @@ func (h *TimeCustomerHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	id, ok := requireIDParam(w, r, "id")
 	if !ok {
+		return
+	}
+
+	existing, err := h.repo.GetByID(id)
+	if errors.Is(err, repository.ErrNotFound) {
+		respondNotFound(w, r, "customer")
+		return
+	}
+	if err != nil {
+		respondInternalError(w, r, err)
+		return
+	}
+	if existing.BuiltinKey != "" {
+		respondValidationError(w, r, "Built-in customers cannot be deleted")
 		return
 	}
 
@@ -240,6 +300,50 @@ func (h *TimeCustomerHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// prepareCustomFieldValues normalises legacy name keys to numeric field ids,
+// validates the values, and rebuilds the unique-name mirror for the downgrade
+// window (WI-2025). Writes the error response itself and returns ok=false on
+// failure. The returned index lets the caller strip the mirror from the
+// response without a second lookup.
+func (h *TimeCustomerHandler) prepareCustomFieldValues(w http.ResponseWriter, r *http.Request, c *models.CustomerOrganisation) (*customfields.CustomFieldNameIndex, bool) {
+	if len(c.CustomFieldValues) == 0 {
+		return nil, true
+	}
+	db := h.repo.DB()
+	index, err := customfields.LoadCustomFieldNameIndex(db, customfields.AppliesToCustomerOrganisations)
+	if err != nil {
+		respondInternalError(w, r, err)
+		return nil, false
+	}
+	if err := index.Validate(c.CustomFieldValues); err != nil {
+		respondCustomerFieldError(w, r, err)
+		return nil, false
+	}
+	if err := validation.ValidateAndNormalizeCustomFieldValues(db, c.CustomFieldValues); err != nil {
+		respondCustomerFieldError(w, r, err)
+		return nil, false
+	}
+	index.RebuildMirrors(c.CustomFieldValues)
+	return index, true
+}
+
+// respondCustomerFieldError maps a custom-field validation error onto a 400,
+// falling back to a 500 for unexpected errors so a failure never lets an
+// unvalidated write proceed.
+func respondCustomerFieldError(w http.ResponseWriter, r *http.Request, err error) {
+	var ve *validation.ValidationError
+	if errors.As(err, &ve) {
+		respondValidationError(w, r, ve.Error())
+		return
+	}
+	var ae *customfields.AmbiguousNameError
+	if errors.As(err, &ae) {
+		respondValidationError(w, r, ae.Error())
+		return
+	}
+	respondInternalError(w, r, err)
 }
 
 // orgRequestSharingRequest is the body of PUT /customer-organisations/{id}/request-sharing.
@@ -327,6 +431,10 @@ func (h *TimeCustomerHandler) UpdateRequestSharing(w http.ResponseWriter, r *htt
 		respondInternalError(w, r, err)
 		return
 	}
+	if c.BuiltinKey != "" {
+		respondValidationError(w, r, "Built-in customers cannot be edited")
+		return
+	}
 
 	merged := models.MergeOrgRequestSharingSettings(c.Settings, sharing)
 	if _, err := h.repo.UpdateSettings(id, merged); err != nil {
@@ -339,7 +447,7 @@ func (h *TimeCustomerHandler) UpdateRequestSharing(w http.ResponseWriter, r *htt
 	}
 
 	if user != nil {
-		h.auditor.Log(r, user, logger.ActionTimeCustomerUpdate, logger.ResourceTimeCustomer, &id, "request-sharing")
+		h.auditor.Log(r, user, logger.ActionTimeCustomerUpdate, logger.ResourceTimeCustomer, &id, c.Name)
 	}
 
 	respondJSONOK(w, map[string]any{

@@ -1,5 +1,14 @@
 <script>
-  import { IconUsers as Users, IconMail as Mail, IconSearch as Search, IconGripVertical as GripVertical, IconPlus as Plus, IconEdit as Edit2, IconTrash as Trash2, IconDots as MoreHorizontal, IconFile as FileIcon, IconTicket as Ticket, IconFileText as FileText, IconNote as StickyNote, IconExternalLink as ExternalLink, IconShare as Share } from '@tabler/icons-svelte-runes';
+  import Users from '@tabler/icons-svelte-runes/icons/users';
+  import Mail from '@tabler/icons-svelte-runes/icons/mail';
+  import Search from '@tabler/icons-svelte-runes/icons/search';
+  import GripVertical from '@tabler/icons-svelte-runes/icons/grip-vertical';
+  import Plus from '@tabler/icons-svelte-runes/icons/plus';
+  import Edit2 from '@tabler/icons-svelte-runes/icons/edit';
+  import Trash2 from '@tabler/icons-svelte-runes/icons/trash';
+  import MoreHorizontal from '@tabler/icons-svelte-runes/icons/dots';
+  import Ticket from '@tabler/icons-svelte-runes/icons/ticket';
+  import Share from '@tabler/icons-svelte-runes/icons/share';
   import { toHotkeyString } from '../utils/keyboardShortcuts.js';
   import Button from '../components/Button.svelte';
   import Input from '../components/Input.svelte';
@@ -12,14 +21,13 @@
   import Spinner from '../components/Spinner.svelte';
   import Lozenge from '../components/Lozenge.svelte';
   import DataTable from '../components/DataTable.svelte';
+  import ItemKey from '../components/ItemKey.svelte';
   import Select from '../components/Select.svelte';
   import Label from '../components/Label.svelte';
   import Checkbox from '../components/Checkbox.svelte';
   import { errorToast, successToast } from '../stores/toasts.svelte.js';
   import { t } from '../stores/i18n.svelte.js';
-  import { api } from '../api.js';
-  import { logbook } from '../api/logbook.js';
-  import { capabilitiesStore } from '../stores/capabilities.svelte.js';
+  import { contactRoles as contactRolesApi, customerOrganisations } from '../api/portal.js';
   import { formatDateShort } from '../utils/dateFormatter.js';
   import { itemUrl } from '../utils/urls.js';
 
@@ -37,18 +45,13 @@
     hasMoreCustomers = false,
     onLoadMore = () => {},
     buildCustomerActions = () => [],
+    onOrganisationUpdated = () => {},
   } = $props();
 
   let activeTab = $state('contacts');
 
-  // Files tab depends on the logbook service. Drop it from the tab list when
-  // logbook isn't configured server-side so users don't land on a misleading
-  // empty state for an unsupported feature.
   let tabs = $derived([
     { id: 'contacts', label: t('workspaces.customers.contacts') || 'Contacts', icon: Users, testid: 'org-detail-contacts-tab' },
-    ...(capabilitiesStore.logbookAvailable
-      ? [{ id: 'files', label: t('common.files') || 'Files', icon: FileIcon, testid: 'org-detail-files-tab' }]
-      : []),
     { id: 'tickets', label: t('common.tickets') || 'Tickets', icon: Ticket, testid: 'org-detail-tickets-tab' },
     ...(canManage ? [{ id: 'sharing', label: t('workspaces.customers.sharing') || 'Sharing', icon: Share, testid: 'org-detail-sharing-tab' }] : []),
   ]);
@@ -78,7 +81,7 @@
   $effect(() => {
     if (activeTab !== 'sharing' || contactRolesLoaded) return;
     contactRolesLoaded = true;
-    api.contactRoles
+    contactRolesApi
       .getAll()
       .then((roles) => {
         contactRoles = Array.isArray(roles) ? roles : (roles?.data ?? []);
@@ -112,10 +115,18 @@
     sharingSaving = true;
     sharingSaved = false;
     try {
-      await api.customerOrganisations.setRequestSharing(organisation.id, {
+      await customerOrganisations.setRequestSharing(organisation.id, {
         request_sharing: sharingMode,
         request_sharing_audience: sharingAudience,
         visible_role_ids: sharingAudience === 'roles' ? sharingRoleIDs : [],
+      });
+      // Persist the saved values back into the organisation record so a revisit
+      // does not re-hydrate the form from stale settings.
+      onOrganisationUpdated(organisation.id, {
+        ...(organisation.settings || {}),
+        request_sharing: sharingMode,
+        request_sharing_audience: sharingAudience,
+        request_visible_role_ids: sharingAudience === 'roles' ? [...sharingRoleIDs] : [],
       });
       sharingSaved = true;
       successToast(t('workspaces.customers.sharingSaved') || 'Request sharing updated');
@@ -126,55 +137,36 @@
     }
   }
 
-  // Files tab state
-  let orgDocuments = $state([]);
-  let orgDocsLoading = $state(false);
-  let orgDocsLoaded = $state(false);
-
   // Tickets tab state
   let orgTickets = $state([]);
   let orgTicketsLoading = $state(false);
   let orgTicketsLoaded = $state(false);
+  let orgTicketsOrgID = null;
 
   $effect(() => {
-    if (activeTab === 'files' && organisation?.id) {
-      const orgId = organisation.id;
-      orgDocsLoading = true;
-      orgDocsLoaded = false;
-      logbook.listDocumentsByOrganisation(orgId)
-        .then((result) => {
-          orgDocuments = result?.data ?? result ?? [];
-          if (!Array.isArray(orgDocuments)) orgDocuments = [];
-        })
-        .catch((err) => {
-          console.error('Failed to load organisation documents:', err);
-          orgDocuments = [];
-        })
-        .finally(() => {
-          orgDocsLoading = false;
-          orgDocsLoaded = true;
-        });
-    }
-  });
-
-  $effect(() => {
-    if (activeTab === 'tickets' && organisation?.id && !orgTicketsLoaded) {
-      const orgId = organisation.id;
-      orgTicketsLoading = true;
-      api.customerOrganisations.getTickets(orgId)
-        .then((result) => {
-          orgTickets = result?.data ?? result ?? [];
-          if (!Array.isArray(orgTickets)) orgTickets = [];
-        })
-        .catch((err) => {
-          console.error('Failed to load organisation tickets:', err);
-          orgTickets = [];
-        })
-        .finally(() => {
-          orgTicketsLoading = false;
-          orgTicketsLoaded = true;
-        });
-    }
+    if (activeTab !== 'tickets' || !organisation?.id) return;
+    const orgId = organisation.id;
+    if (orgId === orgTicketsOrgID) return;
+    orgTicketsOrgID = orgId;
+    orgTickets = [];
+    orgTicketsLoading = true;
+    orgTicketsLoaded = false;
+    customerOrganisations.getTickets(orgId)
+      .then((result) => {
+        if (orgTicketsOrgID !== orgId) return;
+        const list = result?.data ?? result ?? [];
+        orgTickets = Array.isArray(list) ? list : [];
+      })
+      .catch((err) => {
+        if (orgTicketsOrgID !== orgId) return;
+        console.error('Failed to load organisation tickets:', err);
+        orgTickets = [];
+      })
+      .finally(() => {
+        if (orgTicketsOrgID !== orgId) return;
+        orgTicketsLoading = false;
+        orgTicketsLoaded = true;
+      });
   });
 
   let ticketColumns = $derived([
@@ -187,25 +179,6 @@
   function ticketHref(ticket) {
     if (!ticket?.workspace_id || !ticket?.id) return null;
     return itemUrl({ workspaceId: ticket.workspace_id, itemId: ticket.id });
-  }
-
-  function getSourceIcon(sourceType) {
-    switch (sourceType) {
-      case 'upload': return FileText;
-      case 'note': return StickyNote;
-      case 'email': return Mail;
-      default: return FileText;
-    }
-  }
-
-  function getStatusColor(status) {
-    switch (status) {
-      case 'pending': return 'grey';
-      case 'processing': return 'blue';
-      case 'ready': return 'green';
-      case 'error': return 'red';
-      default: return 'grey';
-    }
   }
 </script>
 
@@ -342,82 +315,6 @@
         </div>
       {/if}
     {/if}
-  {:else if activeTab === 'files'}
-    {#if orgDocsLoading}
-      <div class="flex items-center justify-center h-48">
-        <Spinner />
-      </div>
-    {:else if orgDocuments.length === 0}
-      <div class="p-8 text-center" style="color: var(--ds-text-subtle);">
-        <FileIcon class="w-12 h-12 mx-auto mb-3 opacity-50" />
-        <p class="font-medium">{t('common.noFiles') || 'No files yet'}</p>
-        <p class="text-sm mt-1">{t('workspaces.customers.noOrgFiles') || 'Documents associated with this organisation will appear here.'}</p>
-      </div>
-    {:else}
-      <div class="grid gap-4" style="grid-template-columns: repeat(auto-fill, minmax(150px, 200px));">
-        {#each orgDocuments as doc (doc.id)}
-          {@const SourceIcon = getSourceIcon(doc.source_type)}
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div
-            onclick={() => window.open(logbook.getDocumentFileUrl(doc.id), '_blank')}
-            class="doc-card group text-left rounded-xl border transition-all duration-200 hover:shadow-md cursor-pointer overflow-hidden flex flex-col"
-            style="background-color: var(--ds-surface-raised);"
-          >
-            <div class="relative aspect-[210/297] w-full overflow-hidden" style="background-color: var(--ds-surface);">
-              {#if doc.status === 'pending' || doc.status === 'processing'}
-                <div class="w-full h-full flex items-center justify-center">
-                  <Spinner />
-                </div>
-              {:else if doc.has_thumbnail}
-                <img
-                  src={logbook.getDocumentThumbnailUrl(doc.id)}
-                  alt=""
-                  class="w-full h-full object-contain"
-                  loading="lazy"
-                />
-              {:else}
-                <div class="w-full h-full flex items-center justify-center">
-                  <SourceIcon class="w-10 h-10" style="color: var(--ds-icon-subtle);" />
-                </div>
-              {/if}
-
-              <!-- Open in new tab button -->
-              <div class="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                <button
-                  onclick={(e) => { e.stopPropagation(); window.open(logbook.getDocumentFileUrl(doc.id), '_blank'); }}
-                  class="p-1.5 rounded-lg shadow-sm border transition-colors hover:bg-opacity-90"
-                  style="background-color: var(--ds-surface-overlay); border-color: var(--ds-border);"
-                >
-                  <ExternalLink class="w-3.5 h-3.5" style="color: var(--ds-text-subtle);" />
-                </button>
-              </div>
-            </div>
-
-            <div class="p-3 flex-1 flex flex-col justify-between">
-              <div class="mb-2">
-                <h3 class="text-sm truncate" style="color: var(--ds-text);">
-                  {doc.title || 'Untitled'}
-                </h3>
-                <p class="text-xs mt-0.5" style="color: var(--ds-text-subtle);">
-                  {doc.bucket_name || ''}
-                  {#if doc.author}
-                    &middot; {doc.author}
-                  {/if}
-                </p>
-              </div>
-
-              <div class="flex items-center justify-between">
-                <Lozenge color={getStatusColor(doc.status)} text={doc.status} />
-                <span class="text-xs" style="color: var(--ds-text-subtlest);">
-                  {formatDateShort(doc.created_at)}
-                </span>
-              </div>
-            </div>
-          </div>
-        {/each}
-      </div>
-    {/if}
   {:else if activeTab === 'tickets'}
     {#if orgTicketsLoading}
       <div class="flex items-center justify-center h-48">
@@ -438,16 +335,16 @@
               <div class="font-medium truncate text-sm" style="color: var(--ds-text);">
                 {item.title}
               </div>
-              <div class="text-xs" style="color: var(--ds-text-subtle);">
-                {item.workspace_key}-{item.workspace_item_number}
+              <div class="text-xs">
+                <ItemKey item={item} clickable={false} />
               </div>
             </a>
           {:else}
             <div class="font-medium truncate text-sm" style="color: var(--ds-text);">
               {item.title}
             </div>
-            <div class="text-xs" style="color: var(--ds-text-subtle);">
-              {item.workspace_key}-{item.workspace_item_number}
+            <div class="text-xs">
+              <ItemKey item={item} />
             </div>
           {/if}
         {/snippet}
@@ -533,13 +430,3 @@
     </div>
   {/if}
 </Tabs>
-
-<style>
-  .doc-card {
-    border-color: var(--ds-border);
-  }
-
-  .doc-card:hover {
-    border-color: var(--ds-border-focused);
-  }
-</style>

@@ -1,9 +1,13 @@
 <script>
   import { onMount } from 'svelte';
-  import { Filter, Plus, Edit, Trash2 } from '@lucide/svelte';
+  import Filter from '@lucide/svelte/icons/filter';
+  import Plus from '@lucide/svelte/icons/plus';
+  import Edit from '@lucide/svelte/icons/edit';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
   import AlertBox from '../../components/AlertBox.svelte';
   import { navigate } from '../../router.js';
-  import { timeEntryStore, permissionStore, isSystemAdmin } from '../../stores';
+  import { timeEntryStore } from '../../stores/timeEntryStore.svelte.js';
+  import { permissionStore, isSystemAdmin } from '../../stores/permissions.svelte.js';
   import Button from '../../components/Button.svelte';
   import Input from '../../components/Input.svelte';
   import BasePicker from '../../pickers/BasePicker.svelte';
@@ -13,9 +17,12 @@
   import TimeLogModal from '../../dialogs/TimeLogModal.svelte';
   import { toHotkeyString } from '../../utils/keyboardShortcuts.js';
   import { t } from '../../stores/i18n.svelte.js';
+  import { customerOrganisationName, realCustomers } from '../../utils/customerLabel.js';
   import { errorToast } from '../../stores/toasts.svelte.js';
   import { confirm } from '../../composables/useConfirm.js';
-  import { formatDateSimple } from '../../utils/dateFormatter.js';
+  import { formatDateOnly, getUserTimezone } from '../../utils/dateFormatter.js';
+  import { dateKeyInZone } from '../../utils/worklogTimezone.js';
+  import { authStore } from '../../stores/auth.svelte.js';
   import PageHeader from '../../layout/PageHeader.svelte';
 
   // Bind to store values
@@ -33,7 +40,7 @@
   const canManageProjects = $derived($permissionStore.userPermissionKeys?.has('project.manage') || $isSystemAdmin);
 
   const worklogColumns = $derived([
-    { key: 'created_at', label: t('time.entry.submitted'), render: (w) => formatDateSimple(new Date(w.created_at * 1000)) },
+    { key: 'date', label: t('common.date'), render: (w) => formatDateOnly(dateKeyInZone(w.start_time, getUserTimezone(authStore?.currentUser))) },
     { key: 'project_name', label: t('time.reports.project'), slot: 'project' },
     { key: 'item_title', label: t('items.workItem'), slot: 'item' },
     { key: 'description', label: t('common.description') },
@@ -53,6 +60,7 @@
         type: 'regular',
         icon: Edit,
         title: t('common.edit'),
+        testid: 'worklog-edit',
         hoverClass: 'hover-bg',
         onClick: () => timeEntryStore.editWorklog(worklog)
       },
@@ -61,6 +69,7 @@
         type: 'danger',
         icon: Trash2,
         title: t('common.delete'),
+        testid: 'worklog-delete',
         hoverClass: 'hover-danger',
         onClick: () => deleteWorklog(worklog)
       }
@@ -167,7 +176,7 @@
     <p class="font-medium" style="color: var(--ds-text-warning);">{t('time.entry.needProjects')}</p>
     <p class="mt-1" style="color: var(--ds-text-subtle);">
       <a href="/time/projects" class="font-medium underline hover:opacity-80 transition-opacity" style="color: var(--ds-link);">{t('time.entry.goToProjects')}</a>
-      {#if customers.length === 0 && canManageProjects}
+      {#if realCustomers(customers).length === 0 && canManageProjects}
         {t('common.or')} <button onclick={() => timeEntryStore.openOnboarding()} class="font-medium underline hover:opacity-80 transition-opacity" style="color: var(--ds-link);">{t('time.entry.startSetupWizard')}</button>
       {/if}
     </p>
@@ -188,7 +197,7 @@
         showUnassigned={true}
         unassignedLabel={t('time.reports.allCustomers')}
         getValue={(item) => item.id}
-        getLabel={(item) => item.name}
+        getLabel={(item) => customerOrganisationName(item, t)}
         onSelect={(item) => setFilter('customer_id', item ? item.id : '')}
       />
     </div>
@@ -244,6 +253,8 @@
     keyField="id"
     emptyMessage={t('time.entry.noEntries')}
     actionItems={buildWorklogDropdownItems}
+    actionTriggerTestid={(worklog) => `worklog-actions-${worklog.id}`}
+    rowAttrs={(worklog) => ({ 'data-testid': `worklog-row-${worklog.id}` })}
     class="rounded-none border-0 shadow-none overflow-hidden"
   >
     <!-- Project: name + customer -->

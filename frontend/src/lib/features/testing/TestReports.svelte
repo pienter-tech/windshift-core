@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { api } from '../../api.js';
+  import { tests } from '../../api/tests/index.js';
   import { currentRoute } from '../../router.js';
   import Button from '../../components/Button.svelte';
   import Select from '../../components/Select.svelte';
@@ -14,7 +14,15 @@
   import FormField from '../../components/FormField.svelte';
   import MilestoneCombobox from '../../pickers/MilestoneCombobox.svelte';
   import Chart from '../../widgets/Chart.svelte';
-  import { IconChartBar, IconRefresh, IconCircleCheck, IconCircleX, IconAlertTriangle, IconPlayerSkipForward, IconClock, IconTrendingUp, IconSettings } from '@tabler/icons-svelte-runes';
+  import IconChartBar from '@tabler/icons-svelte-runes/icons/chart-bar';
+  import IconRefresh from '@tabler/icons-svelte-runes/icons/refresh';
+  import IconCircleCheck from '@tabler/icons-svelte-runes/icons/circle-check';
+  import IconCircleX from '@tabler/icons-svelte-runes/icons/circle-x';
+  import IconAlertTriangle from '@tabler/icons-svelte-runes/icons/alert-triangle';
+  import IconPlayerSkipForward from '@tabler/icons-svelte-runes/icons/player-skip-forward';
+  import IconClock from '@tabler/icons-svelte-runes/icons/clock';
+  import IconTrendingUp from '@tabler/icons-svelte-runes/icons/trending-up';
+  import IconSettings from '@tabler/icons-svelte-runes/icons/settings';
   import TestCoverageReport from './TestCoverageReport.svelte';
   import { t } from '../../stores/i18n.svelte.js';
   import { formatAuthenticatedDateTime } from '../../utils/authenticatedDateFormatter.js';
@@ -155,7 +163,7 @@
       if (selectedMilestoneId) {
         options.milestoneId = selectedMilestoneId;
       }
-      reportData = await api.tests.reports.getSummary(workspaceId, options);
+      reportData = await tests.reports.getSummary(workspaceId, options);
     } catch (error) {
       console.error('Failed to load report data:', error);
       reportData = null;
@@ -372,13 +380,12 @@
             </FormField>
 
             <!-- Configure button -->
-            <div class="flex flex-col gap-1">
-              <span class="text-xs font-medium invisible">{t('common.action')}</span>
-              <Button variant="default" onclick={handleOpenCoverageConfig}>
+            <FormField label={t('common.action')} labelHidden>
+              <Button variant="default" onclick={handleOpenCoverageConfig} dataTestid="coverage-configure">
                 <IconSettings class="w-4 h-4" />
                 {t('common.configure')}
               </Button>
-            </div>
+            </FormField>
           </div>
         {/snippet}
       </PageHeader>

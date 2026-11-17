@@ -2,7 +2,7 @@
   let {
     title = '',
     badge = '',
-    badgeStyle = 'background-color: var(--ctx-active-bg, var(--ds-accent-blue-subtler)); color: var(--ctx-active-text, var(--ds-accent-blue)); backdrop-filter: var(--ctx-backdrop, none);',
+    badgeStyle = 'background-color: var(--ctx-active-bg, var(--ds-interactive-subtle)); color: var(--ctx-active-text, var(--ds-interactive)); backdrop-filter: var(--ctx-backdrop, none);',
     subtitle = '',
     description = '',
     icon = null,
