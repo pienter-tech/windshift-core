@@ -1,5 +1,5 @@
 <script>
-  import { X } from '@lucide/svelte';
+  import X from '@lucide/svelte/icons/x';
   import { t } from '../stores/i18n.svelte.js';
 
   /**
@@ -56,6 +56,7 @@
 <span
   class="inline-flex items-center font-medium {appearanceClasses} {className}"
   style={appearanceStyles}
+  dir="auto"
   {title}
 >
   {#if dotColor}

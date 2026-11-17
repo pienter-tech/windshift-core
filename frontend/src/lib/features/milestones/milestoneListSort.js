@@ -1,10 +1,7 @@
-// Column sorting on the global milestones page (WCORE-33). DataTable sorts the
+// Column sorting on the global milestones page. DataTable sorts the
 // rows by these values; null values sort last in either direction.
 
 import { MILESTONE_STATUSES } from './milestoneListFilters.js';
-
-/** The page opens sorted by Updated, newest first. */
-export const DEFAULT_MILESTONE_SORT = Object.freeze({ key: 'last_updated_at', direction: 'desc' });
 
 /** Milliseconds since the epoch, or null for a missing or invalid date. */
 export function timestampSortValue(value) {
@@ -14,12 +11,15 @@ export function timestampSortValue(value) {
 }
 
 /**
- * When the milestone or anything in it last changed. List responses carry
- * `last_updated_at`; a milestone just saved on this page only has the
- * `updated_at` of that save, which is then the latest change.
+ * When the milestone or anything in it last changed: the later of its newest
+ * Activity entry (`last_activity_at`, unset until the first one) and its own
+ * `updated_at`.
  */
 export function milestoneLastUpdated(milestone) {
-  return milestone.last_updated_at ?? milestone.updated_at ?? null;
+  const activity = milestone.last_activity_at;
+  const updated = milestone.updated_at;
+  if (!activity || !updated) return activity || updated || null;
+  return timestampSortValue(activity) > timestampSortValue(updated) ? activity : updated;
 }
 
 /** Lifecycle order: planning, in progress, completed, cancelled. */

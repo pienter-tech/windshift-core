@@ -2,9 +2,8 @@ import { fetchAPI, fetchV2Data } from './core.js';
 import { buildQueryString } from './utils.js';
 
 /**
- * Workspace knowledge-pages API client. Mirrors logbook.js style: every
- * method returns a Promise from fetchAPI; auth is automatic via cookies
- * (core.js sets credentials: 'same-origin').
+ * Workspace knowledge-pages API client. Each method returns a Promise from
+ * fetchAPI; auth is automatic via cookies (core.js sets credentials: 'same-origin').
  */
 export const pages = {
   /** Fetch every visible page as an ordered, flat metadata list. */
@@ -13,6 +12,21 @@ export const pages = {
   /** id+title for the visible pages of several workspaces in one request. */
   getTitles: (workspaceIds) =>
     fetchV2Data(`/pages/titles${buildQueryString({ workspace_ids: workspaceIds.join(',') })}`),
+
+  /**
+   * Cross-workspace page summaries (id/title/depth/flags) for the mobile
+   * list and search. Pass a query to search titles and bodies; omit it to
+   * list every visible page. At most 50 workspace ids per request — callers
+   * batch larger workspace sets.
+   *
+   * @param {number[]} workspaceIds
+   * @param {{q?: string, limit?: number, signal?: AbortSignal, readPolicy?: {priority: string}}} [options]
+   */
+  getSummaries: (workspaceIds, { q = '', limit, ...requestOptions } = {}) =>
+    fetchV2Data(
+      `/pages/summaries${buildQueryString({ workspace_ids: workspaceIds.join(','), q, limit })}`,
+      requestOptions
+    ),
 
   /** Caller's effective page permission level per visible page, keyed by page ID. */
   getEffectiveLevels: (workspaceId) =>

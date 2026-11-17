@@ -1,7 +1,5 @@
 <script>
-  import { api } from '../api.js';
-  import Input from '../components/Input.svelte';
-  import Label from '../components/Label.svelte';
+  import { itemSCMLinks } from '../api/scm.js';
   import Modal from './Modal.svelte';
   import ModalHeader from './ModalHeader.svelte';
   import DialogFooter from './DialogFooter.svelte';
@@ -40,7 +38,7 @@
         base_branch: baseBranch.trim() || undefined,
       };
 
-      const result = await api.itemSCMLinks.createPRFromBranch(branchLink.id, data);
+      const result = await itemSCMLinks.createPRFromBranch(branchLink.id, data);
       successToast(t(isGitLab ? 'scm.mrCreatedSuccess' : 'scm.prCreatedSuccess', { prNumber: result.pr_number }));
       oncreated?.(result);
     } catch (err) {
@@ -98,12 +96,14 @@
 
       <!-- Base Branch -->
       <div>
-        <Label color="default" class="mb-1.5">{t('scm.baseBranchPR')}</Label>
-        <Input
+        <TextField
+          label={t('scm.baseBranchPR')}
+          labelColor="default"
+          labelClass="mb-1.5"
           type="text"
           bind:value={baseBranch}
           placeholder="main"
-          class="font-mono"
+          inputClass="font-mono"
           size="small"
         />
         <DescriptionText variant="subtlest">

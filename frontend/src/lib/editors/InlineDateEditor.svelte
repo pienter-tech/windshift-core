@@ -1,10 +1,11 @@
 <script>
-  import { tick } from 'svelte';
-  import { Calendar } from '@lucide/svelte';
+  import Calendar from '@lucide/svelte/icons/calendar';
   import { t } from '../stores/i18n.svelte.js';
   import { dateOnlyKey, formatDateOnly } from '../utils/dateFormatter.js';
-  import BaseInlineEditor from './BaseInlineEditor.svelte';
+  import EditableField from './EditableField.svelte';
   import Input from '../components/Input.svelte';
+  import InlineEditorActions from './InlineEditorActions.svelte';
+  import InlineEditorError from './InlineEditorError.svelte';
 
   let {
     value = '', placeholder = '', disabled = false, required = false,
@@ -16,74 +17,59 @@
   const effectivePlaceholder = $derived(placeholder || t('editors.selectDate'));
   const displayValue = $derived(value ? (formatDateOnly(value) || value) : '');
 
-  let baseEditor;
-  let editValue = $state('');
-  let inputElement = $state(null);
-
-  function formatInputDate(dateStr) {
-    if (!dateStr) return '';
-    return dateOnlyKey(dateStr);
+  function toDraft(stored) {
+    return stored ? dateOnlyKey(stored) : '';
   }
 
-  function handleStartEdit() {
-    editValue = formatInputDate(value);
-    tick().then(() => inputElement?.focus());
-  }
-
-  function handleSave() {
-    if (required && !editValue) {
-      baseEditor.setError(t('validation.required'));
-      return;
-    }
-    if (editValue === formatInputDate(value)) {
-      baseEditor.cancelEditing();
-      return;
-    }
-    baseEditor.setSaving(true);
-    onsave?.({ value: editValue });
-  }
-
-  export function confirmSave(newValue) {
-    value = newValue;
-    editValue = '';
-    baseEditor.confirmSave();
-  }
-
-  export function rejectSave(errorMessage) {
-    baseEditor.rejectSave(errorMessage);
+  function handleCommit(draft) {
+    const next = String(draft ?? '');
+    if (required && !next) throw new Error(t('validation.required'));
+    if (next === toDraft(value)) return;
+    return onsave?.({ value: next });
   }
 </script>
 
-<BaseInlineEditor
-  bind:this={baseEditor}
-  {disabled}
+<EditableField
+  {value}
+  editable={!disabled}
+  oncommit={handleCommit}
+  {toDraft}
   {enableSingleClick}
   {enableDoubleClick}
   onclick={onclickProp}
-  onsave={handleSave}
-  onstartedit={handleStartEdit}
 >
-  {#snippet editingInput({ saving, error, onkeydown, onblur })}
-    <Input
-      bind:inputRef={inputElement}
-      bind:value={editValue}
-      type="date"
-      class="w-full px-2 py-1 text-sm border rounded {editingClass} {className} {error ? 'border-ds-border-danger' : ''}"
-      disabled={saving}
-      {onkeydown}
-      {onblur}
-    />
-  {/snippet}
-  {#snippet displayContent()}
+  {#snippet display()}
     <span
-      class="block text-left w-full px-2 py-1 text-sm rounded transition-colors flex items-center gap-2 {displayClass} {className}"
+      class="flex items-center gap-2 text-left w-full px-2 py-1 text-sm rounded whitespace-nowrap transition-colors {displayClass} {className}"
       style={!value ? 'color: var(--ds-text-subtle);' : ''}
+      data-testid="inline-date-display"
     >
-      <Calendar class="w-4 h-4" style="color: var(--ds-text-subtle);" />
-      {displayValue || effectivePlaceholder}
+      <Calendar class="w-4 h-4 flex-shrink-0" style="color: var(--ds-text-subtle);" />
+      <span data-testid="inline-date-value">{displayValue || effectivePlaceholder}</span>
     </span>
   {/snippet}
-</BaseInlineEditor>
+  {#snippet editor({ draft, setDraft, error, saving, commit, cancel, markAction })}
+    <div class="inline-flex items-center gap-1 w-full">
+      <div class="flex-1 relative">
+        <Input
+          type="date"
+          value={draft ?? ''}
+          class="w-full px-2 py-1 text-sm border rounded {editingClass} {className} {error ? 'border-ds-border-danger' : ''}"
+          oninput={(e) => setDraft(e.currentTarget.value)}
+          autofocus
+        />
+        <InlineEditorError {error} />
+      </div>
+      <div class="flex items-center gap-1">
+        <InlineEditorActions
+          {saving}
+          onsave={() => markAction(commit)}
+          oncancel={() => markAction(cancel)}
+        />
+      </div>
+    </div>
+  {/snippet}
+</EditableField>
 
 <style>
   .hover-bg:hover {

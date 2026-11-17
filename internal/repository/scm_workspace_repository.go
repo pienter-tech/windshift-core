@@ -60,6 +60,82 @@ func (r *SCMWorkspaceRepository) ListItemSCMLinkSummaries(itemID int) ([]ItemSCM
 	return out, nil
 }
 
+// ItemSCMLink is an item's SCM link joined with its repository and provider,
+// as returned by the item SCM link APIs.
+type ItemSCMLink struct {
+	ID                    int       `json:"id"`
+	ItemID                int       `json:"item_id"`
+	WorkspaceRepositoryID int       `json:"workspace_repository_id"`
+	LinkType              string    `json:"link_type"`
+	ExternalID            string    `json:"external_id"`
+	ExternalURL           string    `json:"external_url,omitempty"`
+	Title                 string    `json:"title,omitempty"`
+	State                 string    `json:"state,omitempty"`
+	AuthorExternalID      string    `json:"author_external_id,omitempty"`
+	AuthorName            string    `json:"author_name,omitempty"`
+	DetectionSource       string    `json:"detection_source,omitempty"`
+	CIState               string    `json:"ci_state,omitempty"` // PR head CI: pending, success, failure; Gitea/Forgejo only
+	CIURL                 string    `json:"ci_url,omitempty"`   // CI run that explains CIState
+	IsMention             bool      `json:"is_mention"`         // PR link whose body only mentions the item; PR automations skip it
+	CreatedAt             time.Time `json:"created_at"`
+	UpdatedAt             time.Time `json:"updated_at"`
+	// Joined fields
+	RepositoryName string `json:"repository_name,omitempty"`
+	RepositoryURL  string `json:"repository_url,omitempty"`
+	ProviderType   string `json:"provider_type,omitempty"`
+	AuthMethod     string `json:"auth_method,omitempty"`
+}
+
+// ListItemSCMLinks returns an item's SCM links with their repository and
+// provider, newest first. Rows that fail to scan are logged and skipped.
+func (r *SCMWorkspaceRepository) ListItemSCMLinks(itemID int) ([]ItemSCMLink, error) {
+	rows, err := r.db.Query(`
+		SELECT
+			isl.id, isl.item_id, isl.workspace_repository_id, isl.link_type,
+			isl.external_id, isl.external_url, isl.title, isl.state,
+			isl.author_external_id, isl.author_name, isl.detection_source,
+			isl.ci_state, isl.ci_url, isl.is_mention,
+			isl.created_at, isl.updated_at,
+			wr.repository_name, wr.repository_url,
+			sp.provider_type, sp.auth_method
+		FROM item_scm_links isl
+		JOIN workspace_repositories wr ON wr.id = isl.workspace_repository_id
+		JOIN workspace_scm_connections wsc ON wsc.id = wr.workspace_scm_connection_id
+		JOIN scm_providers sp ON sp.id = wsc.scm_provider_id
+		WHERE isl.item_id = ?
+		ORDER BY isl.created_at DESC
+	`, itemID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	links := []ItemSCMLink{}
+	for rows.Next() {
+		var link ItemSCMLink
+		var externalURL, title, state, authorExternalID, authorName, detectionSource, ciState, ciURL sql.NullString
+		err := rows.Scan(
+			&link.ID, &link.ItemID, &link.WorkspaceRepositoryID, &link.LinkType,
+			&link.ExternalID, &externalURL, &title, &state,
+			&authorExternalID, &authorName, &detectionSource,
+			&ciState, &ciURL, &link.IsMention,
+			&link.CreatedAt, &link.UpdatedAt,
+			&link.RepositoryName, &link.RepositoryURL,
+			&link.ProviderType, &link.AuthMethod,
+		)
+		if err != nil {
+			slog.Error("failed to scan link", slog.String("component", "scm_item_links"), slog.Any("error", err))
+			continue
+		}
+		link.ExternalURL, link.Title, link.State = externalURL.String, title.String, state.String
+		link.AuthorExternalID, link.AuthorName = authorExternalID.String, authorName.String
+		link.DetectionSource = detectionSource.String
+		link.CIState, link.CIURL = ciState.String, ciURL.String
+		links = append(links, link)
+	}
+	return links, rows.Err()
+}
+
 // SCMWorkspaceConnection represents a workspace SCM connection joined with
 // provider metadata and the linked-repository count.
 type SCMWorkspaceConnection struct {

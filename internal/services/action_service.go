@@ -24,6 +24,7 @@ import (
 
 	"windshift/internal/database"
 	"windshift/internal/llm"
+	"windshift/internal/logger"
 	"windshift/internal/models"
 	"windshift/internal/repository"
 	"windshift/internal/repository/actionutil"
@@ -393,6 +394,46 @@ func matchesStatusTransition(fromStatusID, toStatusID *int, oldValues, newValues
 	return true
 }
 
+// matchesStatusLoop narrows a status_loop event to a looped status and item
+// type. The loop status is the trigger's to_status_id (from is implied equal).
+func matchesStatusLoop(config models.ActionTriggerConfig, event *models.ActionEvent) bool {
+	if config.ToStatusID != nil {
+		statusID := utils.InterfaceToIntPtr(event.NewValues["status_id"])
+		if statusID == nil || *statusID != *config.ToStatusID {
+			return false
+		}
+	}
+	if config.ItemTypeID != nil {
+		itemTypeID := utils.InterfaceToIntPtr(event.NewValues["item_type_id"])
+		if itemTypeID == nil || *itemTypeID != *config.ItemTypeID {
+			return false
+		}
+	}
+	return true
+}
+
+// statusCascadeEvent builds the action event an action node emits after a
+// transition. A declared loop (old == new) maps to status_loop; a real change
+// maps to status_transition.
+func statusCascadeEvent(workspaceID, itemID, actorUserID, oldStatusID, newStatusID int, itemTypeID *int, chainID string, cascadeDepth int, commentIsPrivate bool) *models.ActionEvent {
+	eventType := models.ActionTriggerStatusTransition
+	if oldStatusID == newStatusID {
+		eventType = models.ActionTriggerStatusLoop
+	}
+	return &models.ActionEvent{
+		EventType:               eventType,
+		WorkspaceID:             workspaceID,
+		ItemID:                  itemID,
+		ActorUserID:             actorUserID,
+		OldValues:               map[string]any{"status_id": oldStatusID},
+		NewValues:               map[string]any{"status_id": newStatusID, "item_type_id": itemTypeID},
+		TriggeredByAction:       true,
+		ExecutionChainID:        chainID,
+		CascadeDepth:            cascadeDepth,
+		TriggerCommentIsPrivate: commentIsPrivate,
+	}
+}
+
 // matchesTrigger checks if an action's trigger matches the event
 func (as *ActionService) matchesTrigger(action *models.Action, event *models.ActionEvent) bool {
 	if action.TriggerType != event.EventType {
@@ -439,6 +480,9 @@ func (as *ActionService) matchesTrigger(action *models.Action, event *models.Act
 	case models.ActionTriggerStatusTransition:
 		return matchesStatusTransition(config.FromStatusID, config.ToStatusID, event.OldValues, event.NewValues) &&
 			as.matchesDestinationStatusCategory(config.ToStatusCategoryIsCompleted, event.NewValues)
+
+	case models.ActionTriggerStatusLoop:
+		return matchesStatusLoop(config, event)
 
 	case models.ActionTriggerItemCreated, models.ActionTriggerItemUpdated:
 		return matchesItemActionTrigger(config, event)
@@ -774,6 +818,17 @@ func (as *ActionService) executeActionForEvent(executionCtx context.Context, act
 		slog.String("status", string(log.Status)),
 		slog.Duration("duration", time.Since(startTime)),
 	)
+
+	// Automation runs are audited (WI-1142): routing and assignment decisions
+	// made by rules must be reconstructable from the central audit trail.
+	emitServiceAudit(as.db, AuditActor{UserID: event.ActorUserID},
+		logger.ActionAutomationExecute, logger.ResourceAutomation, &action.ID, action.Name, map[string]any{
+			"item_id":          event.ItemID,
+			"trigger_event":    string(event.EventType),
+			"status":           string(log.Status),
+			"duration_ms":      time.Since(startTime).Milliseconds(),
+			"execution_log_id": log.ID,
+		})
 
 	if log.Status == models.ActionStatusFailed {
 		return fmt.Errorf("%w: action %d", ErrActionCompletedWithFailedSteps, action.ID)
@@ -1415,6 +1470,8 @@ func (as *ActionService) normalizeSetFieldCustomValue(customFieldID int, value s
 		}
 	case "multiselect":
 		values[fieldKey] = parseActionMultiselectValue(value)
+	case "multi_milestone":
+		values[fieldKey] = parseActionMultiselectValue(value)
 	case models.CustomFieldTypeBoolean, models.CustomFieldTypeCheckbox:
 		switch strings.ToLower(strings.TrimSpace(value)) {
 		case "":
@@ -1510,20 +1567,9 @@ func (as *ActionService) executeSetStatusID(statusID int, ctx *models.ExecutionC
 		"new_status_name": as.getStatusName(newStatusID),
 	}
 
-	// Emit cascade event if status actually changed.
-	if !result.NoOp {
-		as.EmitActionEvent(&models.ActionEvent{
-			EventType:               models.ActionTriggerStatusTransition,
-			WorkspaceID:             workspaceID,
-			ItemID:                  itemID,
-			ActorUserID:             ctx.EffectiveActorID,
-			OldValues:               map[string]any{"status_id": oldStatusID},
-			NewValues:               map[string]any{"status_id": newStatusID},
-			TriggeredByAction:       true,
-			ExecutionChainID:        ctx.ChainID,
-			CascadeDepth:            ctx.Event.CascadeDepth + 1,
-			TriggerCommentIsPrivate: ctx.TriggerCommentIsPrivate,
-		})
+	// Emit the cascade event for a real change or a declared loop.
+	if !result.NoOp || result.Loop {
+		as.EmitActionEvent(statusCascadeEvent(workspaceID, itemID, ctx.EffectiveActorID, oldStatusID, newStatusID, result.Item.ItemTypeID, ctx.ChainID, ctx.Event.CascadeDepth+1, ctx.TriggerCommentIsPrivate))
 	}
 
 	return nil
@@ -1646,19 +1692,8 @@ func (as *ActionService) executeTransitionItem(node *models.ActionNode, ctx *mod
 
 	// Cascade emission mirrors executeSetStatus so iterator-driven transitions
 	// participate in the same chain-store loop prevention.
-	if !result.NoOp {
-		as.EmitActionEvent(&models.ActionEvent{
-			EventType:               models.ActionTriggerStatusTransition,
-			WorkspaceID:             item.WorkspaceID,
-			ItemID:                  item.ID,
-			ActorUserID:             ctx.EffectiveActorID,
-			OldValues:               map[string]any{"status_id": oldStatusID},
-			NewValues:               map[string]any{"status_id": targetStatusID},
-			TriggeredByAction:       true,
-			ExecutionChainID:        ctx.ChainID,
-			CascadeDepth:            ctx.Event.CascadeDepth + 1,
-			TriggerCommentIsPrivate: ctx.TriggerCommentIsPrivate,
-		})
+	if !result.NoOp || result.Loop {
+		as.EmitActionEvent(statusCascadeEvent(item.WorkspaceID, item.ID, ctx.EffectiveActorID, oldStatusID, targetStatusID, item.ItemTypeID, ctx.ChainID, ctx.Event.CascadeDepth+1, ctx.TriggerCommentIsPrivate))
 	}
 
 	return nil
@@ -1792,12 +1827,13 @@ func (as *ActionService) executeAddComment(node *models.ActionNode, ctx *models.
 	}
 
 	result, err := as.commentService.Create(CreateCommentParams{
-		ItemID:        itemID,
-		AuthorID:      ctx.EffectiveActorID,
-		Content:       content,
-		IsPrivate:     isPrivate,
-		ActorUserID:   ctx.EffectiveActorID,
-		EventMetadata: itemEventMetadata(ctx.EffectiveActorID, "automation", actionContextFromExecution(ctx)),
+		ItemID:               itemID,
+		AuthorID:             ctx.EffectiveActorID,
+		Content:              content,
+		IsPrivate:            isPrivate,
+		ActorUserID:          ctx.EffectiveActorID,
+		SuppressActionEvents: true,
+		EventMetadata:        itemEventMetadata(ctx.EffectiveActorID, "automation", actionContextFromExecution(ctx)),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create comment via service: %w", err)

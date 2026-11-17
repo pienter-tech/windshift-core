@@ -1,5 +1,7 @@
 <script>
   import { cn } from '../utils/cn.js';
+  import { controlSizeClasses } from '../utils/controlSizes.js';
+  import DatePicker from '../pickers/DatePicker.svelte';
 
   /**
    * @type {{
@@ -24,6 +26,7 @@
    *   minlength?: number,
    *   maxlength?: number,
    *   list?: string,
+   *   dir?: 'ltr' | 'rtl' | 'auto',
    *   class?: string,
    *   style?: string,
    *   dataTestid?: string,
@@ -62,6 +65,7 @@
     minlength = undefined,
     maxlength = undefined,
     list = undefined,
+    dir = 'auto',
     class: className = '',
     style = '',
     dataTestid = undefined,
@@ -81,11 +85,8 @@
   } = $props();
   export { className as class };
 
-  // Size variants
-  const sizeClasses = $derived(variant === 'ghost' ? '' : ({
-    small: 'px-3 py-1.5 text-sm',
-    medium: 'px-4 py-3'
-  }[size] || 'px-4 py-3'));
+  // Size variants. Ghost inputs are chrome-less, so they skip control padding.
+  const sizeClasses = $derived(variant === 'ghost' ? '' : controlSizeClasses(size));
 
   // Combine all classes
   const allClasses = $derived(cn(
@@ -106,6 +107,39 @@
 </script>
 
 <!-- svelte-ignore a11y_autofocus -->
+{#if type === 'date'}
+  <DatePicker
+    bind:value
+    bind:inputRef
+    {id}
+    {name}
+    {min}
+    {max}
+    {step}
+    {disabled}
+    {required}
+    {autofocus}
+    readonly={readonly}
+    {placeholder}
+    {size}
+    class={className}
+    {dataTestid}
+    {ariaLabel}
+    {ariaDescribedby}
+    {style}
+    {title}
+    {onclick}
+    {onkeyup}
+    {onkeydown}
+    {onblur}
+    {onfocus}
+    onchange={(next, event) => {
+      const synthetic = event || { target: { value: next }, currentTarget: { value: next } };
+      oninput?.(synthetic);
+      onchange?.(synthetic);
+    }}
+  />
+{:else}
 <input
   {type}
   {id}
@@ -131,6 +165,7 @@
   {min}
   {max}
   {step}
+  {dir}
   class={allClasses}
   style="{variantStyle} {style}"
   {oninput}
@@ -141,3 +176,4 @@
   {onkeydown}
   {onkeyup}
 />
+{/if}

@@ -432,22 +432,14 @@ func (o *Output) printTransitionsCSV(w *csv.Writer, transitions []Transition) {
 func (o *Output) printCommentsCSV(w *csv.Writer, comments []Comment) {
 	_ = w.Write([]string{"ID", "AUTHOR", "CREATED", "CONTENT"})
 	for _, c := range comments {
-		author := ""
-		if c.Author != nil {
-			author = c.Author.FullName
-		}
 		created := c.CreatedAt.Format("2006-01-02 15:04")
-		_ = w.Write([]string{fmt.Sprintf("%d", c.ID), author, created, c.Content})
+		_ = w.Write([]string{fmt.Sprintf("%d", c.ID), c.AuthorName, created, c.Content})
 	}
 }
 
 func (o *Output) printCommentCSV(w *csv.Writer, c *Comment) {
-	author := ""
-	if c.Author != nil {
-		author = c.Author.FullName
-	}
 	_ = w.Write([]string{"ID", "ITEM_ID", "AUTHOR", "CREATED", "UPDATED", "CONTENT"})
-	_ = w.Write([]string{fmt.Sprintf("%d", c.ID), fmt.Sprintf("%d", c.ItemID), author, c.CreatedAt.Format(time.RFC3339), c.UpdatedAt.Format(time.RFC3339), c.Content})
+	_ = w.Write([]string{fmt.Sprintf("%d", c.ID), fmt.Sprintf("%d", c.ItemID), c.AuthorName, c.CreatedAt.Format(time.RFC3339), c.UpdatedAt.Format(time.RFC3339), c.Content})
 }
 
 func (o *Output) printMilestoneCommentsCSV(w *csv.Writer, comments []MilestoneComment) {
@@ -734,17 +726,23 @@ func (o *Output) printTransitionsTable(w *tabwriter.Writer, transitions []Transi
 	}
 }
 
+// commentAuthorLabel is the comment author for table output, marking
+// agent-authored comments.
+func commentAuthorLabel(c *Comment) string {
+	if c.IsAgent && c.AuthorName != "" {
+		return c.AuthorName + " (agent)"
+	}
+	return c.AuthorName
+}
+
 func (o *Output) printCommentsTable(w *tabwriter.Writer, comments []Comment) {
 	_, _ = fmt.Fprintln(w, "ID\tAUTHOR\tCREATED\tCONTENT")
 	_, _ = fmt.Fprintln(w, "--\t------\t-------\t-------")
-	for _, c := range comments {
-		author := ""
-		if c.Author != nil {
-			author = c.Author.FullName
-		}
+	for i := range comments {
+		c := &comments[i]
 		created := c.CreatedAt.Format("2006-01-02 15:04")
 		content := truncateString(c.Content, 50)
-		_, _ = fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", c.ID, author, created, content)
+		_, _ = fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", c.ID, commentAuthorLabel(c), created, content)
 	}
 }
 
@@ -809,8 +807,8 @@ func humanFileSize(n int64) string {
 func (o *Output) printCommentDetailTable(w *tabwriter.Writer, c *Comment) {
 	_, _ = fmt.Fprintf(w, "ID:\t%d\n", c.ID)
 	_, _ = fmt.Fprintf(w, "Item ID:\t%d\n", c.ItemID)
-	if c.Author != nil {
-		_, _ = fmt.Fprintf(w, "Author:\t%s\n", c.Author.FullName)
+	if c.AuthorName != "" {
+		_, _ = fmt.Fprintf(w, "Author:\t%s\n", commentAuthorLabel(c))
 	}
 	_, _ = fmt.Fprintf(w, "Created:\t%s\n", c.CreatedAt.Format("2006-01-02 15:04:05"))
 	_, _ = fmt.Fprintf(w, "Updated:\t%s\n", c.UpdatedAt.Format("2006-01-02 15:04:05"))
@@ -1332,12 +1330,12 @@ func (o *Output) printLinkTypesCSV(w *csv.Writer, types []LinkType) {
 }
 
 // linkEndpointRef renders one side of a link as "TYPE:ID Title" for the
-// table output. Items get the workspace-key form when available so the
-// caller sees a usable handle (WI-7) rather than an opaque numeric id.
-func linkEndpointRef(entityType string, id int, workspaceKey, title string) string {
+// table output. Items render as workspace keys (WI-7) when the workspace
+// key and item number are known; the global DB id is never shown as a key.
+func linkEndpointRef(entityType string, id int, itemNumber *int, workspaceKey, title string) string {
 	handle := fmt.Sprintf("%s:%d", entityType, id)
-	if entityType == "item" && workspaceKey != "" {
-		handle = fmt.Sprintf("%s-%d", workspaceKey, id)
+	if entityType == "item" && workspaceKey != "" && itemNumber != nil {
+		handle = fmt.Sprintf("%s-%d", workspaceKey, *itemNumber)
 	}
 	if title == "" {
 		return handle
@@ -1348,8 +1346,8 @@ func linkEndpointRef(entityType string, id int, workspaceKey, title string) stri
 func (o *Output) printItemLinkDetailTable(w *tabwriter.Writer, l *ItemLink) {
 	_, _ = fmt.Fprintf(w, "ID:\t%d\n", l.ID)
 	_, _ = fmt.Fprintf(w, "Type:\t%s (%s)\n", l.LinkTypeName, l.LinkTypeForwardLabel)
-	_, _ = fmt.Fprintf(w, "Source:\t%s\n", linkEndpointRef(l.SourceType, l.SourceID, l.SourceWorkspaceKey, l.SourceTitle))
-	_, _ = fmt.Fprintf(w, "Target:\t%s\n", linkEndpointRef(l.TargetType, l.TargetID, l.TargetWorkspaceKey, l.TargetTitle))
+	_, _ = fmt.Fprintf(w, "Source:\t%s\n", linkEndpointRef(l.SourceType, l.SourceID, l.SourceItemNumber, l.SourceWorkspaceKey, l.SourceTitle))
+	_, _ = fmt.Fprintf(w, "Target:\t%s\n", linkEndpointRef(l.TargetType, l.TargetID, l.TargetItemNumber, l.TargetWorkspaceKey, l.TargetTitle))
 }
 
 func (o *Output) printItemLinkCSV(w *csv.Writer, l *ItemLink) {
@@ -1357,8 +1355,8 @@ func (o *Output) printItemLinkCSV(w *csv.Writer, l *ItemLink) {
 	_ = w.Write([]string{
 		fmt.Sprintf("%d", l.ID),
 		l.LinkTypeName,
-		linkEndpointRef(l.SourceType, l.SourceID, l.SourceWorkspaceKey, l.SourceTitle),
-		linkEndpointRef(l.TargetType, l.TargetID, l.TargetWorkspaceKey, l.TargetTitle),
+		linkEndpointRef(l.SourceType, l.SourceID, l.SourceItemNumber, l.SourceWorkspaceKey, l.SourceTitle),
+		linkEndpointRef(l.TargetType, l.TargetID, l.TargetItemNumber, l.TargetWorkspaceKey, l.TargetTitle),
 	})
 }
 
@@ -1366,13 +1364,13 @@ func (o *Output) printItemLinkCSV(w *csv.Writer, l *ItemLink) {
 // Each row shows the link id, type label (forward for outgoing, reverse
 // for incoming) and the *other* endpoint relative to the queried entity.
 func (o *Output) printLinkListTable(w *tabwriter.Writer, resp *LinkListResponse) {
-	writeRows := func(header string, links []ItemLink, otherSide func(ItemLink) (string, int, string, string), label func(ItemLink) string) {
+	writeRows := func(header string, links []ItemLink, otherSide func(ItemLink) (string, int, *int, string, string), label func(ItemLink) string) {
 		_, _ = fmt.Fprintf(w, "%s\n", header)
 		_, _ = fmt.Fprintln(w, "ID\tTYPE\tLABEL\tENTITY")
 		_, _ = fmt.Fprintln(w, "--\t----\t-----\t------")
 		for _, l := range links {
-			eType, eID, eWS, eTitle := otherSide(l)
-			_, _ = fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", l.ID, l.LinkTypeName, label(l), linkEndpointRef(eType, eID, eWS, eTitle))
+			eType, eID, eNumber, eWS, eTitle := otherSide(l)
+			_, _ = fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", l.ID, l.LinkTypeName, label(l), linkEndpointRef(eType, eID, eNumber, eWS, eTitle))
 		}
 		if len(links) == 0 {
 			_, _ = fmt.Fprintln(w, "(none)\t\t\t")
@@ -1382,16 +1380,16 @@ func (o *Output) printLinkListTable(w *tabwriter.Writer, resp *LinkListResponse)
 	writeRows(
 		"Outgoing",
 		resp.Outgoing,
-		func(l ItemLink) (string, int, string, string) {
-			return l.TargetType, l.TargetID, l.TargetWorkspaceKey, l.TargetTitle
+		func(l ItemLink) (string, int, *int, string, string) {
+			return l.TargetType, l.TargetID, l.TargetItemNumber, l.TargetWorkspaceKey, l.TargetTitle
 		},
 		func(l ItemLink) string { return l.LinkTypeForwardLabel },
 	)
 	writeRows(
 		"Incoming",
 		resp.Incoming,
-		func(l ItemLink) (string, int, string, string) {
-			return l.SourceType, l.SourceID, l.SourceWorkspaceKey, l.SourceTitle
+		func(l ItemLink) (string, int, *int, string, string) {
+			return l.SourceType, l.SourceID, l.SourceItemNumber, l.SourceWorkspaceKey, l.SourceTitle
 		},
 		func(l ItemLink) string { return l.LinkTypeReverseLabel },
 	)
@@ -1405,7 +1403,7 @@ func (o *Output) printLinkListCSV(w *csv.Writer, resp *LinkListResponse) {
 			fmt.Sprintf("%d", l.ID),
 			l.LinkTypeName,
 			l.LinkTypeForwardLabel,
-			linkEndpointRef(l.TargetType, l.TargetID, l.TargetWorkspaceKey, l.TargetTitle),
+			linkEndpointRef(l.TargetType, l.TargetID, l.TargetItemNumber, l.TargetWorkspaceKey, l.TargetTitle),
 		})
 	}
 	for _, l := range resp.Incoming {
@@ -1414,7 +1412,7 @@ func (o *Output) printLinkListCSV(w *csv.Writer, resp *LinkListResponse) {
 			fmt.Sprintf("%d", l.ID),
 			l.LinkTypeName,
 			l.LinkTypeReverseLabel,
-			linkEndpointRef(l.SourceType, l.SourceID, l.SourceWorkspaceKey, l.SourceTitle),
+			linkEndpointRef(l.SourceType, l.SourceID, l.SourceItemNumber, l.SourceWorkspaceKey, l.SourceTitle),
 		})
 	}
 }

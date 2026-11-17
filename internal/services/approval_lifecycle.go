@@ -296,7 +296,7 @@ func (s *ApprovalService) decideAs(ctx context.Context, requestID int, actor app
 	// → CommitTransition). Publish independently of the notification coordinator.
 	if full != nil && full.Status != out.priorRequestStatus &&
 		(full.Status == models.ApprovalRequestStatusApproved || full.Status == models.ApprovalRequestStatusRejected) {
-		PublishItemChange(full.ItemID, ItemChangeStatus)
+		PublishItemChange(full.ItemID)
 	}
 	s.emitDecisionEvents(out.decision, full, out.priorRequestStatus, out.newlyStartedStepInstanceID, out.effectiveActorUserID)
 	return out.decision, full, nil
@@ -526,7 +526,7 @@ func (s *ApprovalService) Cancel(ctx context.Context, requestID, actorUserID int
 	// Live-update publish (WI-483): the cancel committed; if it reverted the
 	// item's status, announce the change independently of the coordinator.
 	if outcome.revertTo != 0 {
-		PublishItemChange(outcome.itemID, ItemChangeStatus)
+		PublishItemChange(outcome.itemID)
 	}
 
 	if s.eventCoordinator != nil {

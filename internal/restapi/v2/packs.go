@@ -38,51 +38,29 @@ func parsePackUpload(w http.ResponseWriter, r *http.Request) (*services.PackArch
 		return nil, services.PackApplyTarget{}, newError(http.StatusBadRequest, "invalid_pack", err.Error())
 	}
 
-	target := services.PackApplyTarget{}
 	if raw := r.FormValue("workspace_id"); raw != "" {
-		id := 0
-		for _, c := range raw {
-			if c < '0' || c > '9' {
-				return nil, services.PackApplyTarget{}, newError(http.StatusBadRequest, "invalid_request", "workspace_id must be a positive integer")
-			}
-			id = id*10 + int(c-'0')
-		}
-		if id <= 0 {
-			return nil, services.PackApplyTarget{}, newError(http.StatusBadRequest, "invalid_request", "workspace_id must be a positive integer")
-		}
-		target.WorkspaceID = id
+		return nil, services.PackApplyTarget{}, newError(http.StatusBadRequest, "invalid_request", "workspace_id is not supported: framework packs only apply to new workspaces")
 	}
-	if name := r.FormValue("workspace_name"); name != "" {
-		target.WorkspaceName = name
+	name := strings.TrimSpace(r.FormValue("workspace_name"))
+	if name == "" {
+		return nil, services.PackApplyTarget{}, newError(http.StatusBadRequest, "invalid_request", "workspace_name is required")
 	}
-	if target.WorkspaceID == 0 && target.WorkspaceName == "" {
-		return nil, services.PackApplyTarget{}, newError(http.StatusBadRequest, "invalid_request", "either workspace_id or workspace_name is required")
-	}
-	if target.WorkspaceID > 0 && target.WorkspaceName != "" {
-		return nil, services.PackApplyTarget{}, newError(http.StatusBadRequest, "invalid_request", "workspace_id and workspace_name are mutually exclusive")
-	}
-	return archive, target, nil
+	return archive, services.PackApplyTarget{WorkspaceName: name}, nil
 }
 
-// packBuiltinTarget is the JSON body for applying a built-in pack: either an
-// existing workspace by ID, or a workspace by name created when missing.
+// packBuiltinTarget is the JSON body for applying a built-in pack: the name of
+// the new workspace to provision. Framework packs only apply to new
+// workspaces, so there is no existing-workspace target.
 type packBuiltinTarget struct {
-	WorkspaceID   int    `json:"workspace_id"`
 	WorkspaceName string `json:"workspace_name"`
 }
 
 func (t packBuiltinTarget) resolve() (services.PackApplyTarget, error) {
-	if t.WorkspaceID < 0 {
-		return services.PackApplyTarget{}, newError(http.StatusBadRequest, "invalid_request", "workspace_id must be a positive integer")
-	}
 	name := strings.TrimSpace(t.WorkspaceName)
-	switch {
-	case t.WorkspaceID == 0 && name == "":
-		return services.PackApplyTarget{}, newError(http.StatusBadRequest, "invalid_request", "either workspace_id or workspace_name is required")
-	case t.WorkspaceID > 0 && name != "":
-		return services.PackApplyTarget{}, newError(http.StatusBadRequest, "invalid_request", "workspace_id and workspace_name are mutually exclusive")
+	if name == "" {
+		return services.PackApplyTarget{}, newError(http.StatusBadRequest, "invalid_request", "workspace_name is required")
 	}
-	return services.PackApplyTarget{WorkspaceID: t.WorkspaceID, WorkspaceName: name}, nil
+	return services.PackApplyTarget{WorkspaceName: name}, nil
 }
 
 // listBuiltinPacks lists the packs embedded in the running server. System
@@ -155,11 +133,8 @@ func registerPackRoutes(b *routeBuilder, deps Deps) {
 		actor := auditActorFromRequest(r)
 		req := services.PackApplyRequest{
 			Archive: archive,
-			Target: services.PackApplyTarget{
-				WorkspaceID:   target.WorkspaceID,
-				WorkspaceName: target.WorkspaceName,
-			},
-			Actor: actor,
+			Target:  services.PackApplyTarget{WorkspaceName: target.WorkspaceName},
+			Actor:   actor,
 		}
 		var report *services.PackApplyReport
 		if dryRun {

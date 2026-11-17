@@ -1,6 +1,6 @@
 <script>
-  import { AlertCircle } from '@lucide/svelte';
-  import { api } from '../../api.js';
+  import AlertCircle from '@lucide/svelte/icons/alert-circle';
+  import { deleteDiagram } from '../../api/misc.js';
   import { confirm } from '../../composables/useConfirm.js';
   import { t } from '../../stores/i18n.svelte.js';
   import { errorToast, successToast } from '../../stores/toasts.svelte.js';
@@ -8,7 +8,6 @@
   import ItemDetailHeader from '../items/ItemDetailHeader.svelte';
   import ItemDetailDescription from '../items/ItemDetailDescription.svelte';
   import ItemIncidentPanel from '../items/ItemIncidentPanel.svelte';
-  import ItemSLAPanel from '../items/ItemSLAPanel.svelte';
   import ItemDetailLinks from './ItemDetailLinks.svelte';
   import ItemDetailTabs from '../items/ItemDetailTabs.svelte';
   import ItemDetailSidebar from '../items/ItemDetailSidebar.svelte';
@@ -24,8 +23,6 @@
     currentItemType = null,
     currentHierarchyLevel = null,
     workspaceId = null,
-    editingTitle = $bindable(false),
-    editTitle = $bindable(''),
     saving = false,
     canEdit = false,
     dropdownItems = [],
@@ -51,9 +48,6 @@
     timeProjects = [],
     activeTimer = null,
     editingStatus = false,
-    editingDueDate = false,
-    editingStartDate = false,
-    editingEndDate = false,
     editingCustomFields = {},
     editCustomFieldValues = {},
     editingPriority = false,
@@ -89,9 +83,6 @@
     onstartEditingMilestone = null,
     onstartEditingIteration = null,
     onstartEditingPriority = null,
-    onstartEditingDueDate = null,
-    onstartEditingStartDate = null,
-    onstartEditingEndDate = null,
     onstartEditingStatus = null,
     onstartEditingProject = null,
     onstartEditingDescription = null,
@@ -104,12 +95,14 @@
     onattachmentUpload = null,
     onattachmentUploadFiles = null,
     onattachmentDelete = null,
+    onattachmentToggleVisibility = null,
     onattachmentPageChange = null,
     onattachmentPageSizeChange = null,
     ondiagramSaved = null,
     onexecuteAction = null,
     onaiAction = null,
     onreorderChildren = null,
+    onrelatedStatusChanged = null,
     canCreate = false,
     onclose = null,
     recurrenceRule = null,
@@ -117,6 +110,7 @@
     oneditRecurrence = null,
     onapprovalsChanged = null,
     onitemtypechange = null,
+    onrequestmerge = null,
   } = $props();
 
   // Keep the editor bundle off the network until the user opens it.
@@ -131,7 +125,7 @@
   let editingDiagram = $state(null);
 
   // Panel resizing state
-  let panelWidth = $state(320);
+  let panelWidth = $state(290);
   function updatePanelWidth(width) {
     panelWidth = width;
     document.documentElement.style.setProperty('--panel-width', `${width}px`);
@@ -150,7 +144,14 @@
   }
 
   function handleSaveField(data) {
-    onsaveField?.(data);
+    return onsaveField?.(data);
+  }
+
+  // Description and sidebar edits are fire-and-forget: the store surfaces the
+  // failure toast, so swallow the rejection here instead of letting it reach
+  // the global unhandledrejection handler and add a second toast.
+  function handleBackgroundSaveField(data) {
+    return handleSaveField(data)?.catch?.(() => {});
   }
 
   function handleCancelEdit(data) {
@@ -187,18 +188,6 @@
 
   function handleStartEditingIteration() {
     onstartEditingIteration?.();
-  }
-
-  function handleStartEditingDueDate() {
-    onstartEditingDueDate?.();
-  }
-
-  function handleStartEditingStartDate() {
-    onstartEditingStartDate?.();
-  }
-
-  function handleStartEditingEndDate() {
-    onstartEditingEndDate?.();
   }
 
   function handleStartEditingPriority() {
@@ -284,7 +273,7 @@
     if (!confirmed) return;
 
     try {
-      await api.deleteDiagram(diagram.id);
+      await deleteDiagram(diagram.id);
       await ondiagramSaved?.();
       successToast(t('editors.diagramDeleted'));
     } catch (err) {
@@ -299,6 +288,10 @@
 
   function handleReorderChildren() {
     onreorderChildren?.();
+  }
+
+  function handleRelatedStatusChanged(data) {
+    return onrelatedStatusChanged?.(data);
   }
 
   function handleAIAction(data) {
@@ -361,12 +354,9 @@
           <ItemDetailHeader
             {item}
             {workspace}
-            bind:editingTitle
-            bind:editTitle
             {saving}
             {canEdit}
             onsavefield={handleSaveField}
-            oncanceledit={handleCancelEdit}
           />
           <ItemDetailDescription
             bind:this={descriptionComponent}
@@ -380,7 +370,7 @@
             {manualActions}
             {canCreate}
             {canEdit}
-            onsavefield={handleSaveField}
+            onsavefield={handleBackgroundSaveField}
             oncanceledit={handleCancelEdit}
             onstartEditingDescription={() => onstartEditingDescription?.()}
             onshowAddLink={handleShowLinkModal}
@@ -389,6 +379,7 @@
             onattachmentUpload={(data) => onattachmentUpload?.(data)}
             onattachmentUploadFiles={(data) => onattachmentUploadFiles?.(data)}
             onattachmentDelete={(data) => onattachmentDelete?.(data)}
+            onattachmentToggleVisibility={(data) => onattachmentToggleVisibility?.(data)}
             onnewDiagram={handleNewDiagram}
             oneditDiagram={handleEditDiagram}
             ondeleteDiagram={handleDeleteDiagram}
@@ -397,8 +388,6 @@
           />
 
           <ItemIncidentPanel itemId={item.id} {item} {canEdit} />
-
-          <ItemSLAPanel itemId={item.id} />
 
           <ItemDetailLinks
             {item}
@@ -420,6 +409,7 @@
             onviewtestcase={handleViewTestCase}
             onshowlinkmodal={handleShowLinkModal}
             onreorderchildren={handleReorderChildren}
+            onstatuschanged={handleRelatedStatusChanged}
           />
 
           <br />
@@ -441,12 +431,12 @@
         </div>
 
         <!-- Resizable Right Panel -->
-        <div class="flex-shrink-0 relative {isModal ? 'h-full' : ''}" style="width: var(--panel-width, 320px); min-width: 280px; max-width: 600px;">
+        <div class="flex-shrink-0 relative {isModal ? 'h-full' : ''}" style="width: var(--panel-width, 290px); min-width: 280px; max-width: 600px;">
           <SidebarResizeHandle
             width={panelWidth}
             minWidth={280}
             maxWidth={600}
-            defaultWidth={320}
+            defaultWidth={290}
             edge="left"
             label="Resize item details"
             title="Drag to resize, double-click to reset"
@@ -461,9 +451,6 @@
             {pendingApproval}
             {onapprovalsChanged}
             {editingStatus}
-            {editingDueDate}
-            {editingStartDate}
-            {editingEndDate}
             {editingCustomFields}
             {editCustomFieldValues}
             {editingPriority}
@@ -483,15 +470,12 @@
             {timeProjects}
             {moduleSettings}
             {dropdownItems}
-            onsaveField={onsaveField}
+            onsaveField={handleBackgroundSaveField}
             oncancelEdit={oncancelEdit}
             {storyPointsRollup}
             onstartEditingAssignee={onstartEditingAssignee}
             onstartEditingMilestone={onstartEditingMilestone}
             onstartEditingIteration={onstartEditingIteration}
-            onstartEditingDueDate={onstartEditingDueDate}
-            onstartEditingStartDate={onstartEditingStartDate}
-            onstartEditingEndDate={onstartEditingEndDate}
             onstartEditingPriority={onstartEditingPriority}
             onstartEditingStatus={onstartEditingStatus}
             onstartEditingProject={onstartEditingProject}
@@ -499,6 +483,7 @@
             {recurrenceRule}
             onsetupRecurrence={onsetupRecurrence}
             oneditRecurrence={oneditRecurrence}
+            {onrequestmerge}
           />
         </div>
       </div>

@@ -11,8 +11,10 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	"windshift/internal/auth"
 	"windshift/internal/database"
 	"windshift/internal/emailutil"
+	"windshift/internal/i18n"
 	"windshift/internal/models"
 )
 
@@ -110,11 +112,13 @@ func (s *InvitationService) SendInvitationEmail(user *models.User, token string)
 	if firstName == "" {
 		firstName = "there"
 	}
+	locale := i18n.Normalize(user.Language)
 	url := fmt.Sprintf("%s/set-password/%s", s.baseURL, token)
-	return s.smtpSender.SendTransactional(user.Email, emailutil.TemplateInvitation, struct {
+	return s.smtpSender.SendTransactional(user.Email, locale, emailutil.TemplateInvitation, struct {
 		FirstName     string
 		InvitationURL string
-	}{firstName, url})
+		ExpiresIn     string
+	}{firstName, url, i18n.HumanizeDuration(locale, InvitationExpiry)})
 }
 
 // VerifyInvitation validates an invitation token and returns the user info
@@ -178,6 +182,9 @@ func (s *InvitationService) AcceptInvitation(token, password string) error {
 	}
 
 	// 2. Hash password
+	if err := auth.ValidatePasswordLength(password); err != nil {
+		return err
+	}
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return fmt.Errorf("failed to hash password: %w", err)

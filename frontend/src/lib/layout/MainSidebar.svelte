@@ -1,8 +1,13 @@
 <script>
+  import { onMount } from 'svelte';
   import { currentRoute, isWorkspaceRoute } from '../router.js';
-  import { permissionStore, uiStore, workspacesStore } from '../stores';
+  import { permissionStore } from '../stores/permissions.svelte.js';
+  import { uiStore } from '../stores/ui.svelte.js';
+  import { workspacesStore } from '../stores/workspaces.svelte.js';
+  import { homepageStore } from '../stores/homepageStore.svelte.js';
   import { t } from '../stores/i18n.svelte.js';
   import { themeStore } from '../stores/theme.svelte.js';
+  import { brandStore, resolveBrandLockup } from '../stores/brand.svelte.js';
   import { aiStore } from '../stores/aiStore.svelte.js';
   import { getShortcutDisplay } from '../utils/keyboardShortcuts.js';
   import { workspaceMenuItems } from '../navigation/workspaceMenu.js';
@@ -13,11 +18,15 @@
   import UserAvatar from '../components/UserAvatar.svelte';
   import NotificationTray from '../features/notifications/NotificationTray.svelte';
   import ScrollableSidebar from './ScrollableSidebar.svelte';
-  import {
-    IconSearch, IconPlus, IconGridDots, IconUserScan,
-    IconFolders, IconLayoutSidebarLeftExpand, IconLayoutSidebarLeftCollapse,
-    IconMessage, IconTerminal2,
-  } from '@tabler/icons-svelte-runes';
+  import IconSearch from '@tabler/icons-svelte-runes/icons/search';
+  import IconPlus from '@tabler/icons-svelte-runes/icons/plus';
+  import IconGridDots from '@tabler/icons-svelte-runes/icons/grid-dots';
+  import IconUserScan from '@tabler/icons-svelte-runes/icons/user-scan';
+  import IconFolders from '@tabler/icons-svelte-runes/icons/folders';
+  import IconLayoutSidebarLeftExpand from '@tabler/icons-svelte-runes/icons/layout-sidebar-left-expand';
+  import IconLayoutSidebarLeftCollapse from '@tabler/icons-svelte-runes/icons/layout-sidebar-left-collapse';
+  import IconMessageChatbot from '@tabler/icons-svelte-runes/icons/message-chatbot';
+  import IconTerminal2 from '@tabler/icons-svelte-runes/icons/terminal-2';
   import { mainNavItems, bottomNavItems } from '../navigation/mainNavigation.js';
 
   let {
@@ -33,6 +42,7 @@
 
   let workspaceSearchQuery = $state('');
   let searchedWorkspaces = $state(null);
+  let recentWorkspaceIds = $state([]);
   let workspaceSearchGeneration = 0;
   let workspaceSearchTimer = null;
 
@@ -49,8 +59,34 @@
     directoryWorkspaces,
     workspaceSearchQuery,
     onWorkspaceSearchInput,
-    t
+    t,
+    recentWorkspaceIds
   ));
+
+  async function loadRecentWorkspaceOrder() {
+    try {
+      const snapshot = await homepageStore.getSnapshot();
+      const visits = Array.isArray(snapshot?.recent_workspaces) ? snapshot.recent_workspaces : [];
+      recentWorkspaceIds = visits
+        .filter((visit) => visit?.workspace_id)
+        .sort((left, right) => visitedAt(right) - visitedAt(left))
+        .map((visit) => visit.workspace_id);
+    } catch (error) {
+      console.error('Failed to load recent workspaces:', error);
+    }
+  }
+
+  function visitedAt(visit) {
+    const timestamp = Date.parse(visit?.last_visited ?? '');
+    return Number.isNaN(timestamp) ? 0 : timestamp;
+  }
+
+  // Resolve the visit order before the menu is first opened. Loading it in
+  // onOpen sorted an already-visible list and flashed from directory order to
+  // recency order. onOpen still refreshes it so recent navigation is reflected.
+  onMount(() => {
+    void loadRecentWorkspaceOrder();
+  });
 
   function onWorkspaceSearchInput(value) {
     workspaceSearchQuery = value;
@@ -82,6 +118,24 @@
     bottomNavItems.filter(item => !item.permission || $permissionStore[item.permission])
   );
 
+  const brandLockup = $derived(
+    resolveBrandLockup(
+      { isDark: themeStore.isDarkMode, expanded: $uiStore.navExpanded },
+      brandStore.snapshot
+    )
+  );
+
+  // The full-logo wordmark spans the sidebar, so center it to keep its margins
+  // even. Mark-based lockups align with the navigation icons on the left, and
+  // the collapsed sidebar always centers the mark.
+  const brandLinkClass = $derived(
+    !$uiStore.navExpanded
+      ? 'justify-center'
+      : brandLockup.variant === 'full'
+        ? 'justify-center px-4'
+        : 'justify-start px-4'
+  );
+
   function showCreateDropdown() {
     onShowCreateModal();
   }
@@ -102,35 +156,33 @@
 </script>
 
 {#snippet sidebarHeader()}
-  <!-- Logo -->
-  <Tooltip content="Windshift" placement="right" disabled={$uiStore.navExpanded}>
+  <!-- Brand lockup: mark + site title, mark only, or full logo per brand_layout -->
+  <Tooltip content={brandLockup.text} placement="right" disabled={$uiStore.navExpanded}>
     <a
       href="/"
       onclick={closePopoverSurface}
       data-testid="nav-logo-link"
-      class="flex items-center {$uiStore.navExpanded
-        ? 'justify-start px-4'
-        : 'justify-center'} w-full h-10 mb-2 hover:opacity-80 transition-opacity cursor-pointer"
+      class="flex items-center {brandLinkClass} w-full h-10 mb-2 hover:opacity-80 transition-opacity cursor-pointer"
     >
-      {#if themeStore.isDarkMode && themeStore.activeTheme?.logo_url_dark}
+      {#if brandLockup.src}
         <img
-          src={themeStore.activeTheme.logo_url_dark}
-          alt={themeStore.activeTheme.name || 'Windshift'}
+          src={brandLockup.src}
+          alt={brandLockup.text}
           data-testid="nav-logo"
-          class="max-w-8 max-h-8 object-contain flex-shrink-0"
-        />
-      {:else if themeStore.activeTheme?.logo_url}
-        <img
-          src={themeStore.activeTheme.logo_url}
-          alt={themeStore.activeTheme.name || 'Windshift'}
-          data-testid="nav-logo"
-          class="max-w-8 max-h-8 object-contain flex-shrink-0"
+          class={brandLockup.variant === 'full'
+            ? 'max-h-8 max-w-full object-contain flex-shrink-0'
+            : 'max-w-8 max-h-8 object-contain flex-shrink-0'}
         />
       {:else}
-        <img src="windshift-3.svg" alt="Windshift" class="w-8 h-8 flex-shrink-0" />
+        <img
+          src="windshift-3.svg"
+          alt={brandLockup.text}
+          data-testid="nav-logo"
+          class="w-8 h-8 flex-shrink-0"
+        />
       {/if}
-      {#if $uiStore.navExpanded}
-        <span class="ml-3 font-semibold text-sm whitespace-nowrap">Windshift</span>
+      {#if brandLockup.showText}
+        <span class="ml-3 font-semibold text-sm whitespace-nowrap truncate" data-testid="nav-brand-title">{brandLockup.text}</span>
       {/if}
     </a>
   </Tooltip>
@@ -160,6 +212,7 @@
           iconOnly={!$uiStore.navExpanded}
           triggerAlignment={$uiStore.navExpanded ? 'start' : 'center'}
           isOpen={activeSurface === 'workspaces'}
+          onOpen={loadRecentWorkspaceOrder}
           onOpenChange={(open) => setPopoverSurface('workspaces', open)}
         />
       </div>
@@ -205,7 +258,7 @@
       {#if aiStore.chatAvailable}
         <NavLink
           id="chat-toggle-button"
-          icon={IconMessage}
+          icon={IconMessageChatbot}
           label={t('nav.aiChat')}
           onclick={onShowChatPanel}
           expanded={$uiStore.navExpanded}

@@ -104,10 +104,9 @@ func (h *PortalHandler) assetReportBindingAvailable(config *models.ChannelConfig
 	if !itemTypeExists {
 		return false, nil
 	}
-	if workspaceID == nil {
-		return true, nil
-	}
-	if *workspaceID <= 0 || !containsID(config.PortalWorkspaceIDs, *workspaceID) {
+	// A form-mode report pins both bindings; an unpinned report is not
+	// routable and is not exposed to the portal.
+	if workspaceID == nil || *workspaceID <= 0 || !containsID(config.PortalWorkspaceIDs, *workspaceID) {
 		return false, nil
 	}
 	return services.IsItemTypeAllowedInWorkspace(h.db, *workspaceID, *itemTypeID)
@@ -157,6 +156,21 @@ func (h *PortalHandler) resolvePortalAssetReport(
 		return nil, cancel, nil, false
 	}
 	if !bindingAvailable {
+		cancel()
+		respondError(w, r, restapi.NewAPIError(http.StatusNotFound, restapi.ErrCodeNotFound, "Asset report not found"))
+		return nil, cancel, nil, false
+	}
+
+	// The asset set's portal grant is the exposure switch for its reports. The
+	// single-asset and search paths apply it too; without it here, revoking the
+	// grant still leaves the report executable by direct id.
+	setEnabled, err := repository.NewAssetRepository(h.db).IsSetPortalEnabled(report.AssetSetID)
+	if err != nil {
+		cancel()
+		respondInternalError(w, r, err)
+		return nil, cancel, nil, false
+	}
+	if !setEnabled {
 		cancel()
 		respondError(w, r, restapi.NewAPIError(http.StatusNotFound, restapi.ErrCodeNotFound, "Asset report not found"))
 		return nil, cancel, nil, false
@@ -685,7 +699,7 @@ func (h *PortalHandler) visibleRequestTypeIDs(ctx context.Context, channelID int
 	rows, err := h.db.QueryContext(ctx, `
 		SELECT id, visibility_group_ids, visibility_org_ids
 		FROM request_types
-		WHERE channel_id = ? AND is_active = true
+		WHERE channel_id = ? AND is_active = true AND kind != 'email'
 	`, channelID)
 	if err != nil {
 		return nil, err
@@ -750,6 +764,8 @@ func (h *PortalHandler) loadPortalAssetReports(ctx context.Context, channel mode
 	// Computed once, lazily, only when a report actually carries row actions.
 	var visibleTypes map[int]bool
 
+	assetRepo := repository.NewAssetRepository(h.db)
+
 	assetReports := []models.PublicAssetReport{}
 	for _, ar := range reports {
 		if !ar.IsActive {
@@ -760,6 +776,16 @@ func (h *PortalHandler) loadPortalAssetReports(ctx context.Context, channel mode
 			return nil, err
 		}
 		if !bindingAvailable {
+			continue
+		}
+
+		// A report is only reachable when its asset set carries a portal grant;
+		// the set-level switch is the exposure decision for every report over it.
+		setEnabled, err := assetRepo.IsSetPortalEnabled(ar.AssetSetID)
+		if err != nil {
+			return nil, err
+		}
+		if !setEnabled {
 			continue
 		}
 

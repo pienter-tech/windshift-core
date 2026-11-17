@@ -3,9 +3,18 @@ import { fetchAllV2Pages, fetchAPI, fetchV2Data } from './core.js';
 // Users
 export const getUsers = () => fetchAllV2Pages('/users');
 export const getAdminUsers = () => fetchAllV2Pages('/admin/users');
-export const getAssignableUsers = (workspaceId) =>
-  fetchV2Data(`/workspaces/${workspaceId}/assignable-users`);
-export const getUser = (id) => fetchV2Data(`/users/${id}`);
+export const getAssignableUsers = (workspaceId, requestOptions = {}) =>
+  fetchV2Data(`/workspaces/${workspaceId}/assignable-users`, requestOptions);
+export const getUser = (id, requestOptions = {}) => fetchV2Data(`/users/${id}`, requestOptions);
+// The authenticated user's own record. Unlike the directory summary returned by
+// getUser, this includes private profile fields (email, timezone, language).
+export const getMyProfile = (requestOptions = {}) => fetchV2Data('/users/me', requestOptions);
+export const getUserDisplayBatch = (ids, requestOptions = {}) =>
+  fetchV2Data('/users/display-batch', {
+    ...requestOptions,
+    method: 'POST',
+    body: JSON.stringify({ ids }),
+  });
 export const getAgentOwner = (id) => fetchAPI(`/users/${id}/agent-owner`);
 export const createUser = (data) =>
   fetchAPI('/users', {
@@ -145,13 +154,15 @@ export const cliAuth = {
 // User Preferences API
 export const userPreferences = {
   // Get current user's preferences
-  get: () => fetchV2Data('/users/me/preferences'),
+  get: (options = {}) => fetchV2Data('/users/me/preferences', options),
 
-  // Update current user's preferences
-  update: (data) =>
+  // Update current user's preferences. `keepalive` lets a pending write
+  // survive a page unload (used to flush debounced view-state saves).
+  update: (data, options = {}) =>
     fetchV2Data('/users/me/preferences', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/merge-patch+json' },
       body: JSON.stringify(data),
+      ...options,
     }),
 };

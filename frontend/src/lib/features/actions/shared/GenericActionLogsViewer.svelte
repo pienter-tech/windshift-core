@@ -1,11 +1,17 @@
 <script>
   import { onMount } from 'svelte';
-  import { CheckCircle, XCircle, Clock, ArrowLeft, Eye } from '@lucide/svelte';
+  import CheckCircle from '@lucide/svelte/icons/check-circle';
+  import XCircle from '@lucide/svelte/icons/x-circle';
+  import Clock from '@lucide/svelte/icons/clock';
+  import Eye from '@lucide/svelte/icons/eye';
   import Button from '../../../components/Button.svelte';
+  import BackButton from '../../../components/BackButton.svelte';
   import DataTable from '../../../components/DataTable.svelte';
   import ExecutionTraceModal from '../ExecutionTraceModal.svelte';
   import { errorToast } from '../../../stores/toasts.svelte.js';
   import { formatDate } from '../../../utils/dateFormatter.js';
+  import { actionLogElapsedMs, formatElapsedMs } from '../../../utils/timeUtils.js';
+  import { getActionLogStatusColor } from '../../../utils/statusMaps.js';
 
   let {
     containerId,
@@ -55,35 +61,15 @@
     }
   }
 
-  function getStatusColor(status) {
-    switch (status) {
-      case 'completed':
-        return 'var(--ds-success)';
-      case 'failed':
-        return 'var(--ds-danger)';
-      case 'running':
-        return 'var(--ds-accent-blue)';
-      default:
-        return 'var(--ds-text-subtlest)';
-    }
-  }
-
   function formatDuration(log) {
-    if (!log.started_at || !log.completed_at) return '-';
-    const start = new Date(log.started_at);
-    const end = new Date(log.completed_at);
-    const ms = end.getTime() - start.getTime();
-    if (ms < 1000) return `${ms}ms`;
-    return `${(ms / 1000).toFixed(1)}s`;
+    const ms = actionLogElapsedMs(log);
+    return ms == null ? '-' : formatElapsedMs(ms, 1);
   }
 </script>
 
 <div class="action-logs">
   <div class="header">
-    <Button variant="ghost" size="small" onclick={onBack}>
-      <ArrowLeft size={14} />
-      Back
-    </Button>
+    <BackButton onclick={onBack} label="Back" />
     <h3>Logs: {action.name}</h3>
   </div>
 
@@ -98,7 +84,7 @@
     {#snippet cell(column, row)}
       {#if column.key === 'status'}
         {@const StatusIcon = getStatusIcon(row.status)}
-        <span class="status-cell" style="color: {getStatusColor(row.status)}">
+        <span class="status-cell" style="color: {getActionLogStatusColor(row.status)}">
           <StatusIcon size={14} />
           {row.status}
         </span>

@@ -65,6 +65,8 @@ export const getComments = (itemId, params = {}) => {
   const searchParams = new URLSearchParams();
   if (params.limit) searchParams.set('page_size', params.limit);
   if (params.cursor) searchParams.set('cursor', params.cursor);
+  // Reactions are opt-in so feeds that do not render chips skip the extra read.
+  if (params.include_reactions) searchParams.set('include_reactions', 'true');
   const query = searchParams.toString();
   return fetchV2Data(`/items/${itemId}/comments${query ? `?${query}` : ''}`);
 };
@@ -81,6 +83,16 @@ export const updateComment = (commentId, data) =>
   });
 export const deleteComment = (commentId) =>
   fetchV2Data(`/comments/${commentId}`, {
+    method: 'DELETE',
+  });
+// Comment reactions (core#298): add returns the comment's grouped reactions.
+export const addCommentReaction = (commentId, reaction) =>
+  fetchV2Data(`/comments/${commentId}/reactions`, {
+    method: 'POST',
+    body: JSON.stringify({ reaction }),
+  });
+export const removeCommentReaction = (commentId, reaction) =>
+  fetchV2Data(`/comments/${commentId}/reactions/${encodeURIComponent(reaction)}`, {
     method: 'DELETE',
   });
 
@@ -121,7 +133,12 @@ export const attachments = {
     return response.json();
   },
 
-  getDownloadUrl: (attachmentId) => `/api/v2/attachments/${attachmentId}/content`,
+  // URL for rendering an attachment inline (images, PDFs). Renderable media
+  // is served inline; other types fall back to a forced download.
+  getContentUrl: (attachmentId) => `/api/v2/attachments/${attachmentId}/content`,
+
+  // URL that always forces a download.
+  getDownloadUrl: (attachmentId) => `/api/v2/attachments/${attachmentId}/download`,
 
   // Get thumbnail URL for image attachments
   getThumbnailUrl: (attachmentId) => `/api/v2/attachments/${attachmentId}/thumbnail`,
@@ -130,6 +147,15 @@ export const attachments = {
   delete: (attachmentId) =>
     fetchV2Data(`/attachments/${attachmentId}`, {
       method: 'DELETE',
+    }),
+
+  // Hide or reveal an item attachment for portal customers. Only meaningful
+  // on customer requests; the server still enforces item.edit.
+  setInternal: (attachmentId, isInternal) =>
+    fetchV2Data(`/attachments/${attachmentId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/merge-patch+json' },
+      body: JSON.stringify({ is_internal: isInternal }),
     }),
 };
 
@@ -142,6 +168,12 @@ export const attachmentSettings = {
       body: JSON.stringify(data),
     }),
   getStatus: () => fetchAPI('/attachment-settings/status'),
+};
+
+// Public instance branding (site title + active theme logos). No auth required;
+// used by the boot, login, and authenticated shell surfaces.
+export const branding = {
+  get: (options) => fetchAPI('/branding', options),
 };
 
 // Reviews API (daily/weekly review feature)
@@ -178,53 +210,6 @@ export const getCalendarFeedToken = calendarFeed.getToken;
 export const createCalendarFeedToken = calendarFeed.createToken;
 export const revokeCalendarFeedToken = calendarFeed.revokeToken;
 
-// Personal Labels
-//
-// Calling getAll() with no argument returns the unified set: the caller's
-// own labels (user_id = me) plus shared labels (user_id IS NULL). Pass an
-// explicit userId only when you need the legacy filtered behavior.
-export const personalLabels = {
-  getAll: (userId = undefined) => {
-    const params = new URLSearchParams();
-    if (userId !== null && userId !== undefined && userId !== '') {
-      params.append('user_id', userId);
-    }
-    const queryString = params.toString();
-    return fetchAPI(`/personal-labels${queryString ? `?${queryString}` : ''}`);
-  },
-  get: (id) => fetchAPI(`/personal-labels/${id}`),
-  create: (data) =>
-    fetchAPI('/personal-labels', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-  update: (id, data) =>
-    fetchAPI(`/personal-labels/${id}`, {
-      method: 'PUT',
-      body: JSON.stringify(data),
-    }),
-  delete: (id) =>
-    fetchAPI(`/personal-labels/${id}`, {
-      method: 'DELETE',
-    }),
-
-  getForItem: (itemId) => fetchAPI(`/items/${itemId}/personal-labels`),
-  setForItem: (itemId, labelIds) =>
-    fetchAPI(`/items/${itemId}/personal-labels`, {
-      method: 'PUT',
-      body: JSON.stringify({ label_ids: labelIds }),
-    }),
-  addToItem: (itemId, labelId) =>
-    fetchAPI(`/items/${itemId}/personal-labels`, {
-      method: 'POST',
-      body: JSON.stringify({ label_id: labelId }),
-    }),
-  removeFromItem: (itemId, labelId) =>
-    fetchAPI(`/items/${itemId}/personal-labels/${labelId}`, {
-      method: 'DELETE',
-    }),
-};
-
 // Global item labels
 export const labels = {
   getAll: (workspaceId) => fetchV2Data(`/workspaces/${workspaceId}/labels`),
@@ -249,6 +234,13 @@ export const labels = {
     fetchV2Data(`/items/${itemId}/labels`, {
       method: 'PUT',
       body: JSON.stringify({ label_ids: labelIds }),
+    }),
+  // Apply one add/remove delta to many items in a single server-side request.
+  // Returns per-item failures instead of fanning out one PUT per item.
+  bulkSetLabels: (itemIds, { add = [], remove = [] } = {}) =>
+    fetchV2Data('/items/bulk-labels', {
+      method: 'POST',
+      body: JSON.stringify({ item_ids: itemIds, add, remove }),
     }),
 };
 
@@ -302,11 +294,22 @@ export const jiraImport = {
     fetchAPI(`/admin/jira-import/connections/${connectionId}`, {
       method: 'DELETE',
     }),
+  // Replace the stored credentials of an existing connection
+  updateConnection: (connectionId, data) =>
+    fetchAPI(`/admin/jira-import/connections/${connectionId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
   // Start import
   startImport: (data) =>
     fetchAPI('/admin/jira-import/start', {
       method: 'POST',
       body: JSON.stringify(data),
+    }),
+  // Clear an import from the history without deleting its data
+  hideImportJob: (jobId) =>
+    fetchAPI(`/admin/jira-import/jobs/${jobId}`, {
+      method: 'DELETE',
     }),
   // Delete all data mapped to an import job after explicit confirmation
   deleteImportedData: (jobId, confirmation) =>

@@ -7,6 +7,7 @@ import (
 
 	"windshift/internal/database"
 	"windshift/internal/itemevents"
+	"windshift/internal/logger"
 	"windshift/internal/models"
 	"windshift/internal/repository"
 	"windshift/internal/validation"
@@ -221,6 +222,20 @@ func (u *itemUpdateOperation) result() (*UpdateItemResult, error) {
 		return nil, fmt.Errorf("failed to load updated item: %w", err)
 	}
 	statusChanged := u.service.hasStatusChanged(u.original, updatedItem)
+	assigneeChanged := u.original.AssigneeID != updatedItem.AssigneeID || u.original.TeamID != updatedItem.TeamID
+	customerFacing := u.original.ChannelID != nil || u.original.CreatorPortalCustomerID != nil
+	if assigneeChanged && customerFacing {
+		// Assignment changes on helpdesk tickets are an audited routing
+		// decision (WI-1142). Team and assignee ids land in the details;
+		// actor identity comes from the request user.
+		emitServiceAudit(u.service.db, AuditActor{UserID: u.req.UserID},
+			logger.ActionItemAssign, logger.ResourceItem, &u.req.ItemID, updatedItem.Title, map[string]any{
+				"old_assignee_id": u.original.AssigneeID,
+				"new_assignee_id": updatedItem.AssigneeID,
+				"old_team_id":     u.original.TeamID,
+				"new_team_id":     updatedItem.TeamID,
+			})
+	}
 	if u.opts.triggerAssignee {
 		maybeTriggerAssigneeRun(
 			updatedItem.WorkspaceID,
@@ -231,7 +246,7 @@ func (u *itemUpdateOperation) result() (*UpdateItemResult, error) {
 		)
 	}
 	if u.opts.publish {
-		publishUpdatedItem(u.original, updatedItem, statusChanged)
+		publishUpdatedItem(u.original, updatedItem)
 	}
 	return &UpdateItemResult{
 		OriginalItem: u.original, Item: updatedItem,
@@ -239,13 +254,9 @@ func (u *itemUpdateOperation) result() (*UpdateItemResult, error) {
 	}, nil
 }
 
-func publishUpdatedItem(original, updated *models.Item, statusChanged bool) {
-	changeKind := ItemChangeUpdated
-	if statusChanged {
-		changeKind = ItemChangeStatus
-	}
-	PublishItemChange(updated.ID, changeKind)
-	PublishWorkspaceChange(updated.WorkspaceID, WorkspaceChangeItems)
+func publishUpdatedItem(original, updated *models.Item) {
+	PublishItemChange(updated.ID)
+	PublishWorkspaceChange(updated.WorkspaceID)
 	oldParent, newParent := original.ParentID, updated.ParentID
 	reparented := (oldParent == nil) != (newParent == nil) ||
 		(oldParent != nil && newParent != nil && *oldParent != *newParent)
@@ -253,9 +264,9 @@ func publishUpdatedItem(original, updated *models.Item, statusChanged bool) {
 		return
 	}
 	if oldParent != nil {
-		PublishItemChange(*oldParent, ItemChangeUpdated)
+		PublishItemChange(*oldParent)
 	}
 	if newParent != nil {
-		PublishItemChange(*newParent, ItemChangeUpdated)
+		PublishItemChange(*newParent)
 	}
 }
