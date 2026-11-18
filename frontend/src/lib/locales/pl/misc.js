@@ -423,6 +423,7 @@ export default {
     noMatchingMilestones: 'Żadne kamienie milowe nie pasują do filtrów',
     noMatchingMilestonesDescription: 'Zmień filtry, aby zobaczyć więcej kamieni milowych.',
     clearFilters: 'Wyczyść filtry',
+    actionsFor: 'Akcje dla {name}',
     activity: {
       tabOverview: 'Przegląd',
       tabActivity: 'Aktywność',

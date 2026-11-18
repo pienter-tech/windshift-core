@@ -410,6 +410,7 @@ export default {
     noMatchingMilestones: 'Nessuna milestone corrisponde ai filtri',
     noMatchingMilestonesDescription: 'Modifica i filtri per vedere altre milestone.',
     clearFilters: 'Cancella filtri',
+    actionsFor: 'Azioni per {name}',
     activity: {
       tabOverview: 'Panoramica',
       tabActivity: 'Attività',

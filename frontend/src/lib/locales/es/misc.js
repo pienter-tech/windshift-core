@@ -350,6 +350,7 @@ export default {
   },
 
   milestones: {
+    actionsFor: 'Acciones de {name}',
     title: 'Hitos',
     milestone: 'Hito',
     subtitle: 'Seguimiento de lanzamientos y fechas límite',

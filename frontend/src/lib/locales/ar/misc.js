@@ -348,6 +348,7 @@ export default {
   },
 
   milestones: {
+    actionsFor: 'إجراءات {name}',
     title: 'المعالم',
     milestone: 'معلم',
     subtitle: 'تتبع الإصدارات والمواعيد النهائية',

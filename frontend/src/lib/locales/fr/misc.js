@@ -421,6 +421,7 @@ export default {
     noMatchingMilestones: 'Aucun jalon ne correspond aux filtres',
     noMatchingMilestonesDescription: 'Modifiez les filtres pour voir plus de jalons.',
     clearFilters: 'Effacer les filtres',
+    actionsFor: 'Actions pour {name}',
     columnCreated: 'Créé',
     columnUpdated: 'Mis à jour',
     activity: {

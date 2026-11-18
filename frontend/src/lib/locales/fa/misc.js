@@ -367,6 +367,7 @@ export default {
     "noMatchingMilestones": "هیچ نقطه عطفی با فیلترها مطابقت ندارد",
     "noMatchingMilestonesDescription": "فیلترها را تغییر دهید تا نقاط عطف بیشتری را ببینید.",
     "clearFilters": "فیلترها را پاک کنید",
+    "actionsFor": "اقدامات برای {name}",
     "activity": {
       "tabOverview": "نمای کلی",
       "tabActivity": "فعالیت",

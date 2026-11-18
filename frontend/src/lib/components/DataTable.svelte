@@ -21,6 +21,9 @@
     emptyIcon = null,
     actionItems = null,
     actionTriggerTestid = null,
+    // Accessible name for a row's "…" action button: (item) => string.
+    // Defaults to a plain "Actions" label.
+    actionTriggerLabel = null,
     onRowClick = null,
     selectedItemId = null,
     pagination = false,
@@ -218,6 +221,7 @@
                         showChevron={false}
                         iconOnly={true}
                         triggerTestid={actionTriggerTestid ? actionTriggerTestid(item) : ''}
+                        triggerLabel={actionTriggerLabel ? actionTriggerLabel(item) : t('common.actions')}
                       />
                     </div>
                   {:else if column.slot && slotProps[column.slot]}

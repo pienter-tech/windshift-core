@@ -329,6 +329,7 @@ export default {
     incompleteItemsAction: 'Itens incompletos:',
   },
   milestones: {
+    actionsFor: 'Ações de {name}',
     title: 'Marcos',
     milestone: 'Marco',
     subtitle: 'Acompanhe releases e prazos',

@@ -303,6 +303,7 @@ export default {
     "incompleteItemsAction": "미완료 작업:"
   },
   "milestones": {
+    "actionsFor": "{name} 동작",
     "title": "마일스톤",
     "milestone": "마일스톤",
     "subtitle": "릴리스 및 마감일 추적",
