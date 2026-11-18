@@ -920,6 +920,47 @@ func (ns *NotificationService) workspaceViewAuthorizer(workspaceID int) func(int
 	}
 }
 
+// milestoneActionURL is the in-app deep link for a milestone's detail page.
+// Workspace milestones carry the workspace so the page's back link returns to
+// that workspace's milestone list, as the list's own links do.
+func milestoneActionURL(milestoneID int, workspaceID *int) string {
+	if workspaceID != nil {
+		return fmt.Sprintf("/milestones/%d?workspaceId=%d", milestoneID, *workspaceID)
+	}
+	return fmt.Sprintf("/milestones/%d", milestoneID)
+}
+
+// NotifyUsersForMilestoneI18n creates direct notifications with translatable
+// copy that open a milestone's detail page (see NotifyUsersWithRecordsI18n
+// for the key/params contract). authorize must confirm each recipient can
+// view the milestone. A workspace milestone's notification is re-checked at
+// delivery against that workspace; a global milestone's is visible to every
+// active user, like the milestone itself.
+func (ns *NotificationService) NotifyUsersForMilestoneI18n(userIDs []int, milestoneID int, workspaceID *int, actorUserID int, notifType, title, message, titleKey, messageKey string, params map[string]any, authorize func(int) (bool, error)) error {
+	if authorize == nil {
+		return fmt.Errorf("milestone notification blocked: milestone read authorizer not configured")
+	}
+	scope := models.NotificationScopeSystem
+	if workspaceID != nil {
+		scope = models.NotificationScopeWorkspace
+	}
+	milestone := milestoneID
+	_, _, err := ns.notifyUsersAtURL(userIDs, actorUserID, directNotificationSpec{
+		Type:               notifType,
+		Title:              title,
+		Message:            message,
+		ActionURL:          milestoneActionURL(milestoneID, workspaceID),
+		AuthorizationScope: scope,
+		WorkspaceID:        workspaceID,
+		SourceType:         "milestone",
+		SourceID:           &milestone,
+		I18nTitleKey:       titleKey,
+		I18nMessageKey:     messageKey,
+		I18nParams:         params,
+	}, authorize)
+	return err
+}
+
 func (ns *NotificationService) notifyUsersAtURL(
 	userIDs []int,
 	actorUserID int,

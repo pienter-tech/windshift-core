@@ -71,6 +71,7 @@ var catalog = map[string]map[string]string{
 		"notification.mention.comment":           "{actor} أشار إليك في تعليق على {itemTitle} ({itemKey})",
 		"notification.mention.description":       "{actor} أشار إليك في وصف {itemTitle} ({itemKey})",
 		"notification.mention.item":              "{actor} أشار إليك في {itemTitle} ({itemKey})",
+		"notification.mention.milestoneComment":  "{actor} أشار إليك في تعليق على المعلم {milestoneName}",
 		"notification.mention.title":             "تمت الإشارة إليك",
 	},
 	"de": {
@@ -139,6 +140,7 @@ var catalog = map[string]map[string]string{
 		"notification.mention.comment":           "{actor} hat Sie in einem Kommentar zu {itemTitle} ({itemKey}) erwähnt",
 		"notification.mention.description":       "{actor} hat Sie in der Beschreibung von {itemTitle} ({itemKey}) erwähnt",
 		"notification.mention.item":              "{actor} hat Sie in {itemTitle} ({itemKey}) erwähnt",
+		"notification.mention.milestoneComment":  "{actor} hat Sie in einem Kommentar zum Meilenstein {milestoneName} erwähnt",
 		"notification.mention.title":             "Sie wurden erwähnt",
 	},
 	"en": {
@@ -207,6 +209,7 @@ var catalog = map[string]map[string]string{
 		"notification.mention.comment":           "{actor} mentioned you in a comment on {itemTitle} ({itemKey})",
 		"notification.mention.description":       "{actor} mentioned you in the description of {itemTitle} ({itemKey})",
 		"notification.mention.item":              "{actor} mentioned you in {itemTitle} ({itemKey})",
+		"notification.mention.milestoneComment":  "{actor} mentioned you in a comment on milestone {milestoneName}",
 		"notification.mention.title":             "You were mentioned",
 	},
 	"es": {
@@ -275,6 +278,7 @@ var catalog = map[string]map[string]string{
 		"notification.mention.comment":           "{actor} te ha mencionado en un comentario en {itemTitle} ({itemKey})",
 		"notification.mention.description":       "{actor} te ha mencionado en la descripción de {itemTitle} ({itemKey})",
 		"notification.mention.item":              "{actor} te ha mencionado en {itemTitle} ({itemKey})",
+		"notification.mention.milestoneComment":  "{actor} te ha mencionado en un comentario en el hito {milestoneName}",
 		"notification.mention.title":             "Te han mencionado",
 	},
 	"fa": {
@@ -343,6 +347,7 @@ var catalog = map[string]map[string]string{
 		"notification.mention.comment":           "{actor} در یک دیدگاه در {itemTitle} ({itemKey}) به شما اشاره کرد",
 		"notification.mention.description":       "{actor} در توضیحات {itemTitle} ({itemKey}) به شما اشاره کرد",
 		"notification.mention.item":              "{actor} در {itemTitle} ({itemKey}) به شما اشاره کرد",
+		"notification.mention.milestoneComment":  "{actor} در یک دیدگاه در نقطه عطف {milestoneName} به شما اشاره کرد",
 		"notification.mention.title":             "به شما اشاره شد",
 	},
 	"fr": {
@@ -411,6 +416,7 @@ var catalog = map[string]map[string]string{
 		"notification.mention.comment":           "{actor} vous a mentionné dans un commentaire sur {itemTitle} ({itemKey})",
 		"notification.mention.description":       "{actor} vous a mentionné dans la description de {itemTitle} ({itemKey})",
 		"notification.mention.item":              "{actor} vous a mentionné dans {itemTitle} ({itemKey})",
+		"notification.mention.milestoneComment":  "{actor} vous a mentionné dans un commentaire sur le jalon {milestoneName}",
 		"notification.mention.title":             "Vous avez été mentionné",
 	},
 	"it": {
@@ -479,6 +485,7 @@ var catalog = map[string]map[string]string{
 		"notification.mention.comment":           "{actor} ti ha menzionato in un commento su {itemTitle} ({itemKey})",
 		"notification.mention.description":       "{actor} ti ha menzionato nella descrizione di {itemTitle} ({itemKey})",
 		"notification.mention.item":              "{actor} ti ha menzionato in {itemTitle} ({itemKey})",
+		"notification.mention.milestoneComment":  "{actor} ti ha menzionato in un commento sulla milestone {milestoneName}",
 		"notification.mention.title":             "Sei stato menzionato",
 	},
 	"ko": {
@@ -547,6 +554,7 @@ var catalog = map[string]map[string]string{
 		"notification.mention.comment":           "{actor}님이 {itemTitle}({itemKey})의 댓글에서 회원님을 언급했습니다",
 		"notification.mention.description":       "{actor}님이 {itemTitle}({itemKey})의 설명에서 회원님을 언급했습니다",
 		"notification.mention.item":              "{actor}님이 {itemTitle}({itemKey})에서 회원님을 언급했습니다",
+		"notification.mention.milestoneComment":  "{actor}님이 마일스톤 {milestoneName}의 댓글에서 회원님을 언급했습니다",
 		"notification.mention.title":             "회원님이 언급되었습니다",
 	},
 	"pl": {
@@ -615,6 +623,7 @@ var catalog = map[string]map[string]string{
 		"notification.mention.comment":           "{actor} wspomniał o Tobie w komentarzu do {itemTitle} ({itemKey})",
 		"notification.mention.description":       "{actor} wspomniał o Tobie w opisie {itemTitle} ({itemKey})",
 		"notification.mention.item":              "{actor} wspomniał o Tobie w {itemTitle} ({itemKey})",
+		"notification.mention.milestoneComment":  "{actor} wspomniał o Tobie w komentarzu do kamienia milowego {milestoneName}",
 		"notification.mention.title":             "Wspomniano o Tobie",
 	},
 	"pt-BR": {
@@ -683,6 +692,7 @@ var catalog = map[string]map[string]string{
 		"notification.mention.comment":           "{actor} mencionou você em um comentário em {itemTitle} ({itemKey})",
 		"notification.mention.description":       "{actor} mencionou você na descrição de {itemTitle} ({itemKey})",
 		"notification.mention.item":              "{actor} mencionou você em {itemTitle} ({itemKey})",
+		"notification.mention.milestoneComment":  "{actor} mencionou você em um comentário no marco {milestoneName}",
 		"notification.mention.title":             "Você foi mencionado",
 	},
 	"ru": {
@@ -751,6 +761,7 @@ var catalog = map[string]map[string]string{
 		"notification.mention.comment":           "{actor} упомянул вас в комментарии к {itemTitle} ({itemKey})",
 		"notification.mention.description":       "{actor} упомянул вас в описании {itemTitle} ({itemKey})",
 		"notification.mention.item":              "{actor} упомянул вас в {itemTitle} ({itemKey})",
+		"notification.mention.milestoneComment":  "{actor} упомянул вас в комментарии к вехе {milestoneName}",
 		"notification.mention.title":             "Вас упомянули",
 	},
 	"zh-CN": {
@@ -819,6 +830,7 @@ var catalog = map[string]map[string]string{
 		"notification.mention.comment":           "{actor} 在 {itemTitle}（{itemKey}）的评论中提到了您",
 		"notification.mention.description":       "{actor} 在 {itemTitle}（{itemKey}）的描述中提到了您",
 		"notification.mention.item":              "{actor} 在 {itemTitle}（{itemKey}）中提到了您",
+		"notification.mention.milestoneComment":  "{actor} 在里程碑 {milestoneName} 的评论中提到了您",
 		"notification.mention.title":             "有人提到了您",
 	},
 }

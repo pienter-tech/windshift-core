@@ -89,6 +89,7 @@ export default {
         comment: "{actor} أشار إليك في تعليق على {itemTitle} ({itemKey})",
         description: "{actor} أشار إليك في وصف {itemTitle} ({itemKey})",
         item: "{actor} أشار إليك في {itemTitle} ({itemKey})",
+        milestoneComment: "{actor} أشار إليك في تعليق على المعلم {milestoneName}",
     },
     approvalStarted: {
         title: "مطلوب موافقة",
