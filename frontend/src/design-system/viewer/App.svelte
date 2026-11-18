@@ -87,12 +87,14 @@
 
   // Modal Component Pages
   import ModalPage from './pages/Modal.svelte'
+  import ModalBackdropPage from './pages/ModalBackdrop.svelte'
 
   // Menu Component Page
   import DropdownMenuPage from './pages/DropdownMenu.svelte'
 
   // Data Display Page
   import ItemKeyPage from './pages/ItemKey.svelte'
+  import VirtualRowsPage from './pages/VirtualRows.svelte'
 
   // Picker Component Pages
   import ItemPickerPage from './pages/ItemPickerPage.svelte'
@@ -189,6 +191,7 @@
       title: 'Modals',
       items: [
         { id: 'modal', label: 'Modal', icon: Layers },
+        { id: 'modal-backdrop', label: 'ModalBackdrop', icon: Layers },
       ]
     },
     {
@@ -201,6 +204,7 @@
       title: 'Data Display',
       items: [
         { id: 'itemkey', label: 'ItemKey', icon: Hash },
+        { id: 'virtualrows', label: 'VirtualRows', icon: List },
       ]
     },
     {
@@ -284,7 +288,9 @@
 
   <!-- Main Content -->
   <main class="flex-1 overflow-y-auto">
-    {#if currentPage === 'board-example'}
+    {#if currentPage === 'virtualrows'}
+      <VirtualRowsPage />
+    {:else if currentPage === 'board-example'}
       <BoardExample />
     {:else if currentPage === 'form-example'}
       <FormExample />
@@ -346,6 +352,8 @@
       <PaginationPage />
     {:else if currentPage === 'modal'}
       <ModalPage />
+    {:else if currentPage === 'modal-backdrop'}
+      <ModalBackdropPage />
     {:else if currentPage === 'dropdownmenu'}
       <DropdownMenuPage />
     {:else if currentPage === 'itemkey'}

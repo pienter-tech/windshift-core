@@ -30,6 +30,7 @@
     publicSlug = null,
     publicMilestoneSwimlanes = false,
     onpublicsave = null,
+    onpublicbeforesave = null,
     saving = false,
     slugSaved = false,
     showPublicBoard = false,
@@ -163,7 +164,7 @@
             size="sm"
             icon={IconWorld}
           >
-            {isPublic ? t('collections.public') : t('collections.publish')}
+            Share board
           </Button>
         {/if}
 
@@ -244,6 +245,7 @@
 </div>
 
 <PublicBoardSharingDialog
+  collectionId={collection?.id}
   isOpen={showPublicDialog}
   {isPublic}
   {publicSlug}
@@ -252,6 +254,7 @@
   {saving}
   onclose={closePublicDialog}
   onsave={onpublicsave}
+  onbeforesave={onpublicbeforesave}
 />
 
 <style>

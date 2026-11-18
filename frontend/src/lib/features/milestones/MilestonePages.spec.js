@@ -13,7 +13,7 @@ const mocks = vi.hoisted(() => ({
   errorToast: vi.fn(),
 }));
 
-vi.mock('../../api/milestones.js', () => ({
+vi.mock('../../api/planning.js', () => ({
   milestones: {
     getPageLinks: mocks.getPageLinks,
     linkPage: mocks.linkPage,

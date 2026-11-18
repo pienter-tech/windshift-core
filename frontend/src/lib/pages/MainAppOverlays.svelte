@@ -6,11 +6,14 @@
   import GlobalConfirmDialog from '../dialogs/GlobalConfirmDialog.svelte';
   import ToastContainer from '../features/notifications/ToastContainer.svelte';
   import FloatingTimer from '../features/time/FloatingTimer.svelte';
+  import TimeLogHost from '../features/time/TimeLogHost.svelte';
   import { aiStore } from '../stores/aiStore.svelte.js';
   import { itemModalStore } from '../stores/itemModalStore.svelte.js';
+  import { workspacesStore } from '../stores/workspaces.svelte.js';
   import { t } from '../stores/i18n.svelte.js';
+  import { surfaceError } from '../stores/toasts.svelte.js';
   import { currentRoute } from '../router.js';
-  import { getMainAppLazyState } from './mainAppRoutes.js';
+  import { getMainAppLazyState, isPersonalTaskWorkspace } from './mainAppRoutes.js';
 
   let {
     lazyComponents,
@@ -29,6 +32,7 @@
   let PomodoroSettingsModalComponent = $state(null);
   let AboutModalComponent = $state(null);
   let ItemDetailModalComponent = $state(null);
+  let PersonalTaskDetailModalComponent = $state(null);
   let desktopModalLoading = $state(false);
 
   const commandPaletteState = $derived.by(() =>
@@ -82,8 +86,63 @@
     }
   }
 
+  async function loadPersonalTaskDetailModal() {
+    if (PersonalTaskDetailModalComponent) return;
+    try {
+      const module = await import('../features/personal/PersonalTaskDetail.svelte');
+      PersonalTaskDetailModalComponent = module.default;
+    } catch (error) {
+      surfaceError(error, { context: 'loadPersonalTaskDetailModal' });
+      itemModalStore.close();
+    }
+  }
+
+  // The modal host owns the task/work-item split, mirroring the route-level
+  // resolveEffectiveMainAppView. Callers only report the item and its
+  // workspace, so no opener has to know that personal-workspace items are
+  // tasks.
+  const personalWorkspaceId = $derived($workspacesStore.personalWorkspace?.id ?? null);
+  const modalOpensPersonalTask = $derived(
+    itemModalStore.isOpen &&
+      isPersonalTaskWorkspace(itemModalStore.workspaceId, personalWorkspaceId)
+  );
+  const modalComponentReady = $derived(
+    modalOpensPersonalTask
+      ? Boolean(PersonalTaskDetailModalComponent)
+      : Boolean(ItemDetailModalComponent)
+  );
+
+  // The personal workspace loads on demand. Until it arrives a non-null
+  // workspace id cannot be classified, so hold the backdrop instead of
+  // rendering the work-item detail and swapping it out mid-load.
+  let personalWorkspaceChecked = $state(false);
+  let personalWorkspaceCheckInFlight = false;
+
   $effect(() => {
-    if (itemModalStore.isOpen) void loadItemDetailModal();
+    if (!itemModalStore.isOpen) {
+      personalWorkspaceChecked = false;
+      return;
+    }
+    if (itemModalStore.workspaceId == null || personalWorkspaceId != null) return;
+    if (personalWorkspaceCheckInFlight) return;
+    personalWorkspaceCheckInFlight = true;
+    void workspacesStore.loadPersonalWorkspace().finally(() => {
+      personalWorkspaceCheckInFlight = false;
+      personalWorkspaceChecked = true;
+    });
+  });
+
+  const modalWorkspaceUnresolved = $derived(
+    itemModalStore.isOpen &&
+      itemModalStore.workspaceId != null &&
+      personalWorkspaceId == null &&
+      !personalWorkspaceChecked
+  );
+
+  $effect(() => {
+    if (!itemModalStore.isOpen || modalWorkspaceUnresolved) return;
+    if (modalOpensPersonalTask) void loadPersonalTaskDetailModal();
+    else void loadItemDetailModal();
   });
 
   // The host outlives the view that opened it; close on route changes so the
@@ -99,6 +158,7 @@
 {#if commandPaletteState.loading && showCommandPalette}
   <ModalBackdrop
     show={true}
+    ariaLabel={t('nav.loadingSearch')}
     opacity={0.4}
     blur={8}
     extraFilter="saturate(120%)"
@@ -118,7 +178,7 @@
   <CommandPalette bind:isOpen={showCommandPalette} onclose={onclosecommand} />
 {:else if commandPaletteState.error && showCommandPalette}
   <!-- shortcut-guard-exempt: retrying a failed lazy import is a recovery action, not a form submission. -->
-  <ModalBackdrop show={true} opacity={0.4} zIndex={60} closeOnClick={false} onclose={onclosecommand}>
+  <ModalBackdrop show={true} ariaLabel="Failed to load Search" opacity={0.4} zIndex={60} closeOnClick={false} onclose={onclosecommand}>
     <div class="rounded-lg p-6 text-center" role="alert" style="background-color: var(--ds-surface-raised); color: var(--ds-text);">
       <p class="font-semibold">Failed to load Search</p>
       <p class="mt-1 text-sm" style="color: var(--ds-text-subtle);">Check your connection, then try again.</p>
@@ -131,7 +191,7 @@
 {/if}
 
 {#if createModalState.loading && showCreateModal}
-  <ModalBackdrop show={true} opacity={0.4} closeOnClick={false} closeOnEscape={false}>
+  <ModalBackdrop show={true} ariaLabel={t('nav.loadingCreateForm')} opacity={0.4} closeOnClick={false} closeOnEscape={false}>
     <div class="rounded-lg p-6" style="background-color: var(--ds-surface-raised); color: var(--ds-text-subtle);">
       <Spinner class="mx-auto mb-4" />
       <p>{t('nav.loadingCreateForm')}</p>
@@ -149,7 +209,7 @@
   />
 {:else if createModalState.error && showCreateModal}
   <!-- shortcut-guard-exempt: retrying a failed lazy import is a recovery action, not a form submission. -->
-  <ModalBackdrop show={true} opacity={0.4} closeOnClick={false} onclose={onclosecreate}>
+  <ModalBackdrop show={true} ariaLabel="Failed to load Create Form" opacity={0.4} closeOnClick={false} onclose={onclosecreate}>
     <div class="rounded-lg p-6 text-center" role="alert" data-testid="create-modal-load-error" style="background-color: var(--ds-surface-raised); color: var(--ds-text);">
       <p class="font-semibold">Failed to load Create Form</p>
       <p class="mt-1 text-sm" style="color: var(--ds-text-subtle);">Check your connection, then try again.</p>
@@ -170,22 +230,30 @@
 {/if}
 
 <FloatingTimer />
+<TimeLogHost />
 
 {#if itemModalStore.isOpen}
-  {#if ItemDetailModalComponent}
-    <ItemDetailModalComponent
+  {#if modalWorkspaceUnresolved || !modalComponentReady}
+    <ModalBackdrop show={true} ariaLabel={t('items.workItemDetails')} opacity={0.4} closeOnClick={false} closeOnEscape={false}>
+      <div class="rounded-lg p-6" style="background-color: var(--ds-surface-raised); color: var(--ds-text-subtle);">
+        <Spinner class="mx-auto mb-4" />
+        <p>{t('common.loading')}</p>
+      </div>
+    </ModalBackdrop>
+  {:else if modalOpensPersonalTask}
+    <PersonalTaskDetailModalComponent
       isModal={true}
       itemId={itemModalStore.itemId}
       workspaceId={itemModalStore.workspaceId}
       onclose={() => itemModalStore.close()}
     />
   {:else}
-    <ModalBackdrop show={true} opacity={0.4} closeOnClick={false} closeOnEscape={false}>
-      <div class="rounded-lg p-6" style="background-color: var(--ds-surface-raised); color: var(--ds-text-subtle);">
-        <Spinner class="mx-auto mb-4" />
-        <p>{t('common.loading')}</p>
-      </div>
-    </ModalBackdrop>
+    <ItemDetailModalComponent
+      isModal={true}
+      itemId={itemModalStore.itemId}
+      workspaceId={itemModalStore.workspaceId}
+      onclose={() => itemModalStore.close()}
+    />
   {/if}
 {/if}
 

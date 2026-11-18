@@ -1,4 +1,5 @@
 <script>
+  let tabPanelElement = $state(null);
   import MessageSquare from '@lucide/svelte/icons/message-square';
   import Clock from '@lucide/svelte/icons/clock';
   import Play from '@lucide/svelte/icons/play';
@@ -18,6 +19,7 @@
   import Comments from '../items/Comments.svelte';
   import ItemHistory from '../items/ItemHistory.svelte';
   import ItemAgentLog from '../items/ItemAgentLog.svelte';
+  import ItemAgentRunIndicator from '../items/ItemAgentRunIndicator.svelte';
   import { agentRuns } from '../../api/agentRuns.js';
   import { confirm } from '../../composables/useConfirm.js';
   import { dateOnlyKey, formatDateOnly, formatDueDate, getDaysOverdue, getUserTimezone } from '../../utils/dateFormatter.js';
@@ -340,12 +342,16 @@
 <div class="mt-6">
   <div>
     <!-- Tab Navigation -->
-    <TabStrip {tabs} activeTab={tab} onTabChange={switchTab} />
+    <TabStrip {tabs} activeTab={tab} onTabChange={switchTab} panelElement={tabPanelElement} />
 
     <!-- Tab Content -->
-    <div class="pt-6">
+    <div class="pt-6" bind:this={tabPanelElement}>
       {#if tab === 'comments'}
-        <Comments itemId={item.id} workspaceId={item.workspace_id} isPersonalWorkspace={workspace?.is_personal} isPortalRequest={!!item.request_type_id} isExternalRequest={isExternalRequest(item)} enableInternalComments={workspace?.internal_comments_enabled} onCommentsLoaded={handleCommentsLoaded} />
+        <Comments itemId={item.id} workspaceId={item.workspace_id} isPersonalWorkspace={workspace?.is_personal} isPortalRequest={!!item.request_type_id} isExternalRequest={isExternalRequest(item)} enableInternalComments={workspace?.internal_comments_enabled} onCommentsLoaded={handleCommentsLoaded}>
+          {#snippet headerLeft()}
+            <ItemAgentRunIndicator itemId={item.id} onOpenLog={() => switchTab('agent-log')} />
+          {/snippet}
+        </Comments>
       {:else if tab === 'details'}
         <div class="grid gap-8" data-testid="item-details-overview">
           <section class="overflow-hidden rounded-xl border border-[var(--ds-border)] bg-[var(--ds-surface-raised)]" aria-label={t('items.healthOverview')}>

@@ -12,6 +12,7 @@ import (
 	"windshift/internal/database"
 	"windshift/internal/logger"
 	"windshift/internal/models"
+	"windshift/internal/operatorcontrols"
 	"windshift/internal/repository"
 	"windshift/internal/sanitize"
 )
@@ -149,7 +150,7 @@ func (s *ConditionSetApplicationService) Delete(actor AuditActor, id int) error 
 		return err
 	}
 	var count int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM (SELECT id FROM configuration_sets WHERE condition_set_id = ? UNION ALL SELECT id FROM configuration_set_item_types WHERE condition_set_id = ?)`, id, id).Scan(&count); err != nil {
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM (SELECT id FROM configuration_sets WHERE condition_set_id = ? UNION ALL SELECT id FROM configuration_set_item_types WHERE condition_set_id = ?) AS refs`, id, id).Scan(&count); err != nil {
 		return err
 	}
 	if count > 0 {
@@ -276,6 +277,11 @@ func (s *ConditionSetApplicationService) validateTransitions(workflowID int, tra
 			return governanceValidation("transition does not belong to workflow")
 		}
 		for _, condition := range transition.Conditions {
+			if condition.ConditionType == models.ConditionTypeScript {
+				if err := operatorcontrols.From(s.db).Check(operatorcontrols.Scripts); err != nil {
+					return err
+				}
+			}
 			if err := validateConditionInput(condition); err != nil {
 				return err
 			}

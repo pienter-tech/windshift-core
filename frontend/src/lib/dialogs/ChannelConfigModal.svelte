@@ -1,4 +1,5 @@
 <script>
+  let tabPanelElement = $state(null);
   import LifeBuoy from '@lucide/svelte/icons/life-buoy';
   import Settings from '@lucide/svelte/icons/settings';
   import Webhook from '@lucide/svelte/icons/webhook';
@@ -23,6 +24,7 @@
 
   // Import channel config components
   import ChannelPortalConfig from '../features/channels/ChannelPortalConfig.svelte';
+  import CustomerPolicyEditor from '../customer/CustomerPolicyEditor.svelte';
   import ChannelWebhookConfig from '../features/channels/ChannelWebhookConfig.svelte';
   import ChannelEmailConfig from '../features/channels/ChannelEmailConfig.svelte';
   import ChannelSMTPConfig from '../features/channels/ChannelSMTPConfig.svelte';
@@ -66,7 +68,11 @@
     title: '',
     description: '',
     registration_mode: 'open',
-    allowed_domains: ''
+    allowed_domains: '',
+    presentation: 'classic',
+    modules: null,
+    navigation: [],
+    default_module: '',
   });
 
   // Webhook configuration form data
@@ -215,6 +221,10 @@
           title: config.portal_title || '',
           description: config.portal_description || '',
           registration_mode: config.portal_registration_mode === 'manual' ? 'manual' : 'open',
+          presentation: config.portal_presentation || 'classic',
+          modules: config.portal_modules ?? null,
+          navigation: config.portal_navigation || [],
+          default_module: config.portal_default_module || '',
           allowed_domains: Array.isArray(config.portal_allowed_domains)
             ? config.portal_allowed_domains.join(', ')
             : ''
@@ -578,6 +588,7 @@
       <!-- Tab Navigation -->
       <div class="px-6">
         <TabStrip
+          panelElement={tabPanelElement}
           tabs={[
             { id: 'configuration', label: t('channel.configuration'), icon: Settings },
             ...(channel.type === 'form' ? [{ id: 'forms', label: t('forms.title'), icon: ClipboardList }] : []),
@@ -588,7 +599,7 @@
       </div>
 
       <!-- Tab Content -->
-      <div class="flex-1 overflow-y-auto {activeTab === 'forms' ? '' : 'p-6'}">
+      <div class="flex-1 overflow-y-auto {activeTab === 'forms' ? '' : 'p-6'}" bind:this={tabPanelElement}>
         {#if activeTab === 'configuration'}
           <!-- Basic Info Section -->
           <div class="mb-8">
@@ -632,8 +643,10 @@
             <ChannelPortalConfig
               bind:this={portalConfigRef}
               bind:formData={portalFormData}
+              channelId={channel?.id}
               {connectedMailboxes}
             />
+            <CustomerPolicyEditor kind="portal" resourceId={channel.id} />
           {:else if channel.type === 'webhook'}
             <ChannelWebhookConfig
               bind:this={webhookConfigRef}

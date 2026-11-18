@@ -1,4 +1,5 @@
 <script>
+  import { setContext } from 'svelte';
   import Menu from '@lucide/svelte/icons/menu';
   import { useEventListener } from 'runed';
   import { auth } from '../api/auth.js';
@@ -7,6 +8,8 @@
   import EmailVerificationBanner from '../features/notifications/EmailVerificationBanner.svelte';
   import CollectionNavigation from '../features/collections/CollectionNavigation.svelte';
   import MainSidebar from '../layout/MainSidebar.svelte';
+  import { isCollectionContentView, VIEW_BACKGROUND_CONTEXT } from '../layout/viewBackgroundContext.js';
+  import '../layout/viewBackground.css';
   import {
     GLOBAL_COLLECTION_VIEWS,
     currentRoute,
@@ -15,14 +18,13 @@
     navigate,
   } from '../router.js';
   import { toLogical } from '../runtime/contextPath.js';
-  import { hydrateCurrentWorkspaceFromSharedData } from '../services/authenticatedShellUI.js';
   import { authStore } from '../stores/auth.svelte.js';
   import { currentWorkspace, workspacesStore } from '../stores/workspaces.svelte.js';
   import { uiStore } from '../stores/ui.svelte.js';
   import { workspaceDataStore } from '../stores/workspaceDataStore.svelte.js';
   import { aiStore } from '../stores/aiStore.svelte.js';
   import { terminalStore } from '../stores/terminalStore.svelte.js';
-  import { clearWorkspaceGradient } from '../stores/workspaceGradient.svelte.js';
+  import { useGradientStyles } from '../stores/workspaceGradient.svelte.js';
   import { toHotkeyString } from '../utils/keyboardShortcuts.js';
   import { LazyComponentLoader } from '../utils/lazyComponentLoader.svelte.js';
   import { hasSessionExpired, reloadIfBuildChanged } from '../utils/lazyLoadRecovery.js';
@@ -31,6 +33,7 @@
   import MainAppOverlays from './MainAppOverlays.svelte';
   import MainRouteContent from './MainRouteContent.svelte';
   import { useMainAppLifecycle } from './useMainAppLifecycle.js';
+  import { useMainAppWorkspaceContext } from './useMainAppWorkspaceContext.svelte.js';
   import {
     CREATE_MODAL_WORKSPACE_VIEWS,
     MAIN_APP_COMPONENT_LOADERS,
@@ -39,12 +42,18 @@
     prefetchMainAppForView,
     resolveEffectiveMainAppView,
   } from './mainAppRoutes.js';
-  import {
-    getMainAppWorkspaceRedirect,
-    resolveMainAppWorkspaceContext,
-  } from './mainAppWorkspaceContext.js';
+  import { getMainAppWorkspaceRedirect } from './mainAppWorkspaceContext.js';
   import { getDisabledViewRedirect } from './mainAppViewGuard.js';
   import { viewSettingsStore } from '../stores/viewSettings.svelte.js';
+  import { VIRTUAL_SCROLL_CONTEXT } from '../virtualization/types';
+
+  const backgroundStyles = useGradientStyles();
+  const sharedBackgroundActive = $derived(isCollectionContentView($currentRoute.view));
+  setContext(VIEW_BACKGROUND_CONTEXT, {
+    get active() {
+      return sharedBackgroundActive;
+    },
+  });
 
   let showCommandPalette = $state(false);
   let showCreateModal = $state(false);
@@ -56,6 +65,13 @@
   let createModalParentContext = $state(null);
   let showEmailVerificationBanner = $state(false);
   let mobileWorkspaceNavOpen = $state(false);
+  let mainScrollElement = $state(null);
+  setContext(VIRTUAL_SCROLL_CONTEXT, {
+    get element() { return mainScrollElement; },
+    get revision() {
+      return `${showEmailVerificationBanner}|${mobileWorkspaceNavOpen}|${$uiStore.reviewFullscreen}|${$currentRoute.view}`;
+    },
+  });
 
   let terminalState = $derived($terminalStore);
   let TerminalPanelComponent = $state(null);
@@ -281,27 +297,10 @@
     previousRoutePath = routePath;
   });
 
-  $effect(() => {
-    const route = $currentRoute;
-    const context = resolveMainAppWorkspaceContext(
-      route,
-      $workspacesStore.personalWorkspace?.id
-    );
-
-    if (context.kind === 'workspace') {
-      void hydrateCurrentWorkspaceFromSharedData(context.workspaceId);
-    } else if (context.kind === 'personal-pending') {
-      void workspacesStore.loadPersonalWorkspace();
-    } else if (context.kind === 'global-collection') {
-      if ($currentWorkspace) currentWorkspace.clear();
-      workspaceDataStore.initializeGlobal();
-      clearWorkspaceGradient();
-    } else {
-      currentWorkspace.clear();
-      workspaceDataStore.reset();
-      clearWorkspaceGradient();
-    }
-  });
+  const navigationLifetime = useMainAppWorkspaceContext(
+    () => $currentRoute,
+    () => $workspacesStore.personalWorkspace?.id
+  );
 
   $effect(() => {
     const redirect = getMainAppWorkspaceRedirect($currentRoute, $currentWorkspace);
@@ -377,7 +376,8 @@
       />
     {/if}
     <div class="authenticated-body flex flex-1 min-h-0 overflow-hidden">
-      {#if showWorkspaceNav}
+      {#if showWorkspaceNav && navigationLifetime.ready}
+        {#key navigationLifetime.generation}
         <Button
           class="mobile-workspace-nav-trigger"
           variant="default"
@@ -408,10 +408,13 @@
               : $currentRoute.params.id}
           />
         </div>
-      {:else if showCollectionNav}
+        {/key}
+      {:else if showCollectionNav && navigationLifetime.ready}
+        {#key navigationLifetime.generation}
         <div class="h-full min-h-0">
           <CollectionNavigation collectionId={$currentRoute.params.id} />
         </div>
+        {/key}
       {/if}
 
       <div class="flex-1 flex min-w-0 min-h-0 overflow-hidden main-split-container">
@@ -422,10 +425,19 @@
             : 'flex: 1;'}
         >
           <main
+            bind:this={mainScrollElement}
             data-testid="main-content-scroll"
             class="flex-1 min-h-0 overflow-y-auto overscroll-contain"
+            class:view-dot-grid={sharedBackgroundActive && !backgroundStyles.hasCustomBackground}
+            style={sharedBackgroundActive
+              ? `${backgroundStyles.backgroundStyle} ${backgroundStyles.contextVars}`
+              : ''}
           >
-            <MainRouteContent view={effectiveView} route={$currentRoute} {lazyComponents} />
+            {#if navigationLifetime.ready}
+              {#key navigationLifetime.generation}
+                <MainRouteContent view={effectiveView} route={$currentRoute} {lazyComponents} />
+              {/key}
+            {/if}
           </main>
         </div>
 

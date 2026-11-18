@@ -9,11 +9,13 @@
   import DialogFooter from '../../dialogs/DialogFooter.svelte';
   import Modal from '../../dialogs/Modal.svelte';
   import ModalHeader from '../../dialogs/ModalHeader.svelte';
+  import BoardSharingEditor from './BoardSharingEditor.svelte';
   import { publicBaseURL } from '../../runtime/contextPath.js';
   import { t } from '../../stores/i18n.svelte.js';
 
   let {
     isOpen = false,
+    collectionId = null,
     isPublic = false,
     publicSlug = null,
     publicMilestoneSwimlanes = false,
@@ -21,6 +23,7 @@
     saving = false,
     onclose = null,
     onsave = null,
+    onbeforesave = null,
   } = $props();
 
   let draftIsPublic = $state(false);
@@ -90,6 +93,14 @@
     onclose={close}
   />
 
+  {#if collectionId}
+    <div class="px-6 py-5">
+      <BoardSharingEditor {collectionId} {onbeforesave} oncancel={close} onsaved={(savedSharing, shouldClose) => {
+        onsave?.({ savedSharing });
+        if (shouldClose) close();
+      }} />
+    </div>
+  {:else}
   <div class="space-y-5 px-6 py-5">
     <div
       class="rounded-lg border p-4"
@@ -202,4 +213,5 @@
     cancelTestid="public-board-cancel"
     confirmTestid="public-board-save"
   />
+  {/if}
 </Modal>

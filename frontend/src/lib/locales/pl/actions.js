@@ -3,6 +3,46 @@
  */
 export default {
   actions: {
+    preview: {
+      notSelected: 'Nie wybrano', notConfigured: 'Nie skonfigurowano', none: 'Brak', clearValue: 'Wyczyść wartość',
+      loadingName: 'ładowanie nazwy', unavailableName: 'nazwa niedostępna', status: 'Status', customField: 'Pole niestandardowe',
+      user: 'Użytkownik', team: 'Zespół', capability: 'Funkcja', response: 'Odpowiedź', label: 'Etykieta', linkType: 'Typ powiązania',
+      trigger: 'Wyzwalacz', from: 'Z', to: 'Do', field: 'Pole', value: 'Wartość', target: 'Cel', content: 'Treść',
+      recipients: 'Odbiorcy', message: 'Wiadomość', operator: 'Operator', relation: 'Relacja', direction: 'Kierunek', scope: 'Zakres',
+      mappings: 'Mapowania', title: 'Tytuł', upsertKey: 'Klucz tworzenia lub aktualizacji', name: 'Nazwa', tools: 'Narzędzia', method: 'Metoda',
+      url: 'URL', input: 'Wejście', output: 'Wyjście', addLabels: 'Dodaj etykiety', removeLabels: 'Usuń etykiety', source: 'Kod źródłowy',
+      anyStatus: 'Dowolny status', anyCompletedStatus: 'Dowolny status ukończony', anyNonCompletedStatus: 'Dowolny status nieukończony',
+      anyField: 'Dowolne pole', anyLinkType: 'Dowolny typ powiązania', category: 'Kategoria',
+      matchingTerminal: 'Odwzoruj końcową kategorię wyzwalacza w przepływie tego elementu', descendants: 'Wszyscy potomkowie',
+      direct_children: 'Bezpośrednie elementy podrzędne', ancestors: 'Przodkowie', linked: 'Powiązane elementy',
+      crossWorkspace: 'W dostępnych obszarach roboczych', sameWorkspace: 'Ten sam obszar roboczy',
+      sourceLines_one: 'Skonfigurowano {count} wiersz', sourceLines_few: 'Skonfigurowano {count} wiersze', sourceLines_many: 'Skonfigurowano {count} wierszy', sourceLines_other: 'Skonfigurowano {count} wiersza',
+      entryCount_one: '{count} wpis', entryCount_few: '{count} wpisy', entryCount_many: '{count} wpisów', entryCount_other: '{count} wpisu',
+      more: '+{count} więcej', truncated: '[skrócono]', configuredURL: 'URL skonfigurowany (szablon lub brak bezpiecznego adresu)',
+      unsupported: 'Nieobsługiwane', unsupportedNode: 'Nieobsługiwany typ węzła: {type}', unsupportedValue: 'Nieobsługiwana wartość: {value}',
+      itemType: 'Typ elementu', assetType: 'Typ zasobu', fieldScope: 'Zakres pól', role: 'Rola', access: 'Dostęp', invocation: 'Wywołanie',
+      humanInvoked: 'Wywoływane ręcznie', anyItemType: 'Dowolny typ elementu', anyAssetType: 'Dowolny typ zasobu', cascades: 'Reaguj na kaskady',
+      author: 'Autor', anyAuthor: 'Dowolny autor', customer: 'Klient', agent: 'Agent', inactiveHours: 'Brak aktywności', hours: '{count} godzin',
+      invalidThreshold: 'Brak poprawnego dodatniego progu', repository: 'Repozytorium', repositoryName: 'Nazwa repozytorium', anyRepository: 'Dowolne repozytorium',
+      milestone: 'Kamień milowy', clearMilestones: 'Usuń kamienie milowe', unassigned: 'Nieprzypisany', fallback: 'Cel zapasowy',
+      firstTerminal: 'Pierwszy status końcowy w przepływie tego elementu', skipMatching: 'Pomiń pasujące', visibility: 'Widoczność', private: 'Prywatne',
+      publicWithCaveat: 'Publiczne; prywatne komentarze wyzwalające pozostają prywatne', includeLink: 'Dołącz link (konfiguracja)', linkBehavior: 'Zachowanie linku',
+      workspaceLinkCaveat: 'Powiadomienia obszaru roboczego zawierają link do elementu niezależnie od tej opcji', thisAsset: 'Ten zasób',
+      outgoing: 'Wychodzące', incoming: 'Przychodzące', both: 'Oba kierunki', maxItems: 'Maksymalna liczba elementów',
+      skipOnLeave: 'Pomiń nieobecnych członków', useSubstitutes: 'Użyj zastępstw', subject: 'Temat', ticketSubject: 'Temat zgłoszenia (domyślnie)',
+      destination: 'Miejsce docelowe', customerEmail: 'E-mail do klienta portalu powiązanego z elementem', skipPrivateTrigger: 'Pomijane dla prywatnych komentarzy wyzwalających',
+      availability: 'Dostępność', inactiveResponse: 'Nieaktywna odpowiedź; wykonanie niedostępne',
+      asset_title: 'Tytuł', asset_tag: 'Identyfikator zasobu', asset_type_name: 'Nazwa typu zasobu', asset_status_name: 'Nazwa statusu zasobu',
+      assetSet: 'Zbiór zasobów', workspace: 'Obszar roboczy', description: 'Opis', assetTag: 'Identyfikator zasobu',
+      anyAssetSet: 'Dowolny zbiór zasobów (bez ograniczenia oczekiwanego zbioru)', automaticTag: 'Generowany automatycznie', initialStatus: 'Status początkowy',
+      setDefaultStatus: 'Domyślny status zbioru', item_field: 'Pole elementu', literal: 'Wartość stała', variable: 'Szablon',
+      branchStatus: 'Status gałęzi', tagStatus: 'Status tagu', attachRelease: 'Dołącz wydanie przy tagu', attachCommitItems: 'Dołącz elementy z commitów',
+      upsertNameDefault: 'Klucz tworzenia lub aktualizacji (domyślnie)', model: 'Model', timeout: 'Limit czasu', routing: 'Runner', localRunner: 'Lokalny runner',
+      seconds: '{count} sekund', milliseconds: '{count} ms', localTimeoutOnly: '{count} sekund (tylko lokalnie; czas zdalny określa runner)',
+      body: 'Treść żądania', configuredBody: 'Skonfigurowano ({type}); treść ukryta', headers: 'Nagłówki', headersCount: 'Nagłówki ({count})',
+      prompt: 'Instrukcja', schema: 'Schemat wyjściowy', schemaConfigured: 'Schemat skonfigurowany (nierozpoznana struktura)', schemaType: 'Typ schematu: {type}',
+      anyType: 'Dowolny typ', maxSteps: 'Maksymalna liczba kroków', maxAPICalls: 'Maksymalna liczba wywołań API',
+    },
     title: 'Akcje',
     description: 'Automatyzuj przepływy pracy za pomocą akcji opartych na regułach',
     create: 'Utwórz akcję',
@@ -17,6 +57,12 @@ export default {
     confirmDelete: 'Czy na pewno chcesz usunąć akcję „{name}”?',
     failedToSave: 'Nie udało się zapisać akcji',
     newAction: 'Nowa akcja',
+    moreActions: 'Więcej akcji',
+    rename: 'Zmień nazwę akcji',
+    duplicate: 'Duplikuj akcję',
+    copyName: 'Kopia {name}',
+    duplicateHint: 'Kopia jest początkowo wyłączona i zachowuje wyzwalacz, kroki oraz ustawienia dostępu oryginału.',
+    duplicateActorDenied: 'Duplikowanie tej akcji wymaga uprawnienia do ustawiania wykonawcy akcji, ponieważ jest uruchamiana jako inny użytkownik.',
 
     // Szablony akcji (gotowe schematy automatyzacji)
     templates: {
@@ -29,6 +75,9 @@ export default {
 
     // Typy wyzwalaczy
     trigger: {
+      scmTagCreated: 'Utworzono tag SCM', scmReleaseBranchCreated: 'Utworzono gałąź wydania SCM',
+      scmPrLinked: 'Powiązano pull request SCM', scmPrMerged: 'Scalono pull request SCM',
+      assetCreated: 'Utworzono zasób', assetUpdated: 'Zaktualizowano zasób', assetStatusChanged: 'Zmieniono status zasobu',
       statusTransition: 'Zmiana statusu',
       statusLoop: 'Pętla statusu',
       itemCreated: 'Utworzenie elementu',
@@ -55,6 +104,7 @@ export default {
 
     // Typy węzłów
     nodes: {
+      createItem: 'Utwórz element',
       trigger: 'Wyzwalacz',
       setField: 'Ustaw pole',
       setStatus: 'Ustaw status',
@@ -71,6 +121,7 @@ export default {
       transitionItem: 'Przejście elementu',
       roundRobinAssign: 'Przypisanie rotacyjne',
       createMilestone: 'Utwórz kamień milowy',
+      executeScript: 'Uruchom skrypt',
       notifyCustomer: 'Powiadom klienta',
       insertCannedResponse: 'Wstaw gotową odpowiedź',
       adjustLabels: 'Dostosuj etykiety',
@@ -242,6 +293,7 @@ export default {
 
     // Operatory
     operators: {
+      notContains: 'Nie zawiera', startsWith: 'Zaczyna się od', endsWith: 'Kończy się na', matches: 'Pasuje (Regex)',
       equals: 'Równa się',
       notEquals: 'Nie równa się',
       contains: 'Zawiera',
@@ -260,6 +312,7 @@ export default {
       completed: 'Zakończone',
       failed: 'Niepowodzenie',
       skipped: 'Pominięte',
+      reconciliationRequired: 'Wymagane uzgodnienie',
       startedAt: 'Rozpoczęto',
       completedAt: 'Zakończono',
       error: 'Błąd',
@@ -267,8 +320,29 @@ export default {
       viewDetails: 'Zobacz szczegóły',
     },
 
+    history: {
+      title: 'Historia definicji',
+      noRevisions: 'Brak wersji definicji',
+      revision: 'Wersja',
+      source: 'Źródło',
+      editor: 'Edytowane przez',
+      changedFields: 'Zmienione pola',
+      changeSummary: 'Podsumowanie',
+      createdAt: 'Zapisano o',
+      viewDetails: 'Zobacz wersję',
+      detailTitle: 'Wersja definicji',
+      snapshot: 'Definicja wykonywalna',
+      nodes: 'Węzły',
+      edges: 'Krawędzie',
+      noChangedFields: 'Brak zmian wykonywalnych',
+      system: 'System (baza)',
+      triggerType: 'Wyzwalacz',
+    },
+
     // Ślad wykonania
     trace: {
+      apiCalls: 'Wywołania API',
+      consoleTruncated: 'Dane konsoli zostały obcięte',
       title: 'Szczegóły wykonania',
       noSteps: 'Nie zarejestrowano kroków wykonania',
       setStatus: 'Zmieniono status z „{from}” na „{to}”',

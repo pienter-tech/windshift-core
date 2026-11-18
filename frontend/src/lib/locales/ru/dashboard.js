@@ -109,6 +109,7 @@ export default {
       namePlaceholder: "Моя текущая работа",
       promptLabel: "Что он должен показывать?",
       promptPlaceholder: "Мои задачи со счётчиками и таблицей",
+      chartTypesHint: "Столбцы · Линия · Круговая · Кольцевая · Прогресс",
       generate: "Сгенерировать",
       generating: "Генерация...",
       itemQueryLabel: "Запрос элементов (CQL)",

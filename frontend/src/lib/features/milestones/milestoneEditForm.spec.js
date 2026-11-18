@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { milestones } from '../../api/milestones.js';
+import { milestones } from '../../api/planning.js';
 import { milestoneEditForm } from './milestoneEditForm.js';
 
 // Shapes match the real v2 responses: the progress report has no category_id,

@@ -1,4 +1,6 @@
 <script>
+  let tabPanelElement = $state(null);
+  import { untrack } from 'svelte';
   import { configurationSets } from '../api/configuration.js';
   import { workflows } from '../api/workflows.js';
   import StateDisplay from '../components/StateDisplay.svelte';
@@ -57,7 +59,8 @@
   $effect(() => {
     if (!isVisible) return;
     if (preloadedAnalysis) {
-      hydrateFromAnalysis(preloadedAnalysis);
+      // Hydration initializes editable state; user edits must not retrigger it.
+      untrack(() => hydrateFromAnalysis(preloadedAnalysis));
     } else if (configurationSet || targetConfigurationSet) {
       analyzeMigration();
     }
@@ -483,6 +486,7 @@
             {#if comprehensive}
               <!-- Tabs for each dimension -->
               <TabStrip
+                panelElement={tabPanelElement}
                 tabs={[
                   { id: 'itemType', label: t('migrationAssistant.itemTypes'), count: itemTypeCount, countVariant: 'warning', icon: Type, testid: 'migration-tab-item-types' },
                   { id: 'fields', label: t('migrationAssistant.fields'), count: fieldCount, countVariant: 'warning', icon: FileText, testid: 'migration-tab-fields' },
@@ -494,6 +498,7 @@
             {/if}
 
             <!-- Item Type Migrations -->
+            <div bind:this={tabPanelElement}>
             {#if activeTab === 'itemType' && comprehensive}
               <div>
                 <h3 class="text-lg font-medium mb-4" style="color: var(--ds-text);">{t('migrationAssistant.itemTypeMigrations')}</h3>
@@ -731,6 +736,7 @@
               </div>
             {/if}
 
+            </div>
             {#if migrationSuccess}
               <AlertBox variant="success" message="Migration Completed - All items have been successfully migrated." />
             {/if}

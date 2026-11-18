@@ -1,5 +1,6 @@
 <script>
   import InlineEditorActions from './InlineEditorActions.svelte';
+  import { useRowRetention } from '../virtualization/useRowRetention.svelte';
 
   // Single inline-edit primitive. It owns the edit state machine and the
   // commit/cancel outcome rule; callers own parsing, validation and the
@@ -37,6 +38,7 @@
   let suppressCommit = false;
   let container = $state(null);
   let clickTimeout = null;
+  useRowRetention(() => editing, 'edit');
 
   export function isEditing() {
     return editing;
@@ -89,9 +91,11 @@
       suppressCommit = false;
       return;
     }
-    // Focus moving to a control inside the wrapper (save/cancel button, picker)
-    // is not a commit trigger.
+    // Keep editing while focus moves within the editor or its owned popup.
     if (event.relatedTarget && container?.contains(event.relatedTarget)) return;
+    if (event.relatedTarget && Array.from(container?.querySelectorAll('[aria-controls]') || []).some(
+      (control) => document.getElementById(control.getAttribute('aria-controls'))?.contains(event.relatedTarget)
+    )) return;
     void commit();
   }
 

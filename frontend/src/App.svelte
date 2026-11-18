@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { currentRoute, initRouter, isMobileRoute, navigate } from './lib/router.js';
   import { authStore } from './lib/stores/auth.svelte.js';
   import { portalAuthStore } from './lib/stores/portalAuth.svelte.js';
@@ -21,6 +21,7 @@
   import Button from './lib/components/Button.svelte';
   import LazyRootDialog from './lib/components/LazyRootDialog.svelte';
   import LazyRootView from './lib/components/LazyRootView.svelte';
+  import { activateVirtualAudience } from './lib/virtualization/scrollRestoration';
 
   // Root surfaces are intentionally loaded only after startup has resolved the
   // route/auth boundary. Keep these as direct import() calls so Vite can split
@@ -28,12 +29,13 @@
   const ROOT_VIEW_LOADERS = {
     login: () => import('./lib/dialogs/LoginDialog.svelte'),
     welcome: () => import('./lib/pages/WelcomeAssistant.svelte'),
-    portal: () => import('./lib/layout/Portal.svelte'),
+    portal: () => import('./lib/customer/CustomerPortal.svelte'),
     publicForm: () => import('./lib/features/forms/PublicFormPage.svelte'),
     setPassword: () => import('./lib/pages/SetPassword.svelte'),
     desktop: () => import('./lib/pages/MainApp.svelte'),
+    enrollment: () => import('./lib/pages/Security.svelte'),
     mobile: () => import('./lib/mobile/MobileShell.svelte'),
-    publicBoard: () => import('./lib/pages/PublicBoard.svelte'),
+    publicBoard: () => import('./lib/customer/CustomerBoard.svelte'),
     pagePrint: () => import('./lib/features/pages/PagePrintView.svelte'),
     timeReportPrint: () => import('./lib/features/time/TimeReportPrintView.svelte'),
     testRunSummaryPrint: () => import('./lib/features/testing/TestRunSummaryPrintView.svelte'),
@@ -55,6 +57,9 @@
   let startupAttempt = 0;
   let themeAudience = null;
   let themeLoadGeneration = 0;
+  const enrollmentRequired = $derived(
+    $authStore.isAuthenticated && $authStore.session?.enrollment_required === true
+  );
 
   const BOOTSTRAP_TIMEOUT_MS = 10_000;
   const SLOW_START_MS = 4_000;
@@ -99,21 +104,27 @@
     }, SLOW_START_MS);
 
     try {
-      // Initialize i18n (loads user's preferred locale) and instance branding
-      // (public, no auth). Branding drives the browser tab title and the
-      // sidebar text on every surface, including pre-auth.
-      await Promise.all([
-        withBootstrapDeadline(i18n.init()),
-        brandStore.load({ timeout: BOOTSTRAP_TIMEOUT_MS }),
+      // Load locale, branding, and setup together. Apply startup copy and the
+      // title even if the setup request is still pending or has failed.
+      const [, setupComplete] = await Promise.all([
+        Promise.all([
+          withBootstrapDeadline(i18n.init()),
+          brandStore.load({ timeout: BOOTSTRAP_TIMEOUT_MS }),
+        ]).then(() => {
+          if (attempt !== startupAttempt) return;
+          i18nReady = true;
+          if (typeof document !== 'undefined') {
+            document.title = brandStore.siteTitle;
+          }
+        }),
+        checkSetupStatus(),
       ]);
-      i18nReady = true;
-      if (typeof document !== 'undefined') {
-        document.title = brandStore.siteTitle;
-      }
-
-      // Check setup status first
-      await checkSetupStatus();
       if (attempt !== startupAttempt) return;
+
+      setupCompleted = setupComplete;
+      if (!setupCompleted) {
+        showWelcomeAssistant = true;
+      }
 
       // Only initialize auth if setup is completed. A transport error is not a
       // logout: authStore returns it so the startup UI can offer a retry.
@@ -213,7 +224,13 @@
 
   // Handle authentication state changes
   $effect(() => {
-    if ($authStore.isAuthenticated && setupCompleted) {
+    activateVirtualAudience($authStore.isAuthenticated ? `user:${$authStore.user?.id}` : 'public');
+  });
+
+  $effect(() => {
+    if ($authStore.isAuthenticated && setupCompleted && !enrollmentRequired) {
+      // Auth can publish before the dialog's async submit finishes and unmount it.
+      untrack(() => { if (showLoginDialog) handleLoginSuccess(); });
       showLoginDialog = false;
       appInitialized = true;
       void prepareAuthenticatedShellUI(authStore.currentUser?.id);
@@ -232,11 +249,19 @@
     }
   });
 
+  function handleLoginSuccess() {
+    showLoginDialog = false;
+    const returnTo = safeLoginReturnPath(window.location.search);
+    if (returnTo) navigate(returnTo);
+    else maybeRedirectToMobile();
+  }
+
   // Theme loading follows the authenticated audience rather than only the
   // initial bootstrap. This covers interactive login/logout without delaying
   // shell rendering or requiring a page reload to pick up the active theme.
   $effect(() => {
     if (!appInitialized) return;
+    if (enrollmentRequired) return;
 
     const nextAudience = $authStore.isAuthenticated
       ? `user:${$authStore.currentUser?.id ?? 'authenticated'}`
@@ -298,6 +323,7 @@
   // PWAs already open at /m via the manifest start_url, so this only affects
   // plain browsers.
   function maybeRedirectToMobile() {
+    if (enrollmentRequired) return;
     try {
       if (localStorage.getItem('windshift-prefer-desktop') === 'true') return;
     } catch {
@@ -330,6 +356,7 @@
     'zammad-resolve',
   ]);
   $effect(() => {
+    if (enrollmentRequired) return;
     const route = $currentRoute;
     if (!route.view || isMobileRoute(route.view)) return;
     if (MOBILE_REDIRECT_SKIP_VIEWS.has(route.view)) return;
@@ -353,10 +380,7 @@
     // behind the vite proxy), making a fresh, unconfigured instance look
     // already set up and silently skipping the setup wizard.
     const status = await setup.getStatus({ timeout: BOOTSTRAP_TIMEOUT_MS });
-    setupCompleted = status.setup_completed;
-    if (!status.setup_completed) {
-      showWelcomeAssistant = true;
-    }
+    return status.setup_completed;
   }
 
   async function loadAndApplyTheme(isAuthenticated, generation) {
@@ -440,6 +464,10 @@
       label={getStartupCopy('common.loading', i18nReady, t)}
       detail={startupSlow ? getStartupCopy('common.loadingSlow', i18nReady, t) : ''}
     />
+  {:else if enrollmentRequired && appInitialized}
+    <div class="w-full p-6" data-testid="passkey-enrollment">
+      <LazyRootView loader={ROOT_VIEW_LOADERS.enrollment} label="passkey enrollment" />
+    </div>
   <!-- Public board route - no authentication required -->
   {:else if $currentRoute.view === 'public-board'}
     <LazyRootView
@@ -551,17 +579,7 @@
     loader={ROOT_VIEW_LOADERS.login}
     label="sign in"
     bind:isOpen={showLoginDialog}
-    componentProps={{
-      onsuccess: () => {
-        showLoginDialog = false;
-        const returnTo = safeLoginReturnPath(window.location.search);
-        if (returnTo) {
-          navigate(returnTo);
-        } else {
-          maybeRedirectToMobile();
-        }
-      },
-    }}
+    componentProps={{ onsuccess: handleLoginSuccess }}
   />
 {/if}
 

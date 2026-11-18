@@ -7,12 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"windshift/internal/database"
 	"windshift/internal/models"
+	"windshift/internal/operatorcontrols"
 	"windshift/internal/sso"
 )
 
@@ -50,7 +52,7 @@ func NewConnectionManager(db database.Database, encryption *sso.SecretEncryption
 	return &ConnectionManager{
 		db:         db,
 		encryption: encryption,
-		fallback:   fallback,
+		fallback:   WithOperatorControls(fallback, operatorcontrols.From(db), ""),
 	}
 }
 
@@ -138,6 +140,9 @@ type resolvedConnection struct {
 // signature narrow (just a Client) avoids churning its many callers while
 // still letting PromptConnection name the provider/model in its logs.
 func (m *ConnectionManager) resolve(connectionID int) (*resolvedConnection, error) {
+	if err := operatorcontrols.From(m.db).Check(operatorcontrols.AI); err != nil {
+		return nil, err
+	}
 	var row *sql.Row
 	if connectionID > 0 {
 		row = m.db.QueryRow(
@@ -188,6 +193,7 @@ func (m *ConnectionManager) resolve(connectionID int) (*resolvedConnection, erro
 
 	return &resolvedConnection{
 		client: NewProviderClient(ConnectionConfig{
+			Controls:       operatorcontrols.From(m.db),
 			ProviderType:   ProviderType(providerType),
 			Model:          model,
 			APIKey:         apiKey,
@@ -297,6 +303,7 @@ func (m *ConnectionManager) MaxOutputTokens(connectionID int) int {
 // resolve the admin-selected provider for a coding-agent run (the model id for
 // the agent container; the key + base URL stay server-side in the llm-proxy).
 type ConnectionRuntimeConfig struct {
+	Controls       *operatorcontrols.Controls `json:"-"`
 	ProviderType   string
 	APIFormat      string
 	Model          string
@@ -317,7 +324,10 @@ type ConnectionRuntimeConfig struct {
 // is intentionally narrower than GetConnection and is only used after callers
 // have already authorized access to the selected connection.
 func (m *ConnectionManager) ConnectionRuntime(ctx context.Context, connectionID int) (*ConnectionRuntimeConfig, error) {
-	cfg := &ConnectionRuntimeConfig{}
+	if err := operatorcontrols.From(m.db).Check(operatorcontrols.AI); err != nil {
+		return nil, err
+	}
+	cfg := &ConnectionRuntimeConfig{Controls: operatorcontrols.From(m.db)}
 	var apiKeyEncrypted, baseURLNull, providerConfig sql.NullString
 	err := m.db.QueryRowContext(ctx,
 		`SELECT provider_type, model, api_key_encrypted, base_url, provider_config
@@ -484,22 +494,38 @@ func (m *ConnectionManager) ListEnabledPublic() ([]PublicConnectionInfo, error) 
 	if err != nil {
 		return nil, fmt.Errorf("failed to list enabled connections: %w", err)
 	}
-	defer rows.Close()
-
-	out := make([]PublicConnectionInfo, 0)
+	type rawConnection struct {
+		info           PublicConnectionInfo
+		providerConfig string
+	}
+	var raw []rawConnection
 	for rows.Next() {
-		var c PublicConnectionInfo
+		var rc rawConnection
 		var providerType string
 		var providerConfig sql.NullString
-		if err := rows.Scan(&c.ID, &c.Name, &providerType, &c.Model, &c.IsDefault, &providerConfig); err != nil {
+		if err := rows.Scan(&rc.info.ID, &rc.info.Name, &providerType, &rc.info.Model, &rc.info.IsDefault, &providerConfig); err != nil {
+			_ = rows.Close()
 			return nil, fmt.Errorf("failed to scan connection: %w", err)
 		}
-		c.ProviderType = ProviderType(providerType)
-		c.SupportsVision = EffectiveVision(ProviderConfigVisionMode(providerConfig.String), m.resolveModelVision(c.ProviderType, c.Model))
-		out = append(out, c)
+		rc.info.ProviderType = ProviderType(providerType)
+		rc.providerConfig = providerConfig.String
+		raw = append(raw, rc)
 	}
 	if err := rows.Err(); err != nil {
+		_ = rows.Close()
 		return nil, fmt.Errorf("iterate connections: %w", err)
+	}
+	// Release the cursor before resolving vision capability: the model cache
+	// is database-backed, so holding the cursor deadlocks a one-connection
+	// read pool.
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	out := make([]PublicConnectionInfo, 0, len(raw))
+	for _, rc := range raw {
+		c := rc.info
+		c.SupportsVision = EffectiveVision(ProviderConfigVisionMode(rc.providerConfig), m.resolveModelVision(c.ProviderType, c.Model))
+		out = append(out, c)
 	}
 	return out, nil
 }
@@ -542,6 +568,9 @@ type CreateConnectionRequest struct {
 
 // CreateConnection creates a new LLM connection.
 func (m *ConnectionManager) CreateConnection(req CreateConnectionRequest) (*ConnectionInfo, error) {
+	if err := operatorcontrols.From(m.db).Check(operatorcontrols.AIConnections); err != nil {
+		return nil, err
+	}
 	var encryptedKey sql.NullString
 	if req.APIKey != "" {
 		encrypted, err := m.encryption.Encrypt(req.APIKey)
@@ -594,6 +623,9 @@ type UpdateConnectionRequest struct {
 
 // UpdateConnection updates an existing LLM connection.
 func (m *ConnectionManager) UpdateConnection(id int, req UpdateConnectionRequest) (*ConnectionInfo, error) {
+	if err := operatorcontrols.From(m.db).Check(operatorcontrols.AIConnections); err != nil {
+		return nil, err
+	}
 	// If setting as default, clear existing defaults
 	if req.IsDefault {
 		if _, err := m.db.ExecWrite("UPDATE llm_connections SET is_default = false WHERE is_default = true AND id != ?", id); err != nil {
@@ -635,6 +667,9 @@ func (m *ConnectionManager) UpdateConnection(id int, req UpdateConnectionRequest
 
 // DeleteConnection deletes an LLM connection.
 func (m *ConnectionManager) DeleteConnection(id int) error {
+	if err := operatorcontrols.From(m.db).Check(operatorcontrols.AIConnections); err != nil {
+		return err
+	}
 	_, err := m.db.ExecWrite("DELETE FROM llm_connections WHERE id = ?", id)
 	return err
 }
@@ -670,6 +705,9 @@ type CatalogRuntime struct {
 // GetCatalogRuntimeForProvider returns auth/base URL from the preferred enabled
 // connection for a provider. It returns nil when no enabled connection exists.
 func (m *ConnectionManager) GetCatalogRuntimeForProvider(providerType ProviderType) (*CatalogRuntime, error) {
+	if err := operatorcontrols.From(m.db).Check(operatorcontrols.AIConnections); err != nil {
+		return nil, err
+	}
 	return m.catalogRuntimeFromRow(m.db.QueryRow(
 		`SELECT id, api_key_encrypted, base_url FROM llm_connections
 		 WHERE provider_type = ? AND is_enabled = true
@@ -683,6 +721,9 @@ func (m *ConnectionManager) GetCatalogRuntimeForProvider(providerType ProviderTy
 // connection, and the connection's provider type so callers can validate it
 // against route parameters.
 func (m *ConnectionManager) GetCatalogRuntimeForConnection(connectionID int) (ProviderType, *CatalogRuntime, error) {
+	if err := operatorcontrols.From(m.db).Check(operatorcontrols.AIConnections); err != nil {
+		return "", nil, err
+	}
 	var providerType string
 	row := m.db.QueryRow(
 		`SELECT provider_type, id, api_key_encrypted, base_url FROM llm_connections
@@ -730,6 +771,12 @@ func (m *ConnectionManager) decryptCatalogRuntime(id int, apiKeyEncrypted, baseU
 
 // TestConnection tests a connection by creating a client and calling Health.
 func (m *ConnectionManager) TestConnection(id int) error {
+	if err := operatorcontrols.From(m.db).Check(operatorcontrols.AIConnections); err != nil {
+		return err
+	}
+	if err := operatorcontrols.From(m.db).Check(operatorcontrols.AI); err != nil {
+		return err
+	}
 	var providerType, model string
 	var apiKeyEncrypted, baseURL, providerConfig sql.NullString
 	err := m.db.QueryRow(
@@ -748,6 +795,7 @@ func (m *ConnectionManager) TestConnection(id int) error {
 	}
 
 	client := NewProviderClient(ConnectionConfig{
+		Controls:       operatorcontrols.From(m.db),
 		ProviderType:   ProviderType(providerType),
 		Model:          model,
 		APIKey:         apiKey,
@@ -877,6 +925,9 @@ func (m *ConnectionManager) ResolveForFeature(featureKey string) (Client, error)
 //   - Mode == Default (or no entry) → uses override if > 0, else the default
 //     enabled connection.
 func (m *ConnectionManager) ResolveForFeatureWithOverride(featureKey string, userOverrideConnectionID int) (Client, error) {
+	if err := m.checkOperatorFeature(featureKey); err != nil {
+		return nil, err
+	}
 	cfg, err := LoadAIFeaturesConfig(m.db)
 	if err != nil {
 		return nil, err
@@ -894,6 +945,9 @@ func (m *ConnectionManager) ResolveForFeatureWithOverride(featureKey string, use
 // reports the wrong model because it re-derived the policy is worse than one
 // that reports nothing.
 func (m *ConnectionManager) ResolveForFeatureWithIdentity(featureKey string, userOverrideConnectionID int) (Client, ConnectionDescriptor, error) {
+	if err := m.checkOperatorFeature(featureKey); err != nil {
+		return nil, ConnectionDescriptor{}, err
+	}
 	cfg, err := LoadAIFeaturesConfig(m.db)
 	if err != nil {
 		return nil, ConnectionDescriptor{}, err
@@ -910,6 +964,17 @@ func (m *ConnectionManager) ResolveForFeatureWithIdentity(featureKey string, use
 type featureResolution struct {
 	disabled     bool
 	connectionID int // 0 means "use the default enabled connection"
+}
+
+func (m *ConnectionManager) checkOperatorFeature(feature string) error {
+	controls := operatorcontrols.From(m.db)
+	if err := controls.Check(operatorcontrols.AI); err != nil {
+		return err
+	}
+	if policy := controls.AI(); policy != nil && slices.Contains(policy.DeniedFeatures, feature) {
+		return &operatorcontrols.DeniedError{Capability: operatorcontrols.AI}
+	}
+	return nil
 }
 
 // decideFeatureResolution is the pure policy function. Extracted so the rules

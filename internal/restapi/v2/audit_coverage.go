@@ -8,6 +8,24 @@ package v2
 // request middleware flushes it. AuditService: the application service emits the
 // central audit event with the request actor. AuditExempt: reviewed exemption.
 var auditSpecRegistry = map[string]AuditKind{
+	"postWorkspacesWorkspaceIdTestCasesBulk":            AuditService,
+	"putChannelsChannelIdExperience":                    AuditService,
+	"postChannelsChannelIdBoardPlacements":              AuditService,
+	"putChannelsChannelIdBoardPlacementsPlacementId":    AuditService,
+	"deleteChannelsChannelIdBoardPlacementsPlacementId": AuditService,
+	"putBoardPublicationsCollectionId":                  AuditService,
+	"postBoardPublicationsCollectionIdRevoke":           AuditService,
+	"postBoardPublicationsCollectionIdAllowRepublish":   AuditService,
+	// Public WebAuthn ceremonies create browser sessions, not resource mutations.
+	"postAuthPasskeyStart":          AuditExempt,
+	"postAuthPasskeyComplete":       AuditExempt,
+	"putCustomerAccessKindIdPolicy": AuditRecorder,
+	// Customer login creates/revokes isolated customer credentials, not backend mutations.
+	"postCustomerAccessKindSlugAuthRequest":                                          AuditExempt,
+	"postCustomerAccessKindSlugAuthVerify":                                           AuditExempt,
+	"postCustomerAccessKindSlugAuthPasskeyStart":                                     AuditExempt,
+	"postCustomerAccessKindSlugAuthPasskeyComplete":                                  AuditExempt,
+	"postCustomerAccessKindSlugAuthLogout":                                           AuditExempt,
 	"deleteAdminApiTokensTokenId":                                                    AuditRecorder,
 	"deleteAdminGroupsGroupId":                                                       AuditRecorder,
 	"deleteAdminObjectTranslationsObjectTypeObjectIdFieldLocale":                     AuditRecorder,
@@ -54,6 +72,9 @@ var auditSpecRegistry = map[string]AuditKind{
 	"deleteTimeProjectsProjectIdManagersAssignmentId":                                AuditService,
 	"deleteTimeProjectsProjectIdMembersAssignmentId":                                 AuditService,
 	"deleteTimeWorklogsWorklogId":                                                    AuditService,
+	"deleteTimeWorklogDraftsDraftId":                                                 AuditService,
+	"patchTimeWorklogDraftsDraftId":                                                  AuditService,
+	"postTimeWorklogDraftsDraftIdBook":                                               AuditService,
 	"deleteWorkflowsWorkflowId":                                                      AuditService,
 	"deleteWorkspaceRolesWorkspaceRoleId":                                            AuditService,
 	"deleteWorkspacesWorkspaceId":                                                    AuditService,

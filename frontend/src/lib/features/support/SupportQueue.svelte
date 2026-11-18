@@ -48,11 +48,15 @@
   import TableHeaderBar from '../../components/TableHeaderBar.svelte';
   import DropdownMenu from '../../layout/DropdownMenu.svelte';
   import WorkItemListRow from '../collections/WorkItemListRow.svelte';
+  import VirtualRows from '../../components/VirtualRows.svelte';
+  import { collectionItemRowKey } from '../collections/collectionVirtualRows';
   import WorkItemListFooter from '../collections/WorkItemListFooter.svelte';
   import ColumnSelector from '../collections/ColumnSelector.svelte';
   import QlFilterBuilder from '../shared/QlFilterBuilder.svelte';
 
   let { workspaceId, collectionId = null, queue = null } = $props();
+  let queueScrollElement = $state(null);
+  let queueListElement = $state(null);
 
   // Resolved queue catalog for the current scope (built-ins + custom).
   let queues = $state([]);
@@ -67,6 +71,7 @@
   let loadingItems = $state(false);
   let itemsPagination = $state(null);
   let itemsLoadId = 0;
+  let loadedQueryScope = $state('');
   let currentPage = $state(1);
   let itemsPerPage = $state(QUEUE_PAGE_SIZE);
 
@@ -168,7 +173,11 @@
     }, 250);
   }
 
+  const readController = new AbortController();
+  const readOptions = { signal: readController.signal };
   onDestroy(() => {
+    readController.abort();
+    itemsLoadId += 1;
     if (searchTimer) clearTimeout(searchTimer);
   });
 
@@ -197,7 +206,7 @@
       return;
     }
     try {
-      collection = await collections.get(collectionId);
+      collection = await collections.get(collectionId, readOptions);
     } catch (error) {
       collection = null;
     }
@@ -206,10 +215,11 @@
   // Reuses the list view's column configuration so both views stay in sync.
   async function loadBoardConfiguration() {
     try {
-      const config = await collections.getBoardConfiguration(collectionId, workspaceId);
+      const config = await collections.getBoardConfiguration(collectionId, workspaceId, readOptions);
       boardConfig = config;
       listColumns = listColumnsFromConfig(config);
     } catch (error) {
+      if (readController.signal.aborted) return;
       boardConfig = null;
       listColumns = [...DEFAULT_LIST_COLUMNS];
       if (error?.status !== 404) {
@@ -245,13 +255,17 @@
   }
 
   async function loadQueues() {
+    if (readController.signal.aborted) return;
     try {
       await workspaceDataStore.initialize(workspaceId);
+      if (readController.signal.aborted) return;
       const path = queuesPath();
       if (!path) throw new Error('workspace bootstrap unavailable');
-      queues = (await fetchV2Data(path)) ?? [];
+      queues = (await fetchV2Data(path, readOptions)) ?? [];
+      if (readController.signal.aborted) return;
       resolveActiveRef();
     } catch (error) {
+      if (readController.signal.aborted) return;
       errorToast(t('supportQueue.loadFailed'));
     } finally {
       loadingQueues = false;
@@ -271,12 +285,14 @@
   }
 
   async function loadItems({ page = currentPage, limit = itemsPerPage, search = searchQuery.trim() } = {}) {
+    if (readController.signal.aborted) return;
     if (!activeQueue?.ql) {
       items = [];
       itemsPagination = null;
       return;
     }
     const loadId = ++itemsLoadId;
+    const queryScope = JSON.stringify([workspaceId, collectionId, activeRef, activeQueue.ql, search]);
     loadingItems = true;
     try {
       const response = await itemsApi.getAll({
@@ -288,8 +304,9 @@
         order_by: 'updated_at',
         sort_direction: 'desc',
         ...(search ? { search } : {}),
-      });
+      }, readOptions);
       if (loadId !== itemsLoadId) return;
+      loadedQueryScope = queryScope;
       items = response?.data ?? [];
       // The v2 document names the effective size page_size; the shared
       // Pagination component reads limit.
@@ -839,6 +856,7 @@
   </div>
 
   <div
+    bind:this={queueScrollElement}
     class="min-h-0 min-w-0 max-w-full flex-1 w-full overflow-auto overscroll-contain"
     data-testid="support-queue-canvas"
   >
@@ -870,9 +888,15 @@
             <div>{t('common.actions')}</div>
           </TableHeaderBar>
 
-          <div>
-            {#each items as item (item.id)}
+          <div bind:this={queueListElement} style="overflow-anchor: none;">
+            <VirtualRows {items} getKey={collectionItemRowKey} listElement={queueListElement}
+              scrollElement={queueScrollElement} layoutRevision={gridTemplateColumns}
+              identity={`queue:${loadedQueryScope}:${currentPage}:${itemsPerPage}`}
+            >
+            {#snippet row(item, virtual)}
               <WorkItemListRow
+                virtualRow={virtual}
+                deferred={false}
                 {item}
                 columns={listColumns}
                 {gridTemplateColumns}
@@ -903,7 +927,8 @@
                   />
                 {/snippet}
               </WorkItemListRow>
-            {/each}
+            {/snippet}
+            </VirtualRows>
           </div>
         </div>
 

@@ -7,6 +7,8 @@ import (
 	"math"
 	"time"
 
+	"windshift/internal/operatorcontrols"
+
 	"github.com/grafana/sobek"
 )
 
@@ -23,11 +25,15 @@ const (
 // runtime would let one script change what later executions observe. Creating a
 // runtime costs a couple of microseconds, which is cheap enough that pooling is
 // not worth the cross-execution isolation risk.
-type ScriptEngine struct{}
+type ScriptEngine struct{ controls *operatorcontrols.Controls }
 
 // NewScriptEngine creates a new script engine.
-func NewScriptEngine() *ScriptEngine {
-	return &ScriptEngine{}
+func NewScriptEngine(controls ...*operatorcontrols.Controls) *ScriptEngine {
+	e := &ScriptEngine{}
+	if len(controls) > 0 {
+		e.controls = controls[0]
+	}
+	return e
 }
 
 // Execute runs a JavaScript script with the given variables and returns the result
@@ -37,13 +43,24 @@ func NewScriptEngine() *ScriptEngine {
 //
 // The exported Go value is safe to use after this function returns; no sobek.Value
 // escapes the runtime (which is NOT goroutine-safe).
-func (e *ScriptEngine) Execute(ctx context.Context, script string, vars map[string]any, timeoutMs int) (any, error) {
+func (e *ScriptEngine) Execute(ctx context.Context, script string, vars map[string]any, timeoutMs int) (output any, err error) {
+	if err := e.controls.Check(operatorcontrols.Scripts); err != nil {
+		return nil, err
+	}
+	release, err := e.controls.Acquire(ctx, "scripts", e.controls.Limits().ConcurrentScripts)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if len(script) > maxScriptLength {
 		return nil, fmt.Errorf("script exceeds maximum length of %d bytes", maxScriptLength)
 	}
 
 	if timeoutMs <= 0 {
 		timeoutMs = defaultScriptTimeoutMs
+	}
+	if ceiling := e.controls.Limits().ScriptTimeoutMS; ceiling > 0 && timeoutMs > ceiling {
+		timeoutMs = ceiling
 	}
 
 	// A fresh runtime per call is the only way to guarantee that built-ins and
@@ -74,6 +91,24 @@ func (e *ScriptEngine) Execute(ctx context.Context, script string, vars map[stri
 		case <-done:
 		}
 	}()
+	defer func() {
+		// Exported getters and exception formatting are script execution too.
+		if recovered := recover(); recovered != nil {
+			err = inertScriptPanic(recovered)
+		}
+		if err != nil {
+			output = nil
+			err = inertScriptError(err)
+			var interrupted *sobek.InterruptedError
+			if errors.As(err, &interrupted) && interrupted.Value() == errScriptTimeout {
+				err = fmt.Errorf("script execution timed out after %dms", timeoutMs)
+			} else {
+				err = fmt.Errorf("script execution error: %w", err)
+			}
+		}
+		close(done)
+		<-exited
+	}()
 
 	result, err := vm.RunString(script)
 	// Only retry on non-interrupt errors. An InterruptedError means the
@@ -88,18 +123,8 @@ func (e *ScriptEngine) Execute(ctx context.Context, script string, vars map[stri
 			err = nil
 		}
 	}
-	close(done)
-	<-exited
-
 	if err != nil {
-		// Check if it was a timeout
-		var exception *sobek.InterruptedError
-		if errors.As(err, &exception) {
-			if exception.Value() == errScriptTimeout {
-				return nil, fmt.Errorf("script execution timed out after %dms", timeoutMs)
-			}
-		}
-		return nil, fmt.Errorf("script execution error: %w", err)
+		return nil, err
 	}
 
 	if result == nil || sobek.IsUndefined(result) || sobek.IsNull(result) {

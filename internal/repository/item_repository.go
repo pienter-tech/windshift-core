@@ -537,13 +537,18 @@ func (r *ItemRepository) GetWorkspaceIDCtx(ctx context.Context, itemID int) (int
 // Items that do not exist are absent from the returned map, so callers can
 // treat a missing entry as "not found".
 func (r *ItemRepository) GetWorkspaceIDs(itemIDs []int) (map[int]int, error) {
+	return r.GetWorkspaceIDsContext(context.Background(), itemIDs)
+}
+
+// GetWorkspaceIDsContext resolves item ownership before mutation authorization.
+func (r *ItemRepository) GetWorkspaceIDsContext(ctx context.Context, itemIDs []int) (map[int]int, error) {
 	resolved := make(map[int]int, len(itemIDs))
 	if len(itemIDs) == 0 {
 		return resolved, nil
 	}
 
 	clause, args := inPlaceholders(itemIDs)
-	rows, err := r.db.Query("SELECT id, workspace_id FROM items WHERE id IN ("+clause+")", args...)
+	rows, err := r.db.QueryContext(ctx, "SELECT id, workspace_id FROM items WHERE id IN ("+clause+")", args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query item workspace ids: %w", err)
 	}
@@ -664,61 +669,6 @@ func (r *ItemRepository) GetTitles(itemIDs []int) (map[int]string, error) {
 	return out, rows.Err()
 }
 
-// ItemRefByCustomField identifies an item referencing an asset in custom fields.
-type ItemRefByCustomField struct {
-	ID          int
-	Title       string
-	WorkspaceID int
-}
-
-// ListItemsReferencingAssetInCustomField scans scalar, object, and array asset
-// references for a field key. Callers provide stringified values.
-func (r *ItemRepository) ListItemsReferencingAssetInCustomField(fieldKey, assetIDStr string) ([]ItemRefByCustomField, error) {
-	var query string
-	if r.db.GetDriverName() == "postgres" {
-		directExpr := fmt.Sprintf("i.custom_field_values->>'%s'", fieldKey)
-		nestedExpr := fmt.Sprintf("i.custom_field_values->'%s'->>'id'", fieldKey)
-		arrayExpr := fmt.Sprintf(`EXISTS (
-			SELECT 1 FROM jsonb_array_elements(CASE
-				WHEN jsonb_typeof(i.custom_field_values->'%s') = 'array' THEN i.custom_field_values->'%s'
-				ELSE '[]'::jsonb
-			END) AS elem
-			WHERE elem #>> '{}' = ? OR elem->>'id' = ?
-		)`, fieldKey, fieldKey)
-		query = fmt.Sprintf(`
-			SELECT i.id, i.title, i.workspace_id
-			FROM items i
-			WHERE (%s = ? OR %s = ? OR %s)
-		`, directExpr, nestedExpr, arrayExpr)
-	} else {
-		directExpr := fmt.Sprintf(`NULLIF(i.custom_field_values,'') ->> '$."%s"'`, fieldKey)    //nolint:gocritic // SQL JSON path, not Go quoting
-		nestedExpr := fmt.Sprintf(`NULLIF(i.custom_field_values,'') ->> '$."%s".id'`, fieldKey) //nolint:gocritic // SQL JSON path, not Go quoting
-		arrayExpr := fmt.Sprintf(`EXISTS (
-			SELECT 1 FROM json_each(NULLIF(i.custom_field_values,'') -> '$."%s"') AS elem
-			WHERE CAST(elem.value AS TEXT) = ? OR elem.value ->> '$.id' = ?
-		)`, fieldKey) //nolint:gocritic // SQL JSON path, not Go quoting
-		query = fmt.Sprintf(`
-			SELECT i.id, i.title, i.workspace_id
-			FROM items i
-			WHERE (%s = ? OR %s = ? OR %s)
-		`, directExpr, nestedExpr, arrayExpr)
-	}
-	rows, err := r.db.Query(query, assetIDStr, assetIDStr, assetIDStr, assetIDStr)
-	if err != nil {
-		return nil, fmt.Errorf("list items referencing asset in custom field: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	var out []ItemRefByCustomField
-	for rows.Next() {
-		var ref ItemRefByCustomField
-		if err := rows.Scan(&ref.ID, &ref.Title, &ref.WorkspaceID); err != nil {
-			return nil, fmt.Errorf("scan item ref: %w", err)
-		}
-		out = append(out, ref)
-	}
-	return out, rows.Err()
-}
-
 // ItemGraphMetadata contains display, permission, and status data for a graph node.
 type ItemGraphMetadata struct {
 	WorkspaceKey        string
@@ -831,11 +781,61 @@ func (r *ItemRepository) RemapFieldForWorkspacesTxAsUser(tx database.Tx, column 
 }
 
 func (r *ItemRepository) remapFieldForWorkspacesTx(tx database.Tx, column string, fromID *int, toID int, itemTypeID *int, workspaceIDs []int, now time.Time, actorUserID int) (int, error) {
+	itemIDs, err := r.captureRemapTargetsTx(tx, column, fromID, itemTypeID, workspaceIDs, false)
+	if err != nil {
+		return 0, err
+	}
+	return r.applyCapturedRemapTx(tx, column, fromID, toID, itemIDs, now, actorUserID)
+}
+
+type statusRemapTargets struct {
+	fromID  *int
+	toID    int
+	itemIDs []int
+}
+
+// StatusRemapPlan retains original item membership across type/status changes.
+type StatusRemapPlan struct {
+	targets []statusRemapTargets
+}
+
+func (r *ItemRepository) SnapshotStatusRemapsForWorkspacesTx(tx database.Tx, mappings []models.StatusMigrationMapping, workspaceIDs []int) (*StatusRemapPlan, error) {
+	plan := &StatusRemapPlan{}
+	for _, mapping := range mappings {
+		fromID := mapping.FromStatusID
+		if fromID != nil && *fromID == 0 {
+			fromID = nil
+		}
+		if fromID != nil && *fromID == mapping.ToStatusID {
+			continue
+		}
+		ids, err := r.captureRemapTargetsTx(tx, "status_id", fromID, mapping.ItemTypeID, workspaceIDs, true)
+		if err != nil {
+			return nil, err
+		}
+		plan.targets = append(plan.targets, statusRemapTargets{fromID: fromID, toID: mapping.ToStatusID, itemIDs: ids})
+	}
+	return plan, nil
+}
+
+func (r *ItemRepository) ApplyStatusRemapsTxAsUser(tx database.Tx, plan *StatusRemapPlan, now time.Time, actorUserID int) (int, error) {
+	count := 0
+	for _, target := range plan.targets {
+		rows, err := r.applyCapturedRemapTx(tx, "status_id", target.fromID, target.toID, target.itemIDs, now, actorUserID)
+		if err != nil {
+			return 0, err
+		}
+		count += rows
+	}
+	return count, nil
+}
+
+func (r *ItemRepository) captureRemapTargetsTx(tx database.Tx, column string, fromID, itemTypeID *int, workspaceIDs []int, exactItemType bool) ([]int, error) {
 	if !itemRemapColumns[column] {
-		return 0, fmt.Errorf("RemapFieldForWorkspacesTx: column %q is not in the allow-list", column)
+		return nil, fmt.Errorf("RemapFieldForWorkspacesTx: column %q is not in the allow-list", column)
 	}
 	if len(workspaceIDs) == 0 {
-		return 0, nil
+		return nil, nil
 	}
 	// The column name is validated against the fixed allow-list above, so the
 	// fmt.Sprintf cannot splice attacker-controlled input.
@@ -850,6 +850,8 @@ func (r *ItemRepository) remapFieldForWorkspacesTx(tx database.Tx, column string
 	if itemTypeID != nil {
 		where += " AND item_type_id = ?"
 		args = append(args, *itemTypeID)
+	} else if exactItemType {
+		where += " AND item_type_id IS NULL"
 	}
 	ph, wsArgs := inPlaceholders(workspaceIDs)
 	where += " AND workspace_id IN (" + ph + ")"
@@ -859,32 +861,45 @@ func (r *ItemRepository) remapFieldForWorkspacesTx(tx database.Tx, column string
 	// item-history row; the remap is otherwise invisible to audit trails.
 	idRows, err := tx.Query("SELECT id FROM items"+where, args...)
 	if err != nil {
-		return 0, fmt.Errorf("list %s remap targets: %w", column, err)
+		return nil, fmt.Errorf("list %s remap targets: %w", column, err)
 	}
 	var itemIDs []int
 	for idRows.Next() {
 		var id int
 		if err := idRows.Scan(&id); err != nil {
 			_ = idRows.Close()
-			return 0, fmt.Errorf("scan %s remap target: %w", column, err)
+			return nil, fmt.Errorf("scan %s remap target: %w", column, err)
 		}
 		itemIDs = append(itemIDs, id)
 	}
 	if err := idRows.Err(); err != nil {
 		_ = idRows.Close()
-		return 0, fmt.Errorf("iterate %s remap targets: %w", column, err)
+		return nil, fmt.Errorf("iterate %s remap targets: %w", column, err)
 	}
 	_ = idRows.Close()
+	return itemIDs, nil
+}
 
-	updateQuery := fmt.Sprintf("UPDATE items SET %s = ?, updated_at = ?", column) + where
-	updateArgs := make([]any, 0, 2+len(args))
-	updateArgs = append(updateArgs, toID, now)
-	updateArgs = append(updateArgs, args...)
-	res, err := tx.Exec(updateQuery, updateArgs...)
-	if err != nil {
-		return 0, fmt.Errorf("remap %s: %w", column, err)
+func (r *ItemRepository) applyCapturedRemapTx(tx database.Tx, column string, fromID *int, toID int, itemIDs []int, now time.Time, actorUserID int) (int, error) {
+	if !itemRemapColumns[column] {
+		return 0, fmt.Errorf("remap column %q is not in the allow-list", column)
 	}
-	rows, _ := res.RowsAffected()
+	var rows int64
+	// Bound parameter counts for both SQLite and PostgreSQL.
+	for start := 0; start < len(itemIDs); start += 500 {
+		end := min(start+500, len(itemIDs))
+		ph, args := inPlaceholders(itemIDs[start:end])
+		updateArgs := append([]any{toID, now}, args...)
+		res, err := tx.Exec(fmt.Sprintf("UPDATE items SET %s = ?, updated_at = ? WHERE id IN (%s)", column, ph), updateArgs...)
+		if err != nil {
+			return 0, fmt.Errorf("remap %s: %w", column, err)
+		}
+		changed, err := res.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		rows += changed
+	}
 
 	// Record the remap per item, committed atomically with the update.
 	oldValue := ""
@@ -1365,12 +1380,17 @@ func (r *ItemRepository) GetParentID(itemID int) (*int, error) {
 
 // GetParentIDTx locks and reads the parent inside the supplied transaction.
 func (r *ItemRepository) GetParentIDTx(tx database.Tx, itemID int) (*int, error) {
+	return r.GetParentIDTxContext(context.Background(), tx, itemID)
+}
+
+// GetParentIDTxContext keeps hierarchy-lock waits within the request lifetime.
+func (r *ItemRepository) GetParentIDTxContext(ctx context.Context, tx database.Tx, itemID int) (*int, error) {
 	query := `SELECT parent_id FROM items WHERE id = ?`
 	if r.db.GetDriverName() == "postgres" {
 		query += " FOR UPDATE"
 	}
 	var parentID sql.NullInt64
-	if err := tx.QueryRow(query, itemID).Scan(&parentID); err != nil {
+	if err := tx.QueryRowContext(ctx, query, itemID).Scan(&parentID); err != nil {
 		return nil, mapItemErr(err, "get parent id")
 	}
 	return nullIntPtr(parentID), nil

@@ -36,6 +36,8 @@ type FlowOptions struct {
 	// TotalSteps is a shared counter across nested flows — an iterator body
 	// shares the outer flow's budget. Nil means the runner keeps its own.
 	TotalSteps *int
+	// AdmitStep reserves aggregate capacity before dispatch, including iterators.
+	AdmitStep func(context.Context) error
 	// OnStep is invoked for every recorded step, in order. Engines use it to
 	// mirror steps into their execution context while the flow runs, since
 	// condition edges and iterators read earlier results mid-flow.
@@ -59,9 +61,8 @@ type FlowRun struct {
 // after a failed step. These are the loop semantics of the three action
 // engines this runner replaces.
 //
-// The returned error is non-nil only for a cyclic graph (errors.Is with
-// ErrCycleDetected) or a canceled execCtx; a canceled context is detected
-// after each step and the in-flight step is recorded as failed.
+// The returned error is non-nil only for a cyclic graph or a canceled context.
+// Cancellation prevents new dispatches and marks an in-flight step as failed.
 func RunFlow[N RunnerNode, E ActionEdge](execCtx context.Context, nodes []N, edges []E, opts FlowOptions, dispatch FlowDispatch[N]) (FlowRun, error) {
 	nodeIDs := make([]int, len(nodes))
 	nodeMap := make(map[int]N, len(nodes))
@@ -98,6 +99,9 @@ func RunFlow[N RunnerNode, E ActionEdge](execCtx context.Context, nodes []N, edg
 
 	executed := make(map[int]bool)
 	for _, nodeID := range sortedIDs {
+		if err := execCtx.Err(); err != nil {
+			return run, err
+		}
 		node := nodeMap[nodeID]
 		if node.GetNodeType() == opts.TriggerNodeType {
 			executed[node.GetID()] = true
@@ -113,6 +117,13 @@ func RunFlow[N RunnerNode, E ActionEdge](execCtx context.Context, nodes []N, edg
 			continue
 		}
 
+		if opts.AdmitStep != nil && (opts.MaxSteps == 0 || *total < opts.MaxSteps) {
+			if err := opts.AdmitStep(execCtx); err != nil {
+				now := time.Now()
+				record(models.StepResult{NodeID: node.GetID(), NodeType: models.ActionNodeType(node.GetNodeType()), Status: models.ActionStatusFailed, StartedAt: now, CompletedAt: &now, ErrorMessage: err.Error()})
+				return run, err
+			}
+		}
 		*total++
 		if opts.MaxSteps > 0 && *total > opts.MaxSteps {
 			now := time.Now()

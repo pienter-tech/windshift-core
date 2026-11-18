@@ -6,9 +6,8 @@ package server
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
+	"crypto/tls"
 	"embed"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,7 +15,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -37,7 +35,6 @@ import (
 	"windshift/internal/integrations/docmost"
 	"windshift/internal/itemevents"
 	"windshift/internal/ldap"
-	"windshift/internal/licensing"
 	"windshift/internal/llm"
 	"windshift/internal/logger"
 	mcpserver "windshift/internal/mcp"
@@ -45,6 +42,7 @@ import (
 	"windshift/internal/middleware"
 	"windshift/internal/models"
 	"windshift/internal/objecttranslation"
+	"windshift/internal/operatorcontrols"
 	"windshift/internal/plugins"
 	"windshift/internal/portalwebauthn"
 	"windshift/internal/ratelimit"
@@ -182,6 +180,7 @@ type Server struct {
 	// integration OAuth surfaces; set during wiring, used to revoke provider
 	// grants when a user is offboarded.
 	secretEncryption    *sso.SecretEncryption
+	scmHTTPClients      *scm.HTTPClientPool
 	issueSyncStopChan   chan struct{}
 	magicLinkStopChan   chan struct{}
 	cleanupStopChan     chan struct{}
@@ -205,6 +204,7 @@ type Server struct {
 	setupLimiter          *ratelimit.Limiter
 	ssoRateLimiter        *ratelimit.Limiter
 	portalAuthLimiter     *ratelimit.Limiter
+	customerAccessLimiter *ratelimit.Limiter
 	oauthTokenLimiter     *ratelimit.Limiter
 	aiRateLimiter         *ratelimit.Limiter
 	widgetGenerateLimiter *ratelimit.Limiter
@@ -324,6 +324,11 @@ func (s *Server) initialize() error {
 	if err = s.db.Initialize(); err != nil {
 		return fmt.Errorf("failed to initialize database: %w", err)
 	}
+	controls, err := operatorcontrols.New(cfg.OperatorPolicy, repository.NewOperatorUsageRepository(s.db))
+	if err != nil {
+		return fmt.Errorf("operator controls: %w", err)
+	}
+	s.db = database.WithOperatorControls(s.db, controls)
 	if err = database.ValidateCanonicalSchemaCheckpoint(s.db); err != nil {
 		return fmt.Errorf("database startup refused: %w", err)
 	}
@@ -434,6 +439,8 @@ func (s *Server) initialize() error {
 	s.setupLimiter = ratelimit.New(20.0/60.0, 30, ipKey)
 	s.ssoRateLimiter = ratelimit.New(10.0/60.0, 5, ipKey)
 	s.portalAuthLimiter = ratelimit.New(3.0/60.0, 3, ipKey)
+	// Customer passkey and email flows each require multiple login requests.
+	s.customerAccessLimiter = ratelimit.New(5.0/60.0, 10, ipKey)
 	s.calendarFeedLimiter = ratelimit.New(10.0/60.0, 15, ipKey)
 	s.publicBoardLimiter = ratelimit.New(30.0/60.0, 60, ipKey)
 	s.pluginPublicLimiter = ratelimit.New(30.0/60.0, 60, ipKey)
@@ -703,6 +710,7 @@ func (s *Server) initialize() error {
 	if storageErr != nil {
 		return fmt.Errorf("initialize attachment storage: %w", storageErr)
 	}
+	attachmentStorage.SetOperatorControls(controls)
 	if attachmentStorage.Enabled() {
 		if attachmentStorage.Backend() == config.StorageBackendS3 {
 			// The S3 probe retries transient failures and tolerates an
@@ -769,7 +777,8 @@ func (s *Server) initialize() error {
 	timeProjectHandler := handlers.NewTimeProjectHandler(s.db, timePermissionService, customerOrgPermissionService)
 	timeWorklogService := services.NewTimeWorklogService(s.db)
 	activeTimerRepo := repository.NewActiveTimerRepository(s.db)
-	timerService := services.NewTimerService(activeTimerRepo, repository.NewItemRepository(s.db), timePermissionService, permService)
+	draftRepo := repository.NewTimeWorklogDraftRepository(s.db)
+	timerService := services.NewTimerService(activeTimerRepo, draftRepo, repository.NewItemRepository(s.db), timeWorklogService, timePermissionService, permService)
 	customerOrgPermissionHandler := handlers.NewCustomerOrganisationPermissionHandler(logger.NewAuditor(s.db), customerOrgPermissionService)
 
 	itemLinkService := services.NewItemLinkService(s.db).
@@ -860,6 +869,7 @@ func (s *Server) initialize() error {
 	reviewHandler := handlers.NewReviewHandler(s.db, permService)
 	calendarFeedHandler := handlers.NewCalendarFeedHandler(s.db, permService, cfg.BaseURL)
 	securitySettingsHandler := handlers.NewSecuritySettingsHandler(repository.NewSystemSettingRepository(s.db), logger.NewAuditor(s.db), cfg.Plugins.Disabled)
+	publicBoardHandler.SetAvailability(securitySettingsHandler)
 
 	// WI-87/88/89/90 coding-agent harness stack lands later in the
 	// constructor — see the block right after the SCM handlers are
@@ -928,12 +938,13 @@ func (s *Server) initialize() error {
 
 	ssoHandler := handlers.NewSSOHandler(s.db, sessionManager, permService, emailVerificationService, s.pluginManager, cfg.Auth.SessionSecret, baseURL, cfg.AllowedHosts, cfg.DisableCSRF, ipExtractor, cfg.UseProxy, additionalProxyList)
 
-	scmProviderHandler := handlers.NewSCMProviderHandler(s.db, cfg.Auth.SessionSecret, baseURL)
+	s.scmHTTPClients = scm.NewHTTPClientPool()
+	scmProviderHandler := handlers.NewSCMProviderHandler(s.db, cfg.Auth.SessionSecret, baseURL, s.scmHTTPClients)
 	s.secretEncryption = scmProviderHandler.GetEncryption()
 	scmWorkspaceRepo := repository.NewSCMWorkspaceRepository(s.db)
-	scmWorkspaceHandler := handlers.NewSCMWorkspaceHandler(scmWorkspaceRepo, scmProviderHandler.GetEncryption(), scmProviderHandler, scm.NewCredentialResolver(s.db, scmProviderHandler.GetEncryption()), permService, baseURL)
-	scmItemLinksHandler := handlers.NewSCMItemLinksHandler(s.db, scmProviderHandler.GetEncryption(), permService, baseURL)
-	userSCMTokenHandler := handlers.NewUserSCMTokenHandler(repository.NewUserSCMTokenRepository(s.db), scmProviderHandler.GetEncryption())
+	scmWorkspaceHandler := handlers.NewSCMWorkspaceHandler(scmWorkspaceRepo, scmProviderHandler.GetEncryption(), scmProviderHandler, scm.NewCredentialResolver(s.db, scmProviderHandler.GetEncryption(), s.scmHTTPClients), permService, baseURL)
+	scmItemLinksHandler := handlers.NewSCMItemLinksHandler(s.db, scmProviderHandler.GetEncryption(), permService, baseURL, s.scmHTTPClients)
+	userSCMTokenHandler := handlers.NewUserSCMTokenHandler(repository.NewUserSCMTokenRepository(s.db), scmProviderHandler.GetEncryption(), s.scmHTTPClients)
 	milestonePlanningService := services.NewPlanningService(s.db)
 	milestonePlanningService.SetSCMWorkspaceRepository(scmWorkspaceRepo)
 
@@ -942,7 +953,7 @@ func (s *Server) initialize() error {
 	agentSecurityRepo := repository.NewAgentSecurityRepository(s.db)
 	agentIdentitySvc, _ := services.NewAgentActingIdentityService(services.NewUserReadService(s.db), agentSecurityRepo)
 	agentBindingRepo := repository.NewWorkspaceAgentBindingRepository(s.db)
-	scmCredResolver := scm.NewCredentialResolver(s.db, scmProviderHandler.GetEncryption())
+	scmCredResolver := scm.NewCredentialResolver(s.db, scmProviderHandler.GetEncryption(), s.scmHTTPClients)
 
 	// AI handlers and agents share embedded or configured prompt overrides.
 	promptStore := llm.NewPromptStore(cfg.LLM.PromptsDir)
@@ -1041,7 +1052,7 @@ func (s *Server) initialize() error {
 	workspaceUsers := services.NewWorkspaceUserResolver(s.db, permService)
 	userHandler.SetWorkspaceUserResolver(workspaceUsers)
 	agentBindingHandler.SetPresenceService(agentPresenceService)
-	workspaceBootstrapHandler := handlers.NewWorkspaceBootstrapHandler(workspaceHandler, userHandler, milestonePlanningService, permService, timeProjectHandler)
+	workspaceBootstrapHandler := handlers.NewWorkspaceBootstrapHandler(workspaceHandler, userHandler, milestonePlanningService, permService, timeProjectHandler).WithObjectTranslations(objectTranslationService)
 	// Secretless access layer (WI-144): brokers a granted credential to a
 	// running job without it ever living on the runner host.
 	runnerBrokerHandler := handlers.NewRunnerBrokerHandler(tokenManager, repository.NewAgentRunRepository(s.db), actionCredentialService, llmManager, &scmCredsAdapter{cr: scmCredResolver})
@@ -1129,9 +1140,9 @@ func (s *Server) initialize() error {
 	s.todoistSyncScheduler = scheduler.NewTodoistSyncScheduler(s.db, scmProviderHandler.GetEncryption())
 	s.todoistSyncScheduler.Start()
 
-	scmSyncService := scm.NewSyncService(s.db, scmProviderHandler.GetEncryption())
+	scmSyncService := scm.NewSyncService(s.db, scmProviderHandler.GetEncryption(), s.scmHTTPClients)
 
-	issueSyncService := scm.NewIssueSyncService(s.db, scmProviderHandler.GetEncryption())
+	issueSyncService := scm.NewIssueSyncService(s.db, scmProviderHandler.GetEncryption(), s.scmHTTPClients)
 	issueSyncService.SetUserService(services.NewUserReadService(s.db))
 	issueSyncHandler := handlers.NewIssueSyncHandler(issueSyncService, permService, logger.NewAuditor(s.db))
 	scmItemLinksHandler.SetIssueSync(issueSyncService)
@@ -1250,7 +1261,7 @@ func (s *Server) initialize() error {
 	itemHandler.SetActionService(s.actionService)
 	itemLinkService.WithActionEmitter(s.actionService)
 
-	scriptEngine := services.NewScriptEngine()
+	scriptEngine := services.NewScriptEngine(controls)
 	conditionService := services.NewConditionService(s.db, permService, scriptEngine)
 
 	approvalService := services.NewApprovalService(s.db, leaveRepo, workflowService)
@@ -1428,6 +1439,22 @@ func (s *Server) initialize() error {
 			ipExtractor,
 		)
 	}
+	customerAccessHandler := handlers.NewCustomerAccessHandler(handlers.CustomerAccessDependencies{
+		Access:         repository.NewCustomerAccessRepository(s.db),
+		Providers:      sso.NewProviderStore(s.db),
+		Customers:      repository.NewPortalCustomerRepository(s.db),
+		Channels:       repository.NewChannelRepository(s.db),
+		Collections:    repository.NewCollectionRepository(s.db),
+		Permissions:    permService,
+		Scope:          services.NewPublicBoardScopeService(s.db, permService),
+		PortalSessions: portalSessionManager, PortalAuth: portalAuthHandler, Passkeys: portalWebAuthnHandler,
+		MagicLinks: magicLinkService, IP: ipExtractor, Secure: enableHTTPS || strings.HasPrefix(baseURL, "https://"),
+		PublicBoards: securitySettingsHandler,
+		Sharing:      services.NewCollectionApplicationService(s.db, permService, securitySettingsHandler),
+		BoardViewer:  publicBoardHandler,
+	})
+	customerAccessHandler.SetLimiter(s.customerAccessLimiter)
+	ssoHandler.SetCustomerAccess(customerAccessHandler)
 	portalCustomersHandler := handlers.NewPortalCustomersHandler(s.db, permService, customerOrgPermissionService)
 	contactRoleConfig := services.NewContactRoleConfig()
 	contactRoleConfig.AuditEmit = enumAuditEmit
@@ -1458,15 +1485,9 @@ func (s *Server) initialize() error {
 
 	itemDiagramService := services.NewItemDiagramService(repository.NewDiagramRepository(s.db))
 
-	// CSRF origins are shared by the /api middleware chain and the plugin
-	// router, which mounts on the raw mux outside that chain. Derive the scheme
-	// from BASE_URL for origin construction.
-	corsScheme := ""
-	if cfg.BaseURL != "" {
-		if parsed, err := url.Parse(cfg.BaseURL); err == nil {
-			corsScheme = parsed.Scheme
-		}
-	}
+	// CORS and CSRF (including the raw plugin router) share the same browser
+	// scheme, including hostname-only deployments without BASE_URL.
+	corsScheme := browserOriginScheme(cfg)
 	csrfOrigins := buildAllowedOrigins(cfg.AllowedHosts, effectivePort, corsScheme, cfg.UseProxy)
 	csrfValidator := middleware.NewDisabledCSRFValidator()
 	if !cfg.DisableCSRF {
@@ -1491,18 +1512,17 @@ func (s *Server) initialize() error {
 			instanceService = nil
 		}
 
-		// License enforcement: when a license public key is configured, a
-		// plugin only contributes capabilities if its license verifies against
-		// this install's instance ID.
-		if cfg.Plugins.LicensePubKey != "" {
-			licensePubKey, err := base64.StdEncoding.DecodeString(cfg.Plugins.LicensePubKey)
-			if err != nil || len(licensePubKey) != ed25519.PublicKeySize {
-				slog.Error("invalid PLUGIN_LICENSE_PUBKEY; license enforcement disabled", "error", err)
-			} else if instanceService != nil {
-				pluginLicenseVerifier = licensing.MakeVerifier(ed25519.PublicKey(licensePubKey), instanceID)
-				pluginOpts = append(pluginOpts, plugins.WithLicenseVerifier(pluginLicenseVerifier))
-				slog.Info("plugin license enforcement enabled", "instance_id", instanceID)
-			}
+		// License enforcement: a configured public key must produce a working
+		// verifier bound to this install's instance ID. A malformed key or a
+		// missing identity is a startup failure, not a silent downgrade to
+		// enforcement-off (which grants every plugin its capabilities).
+		pluginLicenseVerifier, err = resolvePluginLicenseVerifier(cfg.Plugins.LicensePubKey, instanceID, instanceErr)
+		if err != nil {
+			return fmt.Errorf("plugin license enforcement: %w", err)
+		}
+		if pluginLicenseVerifier != nil {
+			pluginOpts = append(pluginOpts, plugins.WithLicenseVerifier(pluginLicenseVerifier))
+			slog.Info("plugin license enforcement enabled", "instance_id", instanceID)
 		}
 
 		pluginDir := cfg.Plugins.Dir
@@ -1576,13 +1596,13 @@ func (s *Server) initialize() error {
 	s.ldapHandler = handlers.NewLDAPHandler(s.db, ldapSyncService, ssoHandler.GetEncryption())
 	ldapHandler := s.ldapHandler
 
-	featuresHandler := handlers.NewFeaturesHandler(s.pluginManager, cfg.SSH.Enabled)
+	featuresHandler := handlers.NewFeaturesHandler(s.pluginManager, cfg.SSH.Enabled, controls)
 
 	shutdownChan := cfg.ShutdownChan
 	if shutdownChan == nil {
 		shutdownChan = make(chan os.Signal, 1)
 	}
-	systemHandler := handlers.NewSystemHandler(shutdownChan)
+	systemHandler := handlers.NewSystemHandler(shutdownChan, controls)
 
 	llmConnHandler := handlers.NewLLMConnectionHandler(llmManager, logger.NewAuditor(s.db), llmModelCache, llmModelRefresher)
 	workItemStalenessHandler := handlers.NewWorkItemStalenessHandler(
@@ -1618,6 +1638,7 @@ func (s *Server) initialize() error {
 		hubHandler,
 		channelService,
 		workItemStalenessHandler,
+		services.NewCollectionApplicationService(s.db, permService, securitySettingsHandler),
 	)
 
 	s.briefingScheduler = scheduler.NewBriefingScheduler(s.db, llmManager, permService, timePermissionService, services.NewUserReadService(s.db), promptStore)
@@ -1629,6 +1650,7 @@ func (s *Server) initialize() error {
 	apiMiddleware := router.MiddlewareChain{
 		apiCORSMiddleware,
 		authMiddleware.OptionalAuth,
+		customerAccessHandler.Guard,
 		middleware.LimitJSONRequestBody(
 			restapi.DefaultJSONRequestBodyLimit,
 			"/api/llm-proxy/",
@@ -1941,12 +1963,13 @@ func (s *Server) initialize() error {
 		AI:                             aiHandler,
 		AIRateLimiter:                  s.aiRateLimiter,
 		IPExtractor:                    ipExtractor,
+		UserDeactivationService:        userDeactivationService,
 	}, v1.RegisterRoutes)
 	v2CSRF := middleware.NewDisabledCSRFValidator()
 	if !cfg.DisableCSRF {
 		v2CSRF = middleware.NewCSRFValidator(csrfOrigins)
 	}
-	planningCredentialResolver := scm.NewCredentialResolver(s.db, scmProviderHandler.GetEncryption())
+	planningCredentialResolver := scm.NewCredentialResolver(s.db, scmProviderHandler.GetEncryption(), s.scmHTTPClients)
 	planningApplication := services.NewPlanningApplicationService(
 		milestonePlanningService,
 		permService,
@@ -2025,22 +2048,24 @@ func (s *Server) initialize() error {
 		routeDeps.AuthMiddleware.RequireAuth(http.HandlerFunc(customWidgetDataHandler.ResolveCustomWidgetData)))
 	catalogMutations := services.NewCatalogMutationService(s.db, permService, workflowService)
 	governanceApplication := services.NewGovernanceApplicationService(s.db, permService, approvalSetService, approvalService)
-	if err := v2.RegisterRoutes(v2.Deps{
-		Mux:                mux,
-		Tokens:             tokenManager,
-		SLA:                s.slaEngine,
-		SLACalendars:       services.NewSLACalendarService(s.db, s.slaEngine),
-		SLASettings:        services.NewSLASettingsService(s.db, s.slaEngine),
-		SLATeamBindings:    services.NewSLATeamBindingService(s.db, permService),
-		SLAMetrics:         services.NewSLAMetricService(s.db, s.slaEngine),
-		Users:              services.NewUserReadService(s.db),
-		Statuses:           services.NewStatusService(s.db),
-		Teams:              teamRepo,
-		Workflows:          workflowService,
-		Configuration:      services.NewConfigReadService(s.db),
-		ObjectTranslations: objectTranslationService,
-		Catalog:            services.NewCatalogReadService(s.db, permService, v2Access, s.activityTracker),
-		CatalogMutations:   catalogMutations,
+	v2Deps := v2.Deps{
+		PasskeyLoginLimiter: s.fidoRateLimiter,
+		CustomerAccess:      customerAccessHandler,
+		Mux:                 mux,
+		Tokens:              tokenManager,
+		SLA:                 s.slaEngine,
+		SLACalendars:        services.NewSLACalendarService(s.db, s.slaEngine),
+		SLASettings:         services.NewSLASettingsService(s.db, s.slaEngine),
+		SLATeamBindings:     services.NewSLATeamBindingService(s.db, permService),
+		SLAMetrics:          services.NewSLAMetricService(s.db, s.slaEngine),
+		Users:               services.NewUserReadService(s.db),
+		Statuses:            services.NewStatusService(s.db),
+		Teams:               teamRepo,
+		Workflows:           workflowService,
+		Configuration:       services.NewConfigReadService(s.db),
+		ObjectTranslations:  objectTranslationService,
+		Catalog:             services.NewCatalogReadService(s.db, permService, v2Access, s.activityTracker),
+		CatalogMutations:    catalogMutations,
 		CustomFieldProvisioning: services.NewCustomFieldProvisioningService(s.db, services.CustomFieldProvisioningHooks{
 			EnqueueOptionRemoval:     scheduler.EnqueueOptionRemoval,
 			EnqueueFieldCleanup:      scheduler.EnqueueFieldCleanup,
@@ -2081,7 +2106,7 @@ func (s *Server) initialize() error {
 		SystemAdmins:                 permService,
 		GlobalPermission:             permService,
 		Groups:                       groupHandler.Application(),
-		AdminUsers:                   services.NewUserReadService(s.db),
+		AdminUsers:                   services.NewAdminUserService(s.db, userDeactivationService),
 		AuditLogs:                    repository.NewAuditLogRepository(s.db),
 		AdminTokens:                  tokenManager,
 		AdminAuditor:                 logger.NewAuditor(s.db),
@@ -2090,7 +2115,7 @@ func (s *Server) initialize() error {
 		CommentAccess:                permService,
 		Attachments:                  services.NewItemAttachmentService(s.db, attachmentStorage, permService),
 		PageAttachments:              services.NewPageAttachmentUploadService(s.db, attachmentStorage, permService, pagePermissionService),
-		Collections:                  services.NewCollectionApplicationService(s.db, permService),
+		Collections:                  services.NewCollectionApplicationService(s.db, permService, securitySettingsHandler).WithSharingNotifications(s.notificationService),
 		Planning:                     planningApplication,
 		MilestoneComments:            milestoneCommentService,
 		MilestonePageLinks:           milestonePageLinkService,
@@ -2107,6 +2132,7 @@ func (s *Server) initialize() error {
 		ItemDetail:                   itemDetailApplication,
 		ItemLifecycle:                services.NewItemLifecycleService(s.db, permService),
 		TicketImport:                 services.NewTicketImportService(s.db, permService, importScratch),
+		OperatorControls:             services.NewOperatorControlsService(s.db, attachmentStorage),
 		SessionMiddleware:            authMiddleware.OptionalAuth,
 		SearchAllowed:                s.searchLimiter.AllowRequest,
 		DBRequestTimeout:             s.config.DB.RequestTimeout,
@@ -2114,9 +2140,22 @@ func (s *Server) initialize() error {
 		CSRF:                         v2CSRF,
 		Concurrency:                  s.userConcurrency,
 		RateLimiter:                  s.v2RateLimiter,
-	}); err != nil {
+	}
+	if webAuthnHandler != nil {
+		v2Deps.PasskeyLogin = webAuthnHandler
+	}
+	if err := v2.RegisterRoutes(v2Deps); err != nil {
 		return fmt.Errorf("register REST API v2: %w", err)
 	}
+
+	// execute_script runs author-supplied JavaScript as the effective action
+	// executor. REST calls from the script go through the mounted v2 handler
+	// with a short-lived token minted for that executor, so bearer auth, token
+	// scopes, and every handler-level authorization check still apply.
+	s.actionService.RegisterNodeExecutor(
+		services.NewExecuteScriptExecutor(tokenManager, services.NewInProcessV2Dispatcher(mux, 0)).
+			WithWriteMarker(s.actionService),
+	)
 
 	// MCP Server (Model Context Protocol) — opt-in via --mcp or MCP_ENABLED=true
 	if cfg.MCPEnabled {
@@ -2242,7 +2281,7 @@ func (s *Server) initialize() error {
 	// Recovery converts panics before the metrics layer records the final status.
 	securityMiddleware := createSecurityHeaders(enableHTTPS, cfg.UseProxy, additionalProxyIPs, jiraHosts.Allowed, securitySettingsHandler.ExternalImagesAllowed)
 	compressionMiddleware := middleware.CreateCompressionMiddleware(cfg.UseProxy)
-	applicationHandler := middleware.Recovery(compressionMiddleware(securityMiddleware(s.metrics.CaptureRoutePattern(mux))))
+	applicationHandler := middleware.Recovery(compressionMiddleware(securityMiddleware(middleware.OperatorAdmission(controls)(s.metrics.CaptureRoutePattern(mux)))))
 	handler := s.metrics.Instrument(applicationHandler)
 	handler = withContextPath(handler, cfg.ContextPath)
 
@@ -2386,7 +2425,6 @@ func (s *Server) Start() error {
 		return fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
 	s.listener = listener
-	s.databasePoolMonitor.Start()
 
 	// Get actual port (important for port 0)
 	tcpAddr := listener.Addr().(*net.TCPAddr) //nolint:errcheck // Type assertion is safe; net.Listen("tcp", ...) always returns *net.TCPAddr
@@ -2396,9 +2434,28 @@ func (s *Server) Start() error {
 	configureServerProtocols(s.httpServer, enableHTTPS, s.config.H2CEnabled)
 
 	if enableHTTPS {
+		// Load the key pair synchronously so a missing, unreadable, malformed or
+		// mismatched certificate fails startup instead of leaving the process
+		// alive without a working HTTPS listener.
+		cert, certErr := tls.LoadX509KeyPair(s.config.TLSCertPath, s.config.TLSKeyPath)
+		if certErr != nil {
+			_ = listener.Close()
+			return fmt.Errorf("load TLS certificate: %w", certErr)
+		}
+		if s.httpServer.TLSConfig == nil {
+			s.httpServer.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		}
+		s.httpServer.TLSConfig.Certificates = append(s.httpServer.TLSConfig.Certificates, cert)
+	}
+
+	s.databasePoolMonitor.Start()
+
+	if enableHTTPS {
 		slog.Info("HTTPS server starting", "port", s.actualPort)
 		go func() {
-			if err := s.httpServer.ServeTLS(s.listener, s.config.TLSCertPath, s.config.TLSKeyPath); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			// The key pair is already loaded; empty paths make ServeTLS use the
+			// server's TLSConfig certificates.
+			if err := s.httpServer.ServeTLS(s.listener, "", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				slog.Error("HTTPS server error", "error", err)
 			}
 		}()
@@ -2609,6 +2666,9 @@ func isAPIPath(p string) bool {
 
 // cleanup releases all resources.
 func (s *Server) cleanup() {
+	if s.scmHTTPClients != nil {
+		defer s.scmHTTPClients.CloseIdleConnections()
+	}
 	// New also calls cleanup after a partially completed initialize. Signal any
 	// loops already started there, even when Shutdown was never reachable.
 	s.stopBackgroundLoops()
@@ -2663,6 +2723,9 @@ func (s *Server) cleanup() {
 	}
 	if s.portalAuthLimiter != nil {
 		s.portalAuthLimiter.Stop()
+	}
+	if s.customerAccessLimiter != nil {
+		s.customerAccessLimiter.Stop()
 	}
 	if s.oauthTokenLimiter != nil {
 		s.oauthTokenLimiter.Stop()
@@ -3097,14 +3160,7 @@ func (a *scmCredsAdapter) tokenFromCreds(ctx context.Context, connectionID int, 
 // the same provider already (it just calls GetInstallationAccessToken
 // internally on the first authenticated request).
 func (a *scmCredsAdapter) mintGitHubAppToken(ctx context.Context, creds *scm.ProviderCredentials) (string, error) {
-	provider, err := scm.NewProvider(scm.ProviderConfig{
-		ProviderType:            creds.ProviderType,
-		AuthMethod:              creds.AuthMethod,
-		BaseURL:                 creds.BaseURL,
-		GitHubAppID:             creds.GitHubAppID,
-		GitHubAppPrivateKey:     creds.GitHubAppPrivateKey,
-		GitHubAppInstallationID: creds.GitHubAppInstallationID,
-	})
+	provider, err := a.cr.CreateProvider(creds)
 	if err != nil {
 		return "", fmt.Errorf("build provider: %w", err)
 	}
@@ -3255,36 +3311,52 @@ func (r *itemPRContinuationResolver) ContinuationForItemAsUser(ctx context.Conte
 	if err != nil {
 		return nil, fmt.Errorf("query open PR links: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	type prLink struct {
+		externalID, repoName string
+		connectionID         int
+	}
+	var links []prLink
+	for rows.Next() {
+		var l prLink
+		if err := rows.Scan(&l.externalID, &l.repoName, &l.connectionID); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		links = append(links, l)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	// Release the cursor before credential resolution and the remote PR read:
+	// both can block while the cursor still owns a read connection.
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
 	allowed := make(map[string]bool, len(allowedRepoSlugs))
 	for _, slug := range allowedRepoSlugs {
 		allowed[slug] = true
 	}
-	for rows.Next() {
-		var externalID, repoName string
-		var connectionID int
-		if err := rows.Scan(&externalID, &repoName, &connectionID); err != nil {
-			return nil, err
-		}
-		if len(allowed) > 0 && !allowed[repoName] {
+	for _, l := range links {
+		if len(allowed) > 0 && !allowed[l.repoName] {
 			continue
 		}
-		number, err := strconv.Atoi(externalID)
+		number, err := strconv.Atoi(l.externalID)
 		if err != nil {
 			continue
 		}
-		owner, repo, ok := strings.Cut(repoName, "/")
+		owner, repo, ok := strings.Cut(l.repoName, "/")
 		if !ok || owner == "" || repo == "" {
 			continue
 		}
 		var creds *scm.ProviderCredentials
 		if userID > 0 {
-			creds, err = r.cr.GetCredentialsForUser(ctx, connectionID, userID)
+			creds, err = r.cr.GetCredentialsForUser(ctx, l.connectionID, userID)
 		} else {
-			creds, err = r.cr.GetCredentialsByConnectionID(ctx, connectionID)
+			creds, err = r.cr.GetCredentialsByConnectionID(ctx, l.connectionID)
 		}
 		if err != nil {
-			return nil, fmt.Errorf("resolve connection %d: %w", connectionID, err)
+			return nil, fmt.Errorf("resolve connection %d: %w", l.connectionID, err)
 		}
 		provider, err := r.cr.CreateProvider(creds)
 		if err != nil {
@@ -3297,10 +3369,7 @@ func (r *itemPRContinuationResolver) ContinuationForItemAsUser(ctx context.Conte
 		if pr.IsMerged || strings.EqualFold(pr.State, "closed") || pr.HeadBranch == "" {
 			continue
 		}
-		return &services.ContinuationTarget{PRNumber: number, RepoSlug: repoName, HeadBranch: pr.HeadBranch}, nil
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+		return &services.ContinuationTarget{PRNumber: number, RepoSlug: l.repoName, HeadBranch: pr.HeadBranch}, nil
 	}
 	return nil, nil
 }

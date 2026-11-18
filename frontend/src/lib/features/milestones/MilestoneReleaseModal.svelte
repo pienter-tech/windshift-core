@@ -1,10 +1,11 @@
 <script>
+  import FormField from '../../components/FormField.svelte';
   import { onMount } from 'svelte';
   import Spinner from '../../components/Spinner.svelte';
   import StateDisplay from '../../components/StateDisplay.svelte';
   import { ai } from '../../api/ai.js';
   import { workspaceSCM } from '../../api/scm.js';
-  import { milestones } from '../../api/milestones.js';
+  import { milestones } from '../../api/planning.js';
   import { successToast, errorToast } from '../../stores/toasts.svelte.js';
   import Checkbox from '../../components/Checkbox.svelte';
   import Input from '../../components/Input.svelte';
@@ -240,6 +241,7 @@
     <!-- SCM Connection -->
     {#if connections.length > 0}
       <div>
+        <FormField class="contents">
         <Label>SCM Connection <span class="font-normal" style="color: var(--ds-text-subtle);">(optional)</span></Label>
         <BasePicker
           bind:value={selectedConnectionId}
@@ -250,6 +252,7 @@
           getLabel={getConnectionLabel}
           onSelect={handleConnectionChange}
         />
+        </FormField>
       </div>
 
       <!-- Repository -->
@@ -275,6 +278,7 @@
 
       {#if selectedConnectionId && selectedRepository}
         <div>
+          <FormField class="contents">
           <Label>Release action</Label>
           <BasePicker
             bind:value={releaseMode}
@@ -286,6 +290,7 @@
             getLabel={(item) => item.label}
             onSelect={(item) => handleReleaseModeChange(item.value)}
           />
+          </FormField>
         </div>
       {/if}
     {:else}

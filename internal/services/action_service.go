@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -19,13 +18,13 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"windshift/internal/database"
 	"windshift/internal/llm"
 	"windshift/internal/logger"
 	"windshift/internal/models"
+	"windshift/internal/operatorcontrols"
 	"windshift/internal/repository"
 	"windshift/internal/repository/actionutil"
 	"windshift/internal/utils"
@@ -48,6 +47,11 @@ type AssetSetPermissionChecker interface {
 // ErrActionCompletedWithFailedSteps means execution finished and its log
 // contains the actionable failure details.
 var ErrActionCompletedWithFailedSteps = errors.New("action completed with failed steps")
+
+// ErrActionReconciliationRequired means execution committed a partial side
+// effect (an execute_script write) and then failed. Durable replay must not
+// rerun the flow; an operator reconciles the committed write.
+var ErrActionReconciliationRequired = errors.New("action execution requires reconciliation")
 
 // ActionServiceConfig represents configuration for the action service
 type ActionServiceConfig struct {
@@ -109,6 +113,11 @@ type ActionService struct {
 	// Shared execution chain store for cross-application cascade loop prevention
 	chainStore *ExecutionChainStore
 
+	// revisions resolves the immutable definition snapshot an execution runs,
+	// so a concurrent edit cannot make the recorded revision disagree with the
+	// executed definition.
+	revisions *repository.ActionRevisionRepository
+
 	// Pluggable node-executor registry. New ActionNodeTypes register their
 	// implementations here at startup; executeNode consults the registry
 	// before falling through to the legacy switch. See action_node_executor.go.
@@ -129,6 +138,7 @@ func NewActionService(db database.Database, config ActionServiceConfig, chainSto
 	service := &ActionService{
 		db:             db,
 		repo:           repository.NewActionRepository(db),
+		revisions:      repository.NewActionRevisionRepository(db),
 		itemRepo:       repository.NewItemRepository(db),
 		config:         config,
 		actionCache:    make(map[int][]*models.Action),
@@ -246,6 +256,16 @@ func (as *ActionService) EmitActionEvent(event *models.ActionEvent) {
 // EmitActionEventInTx admits an SCM observation with its source ledger row.
 func (as *ActionService) EmitActionEventInTx(ctx context.Context, tx database.Tx, event *models.ActionEvent) error {
 	return as.durableIngress.EmitInTx(ctx, tx, event)
+}
+
+// MarkScriptWritePending implements ActionScriptWriteMarker. It persists the
+// write-ahead reconciliation marker on the execution log before a mutating
+// script call is dispatched, so a crash after the commit is not replayed.
+func (as *ActionService) MarkScriptWritePending(executionLogID int) error {
+	if executionLogID <= 0 {
+		return nil
+	}
+	return as.repo.MarkExecutionReconciliationRequired(executionLogID)
 }
 
 // Stop gracefully shuts down the action service
@@ -657,13 +677,28 @@ func (as *ActionService) executeActionForEvent(executionCtx context.Context, act
 	if durableEventKey != "" {
 		existing, loadErr := as.repo.GetExecutionLogByDurableTarget(durableEventKey, action.ID)
 		if loadErr == nil {
-			if existing.Status == models.ActionStatusCompleted {
+			if existing.Status == models.ActionStatusCompleted || existing.Status == models.ActionStatusReconciliationRequired {
 				return nil
 			}
 			log.ID = existing.ID
+			// A retry must run the definition the first attempt was bound to,
+			// not whatever the action points at now.
+			if existing.DefinitionRevisionID != nil {
+				log.DefinitionRevisionID = existing.DefinitionRevisionID
+			}
 		} else if !errors.Is(loadErr, sql.ErrNoRows) {
 			return fmt.Errorf("load durable action execution: %w", loadErr)
 		}
+	}
+	boundAction, err := as.bindExecutionRevision(action, log)
+	if err != nil {
+		return err
+	}
+	action = boundAction
+	// Resolve identity from the frozen definition before persisting attribution.
+	if action.ActorUserID != nil && *action.ActorUserID > 0 {
+		effectiveActorID = *action.ActorUserID
+		log.EffectiveActorUserID = &effectiveActorID
 	}
 	if log.ID == 0 {
 		logID, err := as.repo.CreateExecutionLog(log)
@@ -680,14 +715,6 @@ func (as *ActionService) executeActionForEvent(executionCtx context.Context, act
 		log.ID = logID
 	}
 
-	// Resolve the effective actor: action.ActorUserID overrides the triggering
-	// user (subject to action.set_actor permission, enforced at CRUD time).
-	// A null override means the action runs under the triggering user's rights.
-	if action.ActorUserID != nil && *action.ActorUserID > 0 {
-		effectiveActorID = *action.ActorUserID
-		log.EffectiveActorUserID = &effectiveActorID
-	}
-
 	if isSCMActionTrigger(action.TriggerType) && effectiveActorID <= 0 {
 		log.Status = models.ActionStatusFailed
 		log.ErrorMessage = "SCM trigger requires an actor_user_id override because the sync loop has no authenticated user"
@@ -698,14 +725,16 @@ func (as *ActionService) executeActionForEvent(executionCtx context.Context, act
 	}
 
 	ctx := &models.ExecutionContext{
-		Context:          executionCtx,
-		DurableEventKey:  durableEventKey,
-		Action:           action,
-		Event:            event,
-		EffectiveActorID: effectiveActorID,
-		Variables:        make(map[string]any),
-		StepResults:      []models.StepResult{},
-		ChainID:          chainID,
+		Context:              executionCtx,
+		DurableEventKey:      durableEventKey,
+		Action:               action,
+		Event:                event,
+		EffectiveActorID:     effectiveActorID,
+		Variables:            make(map[string]any),
+		StepResults:          []models.StepResult{},
+		ChainID:              chainID,
+		ExecutionLogID:       log.ID,
+		DefinitionRevisionID: log.DefinitionRevisionID,
 	}
 
 	// Expose the effective actor to template expansion.
@@ -736,6 +765,7 @@ func (as *ActionService) executeActionForEvent(executionCtx context.Context, act
 		MaxSteps:          maxStepsPerFlow,
 		BudgetExceededErr: errStepBudgetExceeded,
 		TotalSteps:        &ctx.TotalSteps,
+		AdmitStep:         automationStepAdmission(as.db),
 		OnStep:            func(step *models.StepResult) { ctx.StepResults = append(ctx.StepResults, *step) },
 	}, func(node *models.ActionNode, step *models.StepResult, markExecuted func(int)) error {
 		var err error
@@ -770,12 +800,21 @@ func (as *ActionService) executeActionForEvent(executionCtx context.Context, act
 		as.cleanupActionContainers(ctx.StepResults)
 		log.Status = models.ActionStatusFailed
 		log.ErrorMessage = err.Error()
+		if ctx.ReconciliationRequired {
+			// A script already committed a write; rerunning the flow would
+			// repeat it, so block durable replay and surface reconciliation.
+			log.Status = models.ActionStatusReconciliationRequired
+			log.ErrorMessage = "requires reconciliation: " + err.Error()
+		}
 		log.CompletedAt = &completedAt
 		if trace, marshalErr := json.Marshal(ctx.StepResults); marshalErr == nil {
 			log.ExecutionTrace = string(trace)
 		}
 		if logErr := as.repo.UpdateExecutionLog(log); logErr != nil {
 			slog.Error("failed to cancel action execution log", slog.Any("error", logErr), slog.Int("action_id", action.ID))
+		}
+		if log.Status == models.ActionStatusReconciliationRequired {
+			return fmt.Errorf("%w: %w: action %d", ErrActionCompletedWithFailedSteps, ErrActionReconciliationRequired, action.ID)
 		}
 		return err
 	}
@@ -798,6 +837,14 @@ func (as *ActionService) executeActionForEvent(executionCtx context.Context, act
 		if result.Status == models.ActionStatusFailed {
 			log.Status = models.ActionStatusFailed
 			break
+		}
+	}
+	if log.Status == models.ActionStatusFailed && ctx.ReconciliationRequired {
+		// A script committed a write before a later step failed: the trace is
+		// final, but durable replay must not repeat the committed write.
+		log.Status = models.ActionStatusReconciliationRequired
+		if log.ErrorMessage == "" {
+			log.ErrorMessage = "requires reconciliation: a script step committed a write before the action failed"
 		}
 	}
 
@@ -833,6 +880,9 @@ func (as *ActionService) executeActionForEvent(executionCtx context.Context, act
 	if log.Status == models.ActionStatusFailed {
 		return fmt.Errorf("%w: action %d", ErrActionCompletedWithFailedSteps, action.ID)
 	}
+	if log.Status == models.ActionStatusReconciliationRequired {
+		return fmt.Errorf("%w: %w: action %d", ErrActionCompletedWithFailedSteps, ErrActionReconciliationRequired, action.ID)
+	}
 	return nil
 }
 
@@ -843,11 +893,54 @@ func actionRequestContext(ctx *models.ExecutionContext) context.Context {
 	return context.Background()
 }
 
+// bindExecutionRevision returns a copy of the action carrying the immutable
+// definition revision it is currently bound to, and records that revision on
+// the execution log. A durable retry reuses the revision from its first
+// attempt so worker recovery cannot silently run a newer definition. The
+// cached action is never mutated, so concurrent executions stay isolated.
+func (as *ActionService) bindExecutionRevision(action *models.Action, log *models.ActionExecutionLog) (*models.Action, error) {
+	revisionID := log.DefinitionRevisionID
+	if revisionID == nil {
+		revisionID = action.CurrentRevisionID
+	}
+	if revisionID == nil {
+		return action, nil
+	}
+	if as.revisions == nil {
+		as.revisions = repository.NewActionRevisionRepository(as.db)
+	}
+	snapshot, err := as.revisions.LoadDefinitionSnapshot(*revisionID)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			// A missing revision (pre-revision action) falls back to the live row.
+			return action, nil
+		}
+		return nil, fmt.Errorf("load action definition revision %d: %w", *revisionID, err)
+	}
+	execution := *action
+	execution.Name = snapshot.Name
+	execution.Description = snapshot.Description
+	execution.IsEnabled = snapshot.IsEnabled
+	execution.TriggerType = snapshot.TriggerType
+	execution.TriggerConfig = snapshot.TriggerConfig
+	execution.ActorUserID = snapshot.ActorUserID
+	execution.AllowedRoleIDs = snapshot.AllowedRoleIDs
+	execution.Nodes = snapshot.Nodes
+	execution.Edges = snapshot.Edges
+	log.DefinitionRevisionID = revisionID
+	return &execution, nil
+}
+
 // topologicalSort sorts nodes in execution order using Kahn's algorithm
 // executeNode executes a single node. Registered NodeExecutors take
 // precedence over the legacy switch so new node types can ship without
 // touching this function.
 func (as *ActionService) executeNode(node *models.ActionNode, ctx *models.ExecutionContext, stepResult *models.StepResult) error {
+	if string(node.NodeType) == "execute_script" {
+		if err := operatorcontrols.From(as.db).Check(operatorcontrols.Scripts); err != nil {
+			return err
+		}
+	}
 	if exec, ok := as.lookupNodeExecutor(node.NodeType); ok {
 		return exec.Execute(node, ctx, stepResult)
 	}
@@ -2181,15 +2274,15 @@ func (as *ActionService) substituteVariables(template string, ctx *models.Execut
 	})
 }
 
-// cleanupActionContainers stops any containers started by container_run
-// nodes during this action's execution. ContainerService keeps an internal
-// registry, so a double-stop (auto-teardown racing with this cleanup) is
-// harmless — StopContainer becomes a no-op for unknown IDs.
+// cleanupActionContainers stops containers from the flow and nested iterations.
 func (as *ActionService) cleanupActionContainers(results []models.StepResult) {
 	if as.containerService == nil {
 		return
 	}
 	for _, r := range results {
+		for _, iteration := range r.Iterations {
+			as.cleanupActionContainers(iteration.Steps)
+		}
 		if r.NodeType != models.ActionNodeContainerRun {
 			continue
 		}
@@ -3185,31 +3278,9 @@ var errDisallowedRedirect = errors.New("redirect URL not in allowlist")
 
 // newSSRFSafeClient enforces redirect allowlists and public-only destinations.
 func newSSRFSafeClient(timeout time.Duration, allowedPatterns []string) *http.Client {
-	dialer := &net.Dialer{
-		Timeout:   10 * time.Second,
-		KeepAlive: 30 * time.Second,
-		ControlContext: func(_ context.Context, network, address string, _ syscall.RawConn) error {
-			host, _, err := net.SplitHostPort(address)
-			if err != nil {
-				return fmt.Errorf("invalid dial address %q: %w", address, err)
-			}
-			ip := net.ParseIP(host)
-			if ip == nil {
-				return fmt.Errorf("dial host %q did not resolve to an IP", host)
-			}
-			if utils.IsBlockedSSRFAddr(ip) {
-				return fmt.Errorf("%w: %s (%s)", utils.ErrBlockedSSRFAddr, ip.String(), network)
-			}
-			return nil
-		},
-	}
-	transport := utils.ConfigureHTTPTransport(&http.Transport{
-		DialContext:           dialer.DialContext,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: timeout,
-		ExpectContinueTimeout: 1 * time.Second,
-		DisableKeepAlives:     true,
-	})
+	transport := utils.NewSSRFSafeTransport(10 * time.Second)
+	transport.ResponseHeaderTimeout = timeout
+	transport.DisableKeepAlives = true
 	return &http.Client{
 		Transport: transport,
 		Timeout:   timeout,

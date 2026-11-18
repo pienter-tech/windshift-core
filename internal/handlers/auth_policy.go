@@ -273,7 +273,7 @@ func (h *AuthPolicyHandler) GetAuthPolicyStats(w http.ResponseWriter, r *http.Re
 			JOIN permissions gp ON ggp.permission_id = gp.id
 			WHERE gp.permission_key = 'system.admin'
 			AND g.is_active = true
-		)
+		) AS admins
 	`).Scan(&stats.SystemAdmins); err != nil {
 		slog.Warn("failed to get system admins count", slog.Any("error", err))
 	}
@@ -295,7 +295,7 @@ func (h *AuthPolicyHandler) GetAuthPolicyStats(w http.ResponseWriter, r *http.Re
 			WHERE gp.permission_key = 'system.admin'
 			AND g.is_active = true
 			AND EXISTS(SELECT 1 FROM webauthn_credentials wc WHERE wc.user_id = gm.user_id)
-		)
+		) AS admins
 	`).Scan(&stats.AdminsWithPasskey); err != nil {
 		slog.Warn("failed to get admins with passkey count", slog.Any("error", err))
 	}
@@ -517,9 +517,10 @@ func (h *AuthPolicyHandler) IsPreviewMode() bool {
 
 // PublicPolicyStatus represents the public auth policy status for the login page
 type PublicPolicyStatus struct {
-	HidePasswordForm bool `json:"hide_password_form"` // True if password form should be hidden
-	SSOEnabled       bool `json:"sso_enabled"`        // True if SSO is configured
-	PasskeyRequired  bool `json:"passkey_required"`   // True if passkey authentication is required
+	PasswordFirstRequired bool `json:"password_first_required"`
+	HidePasswordForm      bool `json:"hide_password_form"` // True if password form should be hidden
+	SSOEnabled            bool `json:"sso_enabled"`        // True if SSO is configured
+	PasskeyRequired       bool `json:"passkey_required"`   // True if passkey authentication is required
 }
 
 // GetPublicPolicyStatus returns the auth policy status for the login page (no auth required)
@@ -545,6 +546,7 @@ func (h *AuthPolicyHandler) GetPublicPolicyStatus(w http.ResponseWriter, r *http
 
 	// Derive passkey requirement
 	status.PasskeyRequired = policy == AuthPolicyPasskeyOnly || policy == AuthPolicyPasswordPasskey2FA
+	status.PasswordFirstRequired = policy == AuthPolicyPasswordPasskey2FA && !previewMode
 
 	// Passkey-only retains password solely as a first-passkey enrollment
 	// credential, so its form remains available; SSO-primary hides it.

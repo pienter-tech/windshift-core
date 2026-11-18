@@ -504,6 +504,7 @@ type commentApplication interface {
 	CountFeedByItemID(int) (int, error)
 	UserCanReadItemAsApprover(context.Context, int, int) (bool, error)
 	Create(services.CreateCommentParams) (*services.CreateCommentResult, error)
+	CreateContext(context.Context, services.CreateCommentParams) (*services.CreateCommentResult, error)
 	UpdateWithEffects(services.UpdateCommentParams) (*models.Comment, error)
 	DeleteWithEffects(services.DeleteCommentParams) error
 	AttachReactions([]models.Comment) error
@@ -622,11 +623,17 @@ type actionApplication interface {
 	Update(int, int, int, services.AuditActor, models.UpdateActionRequest) (*models.Action, error)
 	Delete(int, int, int, services.AuditActor) error
 	Logs(int, int, int, int, int) ([]*models.ActionExecutionLog, int, error)
+	ListRevisions(int, int, int, int, int) ([]models.ActionDefinitionRevisionSummary, int, error)
+	GetRevision(int, int, int, int) (*models.ActionDefinitionRevision, error)
 	Execute(int, int, int, int) (models.ActionExecutionStatus, error)
 }
 
 // Deps lists every required v2 dependency. Construction has no fallbacks.
 type Deps struct {
+	OperatorControls             *services.OperatorControlsService
+	PasskeyLogin                 passkeyLoginHTTP
+	PasskeyLoginLimiter          requestLimiter
+	CustomerAccess               customerAccessHTTP
 	Mux                          *http.ServeMux
 	Tokens                       tokenAuthenticator
 	Users                        userReader
@@ -946,7 +953,7 @@ func buildRoutes(deps Deps) []route {
 	registerWorkspaceBundleRoutes(&builder, deps)
 	registerPackRoutes(&builder, deps)
 	registerHierarchyLevelRoutes(&builder, deps)
-	registerScopedCatalogRoutes(&builder, deps.Catalog, deps.Workspaces, deps.ItemTemplates)
+	registerScopedCatalogRoutes(&builder, deps.Catalog, deps.Workspaces, deps.ItemTemplates, deps.ObjectTranslations)
 	registerLabelRoutes(&builder, deps)
 	registerItemParticipantRoutes(&builder, deps)
 	registerItemSCMLinkRoutes(&builder, deps)
@@ -959,25 +966,32 @@ func buildRoutes(deps Deps) []route {
 	registerWorklogRoutes(&builder, deps)
 	registerTimeRoutes(&builder, deps)
 	registerAdminRoutes(&builder, deps)
+	registerOperatorControlsRoutes(&builder, deps)
 	registerAdminIntegrationRoutes(&builder, deps)
 	registerPageRoutes(&builder, deps)
 	registerCommentRoutes(&builder, deps)
 	registerAttachmentRoutes(&builder, deps)
 	registerCollectionRoutes(&builder, deps.Collections)
+	registerBoardPublicationRoutes(&builder, deps.Collections)
+	registerBoardPlacementRoutes(&builder, deps.Collections)
+	registerPortalBoardRoutes(&builder, deps)
+	registerCustomerAccessRoutes(&builder, deps)
+	registerPasskeyLoginRoutes(&builder, deps)
 	registerPlanningRoutes(&builder, deps.Planning)
 	registerMilestoneCommentRoutes(&builder, deps)
 	registerMilestonePageLinkRoutes(&builder, deps)
 	registerMilestoneActivityRoutes(&builder, deps)
-	registerLinkRoutes(&builder, deps.Links, deps.CatalogMutations)
+	registerLinkRoutes(&builder, deps.Links, deps.CatalogMutations, deps.ObjectTranslations)
 	registerAgentRunRoutes(&builder, deps.AgentRuns)
 	registerAgentSkillRoutes(&builder, deps.AgentSkills)
 	registerGovernanceRoutes(&builder, deps.ConditionSets, deps.Governance)
 	registerActionRoutes(&builder, deps.Actions)
 	registerTestManagementRoutes(&builder, deps.TestManagement)
 	registerAssetRoutes(&builder, deps.Assets)
-	registerItemRoutes(&builder, deps.ItemApplication, deps.ItemDetail, deps.ItemLifecycle, deps.Access, deps.StoryPointRollup, deps.DBRequestTimeout)
+	registerItemRoutes(&builder, deps.ItemApplication, deps.ItemDetail, deps.ItemLifecycle, deps.Access, deps.StoryPointRollup, deps.DBRequestTimeout, deps.ObjectTranslations)
 	registerQueueRoutes(&builder, deps.ItemApplication)
 	registerSupportMetricsRoutes(&builder, deps)
+	registerOverviewChartRoutes(&builder, deps)
 	registerSLARoutes(&builder, deps)
 	registerSLACalendarRoutes(&builder, deps)
 	registerSLAWarningThresholdRoutes(&builder, deps)
@@ -1057,6 +1071,7 @@ func applyEmbeddedContractMetadata(routes []route, document []byte) {
 		}
 		slices.Sort(routes[index].DocumentedErrors)
 		applyParameterCorrections(&routes[index].Route)
+		applyBoardContractMetadata(&routes[index].Route)
 	}
 }
 
@@ -1091,6 +1106,9 @@ func appendUniqueParameter(parameters []ParameterMetadata, candidate ParameterMe
 }
 
 func applyParameterCorrections(route *Route) {
+	if route.Path == "/operator-controls" {
+		route.Description = "Read effective operator restrictions, current instance usage and blocked script definitions. Requires system administrator permission and admin:operator-controls:read for bearer tokens. Credentials and deployment paths are never returned. This read-only operation cannot modify operator policy."
+	}
 	if strings.HasPrefix(route.Path, "/admin/") && route.Exposure == ExposureBoth {
 		route.Description += " Requires system administrator permission and the declared bearer token scope. Responses use the standard v2 envelope."
 		if route.Path == "/admin/audit-logs/since" {
@@ -1105,6 +1123,19 @@ func applyParameterCorrections(route *Route) {
 		upsertParameter(route, integerQuery("page_size", "Maximum number of resources to return.", maxPageSize, defaultPageSize))
 	}
 	switch route.Method + " " + route.Path {
+	case "GET /workspaces/{workspace_id}/overview-charts":
+		route.Tag = "Workspaces"
+		route.Summary = "Get date-bounded overview chart counts"
+		route.Description = "Returns zero-filled daily counts for the current workspace/collection cohort, without item bodies or pagination. Dates are inclusive UTC calendar dates, at most 366 days. Completion is each item's first recorded transition from a non-completed status to a completed status; creation in a completed status is not inferred. Edits, reopening, and recompletion do not move or duplicate that event. Merged/deleted items are excluded. A collection must belong to this workspace and be visible to the caller; inaccessible scopes return 404. Unrequested series are omitted."
+		upsertParameter(route, ParameterMetadata{Name: "workspace_id", In: "path", Required: true, Description: "The workspace identifier.", Schema: map[string]any{"type": "integer", "minimum": 1}})
+		for _, name := range []string{"from", "to"} {
+			upsertParameter(route, ParameterMetadata{Name: name, In: "query", Required: true, Description: "Inclusive UTC date (YYYY-MM-DD).", Schema: map[string]any{"type": "string", "format": "date"}})
+		}
+		upsertParameter(route, positiveIDQuery("collection_id", "Optional visible collection belonging to this workspace; its current saved query restricts both series."))
+		upsertParameter(route, ParameterMetadata{Name: "series", In: "query", Description: "Comma-separated requested series: created, completed, or both. Defaults to both.", Schema: map[string]any{"type": "string", "default": "created,completed"}})
+		if !slices.Contains(route.DocumentedErrors, http.StatusBadRequest) {
+			route.DocumentedErrors = append(route.DocumentedErrors, http.StatusBadRequest)
+		}
 	case "POST /workspaces/{workspace_id}/tickets/import/upload",
 		"POST /workspaces/{workspace_id}/tickets/import/start":
 		upsertParameter(route, ParameterMetadata{Name: "workspace_id", In: "path", Required: true, Description: "The workspace identifier.", Schema: map[string]any{"type": "integer", "minimum": 1}})
@@ -1210,6 +1241,23 @@ func applyParameterCorrections(route *Route) {
 		upsertParameter(route, dateQuery("from", "Includes worklogs on or after this civil date."))
 		upsertParameter(route, dateQuery("to", "Includes worklogs on or before this civil date."))
 		upsertParameter(route, stringQuery("timezone", "IANA timezone that from/to are interpreted in; defaults to the caller's profile timezone."))
+	case "GET /time/worklog-drafts",
+		"GET /time/worklog-drafts/{draft_id}",
+		"PATCH /time/worklog-drafts/{draft_id}",
+		"DELETE /time/worklog-drafts/{draft_id}",
+		"POST /time/worklog-drafts/{draft_id}/book":
+		route.Tag = "Time tracking"
+		route.Summary = map[string]string{
+			"GET /time/worklog-drafts":                  "List draft worklogs",
+			"GET /time/worklog-drafts/{draft_id}":       "Get a draft worklog",
+			"PATCH /time/worklog-drafts/{draft_id}":     "Update a draft worklog",
+			"DELETE /time/worklog-drafts/{draft_id}":    "Delete a draft worklog",
+			"POST /time/worklog-drafts/{draft_id}/book": "Book a draft worklog",
+		}[route.Method+" "+route.Path]
+		route.Description = semanticRouteDescription(route.Method, route.Summary)
+		if strings.Contains(route.Path, "{draft_id}") {
+			upsertParameter(route, ParameterMetadata{Name: "draft_id", In: "path", Required: true, Description: "The draft worklog identifier.", Schema: map[string]any{"type": "integer", "minimum": 1}})
+		}
 	case "GET /asset-sets/{asset_set_id}/assets":
 		for _, name := range []string{"type_id", "category_id", "status_id"} {
 			upsertParameter(route, stringQuery(name, "Restricts assets by "+strings.ReplaceAll(name, "_", " ")+"."))
@@ -1220,7 +1268,7 @@ func applyParameterCorrections(route *Route) {
 	case "GET /asset-sets/{asset_set_id}/categories":
 		upsertParameter(route, booleanQuery("tree", "Whether to return categories as a hierarchy.", false))
 	case "GET /workspaces/{workspace_id}/test-cases":
-		upsertParameter(route, stringQuery("q", "Case-insensitive test-case search."))
+		upsertParameter(route, stringQuery("q", "Case-insensitive lexical LIKE search across metadata, labels, steps and Gherkin. No semantic similarity ranking; % and _ remain LIKE wildcards."))
 		upsertParameter(route, positiveIDQuery("label_id", "Restricts test cases to one label."))
 		upsertParameter(route, positiveIDQuery("folder_id", "Restricts test cases to one folder; null selects unfiled cases."))
 		upsertParameter(route, booleanQuery("all", "Whether to ignore the folder filter.", false))
@@ -1280,6 +1328,17 @@ func applyParameterCorrections(route *Route) {
 	case "GET /workspaces/{workspace_id}/test-reports/summary":
 		upsertParameter(route, positiveIDQuery("milestone_id", "Restricts the report to one milestone."))
 		upsertParameter(route, integerQuery("days", "Number of recent civil days included in trend calculations.", 365, 30))
+	case "GET /workspaces/{workspace_id}/test-reports/effectiveness":
+		route.Description = "Ranks all workspace cases by observed defect-finding executions, then distinct linked Bugs, then case ID. One execution is one persisted run/case result in [since, until) with an execution timestamp and passed/failed/blocked/skipped status. Findings require a failed result linked to a same-workspace builtin Bug. Rate is findings/executions (0..1), null for zero executions. Milestone filters executions via their plan, not the case population. Missing links are not proof of ineffectiveness. Bounded to 100 cases per page. Offset pages independently sample a mutable ranking, not a consistent snapshot: concurrent executions, edits and links can shift rows even with a fixed time window. Deduplicate IDs and report sampling limits. Permission denials and missing workspaces return the same 404 envelope."
+		upsertParameter(route, positiveIDQuery("milestone_id", "Restricts executions to plans in this milestone; all workspace cases remain visible."))
+		upsertParameter(route, stringQuery("since", "Inclusive RFC3339 execution timestamp; defaults to 30 days before until."))
+		upsertParameter(route, stringQuery("until", "Exclusive RFC3339 execution timestamp; defaults to now; maximum window 366 days."))
+		upsertParameter(route, integerQuery("limit", "Cases per page; maximum 100.", 100, 50))
+		upsertParameter(route, ParameterMetadata{Name: "offset", In: "query", Description: "Nonnegative case offset.", Schema: map[string]any{"type": "integer", "minimum": 0, "default": 0}})
+	case "POST /workspaces/{workspace_id}/test-cases/bulk":
+		route.Description = "Create, update or reversibly archive 1..50 cases. References must belong to this workspace and are checked before any write. Responses contain ordered zero-based per-case results; validation failures may coexist with successes. Each successful mutation is audited. Explicit steps and label_ids replace collections; omitted fields preserve values. Archive sets inactive without deleting history. Removing steps with recorded results is refused. Permission and cross-workspace denials use the same 404 envelope."
+	case "GET /workspaces/{workspace_id}/test-coverage/items/{item_id}":
+		route.Description = "Returns explicit Tests links for the ticket and its direct child criterion items. With no children, basis=item means coarse item-level traceability. Prose is not parsed and a link does not prove adequacy. Only same-workspace non-inactive cases count. Requires test.view and item.view. At most 100 criteria and 50 cases per criterion; totals and truncated disclose omitted data. Missing and inaccessible resources share the 404 envelope."
 	case "DELETE /asset-sets/{asset_set_id}/roles/{assignment_id}":
 		upsertParameter(route, enumQuery("type", "Assignment principal type.", "user", "group"))
 	case "POST /workspaces/{workspace_id}/tickets/import/upload",
@@ -1520,6 +1579,21 @@ func registerMount(mux *http.ServeMux, prefix string, routes []route, deps Deps,
 					return search(w, r)
 				}
 			}
+			// Bound the database work of ordinary routes; auth and the handlers
+			// above stay outside the deadline so a slow operation cannot be
+			// mistaken for a credential failure. Routes that receive their
+			// request body before doing database work start the budget
+			// themselves after parsing (startDBBudget), so transfer time is
+			// not charged to it.
+			if deps.DBRequestTimeout > 0 {
+				switch {
+				case dbTimeoutDeferred(selected):
+					r = r.WithContext(withDBBudgetDefault(r.Context(), deps.DBRequestTimeout))
+					handler = mapDBDeadline(handler)
+				case !dbTimeoutExempt(selected):
+					handler = withDBRequestTimeout(deps.DBRequestTimeout)(handler)
+				}
+			}
 			if selected.Auth == AuthAuthenticated {
 				if deps.RateLimiter != nil {
 					handler = limitRequests(deps.RateLimiter)(handler)
@@ -1602,6 +1676,94 @@ func matchPath(pattern, path string) (map[string]string, bool) {
 		}
 	}
 	return values, true
+}
+
+// dbBudgetKey carries the configured default database-work budget. Handlers on
+// routes that receive their request body first read it when they start their
+// own budget after parsing.
+type dbBudgetKey struct{}
+
+// withDBBudgetDefault records the configured database-work budget for a
+// deferred route's handler. It installs no deadline: the handler decides when
+// the database work starts.
+func withDBBudgetDefault(ctx context.Context, timeout time.Duration) context.Context {
+	return context.WithValue(ctx, dbBudgetKey{}, timeout)
+}
+
+// startDBBudget bounds the database work that follows request-body reception.
+// The configured DB_REQUEST_TIMEOUT is the default; handlers on routes with a
+// different request size or shape use startDBBudgetFor to override it. Routes
+// that are not deferred have no configured budget, so this is a no-op there.
+// Callers must cancel the returned context.
+func startDBBudget(ctx context.Context) (context.Context, context.CancelFunc) {
+	return startDBBudgetFor(ctx, 0)
+}
+
+// startDBBudgetFor is startDBBudget with a per-handler override. A positive
+// override replaces the configured default for this request; zero or negative
+// uses the default. Overrides should stay below the server's write timeout so
+// the database call is canceled before the connection is severed.
+func startDBBudgetFor(ctx context.Context, override time.Duration) (context.Context, context.CancelFunc) {
+	timeout, _ := ctx.Value(dbBudgetKey{}).(time.Duration)
+	if override > 0 {
+		timeout = override
+	}
+	if timeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+// withDBRequestTimeout bounds the database work an ordinary route performs. It
+// derives a deadline from the request context so database calls observe
+// cancellation, and maps a deadline to the stable database_deadline_exceeded
+// response instead of a generic 500.
+func withDBRequestTimeout(timeout time.Duration) Middleware {
+	return func(next Handler) Handler {
+		return func(w http.ResponseWriter, r *http.Request) error {
+			ctx, cancel := context.WithTimeout(r.Context(), timeout)
+			defer cancel()
+			return mapDBDeadline(next)(w, r.WithContext(ctx))
+		}
+	}
+}
+
+// mapDBDeadline maps an expired database budget to the stable 504 contract.
+// Deferred handlers start the budget themselves after receiving the body, so
+// this middleware only maps the outcome.
+func mapDBDeadline(next Handler) Handler {
+	return func(w http.ResponseWriter, r *http.Request) error {
+		err := next(w, r)
+		if errors.Is(err, context.DeadlineExceeded) {
+			return newError(http.StatusGatewayTimeout, "database_deadline_exceeded", "The database request timed out.")
+		}
+		return err
+	}
+}
+
+// dbTimeoutDeferred reports whether a route receives its request body before
+// doing database work. Multipart handlers start the budget themselves once the
+// body is parsed, so receiving the body does not consume it.
+func dbTimeoutDeferred(route *route) bool {
+	return strings.HasPrefix(route.RequestMediaType, "multipart/")
+}
+
+// dbTimeoutExempt reports whether a route manages its own deadline instead of
+// the ordinary DB-request timeout. Binary and streaming responses are exempt
+// automatically; the listed report/export jobs are intentionally long-running
+// and opt out explicitly.
+func dbTimeoutExempt(route *route) bool {
+	switch route.ResponseMediaType {
+	case "", "application/json":
+	default:
+		return true
+	}
+	switch route.Path {
+	case "/configuration-sets/{configuration_set_id}/export",
+		"/support/metrics/aggregate":
+		return true
+	}
+	return false
 }
 
 func requireCSRF(validator csrfValidator) Middleware {

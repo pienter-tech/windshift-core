@@ -5,20 +5,21 @@
   import Edit from '@lucide/svelte/icons/edit';
   import Trash2 from '@lucide/svelte/icons/trash-2';
   import AlertBox from '../../components/AlertBox.svelte';
-  import { navigate } from '../../router.js';
+  import { currentRoute, navigate } from '../../router.js';
   import { timeEntryStore } from '../../stores/timeEntryStore.svelte.js';
+  import { timeLogStore } from '../../stores/timeLogStore.svelte.js';
   import { permissionStore, isSystemAdmin } from '../../stores/permissions.svelte.js';
   import Button from '../../components/Button.svelte';
   import Input from '../../components/Input.svelte';
   import BasePicker from '../../pickers/BasePicker.svelte';
   import DataTable from '../../components/DataTable.svelte';
   import Card from '../../components/Card.svelte';
+  import TabNav from '../../components/TabNav.svelte';
   import TimeTrackingOnboarding from './TimeTrackingOnboarding.svelte';
-  import TimeLogModal from '../../dialogs/TimeLogModal.svelte';
+  import TimeDraftsCard from './TimeDraftsCard.svelte';
   import { toHotkeyString } from '../../utils/keyboardShortcuts.js';
   import { t } from '../../stores/i18n.svelte.js';
   import { customerOrganisationName, realCustomers } from '../../utils/customerLabel.js';
-  import { errorToast } from '../../stores/toasts.svelte.js';
   import { confirm } from '../../composables/useConfirm.js';
   import { formatDateOnly, getUserTimezone } from '../../utils/dateFormatter.js';
   import { dateKeyInZone } from '../../utils/worklogTimezone.js';
@@ -28,16 +29,21 @@
   // Bind to store values
   let worklogs = $derived(timeEntryStore.worklogs);
   let customers = $derived(timeEntryStore.customers);
-  let projects = $derived(timeEntryStore.projects);
-  let workItems = $derived(timeEntryStore.workItems);
-  let workspaces = $derived(timeEntryStore.workspaces);
-  let editingWorklog = $derived(timeEntryStore.editingWorklog);
   let showOnboarding = $derived(timeEntryStore.showOnboarding);
-  let showTimeLogModal = $derived(timeEntryStore.showTimeLogModal);
   let filters = $derived(timeEntryStore.filters);
   let activeProjects = $derived(timeEntryStore.activeProjects);
   let filteredProjects = $derived(timeEntryStore.filteredProjects);
   const canManageProjects = $derived($permissionStore.userPermissionKeys?.has('project.manage') || $isSystemAdmin);
+
+  // The subtab lives in the URL so the Time & Projects menu can deep-link to drafts.
+  const activeTab = $derived($currentRoute.query?.subtab === 'drafts' ? 'drafts' : 'worklogs');
+  const entryTabs = $derived([
+    { id: 'worklogs', label: t('time.entry.worklogsTab') },
+    {
+      id: 'drafts',
+      label: timeLogStore.draftCount > 0 ? `${t('time.drafts')} (${timeLogStore.draftCount})` : t('time.drafts')
+    }
+  ]);
 
   const worklogColumns = $derived([
     { key: 'date', label: t('common.date'), render: (w) => formatDateOnly(dateKeyInZone(w.start_time, getUserTimezone(authStore?.currentUser))) },
@@ -51,6 +57,7 @@
 
   onMount(async () => {
     await timeEntryStore.init();
+    void timeLogStore.refreshDrafts();
   });
 
   function buildWorklogDropdownItems(worklog) {
@@ -62,7 +69,7 @@
         title: t('common.edit'),
         testid: 'worklog-edit',
         hoverClass: 'hover-bg',
-        onClick: () => timeEntryStore.editWorklog(worklog)
+        onClick: () => timeLogStore.open({ editingWorklog: worklog })
       },
       {
         id: 'delete',
@@ -76,23 +83,19 @@
     ];
   }
 
-  async function handleModalSave(event) {
-    try {
-      const data = event.detail;
-      await timeEntryStore.saveWorklog(data);
-    } catch (error) {
-      console.error('Failed to save worklog:', error);
-      errorToast(t('time.entry.failedToSave'));
-    }
-  }
-
-  function handleModalCancel() {
-    timeEntryStore.closeTimeLogModal();
-  }
-
   function openLogTimeModal() {
-    timeEntryStore.openTimeLogModal();
+    timeLogStore.open();
   }
+
+  // Reload the page list after the shared host saves or books an entry.
+  let lastTimeLogRevision = 0;
+  $effect(() => {
+    const revision = timeLogStore.revision;
+    if (revision !== lastTimeLogRevision) {
+      lastTimeLogRevision = revision;
+      timeEntryStore.loadWorklogs();
+    }
+  });
 
   async function deleteWorklog(worklog) {
     const confirmed = await confirm({
@@ -162,7 +165,7 @@
       icon={Plus}
       onclick={openLogTimeModal}
       keyboardHint="A"
-      hotkeyConfig={{ key: toHotkeyString('timeEntry', 'openLog'), guard: () => !showTimeLogModal }}
+      hotkeyConfig={{ key: toHotkeyString('timeEntry', 'openLog'), guard: () => !timeLogStore.show }}
       title={t('time.entry.addTimeEntry')}
       dataTestid="time-log-open"
     >
@@ -170,6 +173,19 @@
     </Button>
   {/snippet}
 </PageHeader>
+
+<div class="mb-6">
+  <TabNav
+    tabs={entryTabs}
+    basePath="/time"
+    paramName="subtab"
+    defaultTab="worklogs"
+    testidPrefix="time-entry-tab"
+    ariaLabel={t('time.entry.title')}
+  />
+</div>
+
+{#if activeTab === 'worklogs'}
 
 {#if activeProjects.length === 0 && !showOnboarding}
   <AlertBox variant="warning" class="mb-6">
@@ -296,20 +312,13 @@
   {/if}
 </Card>
 
+{:else if activeTab === 'drafts'}
+  <!-- Drafts: incomplete entries recovered here or from the Time & Projects menu. -->
+  <TimeDraftsCard />
+{/if}
+
 <!-- Onboarding Modal -->
 {#if showOnboarding && canManageProjects}
   <TimeTrackingOnboarding oncompleted={handleOnboardingCompleted} oncancel={handleOnboardingCancel} />
 {/if}
 
-<!-- Time Log Modal -->
-{#if showTimeLogModal}
-  <TimeLogModal
-    projects={projects}
-    {customers}
-    {workItems}
-    {workspaces}
-    {editingWorklog}
-    onsave={handleModalSave}
-    oncancel={handleModalCancel}
-  />
-{/if}

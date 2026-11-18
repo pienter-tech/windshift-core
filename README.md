@@ -35,6 +35,11 @@ A built-in importer handles the move off Jira.
 
 It ships as a single Go binary with the Svelte frontend built in, SQLite by default or PostgreSQL for data storage. No Java, no Elasticsearch cluster, no per-user pricing, and your data stays on your infrastructure.
 
+## Operator controls
+
+Deployment owners can apply immutable [operator controls](internal/operatorcontrols/README.md)
+without changing organization preferences or maintaining a separate application fork.
+
 ## Agents and automation
 
 Windshift runs coding agents against your repositories. Agent Studio binds an agent to a workspace, launches it from a work item, and links the resulting pull request back to that item. Source control integrations cover GitHub, GitLab, Gitea, and Forgejo.
@@ -111,7 +116,7 @@ The built-in MCP server exposes work items, comments, pages, knowledge, tests, t
 
 **Internationalization**
 
-- Twelve built-in languages: English, Deutsch, Español, Français, Italiano, Polski, Português (Brasil), العربية, فارسی, Русский, 简体中文, and 한국어, with right-to-left support for Arabic and Persian.
+- Thirteen built-in languages: English, Deutsch, Español, Français, Italiano, Nederlands, Polski, Português (Brasil), العربية, فارسی, Русский, 简体中文, and 한국어, with right-to-left support for Arabic and Persian.
 
 </details>
 
@@ -173,9 +178,9 @@ The built-in MCP server exposes work items, comments, pages, knowledge, tests, t
 
 ## Language support
 
-<p align="center"><strong>Available in many languages · Disponibile in molte lingue · Dostępne w wielu językach · متوفر بالعديد من اللغات · 支持多种语言<br>Доступно на многих языках · 다양한 언어로 사용 가능</strong></p>
+<p align="center"><strong>Available in many languages · Beschikbaar in het Nederlands · Disponibile in molte lingue · Dostępne w wielu językach · متوفر بالعديد من اللغات · 支持多种语言<br>Доступно на многих языках · 다양한 언어로 사용 가능</strong></p>
 
-Windshift ships with twelve built-in languages: English, Deutsch, Español, Français, Italiano, Polski, Português (Brasil), العربية, فارسی, Русский, 简体中文, and 한국어, including right-to-left support for Arabic and Persian.
+Windshift ships with thirteen built-in languages: English, Deutsch, Español, Français, Italiano, Nederlands, Polski, Português (Brasil), العربية, فارسی, Русский, 简体中文, and 한국어, including right-to-left support for Arabic and Persian.
 
 <p align="center">
   <picture>
@@ -229,6 +234,7 @@ Windshift supports OIDC single sign-on with any standards-compliant provider. We
 - [Build instructions](BUILD.md)
 - [Contributing guide](CONTRIBUTING.md)
 - [Logging configuration](LOGGING.md)
+- [Healthchecks and direct TLS](deploy/healthchecks.md)
 - [Docker backup and restore](deploy/backup-restore.md)
 - [Kubernetes deployment](deploy/kubernetes.md)
 - [Release notes](https://windshift.sh/self-hosting/08-release-notes/) and [GitHub releases](https://github.com/Windshiftapp/core/releases)

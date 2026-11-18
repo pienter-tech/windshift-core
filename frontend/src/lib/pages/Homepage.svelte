@@ -32,6 +32,7 @@
 
   import WidgetWrapper from '../widgets/WidgetWrapper.svelte';
   import DashboardCustomizationSidebar from '../layout/DashboardCustomizationSidebar.svelte';
+  import '../layout/viewBackground.css';
 
   // Dashboard widgets
   import DailyBriefingWidget from '../widgets/dashboard/DailyBriefingWidget.svelte';
@@ -265,6 +266,7 @@
 
 <div
   class="min-h-full w-full"
+  class:view-dot-grid={!homepageStore.hasCustomBackground}
   style="{homepageStore.backgroundStyle} background-attachment: fixed;"
   data-testid="homepage"
   data-ready={layoutLoaded}

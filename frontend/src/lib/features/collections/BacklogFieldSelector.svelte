@@ -1,4 +1,6 @@
 <script>
+  import { createOwnedPopup } from '../../utils/overlayScope.js';
+  const ownedPopup = createOwnedPopup();
   import { createPopover, melt } from '@melt-ui/svelte';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import SlidersHorizontal from '@lucide/svelte/icons/sliders-horizontal';
@@ -23,6 +25,8 @@
       placement: 'bottom-start',
     },
     portal: 'body',
+    disableFocusTrap: ownedPopup.withinModal,
+    closeFocus: ownedPopup.withinModal ? null : undefined,
   });
 
   let draftFields = $state([]);
@@ -55,7 +59,7 @@
 <button
   use:melt={$trigger}
   type="button"
-  class="flex items-center gap-2 px-3 py-2 text-sm rounded-lg text-ds-text-subtle transition-colors"
+  class="inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium text-[var(--ds-text)] bg-[var(--ctx-surface,var(--ds-background-neutral))] hover:bg-[var(--ctx-hover-bg,var(--ds-surface-hovered))] transition-colors"
   title={t('fields.configureFields')}
   aria-label={t('fields.configureFields')}
   data-testid="backlog-field-selector-trigger"
@@ -68,6 +72,7 @@
 {#if $open}
   <div
     use:melt={$content}
+    use:ownedPopup={{ close: () => { $open = false; } }}
     class="w-72 rounded-lg shadow-xl border border-ds-border bg-ds-surface-raised z-[60] overflow-hidden"
     data-testid="backlog-field-selector-menu"
   >

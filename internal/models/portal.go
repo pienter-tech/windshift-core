@@ -167,10 +167,14 @@ type ChannelConfig struct {
 	EmailRateLimitPerHour *int `json:"email_rate_limit_per_hour,omitempty"`
 
 	// Portal Configuration
-	PortalSlug         string `json:"portal_slug,omitempty"`        // URL-friendly identifier (e.g., "support-portal")
-	PortalWorkspaceIDs []int  `json:"portal_workspace_ids"`         // Target workspaces for submissions
-	PortalTitle        string `json:"portal_title,omitempty"`       // Display title for portal
-	PortalDescription  string `json:"portal_description,omitempty"` // Description shown on portal page
+	PortalSlug          string   `json:"portal_slug,omitempty"`        // URL-friendly identifier (e.g., "support-portal")
+	PortalWorkspaceIDs  []int    `json:"portal_workspace_ids"`         // Target workspaces for submissions
+	PortalTitle         string   `json:"portal_title,omitempty"`       // Display title for portal
+	PortalDescription   string   `json:"portal_description,omitempty"` // Description shown on portal page
+	PortalPresentation  string   `json:"portal_presentation,omitempty"`
+	PortalModules       []string `json:"portal_modules"`
+	PortalNavigation    []string `json:"portal_navigation,omitempty"`
+	PortalDefaultModule string   `json:"portal_default_module,omitempty"`
 
 	// Portal Registration Controls
 	PortalRegistrationMode string   `json:"portal_registration_mode,omitempty"` // "open" (default) or "manual" — manual = only admin-managed customers can sign in
@@ -270,6 +274,7 @@ const (
 	CustomerCreatedViaAgent        = "agent"
 	CustomerCreatedViaEmailIntake  = "email-intake"
 	CustomerCreatedViaMagicLink    = "magic-link"
+	CustomerCreatedViaGitHub       = "github"
 	CustomerCreatedViaTicketImport = "ticket-import"
 	CustomerCreatedViaUnknown      = "unknown"
 )
@@ -280,6 +285,7 @@ var CustomerCreatedViaValues = []string{
 	CustomerCreatedViaAgent,
 	CustomerCreatedViaEmailIntake,
 	CustomerCreatedViaMagicLink,
+	CustomerCreatedViaGitHub,
 	CustomerCreatedViaTicketImport,
 	CustomerCreatedViaUnknown,
 }

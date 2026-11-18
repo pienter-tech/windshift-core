@@ -10,6 +10,7 @@ require (
 	charm.land/lipgloss/v2 v2.0.5
 	charm.land/wish/v2 v2.0.1
 	github.com/BurntSushi/toml v1.3.2
+	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2
 	github.com/SherClockHolmes/webpush-go v1.4.0
 	github.com/allegro/bigcache/v3 v3.1.0
 	github.com/aws/aws-sdk-go-v2 v1.47.7
@@ -38,7 +39,7 @@ require (
 	github.com/jimlambrt/gldap v0.1.14
 	github.com/jub0bs/cors v0.13.2
 	github.com/klauspost/compress v1.20.3
-	github.com/lib/pq v1.10.9
+	github.com/lib/pq v1.12.3
 	github.com/microcosm-cc/bluemonday v1.0.27
 	github.com/modelcontextprotocol/go-sdk v1.4.1
 	github.com/openai/openai-go/v3 v3.46.0
@@ -46,13 +47,16 @@ require (
 	github.com/sahilm/fuzzy v0.1.3
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/spf13/cobra v1.8.0
-	github.com/spf13/pflag v1.0.10
+	github.com/spf13/pflag v1.1.0
 	github.com/teambition/rrule-go v1.8.2
 	github.com/yuin/goldmark v1.8.6
 	github.com/zitadel/oidc/v3 v3.45.3
 	golang.org/x/crypto v0.58.0
 	golang.org/x/image v0.45.0
+	golang.org/x/net v0.62.0
+	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sync v0.24.0
+	golang.org/x/sys v0.49.0
 	golang.org/x/text v0.43.0
 	golang.org/x/time v0.15.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -65,6 +69,7 @@ require (
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	github.com/Azure/go-ntlmssp v0.1.1 // indirect
+	github.com/JohannesKaufmann/dom v0.3.1 // indirect
 	github.com/KyleBanks/depth v1.2.1 // indirect
 	github.com/PuerkitoBio/purell v1.1.1 // indirect
 	github.com/PuerkitoBio/urlesc v0.0.0-20170810143723-de5bf2ad4578 // indirect
@@ -150,7 +155,7 @@ require (
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/mattermost/xml-roundtrip-validator v0.1.0 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/mattn/go-runewidth v0.0.27 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/muesli/termenv v0.16.0 // indirect
@@ -197,9 +202,6 @@ require (
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546 // indirect
 	golang.org/x/mod v0.41.0 // indirect
-	golang.org/x/net v0.60.0 // indirect
-	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/tools v0.51.0 // indirect
 	google.golang.org/api v0.291.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260729162451-8efbd57d26e0 // indirect

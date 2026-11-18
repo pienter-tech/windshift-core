@@ -1,4 +1,6 @@
 <script>
+  import { createOwnedPopup } from '../../utils/overlayScope.js';
+  const ownedPopup = createOwnedPopup();
   import { createPopover, melt } from '@melt-ui/svelte';
   import { t } from '../../stores/i18n.svelte.js';
   import { LIST_COLUMN_FIELDS } from '../../stores/fieldConfig.js';
@@ -49,7 +51,9 @@
       fitViewport: true,
       placement: 'bottom-end'
     },
-    portal: 'body'
+    portal: 'body',
+    disableFocusTrap: ownedPopup.withinModal,
+    closeFocus: ownedPopup.withinModal ? null : undefined,
   });
 
   const MAX_VISIBLE_CUSTOM_FIELDS = 5;
@@ -228,8 +232,7 @@
 {#if canConfigure}
   <button
     use:melt={$trigger}
-    class="flex items-center gap-2 px-3 py-2 text-sm rounded-lg transition-colors"
-    style="color: var(--ctx-text-subtle, var(--ds-text-subtle));"
+    class="inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium text-[var(--ds-text)] bg-[var(--ctx-surface,var(--ds-background-neutral))] hover:bg-[var(--ctx-hover-bg,var(--ds-surface-hovered))] transition-colors"
     title="Configure columns"
     data-testid={testId}
   >
@@ -242,6 +245,7 @@
 {#if $open}
   <div
     use:melt={$content}
+    use:ownedPopup={{ close: () => { $open = false; } }}
     data-testid="column-selector-menu"
     class="w-80 rounded-lg shadow-xl border z-[60] flex flex-col overflow-hidden"
     style="background-color: var(--ds-surface-raised); border-color: var(--ds-border);"

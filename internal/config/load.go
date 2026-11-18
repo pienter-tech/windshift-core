@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"windshift/internal/database"
+	"windshift/internal/operatorcontrols"
 )
 
 // Load parses CLI flags (via the default flag.CommandLine), reads env vars,
@@ -25,6 +26,7 @@ import (
 func Load(frontend embed.FS, shutdownChan chan os.Signal) Config {
 	// Flag definitions mirror the historic main.go flags verbatim.
 	var (
+		operatorPolicyPath    = flag.String("operator-policy", "", "Path to an operator-owned JSON controls file (changes require restart)")
 		portFlag              = flag.String("port", "8080", "Port to run the HTTP server on")
 		portShort             = flag.String("p", "8080", "Port to run the HTTP server on (shorthand)")
 		dbPath                = flag.String("db", "windshift.db", "Database file path (SQLite)")
@@ -67,10 +69,23 @@ func Load(frontend embed.FS, shutdownChan chan os.Signal) Config {
 		memoryLimitMB         = flag.Int("memory-limit-mb", DefaultMemoryLimitMB, "Total Windshift process memory budget in MiB")
 	)
 	flag.Parse()
+	policyPath := firstNonEmpty(os.Getenv("WINDSHIFT_OPERATOR_POLICY"), *operatorPolicyPath)
+	operatorPolicy, policyErr := operatorcontrols.Load(policyPath)
+	if policyErr != nil {
+		slog.Error("FATAL: invalid operator policy", "error", policyErr)
+		os.Exit(1)
+	}
 
-	// Reconcile the shorthand flags with their long forms.
+	// Track which flags were supplied explicitly so an alias, or a boolean set to
+	// its default value, is distinguishable from an omitted one.
+	explicitFlags := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { explicitFlags[f.Name] = true })
+
+	// Reconcile the shorthand flags with their long forms. An explicitly supplied
+	// value wins even when it equals the default, and when both aliases are
+	// supplied the shorthand (-p) takes precedence.
 	port := *portFlag
-	if *portShort != "" && *portShort != "8080" {
+	if explicitFlags["p"] {
 		port = *portShort
 	}
 	pgConn := *postgresConn
@@ -129,16 +144,13 @@ func Load(frontend embed.FS, shutdownChan chan os.Signal) Config {
 	resolvedSSHHost := firstNonEmpty(os.Getenv("SSH_HOST"), *sshHost)
 
 	// Proxy: track explicit (flag OR env) because downstream auto-detection
-	// treats "user said so" differently from "defaulted off".
-	useProxyExplicit := false
-	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "use-proxy" {
-			useProxyExplicit = true
-		}
-	})
+	// treats "user said so" differently from "defaulted off". USE_PROXY=false is
+	// as explicit as USE_PROXY=true; only an unset variable leaves auto-detection
+	// in charge. An explicit environment value overrides the flag.
+	useProxyExplicit := explicitFlags["use-proxy"]
 	proxyVal := *useProxy
-	if parseBoolEnv("USE_PROXY") {
-		proxyVal = true
+	if raw := os.Getenv("USE_PROXY"); raw != "" {
+		proxyVal = parseBoolEnv("USE_PROXY")
 		useProxyExplicit = true
 	}
 	resolvedAdditionalProxies := firstNonEmpty(os.Getenv("ADDITIONAL_PROXIES"), *additionalProxies)
@@ -212,6 +224,7 @@ func Load(frontend embed.FS, shutdownChan chan os.Signal) Config {
 	}
 
 	return Config{
+		OperatorPolicy:    operatorPolicy,
 		Port:              port,
 		BaseURL:           resolvedBaseURL,
 		ContextPath:       resolvedContextPath,
@@ -221,8 +234,8 @@ func Load(frontend embed.FS, shutdownChan chan os.Signal) Config {
 		UseProxy:          proxyVal,
 		UseProxyExplicit:  useProxyExplicit,
 		AdditionalProxies: resolvedAdditionalProxies,
-		TLSCertPath:       *tlsCertPath,
-		TLSKeyPath:        *tlsKeyPath,
+		TLSCertPath:       firstNonEmpty(os.Getenv("TLS_CERT"), *tlsCertPath),
+		TLSKeyPath:        firstNonEmpty(os.Getenv("TLS_KEY"), *tlsKeyPath),
 		DisableCSRF:       *disableCSRF,
 		AllowInsecureHTTP: *allowInsecureHTTP || parseBoolEnv("ALLOW_INSECURE_HTTP"),
 
@@ -372,13 +385,8 @@ func postgresEnv() database.PostgresEnv {
 	}
 }
 
-// postgresSSLMode resolves POSTGRES_SSLMODE for the split-variable Postgres
-// path. Validated here rather than left to the driver: a typo like "required"
-// otherwise surfaces only as an opaque `pq: unsupported sslmode` at first
-// connect, which reads like a server problem rather than a config one.
-//
-// Deployments using POSTGRES_CONNECTION_STRING put sslmode in the URL instead
-// and never reach this.
+// postgresSSLMode validates split-variable configuration against lib/pq's SSL
+// modes. Direct connection strings bypass this and keep their own sslmode.
 func postgresSSLMode() string {
 	raw := os.Getenv("POSTGRES_SSLMODE")
 	mode := strings.ToLower(strings.TrimSpace(raw))

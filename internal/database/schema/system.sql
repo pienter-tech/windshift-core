@@ -1,5 +1,12 @@
 -- System tables (settings, labels, reviews, plugins, audit, etc.)
 
+CREATE TABLE IF NOT EXISTS operator_usage (
+	resource TEXT NOT NULL,
+	period BIGINT NOT NULL,
+	used BIGINT NOT NULL CHECK (used >= 0),
+	PRIMARY KEY (resource, period)
+);
+
 -- Schema migrations registry. Source of truth for which migrations have
 -- been applied. Paired with internal/database/migrations.go (the Catalog).
 -- The boostrap CREATE in Initialize() makes this table available before
@@ -181,6 +188,15 @@ CREATE TABLE IF NOT EXISTS collections (
 	category_id INTEGER,
 	created_by INTEGER,
 	public_slug TEXT UNIQUE,
+	board_enabled BOOLEAN NOT NULL DEFAULT false,
+	board_standalone_enabled BOOLEAN NOT NULL DEFAULT true,
+	board_ever_published BOOLEAN NOT NULL DEFAULT false,
+	sharing_revision INTEGER NOT NULL DEFAULT 1,
+	public_revoked_at TEXT,
+	public_revoked_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+	public_revoke_reason TEXT NOT NULL DEFAULT '',
+	sharing_changed_at TEXT,
+	sharing_changed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 	FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -195,6 +211,22 @@ CREATE INDEX IF NOT EXISTS idx_collections_is_public ON collections(is_public);
 CREATE INDEX IF NOT EXISTS idx_collections_category_id ON collections(category_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_collections_public_slug ON collections(public_slug);
 
+-- migration: 20261126_board_portal_placements
+CREATE TABLE IF NOT EXISTS board_placements (
+	id TEXT PRIMARY KEY,
+	collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+	channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+	label TEXT NOT NULL,
+	display_order INTEGER NOT NULL DEFAULT 0,
+	enabled BOOLEAN NOT NULL DEFAULT true,
+	access_mode TEXT NOT NULL DEFAULT 'public' CHECK(access_mode IN ('public', 'organisations')),
+	organisation_ids TEXT NOT NULL DEFAULT '[]',
+	revision INTEGER NOT NULL DEFAULT 1,
+	UNIQUE(collection_id, channel_id)
+);
+CREATE INDEX IF NOT EXISTS idx_board_placements_channel ON board_placements(channel_id, display_order);
+
+
 CREATE TRIGGER IF NOT EXISTS trg_collections_change_update AFTER UPDATE OF ql_query, filter_state, workspace_id ON collections
 BEGIN
 	INSERT INTO item_change_log(item_id, workspace_id, change_type) VALUES (0, COALESCE(NEW.workspace_id, OLD.workspace_id, 0), 'upsert');
@@ -205,7 +237,8 @@ CREATE TABLE IF NOT EXISTS active_timers (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	workspace_id INTEGER NOT NULL,
 	item_id INTEGER,
-	project_id INTEGER NOT NULL,
+	-- Nullable: a timer may run before booking information (project) is known.
+	project_id INTEGER,
 	user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 	description TEXT NOT NULL,
 	start_time_utc INTEGER NOT NULL,

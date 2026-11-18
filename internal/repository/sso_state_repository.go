@@ -24,6 +24,10 @@ type SSOStateToken struct {
 	// RequestID is the SP-issued SAML AuthnRequest ID, used to bind the
 	// returned assertion via InResponseTo. Empty for OIDC flows.
 	RequestID string
+	// Nonce holds the OIDC nonce or GitHub PKCE verifier. Empty for SAML.
+	Nonce        string
+	ResourceKind string
+	ResourceID   int
 }
 
 // Store persists an SSO state token. requestID is the SAML SP-issued
@@ -40,21 +44,51 @@ func (r *SSOStateRepository) Store(providerID int, state, requestID, redirectURI
 	return err
 }
 
+// StoreOIDC stores state with its OIDC nonce or GitHub PKCE verifier.
+func (r *SSOStateRepository) StoreOIDC(providerID int, state, nonce, redirectURI string, rememberMe bool, expiresAt time.Time) error {
+	_, err := r.db.ExecWrite(`
+		INSERT INTO sso_state_tokens (provider_id, state, nonce, redirect_uri, remember_me, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, providerID, state, nonce, redirectURI, rememberMe, expiresAt)
+	return err
+}
+
 func (r *SSOStateRepository) GetValid(state string, providerID int, now time.Time) (*SSOStateToken, error) {
 	var token SSOStateToken
-	var requestID sql.NullString
+	var requestID, nonce sql.NullString
 	err := r.db.QueryRow(`
-		SELECT id, request_id, redirect_uri, remember_me FROM sso_state_tokens
+		SELECT id, request_id, nonce, redirect_uri, remember_me, resource_kind, resource_id FROM sso_state_tokens
 		WHERE state = ? AND provider_id = ? AND expires_at > ?
-	`, state, providerID, now).Scan(&token.ID, &requestID, &token.RedirectURI, &token.RememberMe)
+	`, state, providerID, now).Scan(&token.ID, &requestID, &nonce, &token.RedirectURI, &token.RememberMe, &token.ResourceKind, &token.ResourceID)
 	if err != nil {
 		return nil, err
 	}
 	token.RequestID = requestID.String
+	token.Nonce = nonce.String
 	return &token, nil
 }
 
 func (r *SSOStateRepository) Delete(id int) error {
 	_, err := r.db.ExecWrite("DELETE FROM sso_state_tokens WHERE id = ?", id)
+	return err
+}
+
+// Consume atomically claims a state value so concurrent callbacks cannot replay it.
+func (r *SSOStateRepository) Consume(state string, providerID int, now time.Time) (*SSOStateToken, error) {
+	var token SSOStateToken
+	var nonce sql.NullString
+	err := r.db.QueryRow(`DELETE FROM sso_state_tokens
+		WHERE state = ? AND provider_id = ? AND expires_at > ?
+		RETURNING id, nonce, redirect_uri, remember_me, resource_kind, resource_id`, state, providerID, now).
+		Scan(&token.ID, &nonce, &token.RedirectURI, &token.RememberMe, &token.ResourceKind, &token.ResourceID)
+	if err != nil {
+		return nil, err
+	}
+	token.Nonce = nonce.String
+	return &token, nil
+}
+
+func (r *SSOStateRepository) BindCustomerResource(state string, providerID int, kind string, id int) error {
+	_, err := r.db.ExecWrite(`UPDATE sso_state_tokens SET resource_kind = ?, resource_id = ? WHERE state = ? AND provider_id = ?`, kind, id, state, providerID)
 	return err
 }
