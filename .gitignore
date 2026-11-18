@@ -225,6 +225,7 @@ RELEASE_NOTES.md
 .jscpd-report
 scripts/*
 !scripts/pre-commit
+!scripts/check-browser-smoke.sh
 !scripts/run-golangci-lint.sh
 !scripts/check-layering.sh
 !scripts/check-handler-db-access.sh
@@ -234,6 +235,7 @@ scripts/*
 !scripts/check-audit-literals.mjs
 !scripts/check-vulnerabilities.sh
 !scripts/generate-i18n-catalog.mjs
+!scripts/generate-object-translation-catalog.mjs
 !scripts/check-deprecated-v1-api.sh
 !scripts/audit_coverage_inventory.py
 !scripts/.layering-baseline

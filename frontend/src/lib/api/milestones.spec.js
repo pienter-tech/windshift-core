@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { milestones } from './milestones.js';
+import { milestones } from './planning.js';
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {

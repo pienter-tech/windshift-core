@@ -4,6 +4,7 @@
   import { ssoStore } from '../stores/sso.svelte.js';
   import { capabilitiesStore } from '../stores/capabilities.svelte.js';
 
+  import Github from '@tabler/icons-svelte-runes/icons/brand-github';
   import { toHotkeyString } from '../utils/keyboardShortcuts.js';
   import KeyRound from '@lucide/svelte/icons/key-round';
   import Plus from '@lucide/svelte/icons/plus';
@@ -22,6 +23,7 @@
   import TestTube from '@lucide/svelte/icons/test-tube';
   import CheckCircle from '@lucide/svelte/icons/check-circle';
   import XCircle from '@lucide/svelte/icons/x-circle';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import Button from '../components/Button.svelte';
   import CopyButton from '../components/CopyButton.svelte';
   import Modal from '../dialogs/Modal.svelte';
@@ -33,7 +35,10 @@
   import Card from '../components/Card.svelte';
   import EmptyState from '../components/EmptyState.svelte';
   import Label from '../components/Label.svelte';
+  import FormField from '../components/FormField.svelte';
   import Checkbox from '../components/Checkbox.svelte';
+  import Select from '../components/Select.svelte';
+  import CustomerOrganisationPicker from '../pickers/CustomerOrganisationPicker.svelte';
   import { t } from '../stores/i18n.svelte.js';
   import { surfaceError } from '../stores/toasts.svelte.js';
   import PageHeader from '../layout/PageHeader.svelte';
@@ -68,7 +73,10 @@
     client_secret: '',
     scopes: 'openid email profile',
     auto_provision_users: false,
-    require_verified_email: true
+    require_verified_email: true,
+    github_organization: '',
+    account_type: 'internal',
+    customer_organisation_id: null,
   });
 
   let canAddProvider = $derived(providers.length === 0 || capabilitiesStore.has('sso.multi-provider'));
@@ -124,6 +132,21 @@
   }
 
   function buildPayload() {
+    if (formData.provider_type === 'github') {
+      return {
+        slug: formData.slug,
+        name: formData.name,
+        provider_type: 'github',
+        enabled: formData.enabled,
+        is_default: formData.is_default,
+        client_id: formData.client_id,
+        client_secret: formData.client_secret,
+        auto_provision_users: formData.auto_provision_users,
+        github_organization: formData.github_organization.trim(),
+        account_type: formData.account_type,
+        customer_organisation_id: formData.account_type === 'customer' ? formData.customer_organisation_id : undefined,
+      };
+    }
     return { ...formData, attribute_mapping: serializeAttributeMapping() };
   }
 
@@ -161,12 +184,30 @@
       client_secret: '',
       scopes: 'openid email profile',
       auto_provision_users: false,
-      require_verified_email: true
+      require_verified_email: true,
+      github_organization: '',
+      account_type: 'internal',
+      customer_organisation_id: null,
     };
     formErrors = {};
     attributeMapping = emptyAttributeMapping();
     testResult = null;
     showCreateModal = true;
+  }
+
+  // The provider type picker lives in the modal. Fill the name and slug with
+  // GitHub defaults only while they are untouched, and keep email-verification
+  // trust off for GitHub (it verifies the address itself).
+  function handleProviderTypeChange(providerType) {
+    if (providerType === 'github') {
+      if (!formData.name) formData.name = 'GitHub';
+      if (!formData.slug) formData.slug = 'github';
+    } else if (providerType === 'oidc') {
+      if (formData.name === 'GitHub') formData.name = '';
+      if (formData.slug === 'github') formData.slug = '';
+    }
+    formData.require_verified_email = providerType !== 'github';
+    formErrors = {};
   }
 
   function openEditModal(provider) {
@@ -183,6 +224,9 @@
       scopes: provider.scopes || 'openid email profile',
       auto_provision_users: provider.auto_provision_users,
       require_verified_email: provider.require_verified_email !== false, // Default to true
+      github_organization: provider.github_organization || '',
+      account_type: provider.account_type || 'internal',
+      customer_organisation_id: provider.customer_organisation_id || null,
     };
     formErrors = {};
     attributeMapping = parseAttributeMapping(provider.attribute_mapping);
@@ -214,9 +258,9 @@
       formErrors.name = t('settings.sso.nameRequired');
     }
 
-    if (!formData.issuer_url.trim()) {
+    if (formData.provider_type === 'oidc' && !formData.issuer_url.trim()) {
       formErrors.issuer_url = t('settings.sso.issuerUrlRequired');
-    } else if (!formData.issuer_url.startsWith('https://') && !formData.issuer_url.startsWith('http://')) {
+    } else if (formData.provider_type === 'oidc' && !formData.issuer_url.startsWith('https://') && !formData.issuer_url.startsWith('http://')) {
       formErrors.issuer_url = t('settings.sso.issuerUrlInvalid');
     }
 
@@ -227,6 +271,12 @@
     // Client secret required for new providers
     if (showCreateModal && !formData.client_secret.trim()) {
       formErrors.client_secret = t('settings.sso.clientSecretRequired');
+    }
+
+    const organization = formData.github_organization.trim();
+    if (formData.provider_type === 'github' && organization &&
+        (!/^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$/.test(organization) || organization.includes('--'))) {
+      formErrors.github_organization = t('settings.sso.githubOrganizationInvalid');
     }
 
     return Object.keys(formErrors).length === 0;
@@ -324,15 +374,25 @@
   }
 </script>
 
+{#snippet addProviderButton(testid)}
+  <Button
+    variant="primary"
+    dataTestid={testid}
+    keyboardHint={testid === 'sso-add-provider' ? 'A' : null}
+    hotkeyConfig={testid === 'sso-add-provider' ? { key: toHotkeyString('sso', 'addProvider'), guard: () => !showCreateModal && !showEditModal } : null}
+    onclick={() => openCreateModal()}
+  >
+    <Plus class="w-4 h-4 mr-2" />
+    {t('settings.sso.addProvider')}
+  </Button>
+{/snippet}
+
 <div class="space-y-6">
   <!-- Header -->
   <PageHeader title={t('settings.sso.title')} subtitle={t('settings.sso.subtitle')} icon={KeyRound}>
     {#snippet actions()}
       {#if canAddProvider}
-        <Button variant="primary" onclick={openCreateModal} keyboardHint="A" hotkeyConfig={{ key: toHotkeyString('sso', 'addProvider'), guard: () => !showCreateModal && !showEditModal }}>
-          <Plus class="w-4 h-4 mr-2" />
-          {t('settings.sso.addProvider')}
-        </Button>
+        {@render addProviderButton('sso-add-provider')}
       {/if}
     {/snippet}
   </PageHeader>
@@ -363,21 +423,23 @@
         description={t('settings.sso.noProviderDescription')}
       >
         {#snippet action()}
-          <Button variant="primary" onclick={openCreateModal}>
-            <Plus class="w-4 h-4 mr-2" />
-            {t('settings.sso.addProvider')}
-          </Button>
+          {@render addProviderButton('sso-empty-add-provider')}
         {/snippet}
       </EmptyState>
     </Card>
   {:else}
     <!-- Provider Card -->
     {#each providers as provider}
+      <div data-testid={`sso-provider-${provider.slug}`}>
       <Card shadow padding="spacious">
         <div class="flex items-start justify-between">
           <div class="flex items-center gap-3">
             <div class="p-2 rounded-lg" style="background-color: var(--ds-accent-blue-subtler);">
-              <KeyRound class="w-6 h-6" style="color: var(--ds-accent-blue);" />
+              {#if provider.provider_type === 'github'}
+                <Github class="w-6 h-6" />
+              {:else}
+                <KeyRound class="w-6 h-6" style="color: var(--ds-accent-blue);" />
+              {/if}
             </div>
             <div>
               <Text as="h3" size="lg" weight="semibold">{provider.name}</Text>
@@ -394,9 +456,10 @@
                   {t('settings.sso.disabled')}
                 </Lozenge>
               {/if}
+              {#if provider.account_type === 'customer'}<Lozenge color="blue" size="md">Customer-only</Lozenge>{/if}
             </div>
             <div class="flex items-center gap-2">
-              <Button variant="default" size="sm" onclick={() => openEditModal(provider)}>
+              <Button variant="default" size="sm" dataTestid={`sso-edit-${provider.slug}`} onclick={() => openEditModal(provider)}>
                 <Edit class="w-4 h-4 mr-1" />
                 {t('common.edit')}
               </Button>
@@ -412,6 +475,12 @@
               <span style="color: var(--ds-text-subtle);">{t('settings.sso.providerType')}:</span>
               <span class="ml-2 font-medium uppercase" style="color: var(--ds-text);">{provider.provider_type}</span>
             </div>
+            {#if provider.provider_type === 'github'}
+            <div data-testid="sso-github-organization-summary">
+              <span class="text-ds-text-subtle">{t('settings.sso.githubOrganization')}:</span>
+              <span class="ml-2">{provider.github_organization || t('settings.sso.githubAnyOrganization')}</span>
+            </div>
+            {:else}
             <div>
               <span style="color: var(--ds-text-subtle);">{t('settings.sso.issuerUrl')}:</span>
               <a href={safeHref(provider.issuer_url)} target="_blank" rel="noopener noreferrer" class="ml-2 hover:underline flex items-center gap-1 inline-flex" style="color: var(--ds-link);">
@@ -419,6 +488,7 @@
                 <ExternalLink class="w-3 h-3" />
               </a>
             </div>
+            {/if}
             <div>
               <span style="color: var(--ds-text-subtle);">{t('settings.sso.clientId')}:</span>
               <span class="ml-2 font-mono text-xs" style="color: var(--ds-text);">{provider.client_id}</span>
@@ -454,6 +524,7 @@
             </div>
           </div>
       </Card>
+      </div>
     {/each}
   {/if}
 </div>
@@ -464,15 +535,36 @@
     isOpen={true}
     onclose={closeModals}
     maxWidth="max-w-2xl"
+    maxHeight="calc(100vh - 4rem)"
   >
     <ModalHeader
-      title={showCreateModal ? t('settings.sso.addSsoProvider') : t('settings.sso.editSsoProvider')}
-      icon={KeyRound}
+      title={formData.provider_type === 'github' ? (showCreateModal ? t('settings.sso.addGitHub') : t('settings.sso.editGitHub')) : (showCreateModal ? t('settings.sso.addSsoProvider') : t('settings.sso.editSsoProvider'))}
+      icon={formData.provider_type === 'github' ? Github : KeyRound}
       onClose={closeModals}
     />
-    <form onsubmit={(e) => { e.preventDefault(); showCreateModal ? handleCreate() : handleUpdate(); }} class="p-6 space-y-4">
+    <form data-testid="sso-provider-form" onsubmit={(e) => { e.preventDefault(); showCreateModal ? handleCreate() : handleUpdate(); }} class="flex min-h-0 flex-1 flex-col">
+      <div class="min-h-0 flex-1 space-y-4 overflow-y-auto p-6">
+      {#if formData.provider_type === 'github'}
+        <AlertBox type="info">{t('settings.sso.githubSetupHelp')}</AlertBox>
+      {/if}
       {#if formErrors.submit}
         <AlertBox type="error">{formErrors.submit}</AlertBox>
+      {/if}
+
+      {#if showCreateModal}
+        <!-- Provider Type -->
+        <div>
+          <Label for="sso-provider-type" color="default" class="mb-1">{t('settings.sso.providerType')}</Label>
+          <Select
+            id="sso-provider-type"
+            bind:value={formData.provider_type}
+            options={[
+              { value: 'oidc', label: t('settings.sso.oidc') },
+              { value: 'github', label: 'GitHub' },
+            ]}
+            onchange={handleProviderTypeChange}
+          />
+        </div>
       {/if}
 
       <div class="grid grid-cols-2 gap-4">
@@ -542,6 +634,7 @@
       </div>
 
       <!-- Issuer URL -->
+      {#if formData.provider_type === 'oidc'}
       <div>
         <TextField
           label={t('settings.sso.issuerUrl')}
@@ -560,6 +653,7 @@
         {/if}
         <DescriptionText>{t('settings.sso.issuerUrlHelp')}</DescriptionText>
       </div>
+      {/if}
 
       <div class="grid grid-cols-2 gap-4">
         <!-- Client ID -->
@@ -602,6 +696,7 @@
       </div>
 
       <!-- Scopes -->
+      {#if formData.provider_type === 'oidc'}
       <div>
         <TextField
           label={t('settings.sso.scopes')}
@@ -620,12 +715,16 @@
       </AlertBox>
 
       <!-- Attribute mapping (advanced) -->
-      <div class="pt-4 border-t" style="border-color: var(--ds-border);">
-        <h3 class="text-sm font-semibold mb-1" style="color: var(--ds-text);">
+      <details class="rounded-lg border border-ds-border" data-testid="sso-attribute-mapping">
+        <summary
+          class="flex cursor-pointer list-none items-center justify-between px-4 py-3 text-sm font-medium text-ds-text"
+        >
           {t('settings.sso.attributeMapping')}
-        </h3>
-        <DescriptionText class="mb-3">{t('settings.sso.attributeMappingHelp')}</DescriptionText>
-        <div class="grid grid-cols-2 gap-4">
+          <ChevronDown class="h-4 w-4" />
+        </summary>
+        <div class="space-y-4 border-t border-ds-border p-4">
+          <DescriptionText>{t('settings.sso.attributeMappingHelp')}</DescriptionText>
+          <div class="grid grid-cols-2 gap-4">
           <TextField
             label={t('settings.sso.attributeEmail')}
             id="attr_email"
@@ -693,11 +792,37 @@
             bind:value={attributeMapping.family_name}
           />
         </div>
-      </div>
+        </div>
+      </details>
 
       <!-- Checkboxes -->
+      {:else if formData.provider_type === 'github'}
+        <Label for="sso-account-type">Account type</Label>
+        <Select id="sso-account-type" disabled={showEditModal} bind:value={formData.account_type} options={[
+          { value: 'internal', label: 'Internal users' },
+          { value: 'customer', label: 'Portal-only customers' },
+        ]} />
+        {#if formData.account_type === 'customer'}
+          <FormField id="sso-customer-organisation" label={t('settings.sso.customerOrganisationOptional')} helper={t('settings.sso.customerOrganisationHelp')}>
+            <CustomerOrganisationPicker id="sso-customer-organisation" disabled={showEditModal} showUnassigned unassignedLabel={t('settings.sso.noCustomerOrganisation')} bind:value={formData.customer_organisation_id} />
+          </FormField>
+        {/if}
+        <TextField
+          id="github_organization"
+          label={t('settings.sso.githubOrganization')}
+          bind:value={formData.github_organization}
+          placeholder="Windshiftapp"
+          size="small"
+        />
+        <DescriptionText>{t('settings.sso.githubOrganizationHelp')}</DescriptionText>
+        {#if formErrors.github_organization}
+          <p class="text-sm text-[var(--ds-text-danger)]">{formErrors.github_organization}</p>
+        {/if}
+        <AlertBox type="info">{t('settings.sso.githubVerifiedEmailHelp')}</AlertBox>
+      {/if}
       <div class="space-y-3 pt-2">
         <Checkbox
+          dataTestid="sso-provider-enabled"
           bind:checked={formData.enabled}
           label={t('settings.sso.enableThisProvider')}
           hint={t('settings.sso.enableThisProviderDesc')}
@@ -705,12 +830,14 @@
         />
 
         <Checkbox
+          dataTestid="sso-provider-signup"
           bind:checked={formData.auto_provision_users}
           label={t('settings.sso.autoProvisionUsers')}
-          hint={t('settings.sso.autoProvisionUsersDesc')}
+          hint={formData.account_type === 'customer' ? t('settings.sso.customerAccountCreationHelp') : t('settings.sso.autoProvisionUsersDesc')}
           size="small"
         />
 
+        {#if formData.provider_type !== 'github'}
         <Checkbox
           bind:checked={formData.require_verified_email}
           label={t('settings.sso.trustIdpEmailVerification')}
@@ -724,10 +851,11 @@
             <div class="mt-1">{t('settings.sso.unsafeProvisioningWarningBody')}</div>
           </AlertBox>
         {/if}
+        {/if}
       </div>
 
       <!-- Test Connection (only for edit) -->
-      {#if showEditModal}
+      {#if showEditModal && formData.provider_type === 'oidc'}
         <div class="pt-4 border-t" style="border-color: var(--ds-border);">
           <div class="flex items-center gap-3">
             <Button
@@ -759,13 +887,14 @@
           </div>
         </div>
       {/if}
+      </div>
 
       <!-- Modal Actions -->
-      <div class="flex justify-end gap-3 pt-4 border-t" style="border-color: var(--ds-border);">
+      <div class="flex justify-end gap-3 border-t px-6 py-4" style="border-color: var(--ds-border);">
         <Button variant="default" onclick={closeModals} disabled={saving}>
           {t('common.cancel')}
         </Button>
-        <Button variant="primary" type="submit" disabled={saving}>
+        <Button variant="primary" type="submit" dataTestid="sso-provider-save" disabled={saving}>
           {#if saving}
             <Spinner class="w-4 h-4 mr-2" />
           {/if}

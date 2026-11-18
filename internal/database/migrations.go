@@ -15,6 +15,8 @@ import (
 	"strings"
 
 	"github.com/lib/pq"
+
+	"windshift/internal/models"
 )
 
 // pgJSONBColumnsCheck reports whether every named column already has the
@@ -3451,7 +3453,195 @@ CREATE TABLE IF NOT EXISTS plane_import_mappings (
 );
 CREATE INDEX IF NOT EXISTS idx_plane_import_mappings_windshift ON plane_import_mappings(workspace_id, entity_type, windshift_id);`,
 	},
+	{
+		Version:       "20261113_sso_github_organization",
+		Name:          "Add optional GitHub login organization restriction",
+		CheckSQLite:   sqliteColumnCheck("sso_providers", "github_organization"),
+		CheckPostgres: pgColumnCheck("sso_providers", "github_organization"),
+		SQLite:        "ALTER TABLE sso_providers ADD COLUMN github_organization TEXT NOT NULL DEFAULT ''",
+		Postgres:      "ALTER TABLE sso_providers ADD COLUMN github_organization TEXT NOT NULL DEFAULT ''",
+	},
+	{
+		Version:       "20261113_customer_resource_access",
+		Name:          "Add customer-only identity providers and resource-scoped customer access",
+		CheckSQLite:   sqliteColumnCheck("sso_providers", "account_type"),
+		CheckPostgres: pgColumnCheck("sso_providers", "account_type"),
+		SQLite:        customerAccessMigration,
+		Postgres:      strings.ReplaceAll(customerAccessMigration, "DATETIME", "TIMESTAMPTZ"),
+	},
+	{
+		Version: "20261123_action_definition_revisions",
+		Name:    "Persist immutable action definition revisions and bind executions",
+		CheckSQLite: `SELECT CASE WHEN
+			EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name='action_definition_revisions')
+			AND EXISTS (SELECT 1 FROM pragma_table_info('actions') WHERE name='current_revision_id')
+			AND EXISTS (SELECT 1 FROM pragma_table_info('action_execution_logs') WHERE name='definition_revision_id')
+		THEN 1 ELSE 0 END`,
+		CheckPostgres: `SELECT CASE WHEN
+			EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='action_definition_revisions')
+			AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='actions' AND column_name='current_revision_id')
+			AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='action_execution_logs' AND column_name='definition_revision_id')
+		THEN 1 ELSE 0 END`,
+		SQLite:        "applyActionDefinitionRevisionsSQLite:v1",
+		Postgres:      "applyActionDefinitionRevisionsPostgres:v1",
+		ApplySQLite:   applyActionDefinitionRevisions,
+		ApplyPostgres: applyActionDefinitionRevisions,
+	},
+	{
+		Version: "20261123_active_timer_nullable_project",
+		Name:    "Allow a running timer without a project for seamless time tracking",
+		// Effect present when project_id is nullable. SQLite cannot drop a NOT
+		// NULL constraint in place, so ApplySQLite rebuilds the table; the SQL
+		// field is the checksum marker.
+		CheckSQLite:   `SELECT CASE WHEN (SELECT "notnull" FROM pragma_table_info('active_timers') WHERE name='project_id') = 0 THEN 1 ELSE 0 END`,
+		CheckPostgres: `SELECT CASE WHEN (SELECT is_nullable FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='active_timers' AND column_name='project_id') = 'YES' THEN 1 ELSE 0 END`,
+		SQLite:        "active-timer-nullable-project:v1",
+		ApplySQLite:   applySQLiteActiveTimerNullableProject,
+		Postgres:      `ALTER TABLE active_timers ALTER COLUMN project_id DROP NOT NULL;`,
+	},
+	{
+		Version:       "20261124_time_worklog_drafts",
+		Name:          "Persist incomplete time entries as user-owned draft worklogs",
+		CheckSQLite:   `SELECT CASE WHEN (SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('time_worklog_drafts','time_worklog_bookings')) = 2 THEN 1 ELSE 0 END`,
+		CheckPostgres: `SELECT CASE WHEN (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=current_schema() AND table_name IN ('time_worklog_drafts','time_worklog_bookings')) = 2 THEN 1 ELSE 0 END`,
+		SQLite:        timeWorklogDraftsMigrationSQLite,
+		Postgres:      timeWorklogDraftsMigrationPostgres,
+	},
+	{
+		Version:       "20261113_operator_usage",
+		Name:          "Persist instance-wide operator budget reservations",
+		CheckSQLite:   sqliteTableCheck("operator_usage"),
+		CheckPostgres: pgTableCheck("operator_usage"),
+		SQLite:        operatorUsageSchema,
+		Postgres:      operatorUsageSchema,
+	},
+	{
+		Version:       "20261125_session_remember_me",
+		Name:          "Preserve the session lifetime choice through passkey authentication",
+		CheckSQLite:   sqliteColumnCheck("user_sessions", "remember_me"),
+		CheckPostgres: pgColumnCheck("user_sessions", "remember_me"),
+		SQLite:        "ALTER TABLE user_sessions ADD COLUMN remember_me BOOLEAN NOT NULL DEFAULT false",
+		Postgres:      "ALTER TABLE user_sessions ADD COLUMN IF NOT EXISTS remember_me BOOLEAN NOT NULL DEFAULT false",
+	},
+	{
+		Version:       "20261126_board_publication_governance",
+		Name:          "Separate external board publication and standalone availability with durable governance",
+		CheckSQLite:   sqliteColumnCheck("collections", "sharing_revision"),
+		CheckPostgres: pgColumnCheck("collections", "sharing_revision"),
+		SQLite:        boardPublicationMigration,
+		Postgres:      boardPublicationMigration,
+	},
+	{
+		Version:       "20261126_board_portal_placements",
+		Name:          "Add native portal board placements with independently narrower audiences",
+		CheckSQLite:   `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'board_placements'`,
+		CheckPostgres: `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'board_placements'`,
+		SQLite:        boardPlacementSchema,
+		Postgres:      boardPlacementSchema,
+	},
 }
+
+const timeWorklogDraftsMigrationSQLite = `
+CREATE TABLE IF NOT EXISTS time_worklog_drafts (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	user_id INTEGER NOT NULL,
+	project_id INTEGER,
+	item_id INTEGER,
+	workspace_id INTEGER,
+	description TEXT,
+	date INTEGER,
+	start_time INTEGER,
+	end_time INTEGER,
+	duration_minutes INTEGER,
+	source TEXT NOT NULL DEFAULT 'manual',
+	source_timer_id INTEGER,
+	created_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL,
+	version INTEGER NOT NULL DEFAULT 1,
+	FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+	FOREIGN KEY (project_id) REFERENCES time_projects(id) ON DELETE SET NULL,
+	FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE SET NULL,
+	FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_time_worklog_drafts_user_id ON time_worklog_drafts(user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_time_worklog_drafts_source_timer ON time_worklog_drafts(user_id, source_timer_id) WHERE source_timer_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS time_worklog_bookings (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	user_id INTEGER NOT NULL,
+	idempotency_key TEXT NOT NULL,
+	worklog_id INTEGER NOT NULL,
+	draft_id INTEGER,
+	created_at INTEGER NOT NULL,
+	FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+	FOREIGN KEY (worklog_id) REFERENCES time_worklogs(id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_time_worklog_bookings_user_key ON time_worklog_bookings(user_id, idempotency_key);
+`
+
+const timeWorklogDraftsMigrationPostgres = `
+CREATE TABLE IF NOT EXISTS time_worklog_drafts (
+	id SERIAL PRIMARY KEY,
+	user_id INTEGER NOT NULL,
+	project_id INTEGER,
+	item_id INTEGER,
+	workspace_id INTEGER,
+	description TEXT,
+	date INTEGER,
+	start_time INTEGER,
+	end_time INTEGER,
+	duration_minutes INTEGER,
+	source TEXT NOT NULL DEFAULT 'manual',
+	source_timer_id INTEGER,
+	created_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL,
+	version INTEGER NOT NULL DEFAULT 1,
+	FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+	FOREIGN KEY (project_id) REFERENCES time_projects(id) ON DELETE SET NULL,
+	FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE SET NULL,
+	FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_time_worklog_drafts_user_id ON time_worklog_drafts(user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_time_worklog_drafts_source_timer ON time_worklog_drafts(user_id, source_timer_id) WHERE source_timer_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS time_worklog_bookings (
+	id SERIAL PRIMARY KEY,
+	user_id INTEGER NOT NULL,
+	idempotency_key TEXT NOT NULL,
+	worklog_id INTEGER NOT NULL,
+	draft_id INTEGER,
+	created_at INTEGER NOT NULL,
+	FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+	FOREIGN KEY (worklog_id) REFERENCES time_worklogs(id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_time_worklog_bookings_user_key ON time_worklog_bookings(user_id, idempotency_key);
+`
+
+const customerAccessMigration = `
+ALTER TABLE sso_providers ADD COLUMN account_type TEXT NOT NULL DEFAULT 'internal';
+ALTER TABLE sso_providers ADD COLUMN customer_organisation_id INTEGER REFERENCES customer_organisations(id) ON DELETE RESTRICT;
+ALTER TABLE sso_state_tokens ADD COLUMN resource_kind TEXT NOT NULL DEFAULT '';
+ALTER TABLE sso_state_tokens ADD COLUMN resource_id INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS customer_resource_access (
+ resource_kind TEXT NOT NULL CHECK(resource_kind IN ('portal', 'board')),
+ resource_id INTEGER NOT NULL, mode TEXT NOT NULL CHECK(mode IN ('public', 'organisations')),
+ organisation_ids TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(resource_kind, resource_id)
+);
+CREATE TABLE IF NOT EXISTS customer_external_accounts (
+ provider_id INTEGER NOT NULL REFERENCES sso_providers(id) ON DELETE CASCADE,
+ external_id TEXT NOT NULL, customer_id INTEGER NOT NULL REFERENCES portal_customers(id) ON DELETE CASCADE,
+ PRIMARY KEY(provider_id, external_id)
+);
+CREATE TABLE IF NOT EXISTS customer_resource_sessions (
+ token TEXT PRIMARY KEY, resource_kind TEXT NOT NULL, resource_id INTEGER NOT NULL,
+ customer_id INTEGER NOT NULL REFERENCES portal_customers(id) ON DELETE CASCADE,
+ expires_at DATETIME NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_customer_resource_sessions_expires ON customer_resource_sessions(expires_at);
+CREATE TABLE IF NOT EXISTS customer_resource_tokens (
+ token TEXT PRIMARY KEY, purpose TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '', resource_kind TEXT NOT NULL, resource_id INTEGER NOT NULL,
+ customer_id INTEGER REFERENCES portal_customers(id) ON DELETE CASCADE, expires_at DATETIME NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_customer_resource_tokens_expires ON customer_resource_tokens(expires_at);
+`
 
 // isNumericJSONKey reports whether a custom-field value key is a numeric field
 // id (the canonical form) rather than a legacy name key.
@@ -5151,14 +5341,31 @@ func backfillIntakesFromChannels(db Database) error {
 		channelID int
 		intakeID  int
 	}
-	var createdIntakes []created
+	type channelRow struct {
+		channelID  int
+		configJSON string
+	}
+	var channels []channelRow
 	for rows.Next() {
-		var channelID int
-		var configJSON string
-		if err := rows.Scan(&channelID, &configJSON); err != nil {
+		var cr channelRow
+		if err := rows.Scan(&cr.channelID, &cr.configJSON); err != nil {
 			_ = rows.Close()
 			return fmt.Errorf("scan email channel for intake backfill: %w", err)
 		}
+		channels = append(channels, cr)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate email channels for intake backfill: %w", err)
+	}
+	// Release the cursor before inserting intakes: holding it while the
+	// write-returning query runs deadlocks PostgreSQL's shared pool.
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close email channels for intake backfill: %w", err)
+	}
+	var createdIntakes []created
+	for _, cr := range channels {
+		channelID, configJSON := cr.channelID, cr.configJSON
 		var cfg struct {
 			EmailConnectedPortalID     *int   `json:"email_connected_portal_id"`
 			EmailWorkspaceID           int    `json:"email_workspace_id"`
@@ -5217,11 +5424,6 @@ func backfillIntakesFromChannels(db Database) error {
 		}
 		createdIntakes = append(createdIntakes, created{channelID: channelID, intakeID: intakeID})
 	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return fmt.Errorf("iterate email channels for intake backfill: %w", err)
-	}
-	_ = rows.Close()
 
 	for _, c := range createdIntakes {
 		if _, err := db.ExecWrite(`
@@ -5474,6 +5676,318 @@ func applySQLiteQueuesCollectionScope(db Database) (retErr error) {
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit queues scope rebuild: %w", err)
+	}
+	return nil
+}
+
+// actionDefinitionRevisionTableSQL returns the backend-specific DDL that adds
+// immutable action definition revisions, the live-revision pointer on actions,
+// and the executed-revision pointer on execution logs.
+func actionDefinitionRevisionTableSQL(driver string) []string {
+	postgres := driver == driverPostgres
+	timestamp := "DATETIME"
+	if postgres {
+		timestamp = "TIMESTAMPTZ"
+	}
+	serial := "INTEGER PRIMARY KEY AUTOINCREMENT"
+	if postgres {
+		serial = "SERIAL PRIMARY KEY"
+	}
+	createTable := `
+		CREATE TABLE IF NOT EXISTS action_definition_revisions (
+			id ` + serial + `,
+			action_id INTEGER NOT NULL,
+			workspace_id INTEGER NOT NULL,
+			revision_number INTEGER NOT NULL,
+			source TEXT NOT NULL,
+			editor_user_id INTEGER,
+			editor_username TEXT NOT NULL DEFAULT '',
+			editor_source TEXT NOT NULL DEFAULT '',
+			change_summary TEXT NOT NULL DEFAULT '',
+			changed_fields TEXT NOT NULL DEFAULT '[]',
+			snapshot TEXT NOT NULL,
+			created_at ` + timestamp + ` DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE (action_id, revision_number),
+			FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+			FOREIGN KEY (editor_user_id) REFERENCES users(id) ON DELETE SET NULL
+		)`
+	addRevisionColumn := "ALTER TABLE actions ADD COLUMN current_revision_id INTEGER"
+	addExecutionColumn := "ALTER TABLE action_execution_logs ADD COLUMN definition_revision_id INTEGER"
+	if postgres {
+		addRevisionColumn = "ALTER TABLE actions ADD COLUMN IF NOT EXISTS current_revision_id INTEGER"
+		addExecutionColumn = "ALTER TABLE action_execution_logs ADD COLUMN IF NOT EXISTS definition_revision_id INTEGER"
+	}
+	return []string{
+		createTable,
+		addRevisionColumn,
+		addExecutionColumn,
+		`CREATE INDEX IF NOT EXISTS idx_action_definition_revisions_action_id
+			ON action_definition_revisions(action_id, revision_number DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_action_definition_revisions_workspace_id
+			ON action_definition_revisions(workspace_id, created_at DESC)`,
+	}
+}
+
+// applyActionDefinitionRevisions adds the revision tables/columns and writes a
+// clearly marked baseline revision for every existing action, so an upgraded
+// install has a reconstructable definition without inventing authorship.
+func applyActionDefinitionRevisions(db Database) error {
+	return WithTx(db, func(tx Tx) error {
+		for _, statement := range actionDefinitionRevisionTableSQL(db.GetDriverName()) {
+			if _, err := tx.Exec(statement); err != nil {
+				return fmt.Errorf("apply action definition revision schema: %w", err)
+			}
+		}
+		return backfillActionDefinitionRevisions(tx)
+	})
+}
+
+type baselineActionRow struct {
+	id            int
+	workspaceID   int
+	name          string
+	description   sql.NullString
+	isEnabled     bool
+	triggerType   string
+	triggerConfig sql.NullString
+	actorUserID   sql.NullInt64
+}
+
+func backfillActionDefinitionRevisions(tx Tx) error {
+	rows, err := tx.Query(`
+		SELECT id, workspace_id, name, description, is_enabled, trigger_type, trigger_config, actor_user_id
+		FROM actions
+		WHERE current_revision_id IS NULL
+		ORDER BY id
+	`)
+	if err != nil {
+		return fmt.Errorf("load actions for revision backfill: %w", err)
+	}
+	var actions []baselineActionRow
+	for rows.Next() {
+		var row baselineActionRow
+		if err := rows.Scan(
+			&row.id, &row.workspaceID, &row.name, &row.description, &row.isEnabled,
+			&row.triggerType, &row.triggerConfig, &row.actorUserID,
+		); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan action for revision backfill: %w", err)
+		}
+		actions = append(actions, row)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate actions for revision backfill: %w", err)
+	}
+	// Release the cursor before the nested per-action reads: a one-connection
+	// read pool deadlocks if a query is held open while another runs.
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close action backfill cursor: %w", err)
+	}
+
+	for _, row := range actions {
+		nodes, err := baselineNodes(tx, row.id)
+		if err != nil {
+			return err
+		}
+		edges, err := baselineEdges(tx, row.id)
+		if err != nil {
+			return err
+		}
+		roles, err := baselineAllowedRoleIDs(tx, row.id)
+		if err != nil {
+			return err
+		}
+		action := &models.Action{
+			ID:             row.id,
+			WorkspaceID:    row.workspaceID,
+			Name:           row.name,
+			IsEnabled:      row.isEnabled,
+			TriggerType:    models.ActionTriggerType(row.triggerType),
+			AllowedRoleIDs: roles,
+		}
+		if row.description.Valid {
+			action.Description = row.description.String
+		}
+		if row.triggerConfig.Valid {
+			action.TriggerConfig = row.triggerConfig.String
+		}
+		if row.actorUserID.Valid {
+			actor := int(row.actorUserID.Int64)
+			action.ActorUserID = &actor
+		}
+		snapshot := models.NewActionDefinitionSnapshot(action, nodes, edges)
+		encoded, err := json.Marshal(snapshot)
+		if err != nil {
+			return fmt.Errorf("encode baseline revision for action %d: %w", row.id, err)
+		}
+		var revisionID int
+		if err := tx.QueryRow(`
+			INSERT INTO action_definition_revisions (
+				action_id, workspace_id, revision_number, source, editor_user_id,
+				editor_username, editor_source, change_summary, changed_fields, snapshot, created_at
+			) VALUES (?, ?, 1, 'baseline', NULL, '', 'system', ?, '[]', ?, CURRENT_TIMESTAMP)
+			RETURNING id
+		`, row.id, row.workspaceID, "baseline snapshot for pre-existing definition", string(encoded)).Scan(&revisionID); err != nil {
+			return fmt.Errorf("insert baseline revision for action %d: %w", row.id, err)
+		}
+		if _, err := tx.Exec(`UPDATE actions SET current_revision_id = ? WHERE id = ?`, revisionID, row.id); err != nil {
+			return fmt.Errorf("bind baseline revision for action %d: %w", row.id, err)
+		}
+	}
+	return nil
+}
+
+func baselineNodes(tx Tx, actionID int) ([]models.ActionNode, error) {
+	rows, err := tx.Query(`
+		SELECT id, action_id, node_type, node_config, position_x, position_y
+		FROM action_nodes
+		WHERE action_id = ?
+		ORDER BY id
+	`, actionID)
+	if err != nil {
+		return nil, fmt.Errorf("load nodes for revision backfill: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var nodes []models.ActionNode
+	for rows.Next() {
+		var node models.ActionNode
+		var nodeType string
+		if err := rows.Scan(&node.ID, &node.ActionID, &nodeType, &node.NodeConfig, &node.PositionX, &node.PositionY); err != nil {
+			return nil, fmt.Errorf("scan node for revision backfill: %w", err)
+		}
+		node.NodeType = models.ActionNodeType(nodeType)
+		nodes = append(nodes, node)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate nodes for revision backfill: %w", err)
+	}
+	return nodes, nil
+}
+
+func baselineEdges(tx Tx, actionID int) ([]models.ActionEdge, error) {
+	rows, err := tx.Query(`
+		SELECT id, action_id, source_node_id, target_node_id, edge_type, source_handle, target_handle
+		FROM action_edges
+		WHERE action_id = ?
+		ORDER BY id
+	`, actionID)
+	if err != nil {
+		return nil, fmt.Errorf("load edges for revision backfill: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var edges []models.ActionEdge
+	for rows.Next() {
+		var edge models.ActionEdge
+		var sourceHandle, targetHandle sql.NullString
+		if err := rows.Scan(
+			&edge.ID, &edge.ActionID, &edge.SourceNodeID, &edge.TargetNodeID,
+			&edge.EdgeType, &sourceHandle, &targetHandle,
+		); err != nil {
+			return nil, fmt.Errorf("scan edge for revision backfill: %w", err)
+		}
+		if sourceHandle.Valid {
+			edge.SourceHandle = sourceHandle.String
+		}
+		if targetHandle.Valid {
+			edge.TargetHandle = targetHandle.String
+		}
+		edges = append(edges, edge)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate edges for revision backfill: %w", err)
+	}
+	return edges, nil
+}
+
+func baselineAllowedRoleIDs(tx Tx, actionID int) ([]int, error) {
+	rows, err := tx.Query(`SELECT role_id FROM action_allowed_roles WHERE action_id = ? ORDER BY role_id`, actionID)
+	if err != nil {
+		return nil, fmt.Errorf("load allowed roles for revision backfill: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	roleIDs := []int{}
+	for rows.Next() {
+		var roleID int
+		if err := rows.Scan(&roleID); err != nil {
+			return nil, fmt.Errorf("scan allowed role for revision backfill: %w", err)
+		}
+		roleIDs = append(roleIDs, roleID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate allowed roles for revision backfill: %w", err)
+	}
+	return roleIDs, nil
+}
+
+// applySQLiteActiveTimerNullableProject rebuilds active_timers with a nullable
+// project_id so a timer can run before booking information is known. SQLite
+// cannot drop a NOT NULL constraint in place, so the rows are copied into a
+// fresh table and swapped. The unique timer-per-user index is recreated.
+func applySQLiteActiveTimerNullableProject(db Database) (retErr error) {
+	sqliteDB, ok := db.(*SQLiteDB)
+	if !ok {
+		return fmt.Errorf("expected SQLite database, got %T", db)
+	}
+
+	ctx := context.Background()
+	conn, err := sqliteDB.writeConn.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire SQLite write connection: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	var foreignKeysEnabled bool
+	if err := conn.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&foreignKeysEnabled); err != nil {
+		return fmt.Errorf("read foreign_keys pragma: %w", err)
+	}
+	if foreignKeysEnabled {
+		if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys=OFF"); err != nil {
+			return fmt.Errorf("disable foreign keys: %w", err)
+		}
+		defer func() {
+			if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys=ON"); retErr == nil && err != nil {
+				retErr = fmt.Errorf("restore foreign keys: %w", err)
+			}
+		}()
+	}
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin active_timers rebuild: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	statements := []string{
+		`CREATE TABLE active_timers_migration (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			workspace_id INTEGER NOT NULL,
+			item_id INTEGER,
+			project_id INTEGER,
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			description TEXT NOT NULL,
+			start_time_utc INTEGER NOT NULL,
+			created_at INTEGER NOT NULL,
+			FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+			FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE SET NULL,
+			FOREIGN KEY (project_id) REFERENCES time_projects(id) ON DELETE CASCADE
+		)`,
+		`INSERT INTO active_timers_migration (id, workspace_id, item_id, project_id, user_id, description, start_time_utc, created_at)
+			SELECT id, workspace_id, item_id, project_id, user_id, description, start_time_utc, created_at FROM active_timers`,
+		`DROP TABLE active_timers`,
+		`ALTER TABLE active_timers_migration RENAME TO active_timers`,
+		`CREATE INDEX IF NOT EXISTS idx_active_timers_workspace_id ON active_timers(workspace_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_active_timers_item_id ON active_timers(item_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_active_timers_project_id ON active_timers(project_id)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_active_timers_user_id ON active_timers(user_id)`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("rebuild active_timers: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit active_timers rebuild: %w", err)
 	}
 	return nil
 }

@@ -1,4 +1,5 @@
 <script>
+  const dialogId = $props.id();
   import X from '@lucide/svelte/icons/x';
   import Mail from '@lucide/svelte/icons/mail';
   import Lock from '@lucide/svelte/icons/lock';
@@ -14,10 +15,21 @@
   import Input from '../components/Input.svelte';
   import AlertBox from '../components/AlertBox.svelte';
   import ModalBackdrop from '../components/ModalBackdrop.svelte';
+  import { customerAccess } from '../api/customerAccess.js';
+  import CustomerGitHubButtons from '../customer/CustomerGitHubButtons.svelte';
 
   let { onloginsuccess } = $props();
 
   let email = $state('');
+  let customerProviders = $state([]);
+  $effect(() => {
+    const slug = $currentRoute.params?.slug;
+    if (!portalStore.showLoginDialog || !slug) return;
+    let active = true;
+    customerAccess.status('portal', slug).then(status => { if (active) customerProviders = status.providers; })
+      .catch(() => { if (active) customerProviders = []; });
+    return () => { active = false; };
+  });
   let password = $state('');
   let loginMode = $state('magic'); // 'magic' or 'internal'
   let internalError = $state('');
@@ -161,7 +173,7 @@
     show={portalStore.showLoginDialog}
     opacity={0.38}
     blur={2}
-    ariaLabelledBy="portal-login-title"
+    ariaLabelledBy="{dialogId}-title"
     onclose={closeModal}
   >
     <div
@@ -179,7 +191,7 @@
                 <Mail class="w-4 h-4" />
               </div>
               <div>
-                <h2 id="portal-login-title" class="text-xl font-semibold" style="color: {hasPortalVisual ? '#ffffff' : 'var(--ds-text)'};">{t('portal.checkYourEmail')}</h2>
+                <h2 id="{dialogId}-title" class="text-xl font-semibold" style="color: {hasPortalVisual ? '#ffffff' : 'var(--ds-text)'};">{t('portal.checkYourEmail')}</h2>
                 <p class="text-sm mt-1" style="color: {hasPortalVisual ? 'rgba(255,255,255,0.82)' : 'var(--ds-text-subtle)'};">{t('portal.magicLinkSent')}</p>
               </div>
             </div>
@@ -205,7 +217,7 @@
             style="{hasPortalVisual ? portalStore.headerBackgroundStyle : 'background-color: var(--ds-surface-card);'} border-color: {hasPortalVisual ? 'rgba(255,255,255,0.18)' : 'var(--ds-border)'};"
           >
             <div>
-              <h2 id="portal-login-title" class="text-xl font-semibold" style="color: {hasPortalVisual ? '#ffffff' : 'var(--ds-text)'};">{t('portal.signInTitle')}</h2>
+              <h2 id="{dialogId}-title" class="text-xl font-semibold" style="color: {hasPortalVisual ? '#ffffff' : 'var(--ds-text)'};">{t('portal.signInTitle')}</h2>
               <p class="text-sm mt-1 leading-relaxed" style="color: {hasPortalVisual ? 'rgba(255,255,255,0.82)' : 'var(--ds-text-subtle)'};">{t('portal.signInDescription')}</p>
             </div>
             <button type="button" onclick={closeModal} class="modal-close" style="color: {hasPortalVisual ? 'rgba(255,255,255,0.88)' : 'var(--ds-text-subtle)'};" aria-label="Close">
@@ -217,6 +229,7 @@
             <AlertBox variant="error" message={$portalAuthStore.error} class="mb-4" />
           {/if}
 
+          <div class="space-y-3 mb-4"><CustomerGitHubButtons kind="portal" slug={$currentRoute.params.slug} providers={customerProviders} /></div>
           <form onsubmit={handleMagicLinkSubmit} class="space-y-4">
             <div>
               <label for="email" class="block text-sm font-medium mb-2" style="color: var(--ds-text);">
@@ -297,7 +310,7 @@
           >
             <div>
               <div class="text-xs font-semibold uppercase tracking-[0.14em] mb-2" style="color: {hasPortalVisual ? 'rgba(255,255,255,0.72)' : 'var(--ds-text-subtle)'};">Windshift staff</div>
-              <h2 id="portal-login-title" class="text-xl font-semibold" style="color: {hasPortalVisual ? '#ffffff' : 'var(--ds-text)'};">{t('portal.internalSignIn')}</h2>
+              <h2 id="{dialogId}-title" class="text-xl font-semibold" style="color: {hasPortalVisual ? '#ffffff' : 'var(--ds-text)'};">{t('portal.internalSignIn')}</h2>
             </div>
             <button type="button" onclick={closeModal} class="modal-close" style="color: {hasPortalVisual ? 'rgba(255,255,255,0.88)' : 'var(--ds-text-subtle)'};" aria-label="Close">
               <X class="w-5 h-5" />

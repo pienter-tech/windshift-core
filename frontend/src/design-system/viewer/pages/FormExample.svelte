@@ -246,7 +246,6 @@
       { field_type: 'system', field_identifier: 'due_date', is_required: false },
     ],
     customFieldValues: {},
-    customFieldsLoaded: false,
     validationErrors: [],
     selectedLabels: [],
     templateOptions: [
@@ -363,7 +362,7 @@
   }
 </script>
 
-<StaticViewBackground contentClass="p-6" testid="design-system-form-example">
+<StaticViewBackground dotGrid={false} contentClass="p-6" testid="design-system-form-example">
   <div class="mx-auto max-w-4xl">
     <div class="mb-8">
       <ViewHeader

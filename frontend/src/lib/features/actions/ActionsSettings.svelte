@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { actions as actionsApi } from '../../api/actions.js';
   import { workspaces } from '../../api/workspaces.js';
   import { t } from '../../stores/i18n.svelte.js';
@@ -10,25 +10,102 @@
   import ActionsManager from './ActionsManager.svelte';
   import ActionFlowEditor from './ActionFlowEditor.svelte';
   import ActionLogs from './ActionLogs.svelte';
+  import ActionHistory from './ActionHistory.svelte';
   import ActionTemplatePicker from './ActionTemplatePicker.svelte';
   import Modal from '../../dialogs/Modal.svelte';
   import Button from '../../components/Button.svelte';
   import Input from '../../components/Input.svelte';
   import Textarea from '../../components/Textarea.svelte';
+  import TextField from '../../components/TextField.svelte';
+  import TextareaField from '../../components/TextareaField.svelte';
+  import DescriptionText from '../../components/DescriptionText.svelte';
+  import ModalHeader from '../../dialogs/ModalHeader.svelte';
+  import { permissionStore } from '../../stores/permissions.svelte.js';
   import UnauthorizedAccess from '../../pages/UnauthorizedAccess.svelte';
 
   let { workspaceId, actionId = 0 } = $props();
+  const readController = new AbortController();
+  onDestroy(() => readController.abort());
 
   // Permission check
   let canManageActions = $derived(workspacePermissions.canManageActions(workspaceId));
 
   let actions = $state([]);
   let statuses = $state([]);
+  let statusesState = $state('idle');
   let loading = $state(true);
   let editingAction = $state(null);
   let viewingLogsAction = $state(null);
+  let viewingHistoryAction = $state(null);
   let showCreateModal = $state(false);
   let showTemplatePicker = $state(false);
+  let detailsAction = $state(null);
+  let detailsMode = $state('rename');
+  let detailsName = $state('');
+  let detailsDescription = $state('');
+  let savingDetails = $state(false);
+
+  function openDetails(action, mode) {
+    detailsAction = action;
+    detailsMode = mode;
+    detailsName = mode === 'duplicate' ? t('actions.copyName', { name: action.name }) : action.name;
+    detailsDescription = action.description || '';
+  }
+
+  function closeDetails() {
+    if (!savingDetails) detailsAction = null;
+  }
+
+  async function saveDetails() {
+    if (!detailsAction || savingDetails || !detailsName.trim() || !canManageActions) return;
+    savingDetails = true;
+    try {
+      const metadata = { name: detailsName.trim(), description: detailsDescription.trim() };
+      if (detailsMode === 'rename') {
+        await actionsApi.update(workspaceId, detailsAction.id, metadata);
+        detailsAction = null;
+        successToast(t('common.saved'));
+        await loadActions();
+      } else {
+        const source = await actionsApi.get(workspaceId, detailsAction.id);
+        if (source.actor_user_id && !permissionStore.hasPermissionKey('action.set_actor')) {
+          errorToast(t('actions.duplicateActorDenied'));
+          return;
+        }
+        const copy = await actionsApi.create(workspaceId, {
+          ...metadata,
+          trigger_type: source.trigger_type,
+          trigger_config: source.trigger_config,
+          is_enabled: false,
+          actor_user_id: source.actor_user_id || undefined,
+          allowed_role_ids: source.allowed_role_ids || [],
+          nodes: (source.nodes || []).map((node) => ({
+            id: node.id,
+            node_type: node.node_type,
+            node_config: node.node_config,
+            position_x: node.position_x,
+            position_y: node.position_y,
+          })),
+          edges: (source.edges || []).map((edge) => ({
+            source_node_id: edge.source_node_id,
+            target_node_id: edge.target_node_id,
+            edge_type: edge.edge_type,
+            source_handle: edge.source_handle,
+            target_handle: edge.target_handle,
+          })),
+        });
+        detailsAction = null;
+        successToast(t('common.created'));
+        await loadActions();
+        navigate(`/workspaces/${workspaceId}/actions/${copy.id}`);
+      }
+    } catch (error) {
+      console.error('Failed to save action details:', error);
+      errorToast(t(detailsMode === 'duplicate' ? 'errors.failedToCreate' : 'errors.failedToSave'));
+    } finally {
+      savingDetails = false;
+    }
+  }
 
   // URL is the source of truth for which action is being edited, so the id is
   // recoverable on refresh / share and visible to the AI chat context builder.
@@ -71,7 +148,7 @@
     await loadActions();
     // Open the freshly created action in the editor. The URL effect will fetch
     // and hydrate editingAction once the route updates.
-    if (result?.action_id) {
+    if (!readController.signal.aborted && result?.action_id) {
       navigate(`/workspaces/${workspaceId}/actions/${result.action_id}`);
     }
   }
@@ -82,8 +159,9 @@
   });
 
   async function loadActions() {
+    if (readController.signal.aborted) return;
     try {
-      actions = await actionsApi.getAll(workspaceId) || [];
+      actions = await actionsApi.getAll(workspaceId, { signal: readController.signal }) || [];
     } catch (error) {
       if (error?.name === 'AbortError') return;
       console.error('Failed to load actions:', error);
@@ -93,11 +171,16 @@
   }
 
   async function loadStatuses() {
+    if (readController.signal.aborted) return;
+    statusesState = 'loading';
     try {
-      statuses = await workspaces.getStatuses(workspaceId) || [];
+      statuses = await workspaces.getStatuses(workspaceId, null, { signal: readController.signal }) || [];
+      statusesState = 'ready';
     } catch (error) {
+      if (readController.signal.aborted) return;
       console.error('Failed to load statuses:', error);
       statuses = [];
+      statusesState = 'error';
     }
   }
 
@@ -124,7 +207,7 @@
       showCreateModal = false;
       successToast(t('common.created'));
       await loadActions();
-      navigate(`/workspaces/${workspaceId}/actions/${newAction.id}`);
+      if (!readController.signal.aborted) navigate(`/workspaces/${workspaceId}/actions/${newAction.id}`);
     } catch (error) {
       console.error('Failed to create action:', error);
       errorToast(t('errors.failedToCreate'));
@@ -165,6 +248,14 @@
     viewingLogsAction = null;
   }
 
+  function handleViewHistory(action) {
+    viewingHistoryAction = action;
+  }
+
+  function handleBackFromHistory() {
+    viewingHistoryAction = null;
+  }
+
   async function handleSaveAction(updatedAction) {
     try {
       await actionsApi.update(workspaceId, updatedAction.id, updatedAction);
@@ -190,6 +281,7 @@
     <ActionFlowEditor
       action={editingAction}
       {statuses}
+      {statusesState}
       onSave={handleSaveAction}
       onCancel={handleCancelEdit}
     />
@@ -202,6 +294,14 @@
       onBack={handleBackFromLogs}
     />
   </div>
+{:else if viewingHistoryAction}
+  <div class="h-full">
+    <ActionHistory
+      {workspaceId}
+      action={viewingHistoryAction}
+      onBack={handleBackFromHistory}
+    />
+  </div>
 {:else}
   <ActionsManager
     {workspaceId}
@@ -210,11 +310,69 @@
     oncreate={handleCreate}
     onfromtemplate={handleFromTemplate}
     onedit={handleEdit}
+    onrename={(action) => openDetails(action, 'rename')}
+    onduplicate={(action) => openDetails(action, 'duplicate')}
     ontoggle={handleToggle}
     ondelete={handleDelete}
     onviewlogs={handleViewLogs}
+    onviewhistory={handleViewHistory}
   />
 {/if}
+
+<Modal
+  isOpen={!!detailsAction && canManageActions}
+  onSubmit={saveDetails}
+  submitDisabled={savingDetails || !detailsName.trim()}
+  preventClose={savingDetails}
+  closeOnBackdropClick={false}
+  maxWidth="max-w-md"
+  dataTestid="action-details-modal"
+  onclose={closeDetails}
+>
+  {#snippet children(submitHint)}
+    <ModalHeader
+      title={t(detailsMode === 'duplicate' ? 'actions.duplicate' : 'actions.rename')}
+      showCloseButton={!savingDetails}
+      onclose={closeDetails}
+    />
+    <div class="p-6 space-y-4">
+      <TextField
+        id="action-details-name"
+        dataTestid="action-details-name"
+        label={t('common.name')}
+        bind:value={detailsName}
+        required
+        disabled={savingDetails}
+      />
+      <TextareaField
+        id="action-details-description"
+        dataTestid="action-details-description"
+        label={t('common.description')}
+        bind:value={detailsDescription}
+        rows={2}
+        disabled={savingDetails}
+      />
+      {#if detailsMode === 'duplicate'}
+        <DescriptionText>{t('actions.duplicateHint')}</DescriptionText>
+      {/if}
+      <div class="flex justify-end gap-3">
+        <Button variant="default" dataTestid="action-details-cancel" disabled={savingDetails} onclick={closeDetails}>
+          {t('common.cancel')}
+        </Button>
+        <Button
+          variant="primary"
+          dataTestid="action-details-submit"
+          loading={savingDetails}
+          disabled={savingDetails || !detailsName.trim()}
+          keyboardHint={submitHint}
+          onclick={saveDetails}
+        >
+          {t(detailsMode === 'duplicate' ? 'common.duplicate' : 'common.save')}
+        </Button>
+      </div>
+    </div>
+  {/snippet}
+</Modal>
 
 {#if showTemplatePicker}
   <ActionTemplatePicker
@@ -271,6 +429,7 @@
       <Button
         variant="primary"
         onclick={createAction}
+        dataTestid="action-create-submit"
         disabled={!newActionName.trim()}
         keyboardHint={submitHint}
       >

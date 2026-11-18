@@ -84,8 +84,8 @@ type CreateBranchForItemResponse struct {
 }
 
 // NewSCMItemLinksHandler creates a new item SCM links handler
-func NewSCMItemLinksHandler(db database.Database, encryption *sso.SecretEncryption, permissionService *services.PermissionService, baseURL string) *SCMItemLinksHandler {
-	syncService := scm.NewSyncService(db, encryption)
+func NewSCMItemLinksHandler(db database.Database, encryption *sso.SecretEncryption, permissionService *services.PermissionService, baseURL string, pools ...*scm.HTTPClientPool) *SCMItemLinksHandler {
+	syncService := scm.NewSyncService(db, encryption, pools...)
 	return &SCMItemLinksHandler{
 		db:                db,
 		encryption:        encryption,

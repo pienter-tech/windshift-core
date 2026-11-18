@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
   editors: [],
 }));
 
-vi.mock('../../api/milestones.js', () => ({
+vi.mock('../../api/planning.js', () => ({
   milestones: { getComments: mocks.getComments },
 }));
 vi.mock('../../stores/auth.svelte.js', () => ({

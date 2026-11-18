@@ -255,6 +255,125 @@
         ]
       }
     },
+    "/admin/board-publications": {
+      "get": {
+        "description": "Inventory board publications across all owners. Management is scoped to the collection owner or portal manager; system administrators retain cross-owner sharing governance. Sharing does not grant source editing or requester privileges. Revision conflicts return 409 without changing stored state. Requires system administrator permission; a publishing permission alone does not grant cross-owner inventory access.",
+        "parameters": [
+          {
+            "Name": "page",
+            "In": "query",
+            "Description": "One-based page number.",
+            "Required": false,
+            "Schema": {
+              "default": 1,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "page_size",
+            "In": "query",
+            "Description": "Maximum number of resources to return.",
+            "Required": false,
+            "Schema": {
+              "default": 50,
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "q",
+            "In": "query",
+            "Description": "Case-insensitive board name or slug substring.",
+            "Required": false,
+            "Schema": {
+              "type": "string"
+            }
+          },
+          {
+            "Name": "workspace_id",
+            "In": "query",
+            "Description": "Restricts publication metadata to this resource.",
+            "Required": false,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "owner_id",
+            "In": "query",
+            "Description": "Restricts publication metadata to this resource.",
+            "Required": false,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "organisation_id",
+            "In": "query",
+            "Description": "Restricts publication metadata to this resource.",
+            "Required": false,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "global",
+            "In": "query",
+            "Description": "Only globally scoped collections.",
+            "Required": false,
+            "Schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          {
+            "Name": "state",
+            "In": "query",
+            "Description": "Publication state.",
+            "Required": false,
+            "Schema": {
+              "enum": [
+                "all",
+                "enabled",
+                "disabled",
+                "revoked"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "Name": "access_mode",
+            "In": "query",
+            "Description": "Board baseline audience mode.",
+            "Required": false,
+            "Schema": {
+              "enum": [
+                "public",
+                "organisations"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Inventory board publications across all owners",
+        "tags": [
+          "Governance"
+        ]
+      }
+    },
     "/admin/groups": {
       "get": {
         "description": ". Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
@@ -2950,6 +3069,317 @@
         ]
       }
     },
+    "/auth/passkey/complete": {
+      "post": {
+        "description": "Complete staff passkey login. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Complete staff passkey login",
+        "tags": [
+          "Authentication"
+        ]
+      }
+    },
+    "/auth/passkey/start": {
+      "post": {
+        "description": "Start staff passkey login. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Start staff passkey login",
+        "tags": [
+          "Authentication"
+        ]
+      }
+    },
+    "/board-publications": {
+      "get": {
+        "description": "List owned board publications. Management is scoped to the collection owner or portal manager; system administrators retain cross-owner sharing governance. Sharing does not grant source editing or requester privileges. Revision conflicts return 409 without changing stored state.",
+        "parameters": [
+          {
+            "Name": "page",
+            "In": "query",
+            "Description": "One-based page number.",
+            "Required": false,
+            "Schema": {
+              "default": 1,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "page_size",
+            "In": "query",
+            "Description": "Maximum number of resources to return.",
+            "Required": false,
+            "Schema": {
+              "default": 50,
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "q",
+            "In": "query",
+            "Description": "Case-insensitive board name or slug substring.",
+            "Required": false,
+            "Schema": {
+              "type": "string"
+            }
+          },
+          {
+            "Name": "workspace_id",
+            "In": "query",
+            "Description": "Restricts publication metadata to this resource.",
+            "Required": false,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "owner_id",
+            "In": "query",
+            "Description": "Restricts publication metadata to this resource.",
+            "Required": false,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "organisation_id",
+            "In": "query",
+            "Description": "Restricts publication metadata to this resource.",
+            "Required": false,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "global",
+            "In": "query",
+            "Description": "Only globally scoped collections.",
+            "Required": false,
+            "Schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          {
+            "Name": "state",
+            "In": "query",
+            "Description": "Publication state.",
+            "Required": false,
+            "Schema": {
+              "enum": [
+                "all",
+                "enabled",
+                "disabled",
+                "revoked"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "Name": "access_mode",
+            "In": "query",
+            "Description": "Board baseline audience mode.",
+            "Required": false,
+            "Schema": {
+              "enum": [
+                "public",
+                "organisations"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "List owned board publications",
+        "tags": [
+          "Governance"
+        ]
+      }
+    },
+    "/board-publications/{collection_id}": {
+      "get": {
+        "description": "Read board sharing settings. Management is scoped to the collection owner or portal manager; system administrators retain cross-owner sharing governance. Sharing does not grant source editing or requester privileges. Revision conflicts return 409 without changing stored state.",
+        "parameters": [
+          {
+            "Name": "collection_id",
+            "In": "path",
+            "Description": "Positive numeric resource identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Read board sharing settings",
+        "tags": [
+          "Governance"
+        ]
+      },
+      "put": {
+        "description": "Save board publication and audience atomically. Management is scoped to the collection owner or portal manager; system administrators retain cross-owner sharing governance. Sharing does not grant source editing or requester privileges. Revision conflicts return 409 without changing stored state.",
+        "parameters": [
+          {
+            "Name": "collection_id",
+            "In": "path",
+            "Description": "Positive numeric resource identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "409": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Save board publication and audience atomically",
+        "tags": [
+          "Governance"
+        ]
+      }
+    },
+    "/board-publications/{collection_id}/allow-republish": {
+      "post": {
+        "description": "Clear a publication lock without republishing. Management is scoped to the collection owner or portal manager; system administrators retain cross-owner sharing governance. Sharing does not grant source editing or requester privileges. Revision conflicts return 409 without changing stored state.",
+        "parameters": [
+          {
+            "Name": "collection_id",
+            "In": "path",
+            "Description": "Positive numeric resource identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "409": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Clear a publication lock without republishing",
+        "tags": [
+          "Governance"
+        ]
+      }
+    },
+    "/board-publications/{collection_id}/history": {
+      "get": {
+        "description": "Read board sharing and placement audit history. Management is scoped to the collection owner or portal manager; system administrators retain cross-owner sharing governance. Sharing does not grant source editing or requester privileges. Revision conflicts return 409 without changing stored state.",
+        "parameters": [
+          {
+            "Name": "collection_id",
+            "In": "path",
+            "Description": "Positive numeric resource identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Read board sharing and placement audit history",
+        "tags": [
+          "Governance"
+        ]
+      }
+    },
+    "/board-publications/{collection_id}/revoke": {
+      "post": {
+        "description": "Revoke and lock a board publication. Management is scoped to the collection owner or portal manager; system administrators retain cross-owner sharing governance. Sharing does not grant source editing or requester privileges. Revision conflicts return 409 without changing stored state.",
+        "parameters": [
+          {
+            "Name": "collection_id",
+            "In": "path",
+            "Description": "Positive numeric resource identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "409": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Revoke and lock a board publication",
+        "tags": [
+          "Governance"
+        ]
+      }
+    },
     "/catalogs/global-bootstrap": {
       "get": {
         "description": "Load global reference catalogs. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
@@ -2963,6 +3393,214 @@
         "summary": "Load global reference catalogs",
         "tags": [
           "Workspace configuration"
+        ]
+      }
+    },
+    "/channels/{channel_id}/board-placements": {
+      "get": {
+        "description": "List linked board placements and effective audiences. Management is scoped to the collection owner or portal manager; system administrators retain cross-owner sharing governance. Sharing does not grant source editing or requester privileges. Revision conflicts return 409 without changing stored state.",
+        "parameters": [
+          {
+            "Name": "channel_id",
+            "In": "path",
+            "Description": "Positive numeric resource identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "List linked board placements and effective audiences",
+        "tags": [
+          "Administration"
+        ]
+      },
+      "post": {
+        "description": "Link a board publication to a portal. Management is scoped to the collection owner or portal manager; system administrators retain cross-owner sharing governance. Sharing does not grant source editing or requester privileges. Revision conflicts return 409 without changing stored state.",
+        "parameters": [
+          {
+            "Name": "channel_id",
+            "In": "path",
+            "Description": "Positive numeric resource identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "409": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Link a board publication to a portal",
+        "tags": [
+          "Administration"
+        ]
+      }
+    },
+    "/channels/{channel_id}/board-placements/{placement_id}": {
+      "delete": {
+        "description": "Unlink a portal board without deleting its source. Management is scoped to the collection owner or portal manager; system administrators retain cross-owner sharing governance. Sharing does not grant source editing or requester privileges. Revision conflicts return 409 without changing stored state.",
+        "parameters": [
+          {
+            "Name": "channel_id",
+            "In": "path",
+            "Description": "Positive numeric resource identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "placement_id",
+            "In": "path",
+            "Description": "Resource key resolved within the requested context.",
+            "Required": true,
+            "Schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "Name": "revision",
+            "In": "query",
+            "Description": "Current placement revision; stale revisions return 409.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "409": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Unlink a portal board without deleting its source",
+        "tags": [
+          "Administration"
+        ]
+      },
+      "put": {
+        "description": "Update a portal board placement. Management is scoped to the collection owner or portal manager; system administrators retain cross-owner sharing governance. Sharing does not grant source editing or requester privileges. Revision conflicts return 409 without changing stored state.",
+        "parameters": [
+          {
+            "Name": "channel_id",
+            "In": "path",
+            "Description": "Positive numeric resource identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "placement_id",
+            "In": "path",
+            "Description": "Resource key resolved within the requested context.",
+            "Required": true,
+            "Schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "409": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Update a portal board placement",
+        "tags": [
+          "Administration"
+        ]
+      }
+    },
+    "/channels/{channel_id}/experience": {
+      "get": {
+        "description": "Read portal presentation and capability settings. Management is scoped to the collection owner or portal manager; system administrators retain cross-owner sharing governance. Sharing does not grant source editing or requester privileges. Revision conflicts return 409 without changing stored state.",
+        "parameters": [
+          {
+            "Name": "channel_id",
+            "In": "path",
+            "Description": "Positive numeric resource identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Read portal presentation and capability settings",
+        "tags": [
+          "Administration"
+        ]
+      },
+      "put": {
+        "description": "Save revisioned portal experience settings. Management is scoped to the collection owner or portal manager; system administrators retain cross-owner sharing governance. Sharing does not grant source editing or requester privileges. Revision conflicts return 409 without changing stored state.",
+        "parameters": [
+          {
+            "Name": "channel_id",
+            "In": "path",
+            "Description": "Positive numeric resource identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "409": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Save revisioned portal experience settings",
+        "tags": [
+          "Administration"
         ]
       }
     },
@@ -4554,6 +5192,149 @@
         "summary": "Update custom field",
         "tags": [
           "Workspace configuration"
+        ]
+      }
+    },
+    "/customer-access/{kind}/{id}/policy": {
+      "get": {
+        "description": "Read customer admission policy. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Read customer admission policy",
+        "tags": [
+          "Customer access"
+        ]
+      },
+      "put": {
+        "description": "Replace customer admission policy. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Replace customer admission policy",
+        "tags": [
+          "Customer access"
+        ]
+      }
+    },
+    "/customer-access/{kind}/{slug}/auth/logout": {
+      "post": {
+        "description": "Sign out of customer access. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [],
+        "responses": {
+          "400": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Sign out of customer access",
+        "tags": [
+          "Customer access"
+        ]
+      }
+    },
+    "/customer-access/{kind}/{slug}/auth/passkey/complete": {
+      "post": {
+        "description": "Complete customer passkey login. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [],
+        "responses": {
+          "400": {},
+          "401": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Complete customer passkey login",
+        "tags": [
+          "Customer access"
+        ]
+      }
+    },
+    "/customer-access/{kind}/{slug}/auth/passkey/start": {
+      "post": {
+        "description": "Start customer passkey login. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [],
+        "responses": {
+          "400": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Start customer passkey login",
+        "tags": [
+          "Customer access"
+        ]
+      }
+    },
+    "/customer-access/{kind}/{slug}/auth/request": {
+      "post": {
+        "description": "Request a customer sign-in email. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [],
+        "responses": {
+          "400": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Request a customer sign-in email",
+        "tags": [
+          "Customer access"
+        ]
+      }
+    },
+    "/customer-access/{kind}/{slug}/auth/verify": {
+      "post": {
+        "description": "Redeem a board customer sign-in token. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [],
+        "responses": {
+          "400": {},
+          "401": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Redeem a board customer sign-in token",
+        "tags": [
+          "Customer access"
+        ]
+      }
+    },
+    "/customer-access/{kind}/{slug}/status": {
+      "get": {
+        "description": "Read customer login options and admission status. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [],
+        "responses": {
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Read customer login options and admission status",
+        "tags": [
+          "Customer access"
         ]
       }
     },
@@ -8997,6 +9778,23 @@
         ]
       }
     },
+    "/operator-controls": {
+      "get": {
+        "description": "Read effective operator restrictions, current instance usage and blocked script definitions. Requires system administrator permission and admin:operator-controls:read for bearer tokens. Credentials and deployment paths are never returned. This read-only operation cannot modify operator policy.",
+        "parameters": [],
+        "responses": {
+          "401": {},
+          "403": {},
+          "429": {},
+          "500": {},
+          "503": {}
+        },
+        "summary": "Read operator controls",
+        "tags": [
+          "Administration"
+        ]
+      }
+    },
     "/packs": {
       "get": {
         "description": "List built-in framework packs. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
@@ -9212,6 +10010,168 @@
         "summary": "List page links",
         "tags": [
           "Links"
+        ]
+      }
+    },
+    "/portal/{slug}/boards/{placement_id}": {
+      "get": {
+        "description": "Read a board in its linked portal context. Customer sessions remain bound to the portal. Admission enforces manual registration and email-domain restrictions, intersecting portal policy, board baseline and placement policy on every request. Missing, disabled, revoked, paused or cross-portal placements are masked with 404; restricted admission or audience without a portal customer session returns 401, and a signed-in customer outside admission or audience returns 403. Responses are private and non-cacheable. Internal sessions are not board audience evidence.",
+        "parameters": [
+          {
+            "Name": "slug",
+            "In": "path",
+            "Description": "Resource key resolved within the requested context.",
+            "Required": true,
+            "Schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "Name": "placement_id",
+            "In": "path",
+            "Description": "Resource key resolved within the requested context.",
+            "Required": true,
+            "Schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "500": {}
+        },
+        "summary": "Read a board in its linked portal context",
+        "tags": [
+          "API"
+        ]
+      }
+    },
+    "/portal/{slug}/boards/{placement_id}/attachments/{id}/download": {
+      "get": {
+        "description": "Download a visible image in its portal board context. Customer sessions remain bound to the portal. Admission enforces manual registration and email-domain restrictions, intersecting portal policy, board baseline and placement policy on every request. Missing, disabled, revoked, paused or cross-portal placements are masked with 404; restricted admission or audience without a portal customer session returns 401, and a signed-in customer outside admission or audience returns 403. Responses are private and non-cacheable. Internal sessions are not board audience evidence.",
+        "parameters": [
+          {
+            "Name": "id",
+            "In": "path",
+            "Description": "Positive numeric resource identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "slug",
+            "In": "path",
+            "Description": "Resource key resolved within the requested context.",
+            "Required": true,
+            "Schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "Name": "placement_id",
+            "In": "path",
+            "Description": "Resource key resolved within the requested context.",
+            "Required": true,
+            "Schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "500": {}
+        },
+        "summary": "Download a visible image in its portal board context",
+        "tags": [
+          "API"
+        ]
+      }
+    },
+    "/portal/{slug}/boards/{placement_id}/items/{key}": {
+      "get": {
+        "description": "Read externally projected board item detail. Customer sessions remain bound to the portal. Admission enforces manual registration and email-domain restrictions, intersecting portal policy, board baseline and placement policy on every request. Missing, disabled, revoked, paused or cross-portal placements are masked with 404; restricted admission or audience without a portal customer session returns 401, and a signed-in customer outside admission or audience returns 403. Responses are private and non-cacheable. Internal sessions are not board audience evidence.",
+        "parameters": [
+          {
+            "Name": "slug",
+            "In": "path",
+            "Description": "Resource key resolved within the requested context.",
+            "Required": true,
+            "Schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "Name": "placement_id",
+            "In": "path",
+            "Description": "Resource key resolved within the requested context.",
+            "Required": true,
+            "Schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "Name": "key",
+            "In": "path",
+            "Description": "Resource key resolved within the requested context.",
+            "Required": true,
+            "Schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "500": {}
+        },
+        "summary": "Read externally projected board item detail",
+        "tags": [
+          "API"
+        ]
+      }
+    },
+    "/portal/{slug}/experience": {
+      "get": {
+        "description": "Read the policy-filtered customer experience. Customer sessions remain bound to the portal. Admission enforces manual registration and email-domain restrictions, intersecting portal policy, board baseline and placement policy on every request. Missing, disabled, revoked, paused or cross-portal placements are masked with 404; restricted admission or audience without a portal customer session returns 401, and a signed-in customer outside admission or audience returns 403. Responses are private and non-cacheable. Internal sessions are not board audience evidence.",
+        "parameters": [
+          {
+            "Name": "slug",
+            "In": "path",
+            "Description": "Resource key resolved within the requested context.",
+            "Required": true,
+            "Schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "500": {}
+        },
+        "summary": "Read the policy-filtered customer experience",
+        "tags": [
+          "API"
         ]
       }
     },
@@ -10550,13 +11510,146 @@
         "description": "Stop timer. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
         "parameters": [],
         "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Stop timer",
+        "tags": [
+          "Time tracking"
+        ]
+      }
+    },
+    "/time/worklog-drafts": {
+      "get": {
+        "description": "List draft worklogs. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [],
+        "responses": {
+          "401": {},
+          "403": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "List draft worklogs",
+        "tags": [
+          "Time tracking"
+        ]
+      }
+    },
+    "/time/worklog-drafts/{draft_id}": {
+      "delete": {
+        "description": "Delete a draft worklog. The server verifies resource ownership and deletion preconditions before removing the resource.",
+        "parameters": [
+          {
+            "Name": "draft_id",
+            "In": "path",
+            "Description": "The draft worklog identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
           "401": {},
           "403": {},
           "404": {},
           "429": {},
           "500": {}
         },
-        "summary": "Stop timer",
+        "summary": "Delete a draft worklog",
+        "tags": [
+          "Time tracking"
+        ]
+      },
+      "get": {
+        "description": "Get a draft worklog. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "draft_id",
+            "In": "path",
+            "Description": "The draft worklog identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Get a draft worklog",
+        "tags": [
+          "Time tracking"
+        ]
+      },
+      "patch": {
+        "description": "Update a draft worklog. The operation uses JSON Merge Patch: omitted fields remain unchanged and documented nullable fields accept null. Unknown fields are rejected.",
+        "parameters": [
+          {
+            "Name": "draft_id",
+            "In": "path",
+            "Description": "The draft worklog identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Update a draft worklog",
+        "tags": [
+          "Time tracking"
+        ]
+      }
+    },
+    "/time/worklog-drafts/{draft_id}/book": {
+      "post": {
+        "description": "Book a draft worklog. The server validates resource ownership and command preconditions before persisting changes. Unknown JSON fields are rejected when the operation accepts a body.",
+        "parameters": [
+          {
+            "Name": "draft_id",
+            "In": "path",
+            "Description": "The draft worklog identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Book a draft worklog",
         "tags": [
           "Time tracking"
         ]
@@ -11923,6 +13016,115 @@
           "500": {}
         },
         "summary": "List action logs",
+        "tags": [
+          "Automation"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/actions/{action_id}/revisions": {
+      "get": {
+        "description": "List action definition revisions. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "action_id",
+            "In": "path",
+            "Description": "The action identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "page",
+            "In": "query",
+            "Description": "One-based page number.",
+            "Required": false,
+            "Schema": {
+              "default": 1,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "page_size",
+            "In": "query",
+            "Description": "Maximum number of resources to return.",
+            "Required": false,
+            "Schema": {
+              "default": 50,
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "List action definition revisions",
+        "tags": [
+          "Automation"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/actions/{action_id}/revisions/{revision_id}": {
+      "get": {
+        "description": "Get an action definition revision. Results include only resources visible to the authenticated caller; collections use their documented stable order and bounds.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "action_id",
+            "In": "path",
+            "Description": "The action identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "revision_id",
+            "In": "path",
+            "Description": "The definition revision identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Get an action definition revision",
         "tags": [
           "Automation"
         ]
@@ -13561,6 +14763,75 @@
         "summary": "Update workspace milestone",
         "tags": [
           "Planning"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/overview-charts": {
+      "get": {
+        "description": "Returns zero-filled daily counts for the current workspace/collection cohort, without item bodies or pagination. Dates are inclusive UTC calendar dates, at most 366 days. Completion is each item's first recorded transition from a non-completed status to a completed status; creation in a completed status is not inferred. Edits, reopening, and recompletion do not move or duplicate that event. Merged/deleted items are excluded. A collection must belong to this workspace and be visible to the caller; inaccessible scopes return 404. Unrequested series are omitted.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "from",
+            "In": "query",
+            "Description": "Inclusive UTC date (YYYY-MM-DD).",
+            "Required": true,
+            "Schema": {
+              "format": "date",
+              "type": "string"
+            }
+          },
+          {
+            "Name": "to",
+            "In": "query",
+            "Description": "Inclusive UTC date (YYYY-MM-DD).",
+            "Required": true,
+            "Schema": {
+              "format": "date",
+              "type": "string"
+            }
+          },
+          {
+            "Name": "collection_id",
+            "In": "query",
+            "Description": "Optional visible collection belonging to this workspace; its current saved query restricts both series.",
+            "Required": false,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "series",
+            "In": "query",
+            "Description": "Comma-separated requested series: created, completed, or both. Defaults to both.",
+            "Required": false,
+            "Schema": {
+              "default": "created,completed",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Get date-bounded overview chart counts",
+        "tags": [
+          "Workspaces"
         ]
       }
     },
@@ -15649,7 +16920,7 @@
           {
             "Name": "q",
             "In": "query",
-            "Description": "Case-insensitive test-case search.",
+            "Description": "Case-insensitive lexical LIKE search across metadata, labels, steps and Gherkin. No semantic similarity ranking; % and _ remain LIKE wildcards.",
             "Required": false,
             "Schema": {
               "type": "string"
@@ -15723,6 +16994,37 @@
           "500": {}
         },
         "summary": "Create test case",
+        "tags": [
+          "Test management"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/test-cases/bulk": {
+      "post": {
+        "description": "Create, update or reversibly archive 1..50 cases. References must belong to this workspace and are checked before any write. Responses contain ordered zero-based per-case results; validation failures may coexist with successes. Each successful mutation is audited. Explicit steps and label_ids replace collections; omitted fields preserve values. Archive sets inactive without deleting history. Removing steps with recorded results is refused. Permission and cross-workspace denials use the same 404 envelope.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "413": {},
+          "415": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Bulk create, update or archive test cases",
         "tags": [
           "Test management"
         ]
@@ -16520,6 +17822,44 @@
           "500": {}
         },
         "summary": "Update workspace test coverage config",
+        "tags": [
+          "Test management"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/test-coverage/items/{item_id}": {
+      "get": {
+        "description": "Returns explicit Tests links for the ticket and its direct child criterion items. With no children, basis=item means coarse item-level traceability. Prose is not parsed and a link does not prove adequacy. Only same-workspace non-inactive cases count. Requires test.view and item.view. At most 100 criteria and 50 cases per criterion; totals and truncated disclose omitted data. Missing and inaccessible resources share the 404 envelope.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "item_id",
+            "In": "path",
+            "Description": "The ticket item identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Get explicit item test coverage",
         "tags": [
           "Test management"
         ]
@@ -17345,6 +18685,86 @@
           "500": {}
         },
         "summary": "Remove test case from plan",
+        "tags": [
+          "Test management"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/test-reports/effectiveness": {
+      "get": {
+        "description": "Ranks all workspace cases by observed defect-finding executions, then distinct linked Bugs, then case ID. One execution is one persisted run/case result in [since, until) with an execution timestamp and passed/failed/blocked/skipped status. Findings require a failed result linked to a same-workspace builtin Bug. Rate is findings/executions (0..1), null for zero executions. Milestone filters executions via their plan, not the case population. Missing links are not proof of ineffectiveness. Bounded to 100 cases per page. Offset pages independently sample a mutable ranking, not a consistent snapshot: concurrent executions, edits and links can shift rows even with a fixed time window. Deduplicate IDs and report sampling limits. Permission denials and missing workspaces return the same 404 envelope.",
+        "parameters": [
+          {
+            "Name": "workspace_id",
+            "In": "path",
+            "Description": "The workspace identifier.",
+            "Required": true,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "milestone_id",
+            "In": "query",
+            "Description": "Restricts executions to plans in this milestone; all workspace cases remain visible.",
+            "Required": false,
+            "Schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "since",
+            "In": "query",
+            "Description": "Inclusive RFC3339 execution timestamp; defaults to 30 days before until.",
+            "Required": false,
+            "Schema": {
+              "type": "string"
+            }
+          },
+          {
+            "Name": "until",
+            "In": "query",
+            "Description": "Exclusive RFC3339 execution timestamp; defaults to now; maximum window 366 days.",
+            "Required": false,
+            "Schema": {
+              "type": "string"
+            }
+          },
+          {
+            "Name": "limit",
+            "In": "query",
+            "Description": "Cases per page; maximum 100.",
+            "Required": false,
+            "Schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "Name": "offset",
+            "In": "query",
+            "Description": "Nonnegative case offset.",
+            "Required": false,
+            "Schema": {
+              "default": 0,
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "400": {},
+          "401": {},
+          "403": {},
+          "404": {},
+          "429": {},
+          "500": {}
+        },
+        "summary": "Get observed test defect effectiveness",
         "tags": [
           "Test management"
         ]

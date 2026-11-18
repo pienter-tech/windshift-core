@@ -1,6 +1,13 @@
 <script>
+  import { getContext } from 'svelte';
+  import { VIEW_BACKGROUND_CONTEXT } from './viewBackgroundContext.js';
+  import './viewBackground.css';
+
+  const sharedBackground = getContext(VIEW_BACKGROUND_CONTEXT);
   let {
     backgroundStyle = '',
+    // Custom background shorthands override the default dots; forms can opt out.
+    dotGrid = true,
     contextVars = '',
     class: className = '',
     // min-h-screen suits views that scroll inside main; views that are
@@ -20,7 +27,8 @@
 
 <div
   class={`${fullWidth ? 'w-full' : 'w-fit min-w-full'} ${rootClass} ${className}`}
-  style={`${backgroundStyle} ${contextVars} background-attachment: fixed; ${rootStyle}`}
+  class:view-dot-grid={dotGrid && !sharedBackground?.active}
+  style={`${sharedBackground?.active ? '' : backgroundStyle} ${contextVars} background-attachment: fixed; ${rootStyle}`}
   data-testid={testid}
 >
   <div class={contentClass} style={contentStyle}>

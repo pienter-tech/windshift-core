@@ -1,4 +1,5 @@
 <script>
+  import FormField from '../components/FormField.svelte';
   import { onDestroy } from 'svelte';
   import { links } from '../api/configuration.js';
   import { BasePicker } from '../pickers';
@@ -16,7 +17,7 @@
   import DialogFooter from './DialogFooter.svelte';
   import { t } from '../stores/i18n.svelte.js';
   import { customerDisplayName } from '../utils/customerLabel.js';
-  import { getUserTimezone } from '../utils/dateFormatter.js';
+  import { getUserTimezone, worklogDateKey } from '../utils/dateFormatter.js';
   import { authStore } from '../stores/auth.svelte.js';
   import { dateKeyInZone, formatClockInZone } from '../utils/worklogTimezone.js';
 	import TextField from '../components/TextField.svelte';
@@ -35,13 +36,14 @@
     workItems = [],
     workspaces = [],
     editingWorklog = null,
+    draft = null,
     onsave = () => {},
-    oncancel = () => {}
+    oncancel = () => {},
+    ondiscard = null
   } = $props();
 
-  // One explicit timezone populates and interprets every form control, so
-  // browser and profile timezone differences cannot silently reinterpret
-  // stored work on save.
+  // Interpret clocks in the profile timezone; stored business dates are
+  // UTC-midnight keys, not instants to convert into that timezone.
   const formTimezone = $derived(getUserTimezone(authStore?.currentUser));
 
   // Helper to format minutes to duration string
@@ -55,18 +57,24 @@
   }
 
   const durationSync = createDurationSync(); // Guarded updates to avoid recursive time sync
+  // Worklogs and drafts share the same field names (absolute unix timestamps
+  // plus duration_minutes), so one source record drives the editable form.
+  const sourceRecord = editingWorklog ?? draft ?? null;
+  const isDraft = $derived(!!draft && !editingWorklog);
   // Snapshot props for the editable form; updates are then user-driven, not prop-driven.
   // svelte-ignore state_referenced_locally
   let formData = $state({
-    project_id: editingWorklog?.project_id ?? defaultProjectId,
-    item_id: editingWorklog?.item_id ?? defaultItemId,
-    description: editingWorklog?.description ?? '',
-    date: editingWorklog
-      ? dateKeyInZone(editingWorklog.start_time, formTimezone)
+    project_id: sourceRecord?.project_id ?? defaultProjectId,
+    item_id: sourceRecord?.item_id ?? defaultItemId,
+    description: sourceRecord?.description ?? '',
+    date: sourceRecord
+      ? (sourceRecord.date != null
+          ? worklogDateKey(sourceRecord.date)
+          : dateKeyInZone(sourceRecord.start_time, formTimezone))
       : (defaultDate ?? dateKeyInZone(Date.now() / 1000, formTimezone)),
-    start_time: editingWorklog ? formatClockInZone(editingWorklog.start_time, formTimezone) : (defaultStartTime ?? ''),
-    end_time: editingWorklog ? formatClockInZone(editingWorklog.end_time, formTimezone) : '',
-    duration: editingWorklog ? formatDurationFromMinutes(editingWorklog.duration_minutes) : ''
+    start_time: sourceRecord?.start_time != null ? formatClockInZone(sourceRecord.start_time, formTimezone) : (defaultStartTime ?? ''),
+    end_time: sourceRecord?.end_time != null ? formatClockInZone(sourceRecord.end_time, formTimezone) : '',
+    duration: sourceRecord?.duration_minutes != null ? formatDurationFromMinutes(sourceRecord.duration_minutes) : ''
   });
 
   // Time fields the form was opened with; an edit that leaves them untouched
@@ -244,13 +252,14 @@
 >
   {#snippet children(submitHint)}
   <!-- Header -->
-  <ModalHeader title={editingWorklog ? t('time.editTimeEntry') : t('time.logTime')} showCloseButton={false} />
+  <ModalHeader title={editingWorklog ? t('time.editTimeEntry') : (isDraft ? t('time.completeTimeEntry') : t('time.logTime'))} showCloseButton={false} />
 
   <!-- Form -->
   <div class="p-6 space-y-4">
     <!-- Project Selection (shown at top when from work item) -->
     {#if showProjectField}
       <div>
+        <FormField class="contents" requiredMark={!defaultItemId}>
         <Label color="default" required={!defaultItemId} class="mb-2">{t('time.timeTrackingProject')}</Label>
         <BasePicker
           id="time-log-project"
@@ -272,12 +281,14 @@
             </div>
           {/snippet}
         </BasePicker>
+        </FormField>
       </div>
     {/if}
 
     <!-- Work Item Selection (optional on time page) -->
     {#if showWorkItemField}
       <div>
+        <FormField class="contents">
         <Label color="default" class="mb-2">{t('time.workItemOptional')}</Label>
         <BasePicker
           id="time-log-work-item"
@@ -311,6 +322,7 @@
             </div>
           {/snippet}
         </BasePicker>
+        </FormField>
       </div>
     {/if}
 
@@ -375,6 +387,7 @@
         <TextField
           label={t('common.date')}
           id="time-log-date"
+          dataTestid="time-log-date"
           labelColor="default"
           type="date"
           size="small"
@@ -394,10 +407,23 @@
   <DialogFooter
     onCancel={handleCancel}
     onConfirm={handleSave}
-    confirmLabel={editingWorklog ? t('time.updateEntry') : t('time.logTime')}
+    confirmLabel={editingWorklog ? t('time.updateEntry') : (isDraft ? t('time.bookTimeEntry') : t('time.logTime'))}
     disabled={!isFormValid}
     showKeyboardHint={true}
     confirmKeyboardHint={submitHint}
-  />
+  >
+    {#snippet extra()}
+      {#if isDraft && ondiscard}
+        <button
+          type="button"
+          class="text-sm font-medium hover:underline text-ds-text-danger"
+          data-testid="time-log-discard"
+          onclick={ondiscard}
+        >
+          {t('common.discard')}
+        </button>
+      {/if}
+    {/snippet}
+  </DialogFooter>
   {/snippet}
 </Modal>

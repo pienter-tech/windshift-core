@@ -345,7 +345,34 @@ type TimeProject struct {
 	IsManager          bool     `json:"is_manager,omitempty"`  // Whether current user is a manager of this project
 }
 
-// Worklog represents a time tracking entry
+// TimeWorklogDraft is a persisted, user-owned incomplete time entry. It is
+// produced when a timer stops without complete booking information, or when a
+// user starts a manual entry and saves it incomplete. Booking a draft creates a
+// time_worklogs row and deletes the draft atomically.
+type TimeWorklogDraft struct {
+	ID              int    `json:"id"`
+	UserID          int    `json:"user_id"`
+	ProjectID       *int   `json:"project_id,omitempty"`
+	ItemID          *int   `json:"item_id,omitempty"`
+	WorkspaceID     *int   `json:"workspace_id,omitempty"`
+	Description     string `json:"description"`
+	Date            *int64 `json:"date,omitempty"`
+	StartTime       *int64 `json:"start_time,omitempty"`
+	EndTime         *int64 `json:"end_time,omitempty"`
+	DurationMins    *int   `json:"duration_minutes,omitempty"`
+	Source          string `json:"source"`
+	SourceTimerID   *int   `json:"source_timer_id,omitempty"`
+	CreatedAt       int64  `json:"created_at"`
+	UpdatedAt       int64  `json:"updated_at"`
+	Version         int    `json:"version"`
+	ProjectName     string `json:"project_name,omitempty"`
+	ItemTitle       string `json:"item_title,omitempty"`
+	WorkspaceKey    string `json:"workspace_key,omitempty"`
+	WorkspaceName   string `json:"workspace_name,omitempty"`
+	CustomerName    string `json:"customer_name,omitempty"`
+	CustomerBuiltin string `json:"customer_builtin_key,omitempty"`
+}
+
 type Worklog struct {
 	ID                  int      `json:"id"`
 	ProjectID           int      `json:"project_id"`
@@ -372,11 +399,13 @@ type Worklog struct {
 }
 
 // ActiveTimer represents a running timer
+//
+// ProjectID is nullable: a timer may run before booking information is known.
 type ActiveTimer struct {
 	ID                  int     `json:"id"`
 	WorkspaceID         int     `json:"workspace_id"`
 	ItemID              *int    `json:"item_id,omitempty"` // Optional link to work item
-	ProjectID           int     `json:"project_id"`
+	ProjectID           *int    `json:"project_id,omitempty"`
 	UserID              int     `json:"user_id"`
 	Description         string  `json:"description"`
 	StartTimeUTC        int64   `json:"start_time_utc"` // Unix timestamp in UTC
@@ -866,6 +895,12 @@ const (
 	// ActionNodeAdjustLabels adds and removes item labels on the trigger
 	// item (WI-1132).
 	ActionNodeAdjustLabels ActionNodeType = "adjust_labels"
+	// ActionNodeExecuteScript runs an author-supplied JavaScript function body
+	// through Sobek with the effective action executor's identity (WI-2174).
+	// The script may call the canonical v2 REST API through a server-minted,
+	// short-lived bearer token scoped to that executor; it never chooses its
+	// own identity or credentials.
+	ActionNodeExecuteScript ActionNodeType = "execute_script"
 )
 
 // IsIterator reports whether this node type fans out — i.e. the engine must
@@ -882,6 +917,10 @@ const (
 	ActionStatusCompleted ActionExecutionStatus = "completed"
 	ActionStatusFailed    ActionExecutionStatus = "failed"
 	ActionStatusSkipped   ActionExecutionStatus = "skipped"
+	// ActionStatusReconciliationRequired marks an execution that committed a
+	// partial side effect (an execute_script write) and then failed. Durable
+	// replay must not rerun it; an operator reconciles the partial write.
+	ActionStatusReconciliationRequired ActionExecutionStatus = "reconciliation_required"
 )
 
 // Action represents a workspace-scoped automation definition
@@ -900,9 +939,13 @@ type Action struct {
 	ActorUserID *int `json:"actor_user_id,omitempty"`
 	// AllowedRoleIDs restricts a manual action to members of these workspace
 	// roles. An empty list means every workspace editor may trigger it.
-	AllowedRoleIDs []int     `json:"allowed_role_ids"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	AllowedRoleIDs []int `json:"allowed_role_ids"`
+	// CurrentRevisionID points at the immutable definition revision that the
+	// runtime executes. It is set on every successful definition write and is
+	// captured on each execution log so an operator can reconstruct what ran.
+	CurrentRevisionID *int      `json:"current_revision_id,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 	// Joined fields for API responses
 	CreatorName string       `json:"creator_name,omitempty"`
 	ActorName   string       `json:"actor_name,omitempty"`
@@ -1029,6 +1072,9 @@ type ActionExecutionLog struct {
 	CompletedAt          *time.Time            `json:"completed_at,omitempty"`
 	ErrorMessage         string                `json:"error_message,omitempty"`
 	ExecutionTrace       string                `json:"execution_trace,omitempty"` // JSON step log
+	// DefinitionRevisionID is the immutable definition revision this execution
+	// actually ran. Nil for executions recorded before revisions existed.
+	DefinitionRevisionID *int `json:"definition_revision_id,omitempty"`
 	// Joined fields for API responses
 	ActionName      string `json:"action_name,omitempty"`
 	ItemTitle       string `json:"item_title,omitempty"`
@@ -1093,6 +1139,21 @@ type ExecutionContext struct {
 	// engine's per-flow step budget so a misconfigured nested iterator can't
 	// fan out into millions of executions before the cascade-depth guard fires.
 	TotalSteps int `json:"-"`
+	// ExecutionLogID is the persisted action_execution_logs row for this run,
+	// when one exists. Script REST calls carry it as trusted provenance.
+	ExecutionLogID int `json:"-"`
+	// DefinitionRevisionID is the immutable definition revision this execution
+	// is bound to, when known. Script REST calls carry it as trusted provenance.
+	DefinitionRevisionID *int `json:"-"`
+	// ReconciliationRequired is set when an execute_script node committed a
+	// mutating REST call and the flow later failed. Durable replay must not
+	// rerun the flow, because the committed write would be repeated.
+	ReconciliationRequired bool `json:"-"`
+	// ScriptWriteMarked records that the write-ahead reconciliation marker has
+	// already been persisted for this execution. It is shared across every
+	// script node and iterator pass in the flow so repeated marking of the same
+	// log is a no-op rather than an invalid-state failure.
+	ScriptWriteMarked bool `json:"-"`
 }
 
 // StepResult holds the result of executing a single node
@@ -1245,6 +1306,19 @@ type NotifyCustomerNodeConfig struct {
 type AdjustLabelsNodeConfig struct {
 	AddLabelIDs    []int `json:"add_label_ids,omitempty"`
 	RemoveLabelIDs []int `json:"remove_label_ids,omitempty"`
+}
+
+// ExecuteScriptNodeConfig configures an execute_script node (WI-2174). Source
+// is a JavaScript function body; an explicit return value becomes the node's
+// JSON output. OutputVariable names the execution-context variable that
+// downstream nodes read; it may not shadow reserved actor/context variables.
+// TimeoutMs and MaxAPICalls narrow the server-enforced budgets and are clamped
+// to the hard caps so a definition can never widen them.
+type ExecuteScriptNodeConfig struct {
+	Source         string `json:"source"`
+	OutputVariable string `json:"output_variable,omitempty"`
+	TimeoutMs      int    `json:"timeout_ms,omitempty"`
+	MaxAPICalls    int    `json:"max_api_calls,omitempty"`
 }
 
 // NotifyUserNodeConfig configures a notify_user node

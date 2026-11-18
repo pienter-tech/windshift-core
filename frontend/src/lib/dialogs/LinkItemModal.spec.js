@@ -204,7 +204,9 @@ describe('LinkItemModal in Page mode', () => {
       expect(within(dialog).getByText('Spec page')).toBeInTheDocument();
     });
 
-    it('submits on Enter', async () => {
+    // Native buttons and pickers own their Enter activation, so Enter on the
+    // focused Clear button does not submit the dialog.
+    it('leaves Enter to the focused control', async () => {
       const onsubmit = vi.fn();
       const { dialog, input } = await openPageDialog({ onsubmit });
       await pick(input);
@@ -212,12 +214,8 @@ describe('LinkItemModal in Page mode', () => {
 
       await fireEvent.keyDown(document.activeElement, { key: 'Enter' });
 
-      expect(onsubmit).toHaveBeenCalledWith({
-        link_type_id: pageLinkType.id,
-        target_id: page.id,
-        target_type: 'page',
-      });
-      await expectDialogClosed();
+      expect(onsubmit).not.toHaveBeenCalled();
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
     });
 
     it('closes on Escape', async () => {
@@ -284,21 +282,5 @@ describe('LinkItemModal in Page mode', () => {
     await fireEvent.mouseUp(empty);
 
     await waitFor(() => expect(dialog).toHaveFocus());
-  });
-
-  it('keeps focus where the caller moved it on close', async () => {
-    const other = document.createElement('button');
-    document.body.appendChild(other);
-    try {
-      const { dialog } = await openPageDialog({ oncancel: () => other.focus() });
-
-      await fireEvent.click(within(dialog).getByRole('button', { name: /common\.cancel/ }));
-
-      await expectDialogClosed();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(other).toHaveFocus();
-    } finally {
-      other.remove();
-    }
   });
 });

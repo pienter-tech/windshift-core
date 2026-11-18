@@ -7,7 +7,7 @@ import {
   itemTypes,
   screens,
 } from '../api/configuration.js';
-import { iterations, milestones } from '../api/milestones.js';
+import { iterations, milestones } from '../api/planning.js';
 import { FOREGROUND_READ } from '../api/readScheduler.js';
 import { teams } from '../api/teams.js';
 import { time } from '../api/time.js';
@@ -115,9 +115,7 @@ class WorkItemFormStore {
   // Deduplicates only the current template fetch.
   #templatesInFlightKey = null;
 
-  allCustomFields = $state([]);
   customFields = $state([]);
-  customFieldsLoaded = $state(false);
 
   screenFields = $state([]);
   screenSystemFields = $state([]);
@@ -140,6 +138,12 @@ class WorkItemFormStore {
 
   // === Initialization Flag ===
   #initialized = false;
+  #generation = 0;
+  #controller = new AbortController();
+
+  #readOptions() {
+    return { signal: this.#controller.signal };
+  }
   #milestonesLoadToken = 0;
   #iterationsLoadToken = 0;
   #timeProjectsLoadToken = 0;
@@ -272,45 +276,38 @@ class WorkItemFormStore {
    * via the assignable-users endpoint; otherwise falls back to the general users endpoint.
    */
   async loadTeams() {
+    const generation = this.#generation;
     if (this.teamsLoaded) return;
     try {
-      this.teams = (await teams.getAll()) || [];
+      const result = await teams.getAll({}, this.#readOptions());
+      if (generation !== this.#generation) return;
+      this.teams = result || [];
     } catch (error) {
+      if (generation !== this.#generation) return;
       if (error?.name === 'AbortError') return;
       console.error('Failed to load teams:', error);
       this.teams = [];
     } finally {
-      this.teamsLoaded = true;
+      if (generation === this.#generation) this.teamsLoaded = true;
     }
   }
 
   async loadUsers(workspaceId = null) {
+    const generation = this.#generation;
     if (this.usersLoaded) return;
     try {
-      const result = workspaceId ? await getAssignableUsers(workspaceId) : await getUsers();
+      const result = workspaceId
+        ? await getAssignableUsers(workspaceId, this.#readOptions())
+        : await getUsers(this.#readOptions());
+      if (generation !== this.#generation) return;
       this.users = result || [];
       this.usersLoaded = true;
     } catch (error) {
+      if (generation !== this.#generation) return;
       if (error?.name === 'AbortError') return;
       console.error('Failed to load users:', error);
       this.users = [];
       this.usersLoaded = true;
-    }
-  }
-
-  /**
-   * Load all custom fields.
-   */
-  async loadCustomFields() {
-    if (this.customFieldsLoaded) return;
-    try {
-      this.allCustomFields = await customFields.getAll();
-      this.customFieldsLoaded = true;
-    } catch (error) {
-      console.error('Failed to load custom fields:', error);
-      this.allCustomFields = [];
-      this.customFields = [];
-      this.customFieldsLoaded = true;
     }
   }
 
@@ -328,7 +325,7 @@ class WorkItemFormStore {
       const filters = numericWorkspaceId
         ? { workspace_id: numericWorkspaceId, include_global: true }
         : {};
-      const result = await milestones.getAll(filters);
+      const result = await milestones.getAll(filters, this.#readOptions());
       if (token !== this.#milestonesLoadToken) return;
 
       this.allMilestones = result || [];
@@ -363,7 +360,7 @@ class WorkItemFormStore {
       const filters = numericWorkspaceId
         ? { workspace_id: numericWorkspaceId, include_global: true }
         : {};
-      const result = await iterations.getAll(filters);
+      const result = await iterations.getAll(filters, this.#readOptions());
       if (token !== this.#iterationsLoadToken) return;
 
       this.iterations = result || [];
@@ -400,7 +397,7 @@ class WorkItemFormStore {
     const token = ++this.#timeProjectsLoadToken;
     try {
       this.timeProjectsLoading = true;
-      const result = await time.projects.getByWorkspace(numericWorkspaceId);
+      const result = await time.projects.getByWorkspace(numericWorkspaceId, this.#readOptions());
       if (token !== this.#timeProjectsLoadToken) return;
 
       this.timeProjects = result || [];
@@ -438,6 +435,7 @@ class WorkItemFormStore {
    * Load workspace details and filter milestones.
    */
   async loadWorkspaceDetails(workspaceId) {
+    const generation = this.#generation;
     if (!workspaceId) {
       this.workspaceDetails = null;
       this.iterations = [];
@@ -446,13 +444,16 @@ class WorkItemFormStore {
       return;
     }
     try {
-      this.workspaceDetails = await workspaces.get(workspaceId);
+      const workspace = await workspaces.get(workspaceId, this.#readOptions());
+      if (generation !== this.#generation) return;
+      this.workspaceDetails = workspace;
       await Promise.all([
         this.loadMilestones(workspaceId),
         this.loadIterations(workspaceId),
         this.loadTimeProjects(workspaceId),
       ]);
     } catch (error) {
+      if (generation !== this.#generation) return;
       console.error('Failed to load workspace details:', error);
       this.workspaceDetails = null;
       this.#filterMilestones();
@@ -463,18 +464,21 @@ class WorkItemFormStore {
    * Load all item types and hierarchy levels.
    */
   async loadItemTypes(forceReload = false) {
+    const generation = this.#generation;
     if (this.itemTypesLoaded && !forceReload) return;
     try {
       const [itemTypesResult, hierarchyLevelsResult] = await Promise.all([
-        itemTypes.getAll(),
-        hierarchyLevels.getAll(),
+        itemTypes.getAll({}, this.#readOptions()),
+        hierarchyLevels.getAll({}, this.#readOptions()),
       ]);
+      if (generation !== this.#generation) return;
       this.itemTypes = itemTypesResult || [];
       this.hierarchyLevels = hierarchyLevelsResult || [];
 
       this.#updateAvailableItemTypes();
       this.itemTypesLoaded = true;
     } catch (error) {
+      if (generation !== this.#generation) return;
       console.error('Failed to load item types:', error);
       this.itemTypes = [];
       this.hierarchyLevels = [];
@@ -530,7 +534,10 @@ class WorkItemFormStore {
     if (Number(workspaceDataStore.workspaceId) === Number(workspaceId)) {
       return workspaceDataStore.screenConfig(itemTypeId);
     }
-    return workspaces.getEffectiveConfig(workspaceId, itemTypeId, FOREGROUND_READ);
+    return workspaces.getEffectiveConfig(workspaceId, itemTypeId, {
+      ...FOREGROUND_READ,
+      ...this.#readOptions(),
+    });
   }
 
   /**
@@ -539,9 +546,11 @@ class WorkItemFormStore {
    * the parts the create flow needs onto currentConfigSet.
    */
   async loadConfigSetForWorkspace(workspaceId) {
+    const generation = this.#generation;
     if (this.configSetLoadedForWorkspace === workspaceId) return;
     try {
       const config = await this.#effectiveConfig(workspaceId, null);
+      if (generation !== this.#generation) return;
       this.currentConfigSet = config
         ? {
             priorities_detailed: config.priorities || [],
@@ -552,6 +561,7 @@ class WorkItemFormStore {
       this.configSetLoadedForWorkspace = workspaceId;
       this.#updateAvailableItemTypes();
     } catch (error) {
+      if (generation !== this.#generation) return;
       console.error('Failed to load config set:', error);
       this.currentConfigSet = null;
       this.configSetLoadedForWorkspace = workspaceId;
@@ -568,30 +578,39 @@ class WorkItemFormStore {
   }
 
   /**
-   * Load screen fields for a specific workspace/item type combination.
+   * Load the create screen and the custom field definitions it references in
+   * one pass, so the rendered fields and their required flags cannot disagree.
    */
   async loadScreenFieldsForItemType(workspaceId, itemTypeId) {
+    const generation = this.#generation;
     const key = `${workspaceId}-${itemTypeId}`;
     if (this.loadingScreenFields || this.screenFieldsLoadedForKey === key) return;
     try {
       this.loadingScreenFields = true;
       const createScreenId = await this.#resolveCreateScreenId(workspaceId, itemTypeId);
-      const fields = createScreenId ? await screens.getFields(createScreenId) : [];
+      if (generation !== this.#generation) return;
+      const [fields, definitions] = await Promise.all([
+        createScreenId ? screens.getFields(createScreenId, this.#readOptions()) : [],
+        customFields.getAll({}, this.#readOptions()),
+      ]);
+      if (generation !== this.#generation) return;
       this.screenFields = fields || [];
 
       this.screenSystemFields = this.screenFields
         .filter((field) => field.field_type === 'system')
         .map((field) => field.field_identifier);
 
-      const customFieldIds = this.screenFields
-        .filter((field) => field.field_type === 'custom')
-        .map((field) => parseInt(field.field_identifier, 10));
+      const customFieldIds = new Set(
+        this.screenFields
+          .filter((field) => field.field_type === 'custom')
+          .map((field) => parseInt(field.field_identifier, 10))
+      );
 
       // Linking fields need an existing item and cannot be filled during
       // create, so keep them out of the rendered fields and the payload.
-      const filteredCustomFields = this.allCustomFields.filter(
+      this.customFields = (definitions || []).filter(
         (field) =>
-          customFieldIds.includes(field.id) && isCreateRenderableCustomFieldType(field.field_type)
+          customFieldIds.has(field.id) && isCreateRenderableCustomFieldType(field.field_type)
       );
 
       // Keep values the user already entered for fields that remain configured
@@ -600,7 +619,7 @@ class WorkItemFormStore {
       // item type changed after a field was filled.
       const previousValues = this.customFieldValues;
       this.customFieldValues = {};
-      filteredCustomFields.forEach((field) => {
+      this.customFields.forEach((field) => {
         const previous = previousValues[field.id];
         this.customFieldValues[field.id] =
           previous !== undefined && previous !== null && previous !== ''
@@ -608,9 +627,9 @@ class WorkItemFormStore {
             : defaultCustomFieldValue(field.field_type);
       });
 
-      this.customFields = filteredCustomFields;
       this.screenFieldsLoadedForKey = key;
     } catch (error) {
+      if (generation !== this.#generation) return;
       console.error('Failed to load screen fields:', error);
       this.screenSystemFields = ['priority', 'milestone'];
       this.screenFields = [];
@@ -618,7 +637,7 @@ class WorkItemFormStore {
       this.customFieldValues = {};
       this.screenFieldsLoadedForKey = key;
     } finally {
-      this.loadingScreenFields = false;
+      if (generation === this.#generation) this.loadingScreenFields = false;
     }
   }
 
@@ -678,6 +697,7 @@ class WorkItemFormStore {
 
   // Load selectable and mandatory templates for the current workspace and type.
   async loadTemplatesForCurrentType() {
+    const generation = this.#generation;
     const workspaceId = this.formData.workspace_id;
     const itemTypeId = this.formData.item_type_id;
     if (!workspaceId || !itemTypeId) {
@@ -699,9 +719,18 @@ class WorkItemFormStore {
 
     this.templatesLoading = true;
     try {
-      const list = (await itemTemplates.getAll(workspaceId, { item_type_id: itemTypeId })) ?? [];
+      const list =
+        (await itemTemplates.getAll(
+          workspaceId,
+          { item_type_id: itemTypeId },
+          this.#readOptions()
+        )) ?? [];
       // Guard against an out-of-order response after another type change.
-      if (`${this.formData.workspace_id}:${this.formData.item_type_id}` !== key) return;
+      if (
+        generation !== this.#generation ||
+        `${this.formData.workspace_id}:${this.formData.item_type_id}` !== key
+      )
+        return;
 
       const mandatory = list.find((t) => t.mode === 'mandatory') || null;
       this.templateOptions = list.filter((t) => t.mode === 'selectable');
@@ -717,13 +746,15 @@ class WorkItemFormStore {
         this.selectedTemplateId = null;
       }
     } catch (err) {
+      if (generation !== this.#generation) return;
       console.error('Failed to load item templates:', err);
       this.templateOptions = [];
       this.mandatoryTemplate = null;
     } finally {
-      // Preserve a newer fetch marker.
-      if (this.#templatesInFlightKey === key) this.#templatesInFlightKey = null;
-      this.templatesLoading = false;
+      if (generation === this.#generation) {
+        if (this.#templatesInFlightKey === key) this.#templatesInFlightKey = null;
+        this.templatesLoading = false;
+      }
     }
   }
 
@@ -950,14 +981,13 @@ class WorkItemFormStore {
           }
         } else if (field.field_type === 'custom') {
           const fieldId = parseInt(field.field_identifier, 10);
-          const value = this.customFieldValues[fieldId];
-          const fieldDef = this.allCustomFields.find((f) => f.id === fieldId);
-          // Linking fields are not renderable on create; ignore a legacy
-          // required flag rather than blocking submission forever.
-          if (!isCreateRenderableCustomFieldType(fieldDef?.field_type)) continue;
-          if (isBooleanCustomFieldType(fieldDef?.field_type)) continue;
-          if (this.#isEmptyValue(value)) {
-            errors.push(`${fieldDef?.name || 'Custom field'} is required`);
+          // Only renderable fields are in customFields; a linking field or a
+          // definition that did not load cannot be filled on create, so a
+          // legacy required flag must not block submission forever.
+          const fieldDef = this.customFields.find((f) => f.id === fieldId);
+          if (!fieldDef || isBooleanCustomFieldType(fieldDef.field_type)) continue;
+          if (this.#isEmptyValue(this.customFieldValues[fieldId])) {
+            errors.push(`${fieldDef.name} is required`);
           }
         }
       }
@@ -1038,7 +1068,18 @@ class WorkItemFormStore {
    * Full reset including all loaded data.
    */
   reset() {
+    this.#generation += 1;
+    this.#controller.abort();
+    this.#controller = new AbortController();
+    this.#milestonesLoadToken += 1;
+    this.#iterationsLoadToken += 1;
+    this.#timeProjectsLoadToken += 1;
     this.resetForm();
+    this.formData = defaultFormData();
+    this.customFieldValues = {};
+    this.teams = [];
+    this.teamsLoaded = false;
+    this.templatesLoading = false;
 
     // Reset all loaded data
     this.users = [];
@@ -1060,10 +1101,8 @@ class WorkItemFormStore {
     this.hierarchyLevels = [];
     this.availableItemTypes = [];
     this.itemTypesLoaded = false;
-    this.allCustomFields = [];
     this.customFields = [];
     this.selectedLabels = [];
-    this.customFieldsLoaded = false;
     this.screenFields = [];
     this.screenSystemFields = [];
     this.loadingScreenFields = false;
@@ -1078,6 +1117,7 @@ class WorkItemFormStore {
    * Loads reference data if not already loaded.
    */
   async init() {
+    const generation = this.#generation;
     if (this.#initialized) return;
 
     this.loadStoredSelections();
@@ -1086,9 +1126,8 @@ class WorkItemFormStore {
       this.loadTeams(),
       this.loadMilestones(),
       this.loadItemTypes(),
-      this.loadCustomFields(),
     ]);
-    this.#initialized = true;
+    if (generation === this.#generation) this.#initialized = true;
   }
 
   /**

@@ -109,6 +109,7 @@ export default {
       namePlaceholder: "Mon travail en cours",
       promptLabel: "Que doit-il afficher ?",
       promptPlaceholder: "Mes taches en cours, avec chiffres et tableau",
+      chartTypesHint: "Barres · Courbe · Camembert · Anneau · Progression",
       generate: "Generer",
       generating: "Generation...",
       itemQueryLabel: "Requete elements (CQL)",

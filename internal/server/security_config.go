@@ -99,9 +99,15 @@ func ResolveSecurityConfig(cfg Config) (*ResolvedSecurityConfig, error) {
 	// 5. Auto-detect proxy mode
 	r.UseProxy = cfg.UseProxy
 	if cfg.UseProxyExplicit {
-		r.addDiag(DiagInfo, "PROXY_EXPLICIT",
-			"Proxy mode explicitly enabled via USE_PROXY.",
-			"Ensure this server is NOT directly accessible from the internet.")
+		if r.UseProxy {
+			r.addDiag(DiagInfo, "PROXY_EXPLICIT",
+				"Proxy mode explicitly enabled via USE_PROXY.",
+				"Ensure this server is NOT directly accessible from the internet.")
+		} else {
+			r.addDiag(DiagInfo, "PROXY_EXPLICIT",
+				"Proxy mode explicitly disabled via USE_PROXY.",
+				"X-Forwarded-* headers from clients will not be trusted.")
+		}
 	} else if parsedURL != nil && parsedURL.Scheme == "https" && !r.EnableHTTPS {
 		// BASE_URL is https but no TLS cert → auto-detect proxy
 		r.UseProxy = true
@@ -109,6 +115,9 @@ func ResolveSecurityConfig(cfg Config) (*ResolvedSecurityConfig, error) {
 		r.addDiag(DiagWarn, "PROXY_AUTO_DETECTED",
 			"Proxy mode auto-detected: BASE_URL uses https:// but no TLS certificate is configured. Assuming a reverse proxy handles TLS termination.",
 			"Ensure this server is NOT directly accessible from the internet — it must only be reachable through the reverse proxy. Set USE_PROXY=true to silence this warning.")
+	}
+	if r.Scheme == "" {
+		r.Scheme = browserOriginScheme(cfg)
 	}
 
 	// 6. No BASE_URL and no AllowedHosts
@@ -166,6 +175,20 @@ func ResolveSecurityConfig(cfg Config) (*ResolvedSecurityConfig, error) {
 	}
 
 	return r, nil
+}
+
+// Browser origins follow BASE_URL when explicit, otherwise the listener or
+// proxy TLS policy. Insecure-origin opt-in does not change the actual scheme.
+func browserOriginScheme(cfg Config) string {
+	if cfg.BaseURL != "" {
+		if parsed, err := url.Parse(cfg.BaseURL); err == nil && parsed.Scheme != "" {
+			return parsed.Scheme
+		}
+	}
+	if cfg.UseProxy || (cfg.TLSCertPath != "" && cfg.TLSKeyPath != "") {
+		return "https"
+	}
+	return "http"
 }
 
 // LogDiagnostics logs all diagnostics at appropriate slog levels.

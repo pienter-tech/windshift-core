@@ -1,16 +1,21 @@
 <script>
-  import { onMount } from 'svelte';
+  import { untrack } from 'svelte';
   import { publicBoard } from '../api/publicBoard.js';
   import { themeStore } from '../stores/theme.svelte.js';
-  import IconSun from '@tabler/icons-svelte-runes/icons/sun';
-  import IconMoon from '@tabler/icons-svelte-runes/icons/moon';
+  import CustomerHeader from '../customer/CustomerHeader.svelte';
   import IconClipboardList from '@tabler/icons-svelte-runes/icons/clipboard-list';
   import IconAlertTriangle from '@tabler/icons-svelte-runes/icons/alert-triangle';
   import PublicBoardItemDetail from './PublicBoardItemDetail.svelte';
   import { primaryMilestoneForItem, sortMilestonesForLanes, SWIMLANE_NONE_KEY } from '../features/collections/swimlanes.js';
   import { formatDateOnly } from '../utils/dateFormatter.js';
+  import { canRunBackgroundSync, onBackgroundSyncAvailable } from '../utils/backgroundSync.js';
+  import Badge from '../components/Badge.svelte';
+  import Avatar from '../components/Avatar.svelte';
+  import Card from '../components/Card.svelte';
+  import Lozenge from '../components/Lozenge.svelte';
+  import StatusPill from '../components/StatusPill.svelte';
 
-  let { slug } = $props();
+  let { slug, client = publicBoard, embedded = false, initialItemKey = null, onitemchange = null, onaccessdenied = null } = $props();
 
   let selectedItemKey = $state(null);
 
@@ -18,6 +23,8 @@
   let loading = $state(true);
   let error = $state(null);
   let loadId = 0;
+
+  function selectItem(key) { selectedItemKey = key; onitemchange?.(key); }
 
   // Card fields set for quick lookup
   let cardFieldSet = $derived(
@@ -91,92 +98,78 @@
     return cardFieldSet.has(fieldId);
   }
 
-  function toggleTheme() {
-    const current = themeStore.resolvedTheme;
-    themeStore.setColorMode(current === 'dark' ? 'light' : 'dark');
-  }
-
-  onMount(() => {
-    themeStore.init();
-  });
-
   // The router reuses this component across public-board URLs, so a slug change
   // must reset scope-owned state and start the new board immediately. Each load
   // is bound to its slug generation: a superseded response, error or finally
   // must never commit over the board the user is now looking at.
   $effect(() => {
     const activeSlug = slug;
+    const activeClient = client;
     const id = ++loadId;
     const controller = new AbortController();
     let inFlight = false;
     let disposed = false;
+    let recoveryPending = false;
 
     board = null;
     error = null;
     loading = true;
-    selectedItemKey = null;
+    selectedItemKey = untrack(() => initialItemKey);
 
-    async function load(silent) {
-      if (inFlight || disposed) return;
+    async function load(silent, recovery = false) {
+      if (silent && !canRunBackgroundSync()) return;
+      if (disposed) return;
+      if (inFlight) {
+        if (recovery) recoveryPending = true;
+        return;
+      }
+      recoveryPending = false;
       inFlight = true;
       if (!silent) loading = true;
       try {
-        const result = await publicBoard.get(activeSlug, { signal: controller.signal });
+        const result = await activeClient.get(activeSlug, { signal: controller.signal });
         if (disposed || id !== loadId) return;
         board = result;
         error = null;
       } catch (err) {
         if (disposed || id !== loadId || err?.name === 'AbortError') return;
         error = err?.status === 404 ? 'not_found' : 'error';
+        board = null;
+        selectedItemKey = null;
+        if (err?.status === 401 || err?.status === 403) onaccessdenied?.(err.status);
       } finally {
         inFlight = false;
         if (!disposed && id === loadId) loading = false;
+        if (recoveryPending && !disposed) void load(true);
       }
     }
 
     load(false);
     // Auto-refresh every 60 seconds without overlapping a slow request.
     const refreshInterval = setInterval(() => load(true), 60000);
+    const stopRecovery = onBackgroundSyncAvailable(() => load(true, true));
 
     return () => {
       disposed = true;
       controller.abort();
       clearInterval(refreshInterval);
+      stopRecovery();
     };
   });
+
+  $effect(() => { selectedItemKey = initialItemKey; });
 </script>
 
 <div
   class="public-board"
-  style="background-color: var(--ds-surface); color: var(--ds-text); min-height: 100vh; display: flex; flex-direction: column;"
+  style="background-color: var(--ds-surface); color: var(--ds-text); min-height: {embedded ? '0' : '100vh'}; display: flex; flex-direction: column;"
   data-testid="public-board-page"
   data-ready={!loading}
 >
   <!-- Header -->
-  <header class="public-board-header" style="background-color: var(--ds-surface-raised); border-bottom: 1px solid var(--ds-border); padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; gap: 16px;">
-    <div style="display: flex; align-items: center; gap: 12px;">
-      <img src="windshift-3.svg" alt="Windshift" style="width: 28px; height: 28px;" />
-      {#if board}
-        <div>
-          <h1 style="font-size: 18px; font-weight: 600; margin: 0; line-height: 1.3;">{board.collection.name}</h1>
-          {#if board.collection.description}
-            <p style="font-size: 13px; color: var(--ds-text-subtle); margin: 0; line-height: 1.4;">{board.collection.description}</p>
-          {/if}
-        </div>
-      {/if}
-    </div>
-    <button
-      onclick={toggleTheme}
-      style="background: none; border: 1px solid var(--ds-border); border-radius: 6px; padding: 6px 10px; cursor: pointer; color: var(--ds-text-subtle); font-size: 13px;"
-      title="Toggle theme"
-    >
-      {#if themeStore.resolvedTheme === 'dark'}
-        <IconSun class="w-4 h-4" />
-      {:else}
-        <IconMoon class="w-4 h-4" />
-      {/if}
-    </button>
-  </header>
+  {#if !embedded}
+    <CustomerHeader title={board?.collection.name || ''} description={board?.collection.description || ''} logo="windshift-3.svg" />
+  {/if}
 
   <!-- Content -->
   <main style="flex: 1; overflow-x: auto; padding: 20px 24px;">
@@ -216,129 +209,104 @@
       {#snippet publicCard(card)}
         <div
           class="public-card"
-          style="background-color: var(--ds-surface-raised); border: 1px solid var(--ds-border); border-radius: 6px; padding: 12px; box-shadow: var(--ds-shadow-raised); cursor: pointer;"
-          onclick={() => selectedItemKey = card.key}
-          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectedItemKey = card.key; } }}
+          onclick={() => selectItem(card.key)}
+          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectItem(card.key); } }}
           role="button"
           tabindex="0"
           data-testid="public-board-card"
           data-item-key={card.key}
         >
-          {#if showField('key')}
-            <div style="font-size: 11px; font-weight: 500; color: var(--ds-text-subtle); margin-bottom: 4px; font-family: monospace;">{card.key}</div>
-          {/if}
+          <Card variant="flat" padding="compact" hoverable style="background-color: var(--ds-surface-raised);">
+            {#if showField('key')}
+              <div style="font-size: 11px; font-weight: 500; color: var(--ds-text-subtle); margin-bottom: 4px; font-family: monospace;">{card.key}</div>
+            {/if}
 
-          {#if showField('title')}
-            <div
-              data-testid="public-board-card-title"
-              style="font-size: 13px; font-weight: 500; line-height: 1.4; margin-bottom: 8px;"
-            >
-              {card.title}
-            </div>
-          {/if}
-
-          <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
-            {#if showField('priority') && card.priority_name}
-              <span
-                style="font-size: 11px; padding: 1px 6px; border-radius: 4px; background: {card.priority_color || 'var(--ds-surface-sunken)'}20; color: {card.priority_color || 'var(--ds-text-subtle)'}; border: 1px solid {card.priority_color || 'var(--ds-border)'}40;"
-                title={card.priority_name}
+            {#if showField('title')}
+              <div
+                data-testid="public-board-card-title"
+                style="font-size: 13px; font-weight: 500; line-height: 1.4; margin-bottom: 8px;"
               >
-                {card.priority_name}
-              </span>
+                {card.title}
+              </div>
             {/if}
 
-            {#if showField('status') && card.status_name}
-              <span
-                data-testid="public-board-card-status"
-                style="font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--ds-surface-sunken); color: var(--ds-text-subtle);"
-              >
-                {card.status_name}
-              </span>
-            {/if}
-
-            {#if showField('item_type') && card.item_type_name}
-              <span style="font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--ds-surface-sunken); color: var(--ds-text-subtle);">
-                {card.item_type_name}
-              </span>
-            {/if}
-
-            {#if showField('story_points') && card.story_points != null}
-              <span style="font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--ds-surface-sunken); color: var(--ds-text-subtle);" title="Story Points">
-                {card.story_points} SP
-              </span>
-            {/if}
-
-            {#if showField('due_date') && card.due_date}
-              {@const isOverdue = new Date(card.due_date) < new Date()}
-              <span style="font-size: 11px; padding: 1px 6px; border-radius: 4px; {isOverdue ? 'background: #ef444420; color: #ef4444;' : 'background: var(--ds-surface-sunken); color: var(--ds-text-subtle);'}">
-                {card.due_date}
-              </span>
-            {/if}
-
-            {#if showField('labels') && card.labels?.length}
-              {#each card.labels as label}
-                <span style="font-size: 10px; padding: 1px 6px; border-radius: 4px; background: {label.color}20; color: {label.color}; border: 1px solid {label.color}40;">
-                  {label.name}
-                </span>
-              {/each}
-            {/if}
-
-            <div style="flex: 1;"></div>
-
-            {#if showField('assignee') && card.assignee_name}
-              {#if card.assignee_avatar}
-                <img
-                  src={card.assignee_avatar}
-                  alt={card.assignee_name}
-                  title={card.assignee_name}
-                  style="width: 22px; height: 22px; border-radius: 50%; object-fit: cover;"
-                />
-              {:else}
-                <div
-                  title={card.assignee_name}
-                  style="width: 22px; height: 22px; border-radius: 50%; background: #2874BB; color: white; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 600;"
-                >
-                  {card.assignee_name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()}
-                </div>
+            <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+              {#if showField('priority') && card.priority_name}
+                <Lozenge color="gray" customBg={card.priority_color || null} customText={themeStore.resolvedTheme === 'dark' ? 'var(--ds-text)' : null} text={card.priority_name} />
               {/if}
-            {/if}
-          </div>
+
+              {#if showField('status') && card.status_name}
+                <span data-testid="public-board-card-status">
+                  <StatusPill name={card.status_name} />
+                </span>
+              {/if}
+
+              {#if showField('item_type') && card.item_type_name}
+                <Badge size="xs">{card.item_type_name}</Badge>
+              {/if}
+
+              {#if showField('story_points') && card.story_points != null}
+                <Badge size="xs" title="Story Points">{card.story_points} SP</Badge>
+              {/if}
+
+              {#if showField('due_date') && card.due_date}
+                {@const isOverdue = new Date(card.due_date) < new Date()}
+                <Badge size="xs" variant={isOverdue ? 'danger' : 'neutral'}>{card.due_date}</Badge>
+              {/if}
+
+              {#if showField('labels') && card.labels?.length}
+                {#each card.labels as label}
+                  <Lozenge color="gray" customBg={label.color || null} customText={themeStore.resolvedTheme === 'dark' ? 'var(--ds-text)' : null} text={label.name} />
+                {/each}
+              {/if}
+
+              <div style="flex: 1;"></div>
+
+              {#if showField('assignee') && card.assignee_name}
+                <Avatar size="xs" src={card.assignee_avatar} name={card.assignee_name} title={card.assignee_name} />
+              {/if}
+            </div>
+          </Card>
         </div>
       {/snippet}
 
       {#snippet publicColumn(column, items)}
         <div
           class="board-column"
-          style="min-width: 280px; max-width: 320px; flex: 1; display: flex; flex-direction: column;"
           data-testid="public-board-column"
           data-column-name={column.name}
         >
-          <div style="padding: 10px 12px; margin-bottom: 8px; border-radius: 8px 8px 0 0; display: flex; align-items: center; justify-content: space-between; background-color: var(--ds-surface-raised); border: 1px solid var(--ds-border); border-bottom: 3px solid {column.color || 'var(--ds-border)'};">
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <span style="font-size: 14px; font-weight: 600;">{column.name}</span>
-              <span style="font-size: 12px; color: var(--ds-text-subtle); background: var(--ds-surface-sunken); padding: 1px 7px; border-radius: 10px;">{items.length}</span>
-            </div>
-            {#if column.wip_limit}
-              <span
-                style="font-size: 11px; padding: 1px 6px; border-radius: 8px; {items.length > column.wip_limit ? 'background: #ef4444; color: white;' : 'color: var(--ds-text-subtle); background: var(--ds-surface-sunken);'}"
-                title="WIP limit: {column.wip_limit}"
-              >
-                {items.length}/{column.wip_limit}
-              </span>
-            {/if}
-          </div>
-
-          <div style="flex: 1; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; padding: 0 2px 8px;">
-            {#each items as card}
-              {@render publicCard(card)}
-            {/each}
-
-            {#if items.length === 0}
-              <div style="padding: 24px 12px; text-align: center; color: var(--ds-text-disabled); font-size: 13px;">
-                No items
+          <Card variant="flat" padding="none" class="h-full" shadow style="background-color: var(--ds-surface-raised); border-top: 4px solid {column.color || 'var(--ds-border)'};">
+            {#snippet header()}
+              <div class="column-header">
+                <div class="column-heading">
+                  <span class="column-name">{column.name}</span>
+                  <Badge size="xs">{items.length}</Badge>
+                </div>
+                {#if column.wip_limit}
+                  <Badge
+                    size="xs"
+                    variant={items.length > column.wip_limit ? 'danger' : 'neutral'}
+                    title="WIP limit: {column.wip_limit}"
+                  >
+                    {items.length}/{column.wip_limit}
+                  </Badge>
+                {/if}
               </div>
-            {/if}
-          </div>
+            {/snippet}
+
+            <div class="column-cards">
+              {#each items as card}
+                {@render publicCard(card)}
+              {/each}
+
+              {#if items.length === 0}
+                <div style="padding: 24px 12px; text-align: center; color: var(--ds-text-disabled); font-size: 13px;">
+                  No items
+                </div>
+              {/if}
+            </div>
+          </Card>
         </div>
       {/snippet}
 
@@ -387,15 +355,17 @@
   </main>
 
   <!-- Footer -->
+  {#if !embedded}
   <footer style="padding: 12px 24px; text-align: center; border-top: 1px solid var(--ds-border); background-color: var(--ds-surface-raised);">
     <div style="display: flex; align-items: center; justify-content: center; gap: 8px;">
       <img src="windshift-3.svg" alt="Windshift" style="width: 16px; height: 16px; opacity: 0.5;" />
       <span style="font-size: 12px; color: var(--ds-text-subtle);">Powered by Windshift</span>
     </div>
   </footer>
+  {/if}
 
   {#if selectedItemKey}
-    <PublicBoardItemDetail {slug} itemKey={selectedItemKey} onclose={() => selectedItemKey = null} />
+    {#key selectedItemKey}<PublicBoardItemDetail {slug} {client} itemKey={selectedItemKey} onclose={() => selectItem(null)} />{/key}
   {/if}
 </div>
 
@@ -405,11 +375,45 @@
   }
 
   .public-card {
-    transition: box-shadow 140ms ease-in-out, transform 80ms ease-in-out;
+    min-width: 0;
+    border-radius: var(--radius-lg, 8px);
+    cursor: pointer;
+    overflow-wrap: anywhere;
   }
-  .public-card:hover {
-    box-shadow: var(--ds-shadow-overlay) !important;
-    transform: translateY(-1px);
+  .public-card:focus-visible {
+    outline: 2px solid var(--ds-border-focused);
+    outline-offset: 2px;
+  }
+
+  .board-column {
+    min-width: 280px;
+    max-width: 320px;
+    flex: 1;
+  }
+
+  .column-header,
+  .column-heading {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .column-header {
+    justify-content: space-between;
+  }
+
+  .column-name {
+    font-size: 0.875rem;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
+
+  .column-cards {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
   }
 
   .board-columns {
@@ -420,11 +424,12 @@
   /* Mobile responsive: stack columns */
   @media (max-width: 768px) {
     .board-columns {
-      flex-direction: column !important;
+      flex-direction: column;
     }
     .board-column {
-      min-width: 100% !important;
-      max-width: 100% !important;
+      min-width: 100%;
+      max-width: 100%;
+      flex: none;
     }
   }
 </style>

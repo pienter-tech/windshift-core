@@ -143,7 +143,7 @@ func NewManager(pluginDir string, opts ...Option) *Manager {
 		// 169.254.169.254 or internal services. Redirect-following is preserved.
 		HTTPClient: &http.Client{
 			Timeout:   10 * time.Second,
-			Transport: utils.ConfigureHTTPTransport(&http.Transport{DialContext: utils.SafeNetDialer(10 * time.Second).DialContext}),
+			Transport: utils.NewSSRFSafeTransport(10 * time.Second),
 		},
 		Logger: logger.Get(),
 	}
@@ -646,10 +646,9 @@ func (m *Manager) UploadPlugin(name string, zipData []byte) error {
 	return m.UploadPluginWithLicense(name, zipData, nil)
 }
 
-// UploadPluginWithLicense handles plugin upload with an optional license
-// token. When a verifier is configured the license is verified immediately so
-// the admin gets feedback; it is stored with the plugin either way and
-// re-checked on every load.
+// UploadPluginWithLicense installs an archive, retaining the installed license
+// when no replacement is supplied. Explicit tokens are verified immediately;
+// all stored tokens are re-checked on load.
 func (m *Manager) UploadPluginWithLicense(name string, zipData, license []byte) error {
 	zipReader, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
 	if err != nil {
@@ -756,6 +755,9 @@ func (m *Manager) newStagingDir(pluginName string) (string, error) {
 // promotion or load fails, so a failed upgrade never leaves a partial plugin.
 func (m *Manager) promoteStagedPlugin(pluginName, stagingPath string) error {
 	pluginPath := filepath.Join(m.pluginDirs[0], pluginName)
+	if err := m.preserveInstalledLicense(pluginName, pluginPath, stagingPath); err != nil {
+		return err
+	}
 
 	backupPath := ""
 	if _, err := os.Stat(pluginPath); err == nil {
@@ -787,6 +789,35 @@ func (m *Manager) promoteStagedPlugin(pluginName, stagingPath string) error {
 
 	if backupPath != "" {
 		_ = os.RemoveAll(backupPath)
+	}
+	return nil
+}
+
+// Preserve only the license from the same validated identity, not stale code
+// or assets. A replacement already in staging takes precedence.
+func (m *Manager) preserveInstalledLicense(pluginName, pluginPath, stagingPath string) error {
+	stagedToken := filepath.Join(stagingPath, licenseTokenFileName)
+	if _, err := os.Stat(stagedToken); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("failed to inspect staged license: %w", err)
+	}
+	license, err := os.ReadFile(filepath.Join(pluginPath, licenseTokenFileName)) //nolint:gosec // validated plugin name and fixed license filename
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to read installed license: %w", err)
+	}
+	manifestData, err := os.ReadFile(filepath.Join(pluginPath, "manifest.json")) //nolint:gosec // validated plugin name and fixed manifest filename
+	if err != nil {
+		return fmt.Errorf("failed to read installed manifest: %w", err)
+	}
+	if _, _, err := m.validateManifest(pluginName, manifestData); err != nil {
+		return fmt.Errorf("cannot preserve installed license: %w", err)
+	}
+	if err := os.WriteFile(stagedToken, license, 0o600); err != nil { //nolint:gosec // staging directory from os.MkdirTemp and fixed license filename
+		return fmt.Errorf("failed to preserve installed license: %w", err)
 	}
 	return nil
 }
@@ -967,10 +998,12 @@ func (m *Manager) Close() error {
 	return nil
 }
 
-// GetAssetAuth returns the auth policy for a plugin asset. It errors when the
-// plugin is unknown or disabled so callers can fail closed before reading the
-// asset. An asset that matches no declared policy requires a session.
+// GetAssetAuth rejects noncanonical paths before matching policies. Unknown or
+// disabled plugins fail closed; undeclared assets require a session.
 func (m *Manager) GetAssetAuth(pluginName, assetPath string) (RouteAuth, error) {
+	if err := validateAssetFilePath(assetPath); err != nil {
+		return "", err
+	}
 	m.mu.RLock()
 	p, exists := m.plugins[pluginName]
 	m.mu.RUnlock()
@@ -985,8 +1018,12 @@ func (m *Manager) GetAssetAuth(pluginName, assetPath string) (RouteAuth, error) 
 	return assetAuth(p.Assets, assetPath), nil
 }
 
-// GetAsset serves a static asset from a plugin's assets directory.
+// GetAsset reads only canonical paths from a plugin's assets directory, using
+// the same validation as policy matching.
 func (m *Manager) GetAsset(pluginName, assetPath string) (data []byte, contentType string, err error) {
+	if err := validateAssetFilePath(assetPath); err != nil {
+		return nil, "", err
+	}
 	m.mu.RLock()
 	p, exists := m.plugins[pluginName]
 	m.mu.RUnlock()

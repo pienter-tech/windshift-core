@@ -35,6 +35,7 @@ export function hydrateAuthenticatedShellUI(bootstrap) {
   permissionStore.setHasPortals(bootstrap.has_portals === true);
   permissionStore.setHasActivePortals(bootstrap.has_active_portals === true);
   permissionStore.setManagesChannels(bootstrap.manages_channels === true);
+  permissionStore.setOwnsBoards(bootstrap.owns_boards === true);
   permissionStore.setManagesAssetSets(bootstrap.manages_asset_sets === true);
   return true;
 }
@@ -114,10 +115,13 @@ export async function hydrateCurrentWorkspaceFromSharedData(workspaceId) {
     currentWorkspace.clear();
   }
 
-  await workspaceDataStore.initialize(workspaceId);
+  const ready = workspaceDataStore.initialize(workspaceId);
+  const generation = workspaceDataStore.generation;
+  await ready;
 
   // A newer route already owns the store — let its own hydration finish.
-  if (workspaceDataStore.workspaceId !== expectedId) return false;
+  if (workspaceDataStore.generation !== generation || workspaceDataStore.workspaceId !== expectedId)
+    return false;
   if (!workspaceDataStore.workspace) {
     currentWorkspace.clear();
     return false;

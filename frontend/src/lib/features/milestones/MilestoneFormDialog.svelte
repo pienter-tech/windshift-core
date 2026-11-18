@@ -100,6 +100,7 @@
             <TextField
               label={t('milestones.targetDate')}
               id="milestone-target-date"
+              dataTestid="milestone-target-date"
               type="date"
               bind:value={formData.target_date}
             />

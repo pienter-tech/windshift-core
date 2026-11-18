@@ -109,6 +109,7 @@ export default {
       namePlaceholder: 'Moja otwarta praca',
       promptLabel: 'Co ma pokazywać?',
       promptPlaceholder: 'Elementy, które mam jeszcze do zrobienia, z liczbami i tabelą',
+      chartTypesHint: 'Słupki · Linia · Kołowy · Pierścień · Postęp',
       generate: 'Generuj',
       generating: 'Generowanie...',
       itemQueryLabel: 'Zapytanie o elementy (CQL)',

@@ -71,6 +71,7 @@ type DurableActionEventRecorder interface {
 // SyncService handles periodic synchronization of SCM repositories
 // to detect PRs, branches, and commits linked to work items
 type SyncService struct {
+	httpClients             *HTTPClientPool
 	db                      database.Database
 	encryption              *sso.SecretEncryption
 	detector                *ItemKeyDetector
@@ -128,12 +129,13 @@ func (s *SyncService) SetContinuationStarter(st PRCommentContinuationStarter) {
 }
 
 // NewSyncService creates a new SCM sync service
-func NewSyncService(db database.Database, encryption *sso.SecretEncryption) *SyncService {
+func NewSyncService(db database.Database, encryption *sso.SecretEncryption, pools ...*HTTPClientPool) *SyncService {
 	return &SyncService{
-		db:         db,
-		encryption: encryption,
-		detector:   NewItemKeyDetector(),
-		healthRepo: repository.NewSCMHealthRepository(db),
+		httpClients: clientPoolOrNew(pools),
+		db:          db,
+		encryption:  encryption,
+		detector:    NewItemKeyDetector(),
+		healthRepo:  repository.NewSCMHealthRepository(db),
 	}
 }
 
@@ -182,7 +184,7 @@ func (s *SyncService) resolveProvider(ctx context.Context, connectionID int) (Pr
 	if s.resolveProviderOverride != nil {
 		return s.resolveProviderOverride(ctx, connectionID)
 	}
-	credResolver := NewCredentialResolver(s.db, s.encryption)
+	credResolver := NewCredentialResolver(s.db, s.encryption, s.httpClients)
 	provider, err := credResolver.GetProviderForConnection(ctx, connectionID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create provider: %w", err)
@@ -406,7 +408,7 @@ func (s *SyncService) syncOAuthAgentRepositories(ctx context.Context) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	resolver := NewCredentialResolver(s.db, s.encryption)
+	resolver := NewCredentialResolver(s.db, s.encryption, s.httpClients)
 	type connectionResult struct {
 		checked int
 		errors  []error
@@ -494,6 +496,12 @@ func (s *SyncService) syncRepository(ctx context.Context, provider Provider, rep
 
 	slog.Debug("Syncing repository", slog.String("component", "scm"), slog.String("repository", repositoryName), slog.String("workspace", workspaceKey))
 
+	// Checkpoint the sync at its start, not its end. A change that lands while
+	// the sync is listing (a PR merged mid-sync, for example) is observed only
+	// on the next run; an end-time checkpoint would move last_synced_at past
+	// that change and permanently drop its event.
+	syncStartedAt := time.Now().UTC()
+
 	var syncErrs []error
 	if err := s.syncPullRequests(ctx, provider, owner, repo, repoID, workspaceID, workspaceKey, itemKeyPattern, lastSyncedAt); err != nil {
 		syncErrs = append(syncErrs, fmt.Errorf("sync pull requests: %w", err))
@@ -525,9 +533,9 @@ func (s *SyncService) syncRepository(ctx context.Context, provider Provider, rep
 	}
 
 	_, err := s.db.ExecWriteContext(ctx, `
-		UPDATE workspace_repositories SET last_synced_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+		UPDATE workspace_repositories SET last_synced_at = ?, updated_at = CURRENT_TIMESTAMP
 		WHERE id = ?
-	`, repoID)
+	`, syncStartedAt, repoID)
 	if err != nil {
 		return fmt.Errorf("update repository sync checkpoint: %w", err)
 	}
@@ -751,6 +759,11 @@ func (s *SyncService) processPullRequest(ctx context.Context, provider Provider,
 	var itemIDs []int                 // items linked to this PR
 	var ownItemIDs []int              // the subset the PR is for, not merely mentions
 	linkedItems := make(map[int]bool) // item ids that became own links of this PR
+	// liveMerge is set when a stored link transitions to merged during this
+	// run. That transition is new even if MergedAt predates the checkpoint,
+	// which can happen when a merge lands between a sync's PR listing and its
+	// end-of-sync checkpoint write.
+	liveMerge := false
 	var observationErrs []error
 	for _, key := range keys {
 		itemID, err := s.findItemByKey(ctx, workspaceID, key.Prefix, key.Number)
@@ -791,7 +804,10 @@ func (s *SyncService) processPullRequest(ctx context.Context, provider Provider,
 		if observed.linked && emitLinked && s.durableActionEvents == nil {
 			linkedItems[itemID] = true
 		}
-		if observed.merged && emitMerged && s.durableActionEvents == nil {
+		if observed.liveMerge {
+			liveMerge = true
+		}
+		if observed.merged && (emitMerged || observed.liveMerge) && s.durableActionEvents == nil {
 			s.emitPRMergedEvent(workspaceID, itemID, repoID, owner, repo, pr)
 		}
 	}
@@ -832,8 +848,9 @@ func (s *SyncService) processPullRequest(ctx context.Context, provider Provider,
 	// applied yet, not only when this sync is the first to record the merge:
 	// the link refresh, or a webhook or manual sync on another SyncService,
 	// may have recorded it first. processSmartCommitsForPR applies each PR
-	// body and commit at most once.
-	if pr.IsMerged && shouldRunSmartCommits(pr, lastSyncedAt, now) {
+	// body and commit at most once. A live merge runs them even when MergedAt
+	// predates the checkpoint.
+	if liveMerge || (pr.IsMerged && shouldRunSmartCommits(pr, lastSyncedAt, now)) {
 		s.processSmartCommitsForPR(ctx, provider, owner, repo, pr, repoID, workspaceID, workspaceKey)
 	}
 	return nil
@@ -1284,6 +1301,10 @@ type prLinkObservation struct {
 	linked bool
 	// merged: this write moved an own link to merged; scm_pr_merged applies.
 	merged bool
+	// liveMerge: this write moved a stored link, own or mention, to merged.
+	// The merge is new to Windshift even when MergedAt predates the sync
+	// checkpoint, so scm_pr_merged and smart commits apply regardless.
+	liveMerge bool
 }
 
 // upsertPullRequestSCMLink records one observation of a pull request that
@@ -1354,6 +1375,7 @@ func (s *SyncService) upsertPullRequestSCMLink(
 			if err != nil {
 				return observed, err
 			}
+			observed.liveMerge = becameMerged
 			observed.merged = becameMerged && !observed.mention
 		}
 		_, err = tx.ExecContext(ctx, `
@@ -1372,7 +1394,7 @@ func (s *SyncService) upsertPullRequestSCMLink(
 			return observed, err
 		}
 	}
-	if observed.merged && emitMerged && s.durableActionEvents != nil {
+	if observed.merged && (emitMerged || observed.liveMerge) && s.durableActionEvents != nil {
 		if err := s.durableActionEvents.EmitActionEventInTx(ctx, tx, mergedEvent); err != nil {
 			return observed, err
 		}
@@ -1599,9 +1621,10 @@ func (s *SyncService) getProviderInstance(providerID int) (Provider, error) {
 	}
 
 	cfg := ProviderConfig{
-		ProviderType: providerType,
-		AuthMethod:   authMethod,
-		BaseURL:      baseURL.String,
+		HTTPClientPool: s.httpClients,
+		ProviderType:   providerType,
+		AuthMethod:     authMethod,
+		BaseURL:        baseURL.String,
 	}
 
 	switch authMethod {
@@ -1650,7 +1673,7 @@ func (s *SyncService) refreshItemSCMLink(ctx context.Context, linkID int, userID
 
 	var provider Provider
 	if userID != nil {
-		credResolver := NewCredentialResolver(s.db, s.encryption)
+		credResolver := NewCredentialResolver(s.db, s.encryption, s.httpClients)
 		provider, err = credResolver.GetProviderForUser(ctx, connectionID, *userID)
 		if err != nil {
 			return fmt.Errorf("failed to get provider for user: %w", err)
@@ -1824,7 +1847,7 @@ func (s *SyncService) resolveRepoAndProvider(ctx context.Context, workspaceRepoI
 	}
 
 	// Resolve provider credentials
-	credResolver := NewCredentialResolver(s.db, s.encryption)
+	credResolver := NewCredentialResolver(s.db, s.encryption, s.httpClients)
 	connectionID := s.getConnectionIDForRepo(ctx, workspaceRepoID)
 
 	var provider Provider

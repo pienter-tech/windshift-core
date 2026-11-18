@@ -4,6 +4,32 @@
  */
 
 export default {
+  operatorControls: {
+    title: 'Contrôles de l’exploitant',
+    description: 'Ces règles de déploiement sont en lecture seule. Contactez l’exploitant de l’instance pour modifier les restrictions ou les quotas. Les préférences de l’organisation peuvent être plus strictes, mais ne peuvent pas dépasser ces plafonds.',
+    restricted: 'Cette fonctionnalité est gérée par l’exploitant de l’instance.',
+    restrictions: 'Fonctionnalités restreintes', unrestricted: 'Aucune restriction supplémentaire des fonctionnalités.',
+    limits: 'Plafonds de l’instance', usage: 'Utilisation sur la période actuelle',
+    blockedDefinitions: 'Définitions bloquées par les contrôles de l’exploitant',
+    loadFailed: 'Impossible de charger les contrôles de l’exploitant.', mailMode: 'Mode d’envoi des e-mails',
+    importAdmission: 'Les imports en masse nécessitent l’autorisation de l’exploitant.',
+    models: 'Modèles d’IA disponibles', truncated: 'Les 1 000 premières définitions bloquées sont affichées.',
+    labels: {
+      instance_lifecycle: 'Cycle de vie de l’instance', maintenance: 'Opérations de maintenance',
+      runtime_diagnostics: 'Diagnostics d’exécution', plugin_exec: 'Exécution de commandes par les extensions',
+      ldap: 'LDAP', server_scripts: 'Scripts serveur', imports: 'Imports en masse',
+      mail_transport_management: 'Gestion du transport des e-mails', generic_mail: 'SMTP et IMAP génériques',
+      mail: 'Envoi des e-mails', ai: 'Génération par IA', ai_connection_management: 'Gestion des connexions IA',
+      attachment_bytes: 'Taille maximale d’un objet (octets)', blob_bytes: 'Quota de stockage des objets (octets)',
+      concurrent_requests: 'Requêtes simultanées', concurrent_streams: 'Flux simultanés',
+      requests_per_minute: 'Requêtes par minute', script_timeout_ms: 'Délai maximal des scripts (millisecondes)',
+      concurrent_scripts: 'Scripts simultanés', automation_steps_per_day: 'Étapes d’automatisation par jour UTC',
+      mail_recipients_per_day: 'Tentatives par destinataire d’e-mail par jour UTC', ai_tokens_per_day: 'Quota de jetons IA par jour UTC',
+      concurrent_ai: 'Appels IA simultanés', requests: 'Tentatives de requêtes cette minute',
+      automation_steps: 'Étapes d’automatisation aujourd’hui', mail_recipients: 'Tentatives par destinataire d’e-mail aujourd’hui',
+      ai_tokens: 'Jetons IA comptabilisés aujourd’hui',
+    },
+  },
   // Settings (merged from general and detailed settings sections)
   settings: {
     title: 'Paramètres',
@@ -539,8 +565,17 @@ export default {
     // SSO Settings
     sso: {
       title: 'Authentification unique (SSO)',
-      subtitle: 'Configurer les fournisseurs d\'identité OIDC pour la connexion SSO',
-      oidcTab: 'OIDC',
+      subtitle: 'Configurer les fournisseurs d\'identité pour la connexion SSO',
+      oidcTab: 'Fournisseurs d’identité',
+      addOidc: 'Ajouter OIDC',
+      addGitHub: 'Ajouter GitHub',
+      editGitHub: 'Modifier GitHub',
+      githubOrganization: 'Limiter à une organisation GitHub',
+      githubAnyOrganization: 'Aucune restriction d’organisation',
+      githubOrganizationHelp: 'Nom d’organisation facultatif, pas une URL. L’adhésion active est vérifiée à chaque connexion GitHub, même pour les comptes liés. Les sessions Windshift existantes ne sont pas révoquées lors d’un changement. GitHub peut exiger l’approbation de l’accès à l’organisation.',
+      githubOrganizationInvalid: 'Saisissez un nom d’organisation GitHub valide, pas une URL.',
+      githubSetupHelp: 'Enregistrez une application OAuth GitHub dédiée, puis saisissez son identifiant client et son secret. Utilisez l’URL de rappel affichée. Cette connexion est distincte de l’accès SCM et ne demande aucun droit sur les dépôts.',
+      githubVerifiedEmailHelp: 'GitHub doit vérifier une adresse e-mail avant la connexion. Les comptes Windshift existants sont liés par adresse vérifiée. Les autorisations demandées sont read:user et user:email, plus read:org si une organisation est imposée.',
       addProvider: 'Ajouter un fournisseur',
       addSsoProvider: 'Ajouter un fournisseur SSO',
       editSsoProvider: 'Modifier le fournisseur SSO',
@@ -597,8 +632,12 @@ export default {
       oidc: 'OIDC',
       enableThisProvider: 'Activer ce fournisseur',
       enableThisProviderDesc: 'Les utilisateurs peuvent se connecter via ce fournisseur SSO',
-      autoProvisionUsers: 'Création automatique de comptes',
-      autoProvisionUsersDesc: 'Créer automatiquement les comptes lors de la première connexion SSO',
+      autoProvisionUsers: 'Autoriser la création de comptes',
+      autoProvisionUsersDesc: 'Créer des comptes utilisateurs internes à la première connexion. Si désactivé, seuls les comptes existants peuvent se connecter.',
+      customerAccountCreationHelp: 'Créer des comptes clients limités au portail à la première connexion. Si désactivé, seuls les clients existants peuvent se connecter.',
+      customerOrganisationOptional: 'Organisation cliente (facultatif)',
+      noCustomerOrganisation: 'Aucune organisation',
+      customerOrganisationHelp: 'Attribuez éventuellement les nouveaux clients à cette organisation et exigez que les clients existants en soient membres. Laissez vide pour ne pas restreindre la connexion par organisation. Ne donne jamais accès au back-office. Le type de compte et l’organisation ne peuvent plus être modifiés après la création du fournisseur.',
       manualUserCreationOnly: 'Création manuelle d\'utilisateurs uniquement',
       trustIdpEmailVerification: 'Faire confiance aux e-mails vérifiés du fournisseur',
       trustIdpEmailVerificationDesc:

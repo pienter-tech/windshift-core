@@ -1,4 +1,6 @@
 <script>
+  import { createOwnedPopup } from '../utils/overlayScope.js';
+  const ownedPopup = createOwnedPopup();
   import { createPopover, melt } from '@melt-ui/svelte';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import Check from '@lucide/svelte/icons/check';
@@ -10,6 +12,7 @@
   import Checkbox from '../components/Checkbox.svelte';
   import Input from '../components/Input.svelte';
   import ItemTypeIcon from '../components/ItemTypeIcon.svelte';
+  import { useRowRetention } from '../virtualization/useRowRetention.svelte';
 
   let {
     triggerText = '',
@@ -67,6 +70,8 @@
       placement: /** @type {import('@floating-ui/dom').Placement} */ (placement || 'bottom')
     },
     portal: 'body',
+    disableFocusTrap: ownedPopup.withinModal,
+    closeFocus: ownedPopup.withinModal ? null : undefined,
     open: controlledOpen,
     // svelte-ignore state_referenced_locally
     disabled: isDisabled
@@ -74,6 +79,7 @@
 
   // Watch for open state changes
   let previousOpen = $state(false);
+  useRowRetention(() => $open, 'menu');
   let triggerElement = $state(null);
   let searchInputElement = $state(null);
 
@@ -190,9 +196,9 @@
     data-testid={triggerTestid || undefined}
     data-active={triggerActive ? 'true' : undefined}
     data-open={$open ? 'true' : undefined}
+    data-menu-trigger
     aria-label={triggerLabel || triggerText || undefined}
     title={triggerText || undefined}
-    onclick={(e) => e.stopPropagation()}
     onkeydown={(e) => e.stopPropagation()}
     class="menu-trigger {triggerAvatar ? 'p-0' : iconOnly ? '' : triggerClass ? '' : 'px-4 py-2'} rounded text-sm font-medium transition flex items-center {alignmentClass} {triggerGap} flex-shrink-0 {triggerBgColor ? getTextColorForBackground(triggerBgColor) : ''} {triggerClass} {isDisabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}"
     style={triggerBgColor ? `background-color: ${triggerBgColor}; ${triggerStyle}` : triggerStyle}
@@ -248,6 +254,7 @@
 {#if $open}
   <div
     use:melt={$content}
+    use:ownedPopup={{ trigger: () => triggerElement, close: () => { $open = false; } }}
     data-menu-container
     data-testid={triggerTestid ? `${triggerTestid}-menu` : undefined}
     role="menu"
@@ -353,6 +360,8 @@
             <svelte:element
               this={groupItem.href ? 'a' : 'button'}
               href={groupItem.href || undefined}
+              target={groupItem.href ? groupItem.target || undefined : undefined}
+              rel={groupItem.href ? groupItem.rel || (groupItem.target === '_blank' ? 'noopener noreferrer' : undefined) : undefined}
               type={groupItem.href ? undefined : 'button'}
               data-menu-item
               data-testid={groupItem.testid || undefined}
@@ -378,7 +387,7 @@
                 {:else}
                   {@const GroupItemIcon = groupItem.icon}
                   <div class="w-6 h-6 mr-3 rounded flex items-center justify-center">
-                    <GroupItemIcon class="w-4 h-4 {groupItem.iconClass || 'transition-colors'}" style="color: var(--ds-icon-subtle);" />
+                    <GroupItemIcon class="w-4 h-4 {groupItem.iconClass || 'transition-colors'}" />
                   </div>
                 {/if}
               {/if}
@@ -408,6 +417,8 @@
           <svelte:element
             this={itemData.href ? 'a' : 'button'}
             href={itemData.href || undefined}
+            target={itemData.href ? itemData.target || undefined : undefined}
+            rel={itemData.href ? itemData.rel || (itemData.target === '_blank' ? 'noopener noreferrer' : undefined) : undefined}
             type={itemData.href ? undefined : 'button'}
             data-menu-item
             data-testid={itemData.testid || undefined}
@@ -464,6 +475,9 @@
                 style="{itemData.badgeStyle || (itemData.badgeClass ? '' : 'color: var(--ds-text-subtlest);')}"
               >{itemData.badge}</span>
             {/if}
+            {#if itemData.shortcut}
+              <kbd class="menu-shortcut">{itemData.shortcut}</kbd>
+            {/if}
             {#if itemData.selected}
               <Check class="ml-3 w-4 h-4 flex-shrink-0" style="color: var(--ds-icon-brand);" />
             {/if}
@@ -485,6 +499,19 @@
 
   .menu-item:hover {
     background-color: var(--ds-surface-raised-hovered);
+  }
+
+  .menu-shortcut {
+    margin-left: 0.75rem;
+    padding: 0.125rem 0.375rem;
+    border-radius: 0.25rem;
+    border: 1px solid var(--ds-border);
+    background-color: var(--ds-background-neutral);
+    color: var(--ds-text-subtle);
+    font-family: inherit;
+    font-size: 0.6875rem;
+    line-height: 1.25;
+    flex-shrink: 0;
   }
 
   /* A selected radio row keeps a subtle tint instead of the neutral hover so

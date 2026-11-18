@@ -17,11 +17,19 @@ import (
 // scattered user-metadata lookups elsewhere (leave-period substitute check,
 // channel-manager audit details, etc.) route through here.
 type UserRepository struct {
-	db database.Database
+	db userExecutor
+}
+
+type userExecutor interface {
+	Query(string, ...any) (*sql.Rows, error)
+	QueryRow(string, ...any) *sql.Row
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+	ExecWrite(string, ...any) (sql.Result, error)
 }
 
 // NewUserRepository creates a UserRepository.
-func NewUserRepository(db database.Database) *UserRepository {
+func NewUserRepository(db userExecutor) *UserRepository {
 	return &UserRepository{db: db}
 }
 
@@ -105,10 +113,15 @@ type AdminUserRow struct {
 	OwnerUsername  string
 }
 
-// ListAdmin returns every user with the joined agent-owner display fields.
-// Sorted by last_name, first_name. Used by the admin user list — non-admin
-// listing routes through services.UserReadService.ListAll instead.
-func (r *UserRepository) ListAdmin() ([]models.User, error) {
+// ListAdmin pages active and inactive users, ordered by name with an ID tie-breaker.
+func (r *UserRepository) ListAdmin(limit, offset int) ([]models.User, int, error) {
+	var total int
+	if err := r.db.QueryRow("SELECT COUNT(*) FROM users").Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count admin users: %w", err)
+	}
+	if limit <= 0 {
+		limit = total
+	}
 	rows, err := r.db.Query(`
 		SELECT u.id, u.email, u.username, u.first_name, u.last_name, u.is_active, u.avatar_url,
 			u.requires_password_reset, u.timezone, u.language, COALESCE(u.is_agent, false),
@@ -116,10 +129,11 @@ func (r *UserRepository) ListAdmin() ([]models.User, error) {
 			u.created_at, u.updated_at
 		FROM users u
 		LEFT JOIN users o ON o.id = u.agent_owner_user_id
-		ORDER BY u.last_name, u.first_name
-	`)
+		ORDER BY u.last_name, u.first_name, u.id
+		LIMIT ? OFFSET ?
+	`, limit, max(0, offset))
 	if err != nil {
-		return nil, fmt.Errorf("list admin users: %w", err)
+		return nil, 0, fmt.Errorf("list admin users: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -134,7 +148,7 @@ func (r *UserRepository) ListAdmin() ([]models.User, error) {
 			&u.IsActive, &avatarURL, &requiresPasswordReset, &timezone, &language, &u.IsAgent,
 			&ownerID, &ownerFirst, &ownerLast, &ownerUsername,
 			&u.CreatedAt, &u.UpdatedAt); err != nil {
-			return nil, fmt.Errorf("scan user: %w", err)
+			return nil, 0, fmt.Errorf("scan user: %w", err)
 		}
 		u.AvatarURL = avatarURL.String
 		u.RequiresPasswordReset = requiresPasswordReset.Bool
@@ -159,12 +173,12 @@ func (r *UserRepository) ListAdmin() ([]models.User, error) {
 		users = append(users, u)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate admin users: %w", err)
+		return nil, 0, fmt.Errorf("iterate admin users: %w", err)
 	}
 	if users == nil {
 		users = []models.User{}
 	}
-	return users, nil
+	return users, total, nil
 }
 
 // GetByEmailOrUsernameForAuth returns a user with password fields for login/change-password flows.
@@ -608,18 +622,37 @@ type UpdateProfileSnapshot struct {
 	Timezone    sql.NullString
 	Language    sql.NullString
 	SCIMManaged bool
+	Offboarded  bool
 }
 
 // GetUpdateProfileSnapshot reads the columns the Update audit + SCIM gate
 // need. Returns ErrNotFound when missing.
 func (r *UserRepository) GetUpdateProfileSnapshot(id int) (*UpdateProfileSnapshot, error) {
+	return r.getUpdateProfileSnapshot(id, "")
+}
+
+// LockUpdateProfileSnapshot serializes lifecycle changes on the caller's
+// transaction before reading the policy guards and audit pre-image.
+func (r *UserRepository) LockUpdateProfileSnapshot(id int, driver string) (*UpdateProfileSnapshot, error) {
+	if database.IsPostgresDriver(driver) {
+		return r.getUpdateProfileSnapshot(id, " FOR UPDATE")
+	}
+	// SQLite has no row locks: acquire its writer lock before reading. This
+	// no-op UPDATE also fires any users-table UPDATE triggers.
+	if _, err := r.db.ExecWrite("UPDATE users SET id = id WHERE id = ?", id); err != nil {
+		return nil, fmt.Errorf("lock user %d update: %w", id, err)
+	}
+	return r.GetUpdateProfileSnapshot(id)
+}
+
+func (r *UserRepository) getUpdateProfileSnapshot(id int, suffix string) (*UpdateProfileSnapshot, error) {
 	var s UpdateProfileSnapshot
 	err := r.db.QueryRow(`
 		SELECT email, username, first_name, last_name, is_active, avatar_url, timezone, language,
-		       COALESCE(scim_managed, false)
+		       COALESCE(scim_managed, false), offboarded_at IS NOT NULL
 		FROM users WHERE id = ?
-	`, id).Scan(&s.Email, &s.Username, &s.FirstName, &s.LastName, &s.IsActive,
-		&s.AvatarURL, &s.Timezone, &s.Language, &s.SCIMManaged)
+	`+suffix, id).Scan(&s.Email, &s.Username, &s.FirstName, &s.LastName, &s.IsActive,
+		&s.AvatarURL, &s.Timezone, &s.Language, &s.SCIMManaged, &s.Offboarded)
 	if err != nil {
 		return nil, notFoundOrWrap(err, fmt.Sprintf("get user %d update snapshot", id))
 	}

@@ -54,7 +54,7 @@ export async function loadWorkspaceGradient(workspaceId, { force = false } = {})
 
   const generation = ++loadGeneration;
   loadPromiseKey = workspaceKey;
-  const request = loadWorkspaceLayout(workspaceId, force)
+  const request = loadWorkspaceLayout(workspaceId, force, generation)
     .then((layout) => {
       if (generation === loadGeneration) {
         cachedWorkspaceKey = workspaceKey;
@@ -79,9 +79,10 @@ export async function loadWorkspaceGradient(workspaceId, { force = false } = {})
   return request;
 }
 
-async function loadWorkspaceLayout(workspaceId, force) {
+async function loadWorkspaceLayout(workspaceId, force, generation) {
   if (force) return workspaces.getHomepageLayout(workspaceId);
   await workspaceDataStore.initialize(workspaceId);
+  if (generation !== loadGeneration) return null;
   const expectedID = Number.parseInt(String(workspaceId), 10);
   if (
     workspaceDataStore.initialized &&
@@ -263,7 +264,7 @@ export function useGradientStyles() {
       if (blur <= 0) {
         return 'background-color: var(--ds-surface-raised); border-color: var(--ds-glass-border);';
       }
-      return `background-color: var(--ds-glass-bg); backdrop-filter: blur(${blur}px); border-color: var(--ds-glass-border);`;
+      return `background-color: var(--ds-glass-bg-strong); backdrop-filter: blur(${blur}px); border-color: var(--ds-glass-border);`;
     },
 
     /**
@@ -284,7 +285,7 @@ export function useGradientStyles() {
      */
     tableStyle(blur = 12) {
       return hasCustomBackground
-        ? `background-color: var(--ds-glass-bg); backdrop-filter: blur(${blur}px); border-color: var(--ds-glass-border);`
+        ? `background-color: var(--ds-glass-bg-strong); backdrop-filter: blur(${blur}px); border-color: var(--ds-glass-border);`
         : 'background-color: var(--ds-surface-raised); border-color: var(--ds-border);';
     },
 
@@ -308,6 +309,7 @@ export function useGradientStyles() {
         return `${[
           '--ctx-surface: var(--ds-glass-bg)',
           '--ctx-surface-raised: var(--ds-glass-bg)',
+          '--ctx-surface-strong: var(--ds-glass-bg-strong)',
           '--ctx-surface-overlay: var(--ds-glass-bg)',
           '--ctx-surface-info: var(--ds-glass-bg)',
           '--ctx-badge-bg: var(--ds-glass-bg)',
@@ -327,6 +329,7 @@ export function useGradientStyles() {
       return `${[
         '--ctx-surface: var(--ds-surface)',
         '--ctx-surface-raised: var(--ds-surface-raised)',
+        '--ctx-surface-strong: var(--ds-surface)',
         '--ctx-surface-overlay: var(--ds-surface-overlay)',
         '--ctx-surface-info: var(--ds-surface-information)',
         '--ctx-badge-bg: var(--ds-background-neutral)',

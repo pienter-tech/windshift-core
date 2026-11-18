@@ -15,7 +15,8 @@ import (
 
 // UserReadService provides read operations for users
 type UserReadService struct {
-	db database.Database
+	db           database.Database
+	deactivation *UserDeactivationService
 }
 
 // AdminUserUpdate holds optional user fields for system-admin updates. Empty
@@ -53,13 +54,23 @@ var (
 // AdminUserUpdateResult carries the pre-image and updated user for transport
 // audit projections.
 type AdminUserUpdateResult struct {
-	Before *repository.UpdateProfileSnapshot
-	User   *models.User
+	Before  *repository.UpdateProfileSnapshot
+	User    *models.User
+	Cascade AgentDeactivationResult
 }
 
 // NewUserReadService creates a new user read service
 func NewUserReadService(db database.Database) *UserReadService {
 	return &UserReadService{db: db}
+}
+
+// NewAdminUserService enables mutations with a required lifecycle dependency.
+// Read-only callers must use NewUserReadService instead.
+func NewAdminUserService(db database.Database, lifecycle *UserDeactivationService) *UserReadService {
+	if lifecycle == nil {
+		panic("admin user service requires a lifecycle service")
+	}
+	return &UserReadService{db: db, deactivation: lifecycle}
 }
 
 // hydrateUser populates nullable fields and the computed FullName on a User.
@@ -148,29 +159,15 @@ func (s *UserReadService) ListByIDs(ctx context.Context, ids []int) ([]models.Us
 
 // ListAdmin returns all users, including inactive users, with stable pagination.
 func (s *UserReadService) ListAdmin(pagination PaginationParams) ([]models.User, int, error) {
-	users, err := repository.NewUserRepository(s.db).ListAdmin()
-	if err != nil {
-		return nil, 0, err
-	}
-	total := len(users)
-	start := pagination.Offset
-	if start < 0 {
-		start = 0
-	}
-	if start > total {
-		start = total
-	}
-	end := total
-	if pagination.Limit > 0 && start+pagination.Limit < end {
-		end = start + pagination.Limit
-	}
-	return users[start:end], total, nil
+	return repository.NewUserRepository(s.db).ListAdmin(pagination.Limit, pagination.Offset)
 }
 
-// UpdateAdmin applies the shared administrator profile mutation. Empty string
-// pointer values retain the existing value, matching the bearer compatibility
-// contract. Activation remains an independently projected field.
+// UpdateAdmin commits profile and lifecycle changes together, then invalidates
+// security caches. Empty strings retain existing values for compatibility.
 func (s *UserReadService) UpdateAdmin(id int, update AdminUserUpdate) (*AdminUserUpdateResult, error) {
+	if s.deactivation == nil {
+		return nil, errors.New("user mutations require NewAdminUserService with lifecycle invalidators")
+	}
 	sanitizeOptional := func(value *string, policy sanitize.Policy) {
 		if value != nil {
 			sanitize.Apply(value, policy)
@@ -181,8 +178,13 @@ func (s *UserReadService) UpdateAdmin(id int, update AdminUserUpdate) (*AdminUse
 	sanitizeOptional(update.Username, sanitize.ShortIdentifier)
 	sanitizeOptional(update.Timezone, sanitize.ShortIdentifier)
 	sanitizeOptional(update.Language, sanitize.ShortIdentifier)
-	repo := repository.NewUserRepository(s.db)
-	before, err := repo.GetUpdateProfileSnapshot(id)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin admin user update: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	repo := repository.NewUserRepository(tx)
+	before, err := repo.LockUpdateProfileSnapshot(id, s.db.GetDriverName())
 	if errors.Is(err, repository.ErrNotFound) {
 		return nil, ErrUserNotFound
 	}
@@ -190,7 +192,11 @@ func (s *UserReadService) UpdateAdmin(id int, update AdminUserUpdate) (*AdminUse
 		return nil, err
 	}
 	if before.SCIMManaged {
+		// External ownership takes precedence, including for offboarded users.
 		return nil, ErrUserManagedExternally
+	}
+	if before.Offboarded && update.IsActive != nil && *update.IsActive {
+		return nil, ErrUserOffboarded
 	}
 
 	value := func(candidate *string, current string) string {
@@ -240,8 +246,15 @@ func (s *UserReadService) UpdateAdmin(id int, update AdminUserUpdate) (*AdminUse
 		}
 		return nil, err
 	}
-	if update.IsActive != nil && *update.IsActive != before.IsActive {
-		if err := repo.SetActive(id, *update.IsActive); err != nil {
+	var cascade AgentDeactivationResult
+	if update.IsActive != nil && !*update.IsActive {
+		// Repeat the idempotent cascade to heal partially deactivated dependants.
+		cascade, err = s.deactivation.DeactivateUserTx(tx, id)
+		if err != nil {
+			return nil, err
+		}
+	} else if update.IsActive != nil && *update.IsActive != before.IsActive {
+		if err := repo.SetActive(id, true); err != nil {
 			return nil, err
 		}
 	}
@@ -249,7 +262,13 @@ func (s *UserReadService) UpdateAdmin(id int, update AdminUserUpdate) (*AdminUse
 	if err != nil {
 		return nil, err
 	}
-	return &AdminUserUpdateResult{Before: before, User: user}, nil
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit admin user update: %w", err)
+	}
+	if update.IsActive != nil {
+		s.deactivation.InvalidateDeprovisionCaches(cascade, id)
+	}
+	return &AdminUserUpdateResult{Before: before, User: user, Cascade: cascade}, nil
 }
 
 // GetGroupIDs returns active group membership IDs for a user.

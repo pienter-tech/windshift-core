@@ -9,11 +9,17 @@
   import Plus from '@lucide/svelte/icons/plus';
   import Play from '@lucide/svelte/icons/play';
   import Zap from '@lucide/svelte/icons/zap';
+  import MoreHorizontal from '@lucide/svelte/icons/more-horizontal';
+  import History from '@lucide/svelte/icons/history';
+  import Pencil from '@lucide/svelte/icons/pencil';
+  import Copy from '@lucide/svelte/icons/copy';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
+  import DropdownMenu from '../../layout/DropdownMenu.svelte';
   import IconMessageChatbot from '@tabler/icons-svelte-runes/icons/message-chatbot';
   import PageHeader from '../../layout/PageHeader.svelte';
   import Badge from '../../components/Badge.svelte';
 
-  /** @type {{ workspaceId: any, actions?: any[], loading?: boolean, oncreate?: () => void, onfromtemplate?: () => void, onedit?: (action: any) => void, ontoggle?: (action: any) => void, ondelete?: (action: any) => void, onviewlogs?: (action: any) => void, ontestexecuted?: (action: any) => void }} */
+  /** @type {{ workspaceId: any, actions?: any[], loading?: boolean, oncreate?: () => void, onfromtemplate?: () => void, onedit?: (action: any) => void, onrename?: (action: any) => void, onduplicate?: (action: any) => void, ontoggle?: (action: any) => void, ondelete?: (action: any) => void, onviewlogs?: (action: any) => void, onviewhistory?: (action: any) => void, ontestexecuted?: (action: any) => void }} */
   let {
     workspaceId,
     actions = [],
@@ -21,9 +27,12 @@
     oncreate,
     onfromtemplate,
     onedit,
+    onrename,
+    onduplicate,
     ontoggle,
     ondelete,
     onviewlogs,
+    onviewhistory,
     ontestexecuted,
   } = $props();
 
@@ -88,6 +97,19 @@
   function handleViewLogs(action) {
     onviewlogs?.(action);
   }
+
+  function handleViewHistory(action) {
+    onviewhistory?.(action);
+  }
+
+  function moreItems(action) {
+    return [
+      ...(onrename ? [{ id: 'rename', title: t('actions.rename'), icon: Pencil, testid: `action-rename-${action.id}`, onClick: () => onrename(action) }] : []),
+      ...(onduplicate ? [{ id: 'duplicate', title: t('common.duplicate'), icon: Copy, testid: `action-duplicate-${action.id}`, onClick: () => onduplicate(action) }] : []),
+      { type: 'divider' },
+      { id: 'delete', title: t('common.delete'), icon: Trash2, color: 'var(--ds-danger)', testid: `action-delete-${action.id}`, onClick: () => handleDelete(action) },
+    ];
+  }
 </script>
 
 <div class="actions-manager">
@@ -111,6 +133,7 @@
         icon={Plus}
         keyboardHint={getShortcutDisplay('actions', 'add')}
         hotkeyConfig={{ key: toHotkeyString('actions', 'add') }}
+        dataTestid="actions-create"
         onclick={handleCreate}
       >
         {t('actions.create')}
@@ -190,6 +213,14 @@
               </button>
               <button
                 class="p-2 rounded-md action-button"
+                onclick={() => handleViewHistory(action)}
+                title={t('actions.history.title', 'History')}
+                data-testid={`action-view-history-${action.id}`}
+              >
+                <History class="h-5 w-5" />
+              </button>
+              <button
+                class="p-2 rounded-md action-button"
                 onclick={() => handleToggle(action)}
                 title={action.is_enabled ? t('actions.disable') : t('actions.enable')}
                 data-testid="action-toggle"
@@ -215,15 +246,15 @@
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                 </svg>
               </button>
-              <button
-                class="p-2 rounded-md action-button-danger"
-                onclick={() => handleDelete(action)}
-                title={t('common.delete')}
-              >
-                <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                </svg>
-              </button>
+              <DropdownMenu
+                triggerIcon={MoreHorizontal}
+                triggerLabel={t('actions.moreActions')}
+                triggerTestid={`action-more-${action.id}`}
+                triggerClass="p-2 rounded-md action-button"
+                showChevron={false}
+                placement="bottom-end"
+                items={moreItems(action)}
+              />
             </div>
           </div>
         </div>
@@ -280,13 +311,4 @@
     background-color: var(--ds-background-neutral-hovered);
   }
 
-  .action-button-danger {
-    color: var(--ds-text-subtle);
-    background-color: transparent;
-  }
-
-  .action-button-danger:hover {
-    color: var(--ds-danger);
-    background-color: var(--ds-danger-subtle);
-  }
 </style>

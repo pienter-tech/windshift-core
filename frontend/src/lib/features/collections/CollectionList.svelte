@@ -1,4 +1,5 @@
 <script>
+  import { useEventListener } from 'runed';
   import { t } from '../../stores/i18n.svelte.js';
   import { errorToast } from '../../stores/toasts.svelte.js';
   import { onWorkItemRefresh } from '../../stores/workItemRefresh.js';
@@ -11,6 +12,7 @@
   import { useCollectionEventStream } from '../../composables/useCollectionEventStream.svelte.js';
   import { useCollectionSearch } from '../../composables/useCollectionSearch.svelte.js';
   import { useCollectionEditorOptionsPrime } from '../../composables/useCollectionEditorOptionsPrime.svelte.js';
+  import { useItemBulkSelection } from '../../composables/useItemBulkSelection.svelte.js';
   import { createDeleteItemHandler, createItemActionsBuilder } from '../../utils/workItemTableHelpers.js';
   import {
     getListColumnLabel,
@@ -22,21 +24,32 @@
   import { collectionFieldLinks } from '../../stores/collectionFieldLinks.svelte.js';
   import { itemModalStore } from '../../stores/itemModalStore.svelte.js';
   import { workspaceDataStore } from '../../stores/workspaceDataStore.svelte.js';
+  import { objectDisplayName } from '../../utils/systemLabels.js';
   import ArrowUp from '@lucide/svelte/icons/arrow-up';
   import ArrowDown from '@lucide/svelte/icons/arrow-down';
   import ArrowUpDown from '@lucide/svelte/icons/arrow-up-down';
+  import CheckSquare from '@lucide/svelte/icons/square-check';
+  import Square from '@lucide/svelte/icons/square';
+  import Plus from '@lucide/svelte/icons/plus';
+  import Button from '../../components/Button.svelte';
   import SearchInput from '../../components/SearchInput.svelte';
   import ViewHeader from '../../layout/ViewHeader.svelte';
   import StaticViewBackground from '../../layout/StaticViewBackground.svelte';
   import EmptyState from '../../components/EmptyState.svelte';
   import TableHeaderBar from '../../components/TableHeaderBar.svelte';
+  import ButtonGroup from '../../components/ButtonGroup.svelte';
   import WorkItemListRow from './WorkItemListRow.svelte';
   import WorkItemListFooter from './WorkItemListFooter.svelte';
   import ColumnSelector from './ColumnSelector.svelte';
+  import BulkActionToolbar from './BulkActionToolbar.svelte';
   import SubFilterBar from './SubFilterBar.svelte';
   import { useListColumnConfig } from './listColumnConfig.svelte.js';
+  import { buildDisplayColumns } from './boardColumns.js';
+  import VirtualRows from '../../components/VirtualRows.svelte';
+  import { collectionItemRowKey } from './collectionVirtualRows';
 
   let { workspaceId, collectionId = null } = $props();
+  let listElement = $state(null);
 
   // Reference data from shared workspace store
   let workspace = $derived(workspaceDataStore.workspace);
@@ -49,6 +62,7 @@
   let priorities = $derived(workspaceDataStore.priorities);
   let projects = $derived(workspaceDataStore.projects);
   let customFieldDefinitions = $derived(workspaceDataStore.customFieldDefinitions);
+  let wdsLabels = $derived(workspaceDataStore.labels);
 
   // Dynamic view-specific state
   let workItems = $derived(collectionStore.items);
@@ -91,12 +105,6 @@
     () => workspaceId,
     () => ({ statuses, users, milestones, iterations, projects })
   );
-
-  // Computed: Generate grid-template-columns CSS via the shared list grid
-  // helpers (also used by the support queue's list-shaped table).
-  let gridTemplateColumns = $derived(listGridTemplateColumns(listColumns));
-
-  let gridMinWidth = $derived(listGridMinWidth(listColumns));
 
   $effect(() =>
     onWorkItemRefresh((detail) => {
@@ -149,6 +157,68 @@
   );
   let filteredItems = $derived(search.items);
 
+  // Multi-select mirrors the board: the same composable owns the selection set
+  // and bulk operations, so both views expose identical actions.
+  const selection = useItemBulkSelection({
+    items: () => filteredItems,
+    scopeWorkspaceId: () => workspaceId,
+    reload: reloadCollection,
+    labelNameLookup: () => wdsLabels,
+  });
+
+  // Move targets mirror the board's configured columns so both views offer the
+  // same status destinations.
+  let bulkMoveTargets = $derived(
+    buildDisplayColumns(columnConfig.boardConfig, statuses)
+      .filter((column) => column.status_ids?.length > 0)
+      .map((column) => ({
+        id: column.id,
+        statusId: column.status_ids[0],
+        title: objectDisplayName(column, 'status'),
+        color: column.color,
+      }))
+  );
+
+  // Selection mode reserves a leading track for the row checkboxes.
+  const SELECT_TRACK = '2rem';
+  let gridTemplateColumns = $derived(
+    selection.selectionMode
+      ? `${SELECT_TRACK} ${listGridTemplateColumns(listColumns)}`
+      : listGridTemplateColumns(listColumns)
+  );
+
+  let gridMinWidth = $derived(
+    selection.selectionMode
+      ? `calc(${SELECT_TRACK} + ${listGridMinWidth(listColumns)})`
+      : listGridMinWidth(listColumns)
+  );
+
+  // Shift selection extends across the visible (filtered) rows.
+  function selectRangeTo(itemId) {
+    selection.selectionMode = true;
+    const ids = filteredItems.map((item) => item.id);
+    const from = ids.indexOf(selection.selectionAnchorId);
+    const to = ids.indexOf(itemId);
+    if (from === -1 || to === -1) {
+      selection.toggleSelected(itemId);
+      return;
+    }
+    const start = Math.min(from, to);
+    const end = Math.max(from, to);
+    selection.selectedIds = [...new Set([...selection.selectedIds, ...ids.slice(start, end + 1)])];
+  }
+
+  useEventListener(() => window, 'keydown', (event) => {
+    const target = event.target;
+    const inEditable =
+      target instanceof HTMLElement &&
+      (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+    if (event.key === 'Escape' && selection.selectionMode && !inEditable) {
+      event.preventDefault();
+      selection.exitSelectionMode();
+    }
+  });
+
   // Resolve only the assignees the visible rows reference instead of waiting
   // for the whole directory before the list can render.
   $effect(() => {
@@ -178,6 +248,24 @@
     itemModalStore.open(item.id, item.workspace_id ?? workspaceId);
   }
 
+  // The list view has no inline composer, so the empty state hands off to the
+  // global create modal. Global collections omit the workspace and let the
+  // modal's workspace picker decide.
+  function openCreateItemModal() {
+    window.dispatchEvent(
+      new CustomEvent('show-create-modal', {
+        detail: {
+          type: 'work-item',
+          workspaceId: workspaceId ? Number(workspaceId) : undefined,
+        },
+      })
+    );
+  }
+
+  let canCreateItem = $derived(
+    !workspaceId || workspacePermissions.canCreate(workspaceId)
+  );
+
   const deleteItem = createDeleteItemHandler({
     confirmMessage: (item) => t('collections.confirmDeleteItem', { title: item.title }),
     onDeleted: () => reloadCollection(),
@@ -197,6 +285,18 @@
 
 
 </script>
+
+{#snippet createItemAction()}
+  <!-- shortcut-guard-exempt: empty-state entry point to the global create modal, which owns the create shortcut -->
+  <Button
+    variant="primary"
+    icon={Plus}
+    onclick={openCreateItemModal}
+    dataTestid="list-empty-create-item"
+  >
+    {t('items.createItem')}
+  </Button>
+{/snippet}
 
 {#if loading}
   <div class="p-6">
@@ -232,6 +332,23 @@
         </div>
 
         <div class="flex items-center gap-2">
+          <!-- Selection is an explicit mode, matching the board's toolbar. -->
+          <ButtonGroup testid="list-controls-group">
+            {#snippet children(segment)}
+              <button
+                type="button"
+                class={segment}
+                data-active={selection.selectionMode}
+                aria-pressed={selection.selectionMode}
+                title={t('collections.selectItems')}
+                onclick={selection.toggleSelectionMode}
+                data-testid="list-select-mode-toggle"
+              >
+                <CheckSquare class="w-4 h-4" />
+                {t('common.select')}
+              </button>
+            {/snippet}
+          </ButtonGroup>
           <!-- Column Selector -->
           <ColumnSelector
             columns={listColumns}
@@ -262,6 +379,7 @@
           <EmptyState
             title={t('items.noItems')}
             description={t('items.createToStart')}
+            action={canCreateItem ? createItemAction : null}
           />
         {:else}
           <EmptyState
@@ -277,6 +395,9 @@
             minWidth={gridMinWidth}
             style={styles.tableHeaderStyle}
           >
+            {#if selection.selectionMode}
+              <div></div>
+            {/if}
             {#each listColumns as column (column.field_identifier)}
               {#if sortableFields.has(column.field_identifier)}
                 <button
@@ -301,15 +422,22 @@
           </TableHeaderBar>
 
           <!-- Table Body -->
-          <div>
-            {#each filteredItems as item (item.id)}
+          <div bind:this={listElement} style="overflow-anchor: none;">
+            <VirtualRows items={filteredItems} getKey={collectionItemRowKey} {listElement}
+              dragSources
+              layoutRevision={gridTemplateColumns}
+              identity={`list:${workspaceId ?? ''}:${collectionId ?? ''}:${collectionStore.effectiveSubFilterQL}:${search.query}:${sortKey}:${sortDirection}:${currentPage}`}
+            >
+            {#snippet row(item, virtual)}
               <WorkItemListRow
+                virtualRow={virtual}
+                deferred={false}
                 {item}
                 columns={listColumns}
                 {gridTemplateColumns}
                 {gridMinWidth}
                 {workspace}
-                canEdit={workspacePermissions.canEdit(item.workspace_id)}
+                canEdit={!selection.selectionMode && workspacePermissions.canEdit(item.workspace_id)}
                 {statuses}
                 {statusCategories}
                 {priorities}
@@ -324,8 +452,39 @@
                 onupdateError={handleUpdateError}
                 draggable
                 rowTestid={`workspace-item-row-${item.id}`}
-              />
-            {/each}
+                selectionMode={selection.selectionMode}
+                selected={selection.selectedIdSet.has(item.id)}
+                onselect={selection.toggleSelected}
+                onshiftselect={selectRangeTo}
+              >
+                {#snippet leading(row)}
+                  {#if selection.selectionMode}
+                    <!-- inline-style-guard-exempt: selection checkbox mirrors the board card's dynamic accent. -->
+                    <button
+                      type="button"
+                      class="-ml-0.5 shrink-0 rounded p-0.5"
+                      style="color: {selection.selectedIdSet.has(row.id) ? 'var(--ds-border-focused)' : 'var(--ds-icon-subtle)'};"
+                      data-testid={`list-row-select-${row.id}`}
+                      aria-pressed={selection.selectedIdSet.has(row.id)}
+                      aria-label={t('collections.toggleSelection')}
+                      title={t('collections.toggleSelection')}
+                      onclick={(event) => {
+                        event.stopPropagation();
+                        selection.toggleSelected(row.id);
+                      }}
+                      onkeydown={(event) => event.stopPropagation()}
+                    >
+                      {#if selection.selectedIdSet.has(row.id)}
+                        <CheckSquare class="h-4 w-4" />
+                      {:else}
+                        <Square class="h-4 w-4" />
+                      {/if}
+                    </button>
+                  {/if}
+                {/snippet}
+              </WorkItemListRow>
+            {/snippet}
+            </VirtualRows>
           </div>
         </div>
 
@@ -367,6 +526,13 @@
         {/if}
       {/if}
   </StaticViewBackground>
+
+  <BulkActionToolbar
+    {selection}
+    moveTargets={bulkMoveTargets}
+    {priorities}
+    testidPrefix="list"
+  />
 {:else}
   <div class="p-6">
     <div class="text-center " style="color: var(--ctx-text-subtle, var(--ds-text-subtle));">

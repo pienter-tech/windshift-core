@@ -119,8 +119,9 @@ func RegisterRoutes(deps restapi.Deps) {
 	timeProjectHandler := handlers.NewTimeProjectHandler(handlers.NewBaseHandler(db, permissionService), timePermService)
 	timeWorklogHandler := handlers.NewTimeWorklogHandler(handlers.NewBaseHandler(db, permissionService), timePermService)
 	timerRepo := repository.NewActiveTimerRepository(db)
+	draftRepo := repository.NewTimeWorklogDraftRepository(db)
 	itemRepo := repository.NewItemRepository(db)
-	timerService := services.NewTimerService(timerRepo, itemRepo, timePermService, permissionService)
+	timerService := services.NewTimerService(timerRepo, draftRepo, itemRepo, services.NewTimeWorklogService(db), timePermService, permissionService)
 	activeTimerHandler := handlers.NewActiveTimerHandler(handlers.NewBaseHandler(db, permissionService), timerRepo, timerService)
 
 	// Public discovery routes (no bearer auth). Mounted on a sibling group
@@ -530,7 +531,7 @@ func RegisterRoutes(deps restapi.Deps) {
 	v1.HandleWithMiddleware("GET /timer/active", activeTimerHandler.GetActiveTimer, bearerAuth.RequirePermission("time:read"))
 	v1.HandleWithMiddleware("DELETE /timer/stop", activeTimerHandler.StopTimer, bearerAuth.RequirePermission("time:write"))
 
-	adminUserHandler := handlers.NewAdminUserHandler(db, permissionService)
+	adminUserHandler := handlers.NewAdminUserHandler(db, permissionService, deps.UserDeactivationService)
 	adminGroupHandler := handlers.NewAdminGroupHandler(db, permissionService, deps.AuthorizationCacheInvalidator)
 	adminAuditLogHandler := handlers.NewAdminAuditLogHandler(db, permissionService)
 	adminAPITokenHandler := handlers.NewAdminAPITokenHandler(db, tokenManager, permissionService)

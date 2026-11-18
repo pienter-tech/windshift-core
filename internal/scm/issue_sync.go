@@ -23,6 +23,7 @@ import (
 // IssueSyncService handles synchronization of GitHub and Gitea/Forgejo
 // issues into Windshift items.
 type IssueSyncService struct {
+	httpClients *HTTPClientPool
 	db          database.Database
 	encryption  *sso.SecretEncryption
 	syncMu      sync.Mutex
@@ -86,7 +87,7 @@ func (s *IssueSyncService) providerForConnection(ctx context.Context, connection
 	if s.resolveProviderOverride != nil {
 		return s.resolveProviderOverride(ctx, connectionID)
 	}
-	credResolver := &CredentialResolver{db: s.db, encryption: s.encryption}
+	credResolver := NewCredentialResolver(s.db, s.encryption, s.httpClients)
 	return credResolver.GetProviderForConnection(ctx, connectionID)
 }
 
@@ -98,8 +99,8 @@ func (s *IssueSyncService) SetUserService(us interface {
 }
 
 // NewIssueSyncService creates a new IssueSyncService.
-func NewIssueSyncService(db database.Database, encryption *sso.SecretEncryption) *IssueSyncService {
-	return &IssueSyncService{db: db, encryption: encryption}
+func NewIssueSyncService(db database.Database, encryption *sso.SecretEncryption, pools ...*HTTPClientPool) *IssueSyncService {
+	return &IssueSyncService{db: db, encryption: encryption, httpClients: clientPoolOrNew(pools)}
 }
 
 func (s *IssueSyncService) HasEnabledSyncConfig(ctx context.Context) (bool, error) {
