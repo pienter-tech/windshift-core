@@ -36,6 +36,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        with:
+          # Full history and tags, so branch builds can describe their version.
+          fetch-depth: 0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3.12.0
@@ -57,9 +60,13 @@ jobs:
         id: build_meta
         shell: bash
         run: |
-          version="dev"
+          # Tag builds use the tag. Branch builds describe HEAD from the
+          # nearest release (vX.Y.Z-pienter.N, or vX.Y.Z-pienter.N-K-gSHA when
+          # the release tag has not been pushed yet) instead of "dev".
           if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
             version="$GITHUB_REF_NAME"
+          else
+            version=$(git describe --tags --match 'v[0-9]*' 2>/dev/null || echo "dev")
           fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "commit=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
@@ -94,7 +101,7 @@ jobs:
             RELEASE_NAME=
             COMMIT=${{ steps.build_meta.outputs.commit }}
             BUILD_DATE=${{ steps.build_meta.outputs.date }}
-          tags: ${{ env.REGISTRY }}/${{ matrix.image.name }}:stage-${{ github.sha }}-${{ matrix.platform.arch }}
+          tags: ${{ env.REGISTRY }}/${{ matrix.image.name }}:stage-${{ github.run_id }}-${{ matrix.platform.arch }}
           push: true
 
   merge:
@@ -138,7 +145,10 @@ jobs:
       - name: Create manifest list from per-arch staging tags
         env:
           IMG: ${{ env.REGISTRY }}/${{ matrix.image.name }}
-          STAGE: stage-${{ github.sha }}
+          # Keyed by run, not commit: a push to main and its release tag build
+          # the same commit at the same time, and commit-keyed staging tags let
+          # the tag run publish the branch run's images under the release tag.
+          STAGE: stage-${{ github.run_id }}
         run: |
           # Combine the two per-arch staging tags into the final tags. Tags
           # always resolve in the registry (unlike a by-digest index digest),
@@ -170,11 +180,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PKG: ${{ matrix.image.short }}
         run: |
-          # Best-effort cleanup: delete the two ephemeral stage-<sha>-<arch>
+          # Best-effort cleanup: delete the two ephemeral stage-<run>-<arch>
           # tags now that the real multi-arch manifest is published. Never fails
           # the job — leftover staging tags are harmless if this can't run.
           for arch in amd64 arm64; do
-            tag="stage-${{ github.sha }}-${arch}"
+            tag="stage-${{ github.run_id }}-${arch}"
             vid=$(gh api --paginate "/orgs/pienter-tech/packages/container/${PKG}/versions" \
               --jq ".[] | select(.metadata.container.tags | index(\"${tag}\")) | .id" | head -n1)
             if [ -n "$vid" ]; then
